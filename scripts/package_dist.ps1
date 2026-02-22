@@ -286,9 +286,13 @@ function Validate-SourceTree {
 }
 
 function Validate-BundleLayout {
-    param([Parameter(Mandatory = $true)][string]$BundleDir)
+    param(
+        [Parameter(Mandatory = $true)][string]$BundleDir,
+        [Parameter(Mandatory = $true)][string]$BinaryName,
+        [Parameter(Mandatory = $true)][string]$DesktopBinaryName
+    )
 
-    $expected = @('videnoa', 'videnoa-desktop', 'lib', 'bin', 'models', 'presets', 'README.md', 'LICENSE')
+    $expected = @($BinaryName, $DesktopBinaryName, 'lib', 'bin', 'models', 'presets', 'README.md', 'LICENSE')
     $ok = $true
 
     foreach ($entry in $expected) {
@@ -340,12 +344,16 @@ switch ($resolvedPlatform) {
         $libPart1 = 'lib_linux64.zip.001'
         $libPart2 = 'lib_linux64.zip.002'
         $exeSuffix = ''
+        $distBinaryName = 'videnoa'
+        $distDesktopBinaryName = 'videnoa-desktop'
     }
     'win64' {
         $binAsset = 'bin_win64.zip'
         $libPart1 = 'lib_win64.zip.001'
         $libPart2 = 'lib_win64.zip.002'
         $exeSuffix = '.exe'
+        $distBinaryName = 'videnoa.exe'
+        $distDesktopBinaryName = 'videnoa-desktop.exe'
     }
     default {
         Fail "unsupported platform: $resolvedPlatform"
@@ -452,8 +460,8 @@ try {
         Fail "missing build output: $videnoaDesktopBinSrc"
     }
 
-    Copy-Item -LiteralPath $videnoaBinSrc -Destination (Join-Path $bundleDir 'videnoa') -Force
-    Copy-Item -LiteralPath $videnoaDesktopBinSrc -Destination (Join-Path $bundleDir 'videnoa-desktop') -Force
+    Copy-Item -LiteralPath $videnoaBinSrc -Destination (Join-Path $bundleDir $distBinaryName) -Force
+    Copy-Item -LiteralPath $videnoaDesktopBinSrc -Destination (Join-Path $bundleDir $distDesktopBinaryName) -Force
 
     Extract-ZipIntoDir -ZipFile $mergedLibZip -ExpectedRoot 'lib' -DestinationDir (Join-Path $bundleDir 'lib')
     Extract-ZipIntoDir -ZipFile (Join-Path $downloadDir $binAsset) -ExpectedRoot 'bin' -DestinationDir (Join-Path $bundleDir 'bin')
@@ -463,7 +471,7 @@ try {
     Copy-Item -LiteralPath (Join-Path $cloneDir 'README.md') -Destination (Join-Path $bundleDir 'README.md') -Force
     Copy-Item -LiteralPath (Join-Path $cloneDir 'LICENSE') -Destination (Join-Path $bundleDir 'LICENSE') -Force
 
-    Validate-BundleLayout -BundleDir $bundleDir
+    Validate-BundleLayout -BundleDir $bundleDir -BinaryName $distBinaryName -DesktopBinaryName $distDesktopBinaryName
 
     Write-Log "bundle created successfully: $bundleDir"
 }

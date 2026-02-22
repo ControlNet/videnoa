@@ -206,7 +206,9 @@ extract_zip_into_dir() {
 
 validate_bundle_layout() {
   local bundle_dir="$1"
-  local expected=("videnoa" "videnoa-desktop" "lib" "bin" "models" "presets" "README.md" "LICENSE")
+  local binary_name="$2"
+  local desktop_binary_name="$3"
+  local expected=("$binary_name" "$desktop_binary_name" "lib" "bin" "models" "presets" "README.md" "LICENSE")
 
   local ok="true"
 
@@ -318,12 +320,16 @@ case "$PLATFORM" in
     LIB_PART_1="lib_linux64.zip.001"
     LIB_PART_2="lib_linux64.zip.002"
     EXE_SUFFIX=""
+    DIST_BINARY_NAME="videnoa"
+    DIST_DESKTOP_BINARY_NAME="videnoa-desktop"
     ;;
   win64)
     BIN_ASSET="bin_win64.zip"
     LIB_PART_1="lib_win64.zip.001"
     LIB_PART_2="lib_win64.zip.002"
     EXE_SUFFIX=".exe"
+    DIST_BINARY_NAME="videnoa.exe"
+    DIST_DESKTOP_BINARY_NAME="videnoa-desktop.exe"
     ;;
   *)
     die "unsupported platform: $PLATFORM"
@@ -402,11 +408,11 @@ if [[ ! -f "$VIDENOA_DESKTOP_BIN_SRC" ]]; then
   die "missing build output: $VIDENOA_DESKTOP_BIN_SRC"
 fi
 
-cp "$VIDENOA_BIN_SRC" "$BUNDLE_DIR/videnoa"
-cp "$VIDENOA_DESKTOP_BIN_SRC" "$BUNDLE_DIR/videnoa-desktop"
+cp "$VIDENOA_BIN_SRC" "$BUNDLE_DIR/$DIST_BINARY_NAME"
+cp "$VIDENOA_DESKTOP_BIN_SRC" "$BUNDLE_DIR/$DIST_DESKTOP_BINARY_NAME"
 
 if [[ "$PLATFORM" == "linux64" ]]; then
-  chmod +x "$BUNDLE_DIR/videnoa" "$BUNDLE_DIR/videnoa-desktop"
+  chmod +x "$BUNDLE_DIR/$DIST_BINARY_NAME" "$BUNDLE_DIR/$DIST_DESKTOP_BINARY_NAME"
 fi
 
 extract_zip_into_dir "$MERGED_LIB_ZIP" "lib" "$BUNDLE_DIR/lib"
@@ -417,6 +423,6 @@ cp -a "$CLONE_DIR/presets" "$BUNDLE_DIR/presets"
 cp "$CLONE_DIR/README.md" "$BUNDLE_DIR/README.md"
 cp "$CLONE_DIR/LICENSE" "$BUNDLE_DIR/LICENSE"
 
-validate_bundle_layout "$BUNDLE_DIR"
+validate_bundle_layout "$BUNDLE_DIR" "$DIST_BINARY_NAME" "$DIST_DESKTOP_BINARY_NAME"
 
 log "bundle created successfully: $BUNDLE_DIR"
