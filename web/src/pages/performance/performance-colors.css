@@ -1,0 +1,19 @@
+:root {
+	--performance-color-cpu: 262 83% 58%;
+	--performance-color-gpu: 200 88% 46%;
+	--performance-color-ram: 155 63% 43%;
+	--performance-color-vram: 24 90% 52%;
+	--performance-color-process: var(--performance-color-cpu);
+	--performance-color-others: var(--performance-color-ram);
+	--performance-color-free-idle: 220 14% 62%;
+}
+
+.dark {
+	--performance-color-cpu: 262 90% 70%;
+	--performance-color-gpu: 199 92% 62%;
+	--performance-color-ram: 156 68% 58%;
+	--performance-color-vram: 31 95% 64%;
+	--performance-color-process: var(--performance-color-cpu);
+	--performance-color-others: var(--performance-color-ram);
+	--performance-color-free-idle: 220 16% 74%;
+}

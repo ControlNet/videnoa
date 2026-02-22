@@ -1,0 +1,114 @@
+{
+  "name": "Anime 2x + Interpolation 2x",
+  "description": "First upscale anime to 2x resolution (AnimeJaNai V3 L1), then interpolate 2x framerate (RIFE v4.26)",
+  "workflow": {
+    "nodes": [
+      {
+        "id": "workflow_input",
+        "node_type": "WorkflowInput",
+        "params": {
+          "ports": [
+            {
+              "name": "input",
+              "port_type": "Path"
+            },
+            {
+              "name": "output",
+              "port_type": "Path"
+            }
+          ]
+        }
+      },
+      {
+        "id": "input",
+        "node_type": "VideoInput",
+        "params": {}
+      },
+      {
+        "id": "sr",
+        "node_type": "SuperResolution",
+        "params": {
+          "model_path": "models/the_database_AnimeJaNaiV3L1_sharp_HD_x2_fp16_op17.onnx",
+          "scale": 2,
+          "tile_size": 0,
+          "backend": "tensorrt"
+        }
+      },
+      {
+        "id": "fi",
+        "node_type": "FrameInterpolation",
+        "params": {
+          "model_path": "models/rife_v4.26.onnx",
+          "multiplier": 2,
+          "backend": "tensorrt"
+        }
+      },
+      {
+        "id": "output",
+        "node_type": "VideoOutput",
+        "params": {
+          "codec": "libx265",
+          "crf": 18,
+          "pixel_format": "yuv420p10le"
+        }
+      }
+    ],
+    "connections": [
+      {
+        "from_node": "workflow_input",
+        "from_port": "input",
+        "to_node": "input",
+        "to_port": "path",
+        "port_type": "Path"
+      },
+      {
+        "from_node": "workflow_input",
+        "from_port": "output",
+        "to_node": "output",
+        "to_port": "output_path",
+        "port_type": "Path"
+      },
+      {
+        "from_node": "input",
+        "from_port": "frames",
+        "to_node": "sr",
+        "to_port": "frames",
+        "port_type": "VideoFrames"
+      },
+      {
+        "from_node": "sr",
+        "from_port": "frames",
+        "to_node": "fi",
+        "to_port": "frames",
+        "port_type": "VideoFrames"
+      },
+      {
+        "from_node": "fi",
+        "from_port": "frames",
+        "to_node": "output",
+        "to_port": "frames",
+        "port_type": "VideoFrames"
+      },
+      {
+        "from_node": "input",
+        "from_port": "source_path",
+        "to_node": "output",
+        "to_port": "source_path",
+        "port_type": "Path"
+      }
+    ],
+    "interface": {
+      "inputs": [
+        {
+          "name": "input",
+          "port_type": "Path"
+        },
+        {
+          "name": "output",
+          "port_type": "Path"
+        }
+      ],
+      "outputs": []
+    }
+  }
+}

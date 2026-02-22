@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+    <defs>
+      <!-- Play button: light violet to deep purple -->
+      <linearGradient id="play-grad" x1="0.15" y1="0.1" x2="0.85" y2="0.9">
+        <stop offset="0%" stop-color="#A78BFA"/>
+        <stop offset="50%" stop-color="#8B5CF6"/>
+        <stop offset="100%" stop-color="#6D28D9"/>
+      </linearGradient>
+  
+      <!-- Subtle highlight for 3D polish -->
+      <linearGradient id="highlight" x1="0.2" y1="0" x2="0.5" y2="0.7">
+        <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.22"/>
+        <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0"/>
+      </linearGradient>
+  
+      <!-- Sparkle gradient: pink to purple -->
+      <linearGradient id="sparkle-grad" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="#F472B6"/>
+        <stop offset="100%" stop-color="#C084FC"/>
+      </linearGradient>
+  
+      <!-- Drop shadow for depth -->
+      <filter id="shadow" x="-12%" y="-8%" width="135%" height="130%">
+        <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#4C1D95" flood-opacity="0.3"/>
+      </filter>
+  
+      <!-- Clip path for highlight overlay -->
+      <clipPath id="play-clip">
+        <path d="M88,112 Q88,80 115,97 L353,240 Q380,256 353,273 L115,416 Q88,432 88,400 Z"/>
+      </clipPath>
+    </defs>
+  
+    <!-- Play button with shadow -->
+    <path d="M88,112 Q88,80 115,97 L353,240 Q380,256 353,273 L115,416 Q88,432 88,400 Z"
+          fill="url(#play-grad)" filter="url(#shadow)"/>
+  
+    <!-- Highlight overlay for 3D polish -->
+    <rect x="60" y="60" width="340" height="400"
+          fill="url(#highlight)" clip-path="url(#play-clip)"/>
+  
+    <!-- Large sparkle star (4-pointed) -->
+    <path d="M405,47 L416,84 L453,95 L416,106 L405,143 L394,106 L357,95 L394,84 Z"
+          fill="url(#sparkle-grad)"/>
+  
+    <!-- Medium sparkle star -->
+    <path d="M425,182 L431,202 L451,208 L431,214 L425,234 L419,214 L399,208 L419,202 Z"
+          fill="#F9A8D4"/>
+  
+    <!-- Small upper sparkle -->
+    <path d="M343,41 L347,52 L358,56 L347,60 L343,71 L339,60 L328,56 L339,52 Z"
+          fill="#DDD6FE"/>
+  
+    <!-- Tiny sparkle dot -->
+    <circle cx="442" cy="148" r="5" fill="#E9D5FF"/>
+  
+    <!-- Lower accent sparkle -->
+    <path d="M412,302 L417,315 L430,320 L417,325 L412,338 L407,325 L394,320 L407,315 Z"
+          fill="#E9D5FF" opacity="0.7"/>
+  </svg>
+  

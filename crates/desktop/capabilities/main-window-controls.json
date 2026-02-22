@@ -1,0 +1,19 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-window-controls",
+  "description": "Permissions required by frameless desktop window controls.",
+  "windows": ["main"],
+  "remote": {
+    "urls": [
+      "http://localhost:*/*",
+      "http://127.0.0.1:*/*"
+    ]
+  },
+  "permissions": [
+    "core:default",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-close",
+    "core:window:allow-start-dragging"
+  ]
+}

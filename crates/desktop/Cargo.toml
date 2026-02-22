@@ -1,0 +1,21 @@
+[package]
+name = "videnoa-desktop"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "videnoa-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2" }
+
+[dependencies]
+videnoa-core = { path = "../core" }
+axum = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+tauri = { version = "2" }
+url = { workspace = true }
+sys-locale = "0.3"

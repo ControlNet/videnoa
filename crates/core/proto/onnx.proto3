@@ -1,0 +1,72 @@
+// Minimal subset of ONNX proto3 for model inspection.
+// Source: https://github.com/onnx/onnx/blob/main/onnx/onnx.proto3
+// Only includes types needed for metadata extraction (ModelProto, GraphProto,
+// NodeProto, TensorProto, ValueInfoProto, TypeProto, TensorShapeProto).
+
+syntax = "proto3";
+
+package onnx;
+
+message ModelProto {
+  int64 ir_version = 1;
+  repeated OperatorSetIdProto opset_import = 8;
+  string producer_name = 2;
+  string producer_version = 3;
+  string domain = 4;
+  int64 model_version = 5;
+  string doc_string = 6;
+  GraphProto graph = 7;
+}
+
+message OperatorSetIdProto {
+  string domain = 1;
+  int64 version = 2;
+}
+
+message GraphProto {
+  repeated NodeProto node = 1;
+  string name = 2;
+  repeated TensorProto initializer = 5;
+  repeated ValueInfoProto input = 11;
+  repeated ValueInfoProto output = 12;
+}
+
+message NodeProto {
+  repeated string input = 1;
+  repeated string output = 2;
+  string name = 3;
+  string op_type = 4;
+  string domain = 7;
+}
+
+message TensorProto {
+  repeated int64 dims = 1;
+  int32 data_type = 2;
+  string name = 8;
+}
+
+message ValueInfoProto {
+  string name = 1;
+  TypeProto type = 2;
+}
+
+message TypeProto {
+  message Tensor {
+    int32 elem_type = 1;
+    TensorShapeProto shape = 2;
+  }
+
+  oneof value {
+    Tensor tensor_type = 1;
+  }
+}
+
+message TensorShapeProto {
+  message Dimension {
+    oneof value {
+      int64 dim_value = 1;
+      string dim_param = 2;
+    }
+  }
+  repeated Dimension dim = 1;
+}

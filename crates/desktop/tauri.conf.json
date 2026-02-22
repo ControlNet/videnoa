@@ -1,0 +1,30 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Videnoa",
+  "identifier": "com.videnoa.app",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "create": false,
+        "title": "Videnoa",
+        "decorations": false,
+        "dragDropEnabled": false
+      }
+    ],
+    "withGlobalTauri": true,
+    "security": {
+      "capabilities": ["main-window-controls"]
+    }
+  },
+  "bundle": {
+    "icon": [
+      "icons/icon.ico",
+      "icons/icon.png",
+      "icons/icon-32.png",
+      "icons/icon-64.png",
+      "icons/icon-128.png",
+      "icons/icon-256.png"
+    ]
+  }
+}

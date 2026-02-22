@@ -1,0 +1,58 @@
+[package]
+name = "videnoa-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = { workspace = true }
+axum = { workspace = true }
+chrono = { workspace = true }
+dashmap = { workspace = true }
+mime_guess = { workspace = true }
+ndarray = { workspace = true }
+ort = { workspace = true }
+half = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+petgraph = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+sha2 = { workspace = true }
+tracing = { workspace = true }
+tracing-appender = { workspace = true }
+tracing-subscriber = { workspace = true }
+reqwest = { workspace = true }
+url = { workspace = true }
+uuid = { workspace = true }
+rusqlite = { version = "0.32", features = ["bundled"] }
+rust-embed = { workspace = true }
+libloading = "0.9"
+prost = "0.14"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[build-dependencies]
+prost-build = "0.14"
+
+[dev-dependencies]
+tempfile = "3"
+
+[[example]]
+name = "spike"
+path = "../../examples/spike.rs"
+
+[[example]]
+name = "spike_async"
+path = "../../examples/spike_async.rs"
+
+[[example]]
+name = "spike_trt"
+path = "../../examples/spike_trt.rs"
+
+[[example]]
+name = "spike_iobinding"
+path = "../../examples/spike_iobinding.rs"
