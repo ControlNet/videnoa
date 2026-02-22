@@ -93,6 +93,41 @@ function Enable-Tls12ForWebRequests {
     }
 }
 
+function Build-FrontendAssets {
+    param([Parameter(Mandatory = $true)][string]$RepoRoot)
+
+    $webDir = Join-Path -Path $RepoRoot -ChildPath 'web'
+    if (-not (Test-Path -LiteralPath $webDir -PathType Container)) {
+        Fail "missing frontend directory: $webDir"
+    }
+
+    $lockfilePath = Join-Path -Path $webDir -ChildPath 'package-lock.json'
+    $installCmd = if (Test-Path -LiteralPath $lockfilePath -PathType Leaf) { 'ci' } else { 'install' }
+
+    Write-Log "installing frontend dependencies (npm $installCmd --no-fund)"
+    Push-Location $webDir
+    try {
+        & npm $installCmd --no-fund
+        if ($LASTEXITCODE -ne 0) {
+            Fail "npm $installCmd failed"
+        }
+
+        Write-Log 'building frontend assets (npm run build)'
+        & npm run build
+        if ($LASTEXITCODE -ne 0) {
+            Fail 'npm run build failed'
+        }
+    }
+    finally {
+        Pop-Location
+    }
+
+    $distDir = Join-Path -Path $webDir -ChildPath 'dist'
+    if (-not (Test-Path -LiteralPath $distDir -PathType Container)) {
+        Fail "frontend build did not produce dist directory: $distDir"
+    }
+}
+
 function New-TempDirectory {
     param([Parameter(Mandatory = $true)][string]$Prefix)
     $dirName = '{0}-{1}' -f $Prefix, ([System.Guid]::NewGuid().ToString('N').Substring(0, 10))
@@ -292,6 +327,7 @@ if ($Help) {
 
 Require-Command -Name 'git'
 Require-Command -Name 'cargo'
+Require-Command -Name 'npm'
 Require-Command -Name 'Invoke-WebRequest'
 Require-Command -Name 'Expand-Archive'
 Enable-Tls12ForWebRequests
@@ -378,6 +414,8 @@ try {
     }
 
     Validate-SourceTree -RepoRoot $cloneDir
+
+    Build-FrontendAssets -RepoRoot $cloneDir
 
     Write-Log 'building release workspace'
     Push-Location $cloneDir

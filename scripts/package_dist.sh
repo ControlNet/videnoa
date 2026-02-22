@@ -67,6 +67,34 @@ require_cmd() {
   fi
 }
 
+build_frontend_assets() {
+  local repo_root="$1"
+  local web_dir="$repo_root/web"
+
+  [[ -d "$web_dir" ]] || die "missing frontend directory: $web_dir"
+
+  local install_cmd
+  if [[ -f "$web_dir/package-lock.json" ]]; then
+    install_cmd="ci"
+  else
+    install_cmd="install"
+  fi
+
+  log "installing frontend dependencies (npm ${install_cmd} --no-fund)"
+  (
+    cd "$web_dir"
+    npm "$install_cmd" --no-fund
+  )
+
+  log "building frontend assets (npm run build)"
+  (
+    cd "$web_dir"
+    npm run build
+  )
+
+  [[ -d "$web_dir/dist" ]] || die "frontend build did not produce dist directory: $web_dir/dist"
+}
+
 download_release_asset() {
   local asset_name="$1"
   local output_file="$2"
@@ -275,6 +303,7 @@ trap cleanup EXIT
 
 require_cmd git
 require_cmd cargo
+require_cmd npm
 require_cmd wget
 require_cmd unzip
 require_cmd mktemp
@@ -341,6 +370,8 @@ else
 fi
 
 validate_source_tree "$CLONE_DIR"
+
+build_frontend_assets "$CLONE_DIR"
 
 log "building release workspace"
 (
