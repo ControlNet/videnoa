@@ -1,14 +1,11 @@
 #!/usr/bin/env pwsh
 
-Set-StrictMode -Version Latest
-$ErrorActionPreference = 'Stop'
-
 [CmdletBinding()]
 param(
     [string]$Repo = 'ControlNet/videnoa',
     [string]$ReleaseTag = 'misc',
     [ValidateSet('auto', 'linux64', 'win64')]
-    [string]$Platform = 'auto',
+    [string]$Platform = 'win64',
     [string]$OutputDir = (Get-Location).Path,
     [string]$WorkDir = '',
     [string]$SourceDir = '',
@@ -16,6 +13,9 @@ param(
     [switch]$Force,
     [switch]$Help
 )
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
 
 function Show-Usage {
     @'
@@ -34,7 +34,7 @@ Options:
   -Repo <owner/name>       GitHub repository (default: ControlNet/videnoa)
   -ReleaseTag <tag>        Release tag for large assets (default: misc)
   -Platform <auto|linux64|win64>
-                           Asset platform selector (default: auto)
+                           Asset platform selector (default: win64)
   -OutputDir <path>        Parent directory for output folder "videnoa" (default: current directory)
   -WorkDir <path>          Working directory (default: temporary directory)
   -SourceDir <path>        Use a local source checkout instead of cloning from GitHub
@@ -43,11 +43,17 @@ Options:
   -Help                    Show this help message
 
 Examples:
+  powershell -File scripts/package_dist.ps1
+  powershell -File scripts/package_dist.ps1 -OutputDir .\dist -Force
+  powershell -ExecutionPolicy Bypass -File scripts/package_dist.ps1
+  powershell -ExecutionPolicy Bypass -File scripts/package_dist.ps1 -OutputDir .\dist -Force
   pwsh -File scripts/package_dist.ps1
   pwsh -File scripts/package_dist.ps1 -OutputDir .\dist -Force
   pwsh -File scripts/package_dist.ps1 -Platform win64 -ReleaseTag misc
   pwsh -File scripts/package_dist.ps1 -SourceDir C:\dev\videnoa -Force
 '@ | Write-Output
+
+    Write-Output 'Tip: -ExecutionPolicy Bypass is optional. If script execution is blocked, run once: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned'
 }
 
 function Write-Log {
@@ -72,6 +78,21 @@ function Require-Command {
     }
 }
 
+function Enable-Tls12ForWebRequests {
+    try {
+        $current = [System.Net.ServicePointManager]::SecurityProtocol
+        $tls12 = [System.Net.SecurityProtocolType]::Tls12
+
+        if (($current -band $tls12) -eq 0) {
+            [System.Net.ServicePointManager]::SecurityProtocol = $current -bor $tls12
+            Write-Log 'enabled TLS 1.2 for web requests'
+        }
+    }
+    catch {
+        Write-WarnLog 'failed to adjust TLS settings; downloads may fail on older WinPS defaults'
+    }
+}
+
 function New-TempDirectory {
     param([Parameter(Mandatory = $true)][string]$Prefix)
     $dirName = '{0}-{1}' -f $Prefix, ([System.Guid]::NewGuid().ToString('N').Substring(0, 10))
@@ -87,11 +108,12 @@ function Resolve-Platform {
         return $InputPlatform
     }
 
-    if ($IsWindows) {
+    $platformId = [System.Environment]::OSVersion.Platform
+    if ($platformId -eq [System.PlatformID]::Win32NT) {
         return 'win64'
     }
 
-    if ($IsLinux) {
+    if ($platformId -eq [System.PlatformID]::Unix) {
         return 'linux64'
     }
 
@@ -272,6 +294,7 @@ Require-Command -Name 'git'
 Require-Command -Name 'cargo'
 Require-Command -Name 'Invoke-WebRequest'
 Require-Command -Name 'Expand-Archive'
+Enable-Tls12ForWebRequests
 
 $resolvedPlatform = Resolve-Platform -InputPlatform $Platform
 
