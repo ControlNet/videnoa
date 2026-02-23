@@ -25,12 +25,13 @@
 # ---------------------------------------------------------------------------
 # Stage 1: Build the Rust workspace
 # ---------------------------------------------------------------------------
-FROM rust:1.83-bookworm AS builder
+FROM rust:1.88-bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         pkg-config \
         libssl-dev \
         libclang-dev \
+        protobuf-compiler \
         nodejs \
         npm \
     && rm -rf /var/lib/apt/lists/*
@@ -52,6 +53,7 @@ RUN mkdir -p crates/core/src && echo "" > crates/core/src/lib.rs \
 RUN cargo build --release -p videnoa-app --bin videnoa 2>/dev/null || true
 
 COPY web/ web/
+COPY presets/ presets/
 RUN cd web && npm install && npm run build
 
 RUN rm -rf crates/*/src
@@ -84,6 +86,7 @@ RUN pip install --no-cache-dir "tensorrt-cu12-libs==${TRT_VERSION}" \
     && mkdir /trt-lib \
     && cp /usr/local/lib/python3.12/site-packages/tensorrt_libs/libnvinfer.so.10 /trt-lib/ \
     && cp /usr/local/lib/python3.12/site-packages/tensorrt_libs/libnvinfer_plugin.so.10 /trt-lib/ \
+    && cp /usr/local/lib/python3.12/site-packages/tensorrt_libs/libnvinfer_builder_resource.so.* /trt-lib/ \
     && cp /usr/local/lib/python3.12/site-packages/tensorrt_libs/libnvonnxparser.so.10 /trt-lib/
 
 # ---------------------------------------------------------------------------
