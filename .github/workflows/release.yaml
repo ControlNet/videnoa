@@ -30,19 +30,59 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           python - <<'PY'
+          import os
           from pathlib import Path
           import tomllib
           import subprocess
+
+          workspace_manifest = Path("Cargo.toml")
+          workspace_data = tomllib.loads(workspace_manifest.read_text(encoding="utf-8"))
+          workspace_version = (
+              workspace_data
+              .get("workspace", {})
+              .get("package", {})
+              .get("version")
+          )
+
+          if workspace_version is not None and not isinstance(workspace_version, str):
+              raise SystemExit(
+                  f"workspace.package.version must be a string, got: {workspace_version!r}"
+              )
 
           cargo_files = {
               "app": Path("crates/app/Cargo.toml"),
               "core": Path("crates/core/Cargo.toml"),
               "desktop": Path("crates/desktop/Cargo.toml"),
           }
+
+          def resolve_version(manifest_path: Path) -> str:
+              data = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+              package = data.get("package")
+              if not isinstance(package, dict):
+                  raise SystemExit(f"Missing [package] table in {manifest_path}")
+
+              raw_version = package.get("version")
+              if isinstance(raw_version, str):
+                  return raw_version
+
+              if isinstance(raw_version, dict):
+                  if raw_version.get("workspace") is True:
+                      if workspace_version is None:
+                          raise SystemExit(
+                              f"{manifest_path} uses version.workspace=true but workspace.package.version is missing"
+                          )
+                      return workspace_version
+                  raise SystemExit(
+                      f"Unsupported package.version format in {manifest_path}: {raw_version!r}"
+                  )
+
+              raise SystemExit(
+                  f"Missing package.version in {manifest_path}; expected string or version.workspace=true"
+              )
+
           versions = {}
           for crate, cargo_file in cargo_files.items():
-              data = tomllib.loads(cargo_file.read_text(encoding="utf-8"))
-              versions[crate] = data["package"]["version"]
+              versions[crate] = resolve_version(cargo_file)
 
           unique_versions = set(versions.values())
           if len(unique_versions) != 1:
@@ -62,7 +102,7 @@ jobs:
           )
           publish = "false" if probe.returncode == 0 else "true"
 
-          github_output = Path(__import__("os").environ["GITHUB_OUTPUT"])
+          github_output = Path(os.environ["GITHUB_OUTPUT"])
           with github_output.open("a", encoding="utf-8") as f:
               f.write(f"version={version}\n")
               f.write(f"tag={tag}\n")
@@ -76,6 +116,8 @@ jobs:
     needs: [version-gate]
     if: needs.version-gate.outputs.publish == 'true'
     uses: ./.github/workflows/unittest.yaml
+    with:
+      run_packaging_checks: false
     permissions:
       contents: read
 

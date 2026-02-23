@@ -6,6 +6,12 @@ on:
       - master
   pull_request:
   workflow_call:
+    inputs:
+      run_packaging_checks:
+        description: Run packaging and Docker smoke checks in reusable mode
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -52,3 +58,128 @@ jobs:
       - name: Build web assets
         working-directory: web
         run: npm run build
+
+  package-linux64-smoke:
+    name: Package smoke (Linux)
+    if: ${{ github.event_name != 'workflow_call' || inputs.run_packaging_checks }}
+    needs: [rust-tests, web-build-check]
+    runs-on: ubuntu-latest
+    env:
+      ARCHIVE_NAME: videnoa-linux64-smoke.7z
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler p7zip-full
+      - name: Build package bundle
+        run: |
+          bash scripts/package_dist.sh --platform linux64 --release-tag misc --output-dir "$RUNNER_TEMP/dist-linux64" --source-dir "$GITHUB_WORKSPACE" --force
+      - name: Create split archive (2000MB volumes)
+        run: |
+          dist_root="$RUNNER_TEMP/dist-linux64"
+          bundle_dir="$dist_root/videnoa"
+          archive_path="$RUNNER_TEMP/${{ env.ARCHIVE_NAME }}"
+          if [[ ! -d "$bundle_dir" ]]; then
+            echo "Expected bundle directory not found: $bundle_dir" >&2
+            exit 1
+          fi
+          rm -f "$archive_path" "$archive_path".*
+          (
+            cd "$dist_root"
+            7z a -t7z -v2000m "$archive_path" videnoa
+          )
+      - name: Verify archive layout and split volumes
+        run: |
+          archive_base="$RUNNER_TEMP/${{ env.ARCHIVE_NAME }}"
+          first_volume="$archive_base.001"
+          if [[ ! -f "$first_volume" ]]; then
+            if [[ -f "$archive_base" ]]; then
+              first_volume="$archive_base"
+            else
+              echo "Missing split archive output: $archive_base(.001)" >&2
+              exit 1
+            fi
+          fi
+          if ! 7z l "$first_volume" | grep -Eq 'videnoa[/\\]'; then
+            echo "Archive root layout validation failed: missing videnoa/ root" >&2
+            exit 1
+          fi
+
+  package-win64-smoke:
+    name: Package smoke (Windows)
+    if: ${{ github.event_name != 'workflow_call' || inputs.run_packaging_checks }}
+    needs: [rust-tests, web-build-check]
+    runs-on: windows-latest
+    env:
+      ARCHIVE_NAME: videnoa-win64-smoke.7z
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          choco install protoc -y --no-progress
+          choco install 7zip -y --no-progress
+      - name: Build package bundle
+        shell: pwsh
+        run: |
+          powershell -File scripts/package_dist.ps1 -Platform win64 -ReleaseTag misc -OutputDir "$env:RUNNER_TEMP\dist-win64" -SourceDir "$env:GITHUB_WORKSPACE" -Force
+      - name: Create split archive (2000MB volumes)
+        shell: pwsh
+        run: |
+          $distRoot = Join-Path $env:RUNNER_TEMP 'dist-win64'
+          $bundleDir = Join-Path $distRoot 'videnoa'
+          $archivePath = Join-Path $env:RUNNER_TEMP $env:ARCHIVE_NAME
+          if (-not (Test-Path $bundleDir -PathType Container)) {
+            throw "Expected bundle directory not found: $bundleDir"
+          }
+          Get-ChildItem -Path "$archivePath*" -ErrorAction SilentlyContinue | Remove-Item -Force
+          Push-Location $distRoot
+          try {
+            7z a -t7z -v2000m $archivePath 'videnoa'
+          }
+          finally {
+            Pop-Location
+          }
+      - name: Verify archive layout and split volumes
+        shell: pwsh
+        run: |
+          $archiveBase = Join-Path $env:RUNNER_TEMP $env:ARCHIVE_NAME
+          $firstVolume = "$archiveBase.001"
+          if (-not (Test-Path $firstVolume -PathType Leaf)) {
+            if (Test-Path $archiveBase -PathType Leaf) {
+              $firstVolume = $archiveBase
+            }
+            else {
+              throw "Missing split archive output: $archiveBase(.001)"
+            }
+          }
+          $listing = 7z l $firstVolume
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to inspect archive listing for $firstVolume"
+          }
+          if (-not ($listing -match 'videnoa[/\\]')) {
+            throw "Archive root layout validation failed: missing videnoa/ root"
+          }
+
+  docker-build-smoke:
+    name: Docker build smoke
+    if: ${{ github.event_name != 'workflow_call' || inputs.run_packaging_checks }}
+    needs: [rust-tests, web-build-check]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Docker image
+        run: docker build -t videnoa-ci-smoke .
