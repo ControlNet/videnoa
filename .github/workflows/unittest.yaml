@@ -1,0 +1,54 @@
+name: Unittest Workflow
+
+on:
+  push:
+    branches-ignore:
+      - master
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  rust-tests:
+    name: Rust tests
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install protobuf compiler (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install protobuf compiler (Windows)
+        if: runner.os == 'Windows'
+        run: choco install protoc -y --no-progress
+      - name: Run Cargo tests
+        run: |
+          cargo test -p videnoa-core --lib --tests
+          cargo test -p videnoa-app --lib --tests
+
+  web-build-check:
+    name: Web build check
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci --no-fund
+      - name: Build web assets
+        working-directory: web
+        run: npm run build
