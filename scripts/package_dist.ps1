@@ -220,6 +220,29 @@ function Copy-DirectoryContents {
     }
 }
 
+function Expand-ZipArchivePortable {
+    param(
+        [Parameter(Mandatory = $true)][string]$ZipFile,
+        [Parameter(Mandatory = $true)][string]$DestinationDir
+    )
+
+    $sevenZip = Get-Command -Name '7z' -ErrorAction SilentlyContinue
+    if ($sevenZip) {
+        & 7z 'x' ("-o{0}" -f $DestinationDir) '-y' $ZipFile | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Fail "7z failed to extract archive: $ZipFile"
+        }
+        return
+    }
+
+    try {
+        Expand-Archive -LiteralPath $ZipFile -DestinationPath $DestinationDir -Force
+    }
+    catch {
+        Fail "failed to extract '$ZipFile' with Expand-Archive. Install 7-Zip and ensure '7z' is available in PATH"
+    }
+}
+
 function Extract-ZipIntoDir {
     param(
         [Parameter(Mandatory = $true)][string]$ZipFile,
@@ -229,7 +252,7 @@ function Extract-ZipIntoDir {
 
     $tempExtract = New-TempDirectory -Prefix 'videnoa-unzip'
     try {
-        Expand-Archive -LiteralPath $ZipFile -DestinationPath $tempExtract -Force
+        Expand-ZipArchivePortable -ZipFile $ZipFile -DestinationDir $tempExtract
         New-Item -ItemType Directory -Path $DestinationDir -Force | Out-Null
 
         $expectedPath = Join-Path -Path $tempExtract -ChildPath $ExpectedRoot
@@ -333,7 +356,6 @@ Require-Command -Name 'git'
 Require-Command -Name 'cargo'
 Require-Command -Name 'npm'
 Require-Command -Name 'Invoke-WebRequest'
-Require-Command -Name 'Expand-Archive'
 Enable-Tls12ForWebRequests
 
 $resolvedPlatform = Resolve-Platform -InputPlatform $Platform

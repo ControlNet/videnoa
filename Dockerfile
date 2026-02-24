@@ -39,7 +39,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /build
 
 COPY Cargo.toml Cargo.toml
-COPY Cargo.lock Cargo.lock
 
 COPY crates/core/Cargo.toml crates/core/Cargo.toml
 COPY crates/app/Cargo.toml crates/app/Cargo.toml
