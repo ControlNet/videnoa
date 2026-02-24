@@ -155,6 +155,143 @@ function Resolve-Platform {
     Fail "unsupported host platform. Use -Platform explicitly (linux64 or win64)."
 }
 
+function Get-RemoteContentLength {
+    param([Parameter(Mandatory = $true)][string]$Uri)
+
+    try {
+        $response = Invoke-WebRequest -Uri $Uri -Method Head -MaximumRedirection 10 -ErrorAction Stop
+
+        $headerValue = $null
+        if ($response.Headers) {
+            $headerValue = $response.Headers['Content-Length']
+        }
+
+        $parsedLength = 0L
+        if ($headerValue -and [long]::TryParse([string]$headerValue, [ref]$parsedLength) -and $parsedLength -gt 0) {
+            return [System.Nullable[long]]$parsedLength
+        }
+
+        if ($response.BaseResponse -and $response.BaseResponse.ContentLength -gt 0) {
+            return [System.Nullable[long]]([long]$response.BaseResponse.ContentLength)
+        }
+    }
+    catch {
+        Write-WarnLog "unable to resolve Content-Length for $Uri; proceeding without size validation"
+    }
+
+    return $null
+}
+
+function Test-DownloadedAsset {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [System.Nullable[long]]$ExpectedLength = $null
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $false
+    }
+
+    $actualLength = (Get-Item -LiteralPath $Path).Length
+    if ($actualLength -le 0) {
+        Write-WarnLog "downloaded file is empty: $Path"
+        return $false
+    }
+
+    if ($ExpectedLength.HasValue -and $actualLength -ne $ExpectedLength.Value) {
+        Write-WarnLog ("downloaded file size mismatch for {0}: expected {1} bytes, got {2} bytes" -f $Path, $ExpectedLength.Value, $actualLength)
+        return $false
+    }
+
+    return $true
+}
+
+function Remove-DownloadArtifacts {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath ("{0}.aria2" -f $Path) -Force -ErrorAction SilentlyContinue
+}
+
+function Invoke-DownloadWithAria2 {
+    param(
+        [Parameter(Mandatory = $true)][string]$Uri,
+        [Parameter(Mandatory = $true)][string]$OutputFile
+    )
+
+    $aria2 = Get-Command -Name 'aria2c' -ErrorAction SilentlyContinue
+    if (-not $aria2) {
+        return $false
+    }
+
+    $outputDir = Split-Path -Parent $OutputFile
+    $outputName = Split-Path -Leaf $OutputFile
+
+    & $aria2.Source '--allow-overwrite=true' '--auto-file-renaming=false' '--continue=true' '--max-tries=8' '--retry-wait=3' '--timeout=120' '--connect-timeout=30' '--max-connection-per-server=8' '--split=8' '--min-split-size=16M' '--summary-interval=0' '--console-log-level=warn' '--download-result=hide' '--file-allocation=none' '--dir' $outputDir '--out' $outputName $Uri | Out-Null
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Resolve-CurlCommand {
+    $curlExe = Get-Command -Name 'curl.exe' -ErrorAction SilentlyContinue
+    if ($curlExe) {
+        return $curlExe
+    }
+
+    $curl = Get-Command -Name 'curl' -ErrorAction SilentlyContinue
+    if ($curl -and $curl.CommandType -eq [System.Management.Automation.CommandTypes]::Application) {
+        return $curl
+    }
+
+    return $null
+}
+
+function Invoke-DownloadWithCurl {
+    param(
+        [Parameter(Mandatory = $true)][string]$Uri,
+        [Parameter(Mandatory = $true)][string]$OutputFile
+    )
+
+    $curl = Resolve-CurlCommand
+    if (-not $curl) {
+        return $false
+    }
+
+    & $curl.Source '--fail' '--location' '--silent' '--show-error' '--no-progress-meter' '--retry' '8' '--retry-all-errors' '--retry-delay' '2' '--connect-timeout' '30' '--speed-time' '30' '--speed-limit' '1024' '--continue-at' '-' '--output' $OutputFile $Uri
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Invoke-DownloadWithInvokeWebRequest {
+    param(
+        [Parameter(Mandatory = $true)][string]$Uri,
+        [Parameter(Mandatory = $true)][string]$OutputFile
+    )
+
+    $previousProgressPreference = $ProgressPreference
+    $ProgressPreference = 'SilentlyContinue'
+    try {
+        Invoke-WebRequest -Uri $Uri -OutFile $OutputFile -MaximumRedirection 10 -ErrorAction Stop
+        return $true
+    }
+    catch {
+        return $false
+    }
+    finally {
+        $ProgressPreference = $previousProgressPreference
+    }
+}
+
+function Test-ZipArchiveIntegrity {
+    param([Parameter(Mandatory = $true)][string]$ZipFile)
+
+    $sevenZip = Get-Command -Name '7z' -ErrorAction SilentlyContinue
+    if (-not $sevenZip) {
+        return $true
+    }
+
+    & 7z 't' $ZipFile | Out-Null
+    return ($LASTEXITCODE -eq 0)
+}
+
 function Download-ReleaseAsset {
     param(
         [Parameter(Mandatory = $true)][string]$Repository,
@@ -166,17 +303,65 @@ function Download-ReleaseAsset {
     $releaseUrl = "https://github.com/$Repository/releases/download/$Tag/$AssetName"
     Write-Log "downloading asset: $AssetName"
 
+    $expectedLength = Get-RemoteContentLength -Uri $releaseUrl
+    if ($expectedLength.HasValue) {
+        Write-Log ("expected size for {0}: {1} MiB" -f $AssetName, [math]::Round($expectedLength.Value / 1MB, 2))
+    }
+
     $parent = Split-Path -Parent $OutputFile
     if ($parent) {
         New-Item -ItemType Directory -Path $parent -Force | Out-Null
     }
 
-    try {
-        Invoke-WebRequest -Uri $releaseUrl -OutFile $OutputFile
+    $maxAttempts = 4
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        if (Test-DownloadedAsset -Path $OutputFile -ExpectedLength $expectedLength) {
+            $existingBytes = (Get-Item -LiteralPath $OutputFile).Length
+            Write-Log ("using existing downloaded asset {0}: {1:N1} MiB" -f $AssetName, ($existingBytes / 1MB))
+            return
+        }
+
+        if ($expectedLength.HasValue -and (Test-Path -LiteralPath $OutputFile -PathType Leaf)) {
+            $existingBytes = (Get-Item -LiteralPath $OutputFile).Length
+            if ($existingBytes -gt $expectedLength.Value) {
+                Write-WarnLog ("existing file larger than expected; deleting before retry: {0}" -f $OutputFile)
+                Remove-DownloadArtifacts -Path $OutputFile
+            }
+        }
+
+        $attemptStartedAt = Get-Date
+        $backend = $null
+        $downloaded = $false
+
+        if (Invoke-DownloadWithAria2 -Uri $releaseUrl -OutputFile $OutputFile) {
+            $backend = 'aria2c'
+            $downloaded = $true
+        }
+        elseif (Invoke-DownloadWithCurl -Uri $releaseUrl -OutputFile $OutputFile) {
+            $backend = 'curl'
+            $downloaded = $true
+        }
+        elseif (Invoke-DownloadWithInvokeWebRequest -Uri $releaseUrl -OutputFile $OutputFile) {
+            $backend = 'Invoke-WebRequest'
+            $downloaded = $true
+        }
+
+        if ($downloaded -and (Test-DownloadedAsset -Path $OutputFile -ExpectedLength $expectedLength)) {
+            $elapsedSeconds = [math]::Max(((Get-Date) - $attemptStartedAt).TotalSeconds, 0.01)
+            $bytes = (Get-Item -LiteralPath $OutputFile).Length
+            $sizeMiB = $bytes / 1MB
+            $speedMiB = $sizeMiB / $elapsedSeconds
+            Write-Log ("downloaded {0} using {1}: {2:N1} MiB in {3:N1}s ({4:N1} MiB/s)" -f $AssetName, $backend, $sizeMiB, $elapsedSeconds, $speedMiB)
+            return
+        }
+
+        if ($attempt -lt $maxAttempts) {
+            Write-WarnLog ("download attempt {0}/{1} failed for {2}; retrying" -f $attempt, $maxAttempts, $AssetName)
+            Start-Sleep -Seconds ([math]::Min(2 * $attempt, 8))
+        }
     }
-    catch {
-        Fail "failed to download asset '$AssetName' from $releaseUrl"
-    }
+
+    Fail "failed to download asset '$AssetName' from $releaseUrl after $maxAttempts attempts"
 }
 
 function Join-BinaryFiles {
@@ -468,6 +653,33 @@ try {
     Write-Log 'merging split lib archive'
     $mergedLibZip = Join-Path -Path $downloadDir -ChildPath ("lib_{0}.zip" -f $resolvedPlatform)
     Join-BinaryFiles -InputFiles @((Join-Path $downloadDir $libPart1), (Join-Path $downloadDir $libPart2)) -OutputFile $mergedLibZip
+
+    if (-not (Test-ZipArchiveIntegrity -ZipFile $mergedLibZip)) {
+        Write-WarnLog 'merged lib archive failed integrity check; re-downloading split assets once'
+        Remove-DownloadArtifacts -Path (Join-Path $downloadDir $libPart1)
+        Remove-DownloadArtifacts -Path (Join-Path $downloadDir $libPart2)
+        Remove-DownloadArtifacts -Path $mergedLibZip
+
+        Download-ReleaseAsset -Repository $Repo -Tag $ReleaseTag -AssetName $libPart1 -OutputFile (Join-Path $downloadDir $libPart1)
+        Download-ReleaseAsset -Repository $Repo -Tag $ReleaseTag -AssetName $libPart2 -OutputFile (Join-Path $downloadDir $libPart2)
+        Join-BinaryFiles -InputFiles @((Join-Path $downloadDir $libPart1), (Join-Path $downloadDir $libPart2)) -OutputFile $mergedLibZip
+
+        if (-not (Test-ZipArchiveIntegrity -ZipFile $mergedLibZip)) {
+            Fail "merged lib archive failed integrity check after retry: $mergedLibZip"
+        }
+    }
+
+    foreach ($archiveName in @($binAsset, 'models.zip')) {
+        $archivePath = Join-Path $downloadDir $archiveName
+        if (-not (Test-ZipArchiveIntegrity -ZipFile $archivePath)) {
+            Write-WarnLog ("archive failed integrity check, re-downloading once: {0}" -f $archiveName)
+            Remove-DownloadArtifacts -Path $archivePath
+            Download-ReleaseAsset -Repository $Repo -Tag $ReleaseTag -AssetName $archiveName -OutputFile $archivePath
+            if (-not (Test-ZipArchiveIntegrity -ZipFile $archivePath)) {
+                Fail "archive failed integrity check after retry: $archiveName"
+            }
+        }
+    }
 
     Write-Log "assembling bundle directory: $bundleDir"
     New-Item -ItemType Directory -Path $bundleDir -Force | Out-Null

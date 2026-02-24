@@ -8,6 +8,7 @@ ort-dist/
 /lib/
 /bin/
 AGENTS.md
+.beads
 
 # Test/bench artifacts
 *.mkv
