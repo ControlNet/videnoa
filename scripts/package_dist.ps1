@@ -540,6 +540,7 @@ if ($Help) {
 Require-Command -Name 'git'
 Require-Command -Name 'cargo'
 Require-Command -Name 'npm'
+Require-Command -Name 'protoc'
 Require-Command -Name 'Invoke-WebRequest'
 Enable-Tls12ForWebRequests
 

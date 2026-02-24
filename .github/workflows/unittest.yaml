@@ -33,7 +33,14 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - name: Install protobuf compiler (Windows)
         if: runner.os == 'Windows'
-        run: choco install protoc -y --no-progress
+        uses: arduino/setup-protoc@v3
+        with:
+          version: '33.5'
+          repo-token: ${{ github.token }}
+      - name: Verify protobuf compiler (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: protoc --version
       - name: Run Cargo tests
         run: |
           cargo test -p videnoa-core --lib --tests
@@ -135,21 +142,30 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+      - name: Set up protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: '33.5'
+          repo-token: ${{ github.token }}
       - name: Install dependencies
         shell: pwsh
         run: |
-          choco install protoc -y --no-progress
-          if ($LASTEXITCODE -ne 0) {
-            throw 'Failed to install protoc via Chocolatey'
+          if (-not (Get-Command protoc -ErrorAction SilentlyContinue)) {
+            throw 'protoc not found after setup-protoc step'
           }
-          choco install 7zip -y --no-progress
-          if ($LASTEXITCODE -ne 0) {
-            throw 'Failed to install 7zip via Chocolatey'
+
+          if (-not (Get-Command 7z -ErrorAction SilentlyContinue)) {
+            choco install 7zip -y --no-progress
           }
-          choco install aria2 -y --no-progress
-          if ($LASTEXITCODE -ne 0) {
-            Write-Warning 'aria2 installation failed; package_dist.ps1 will fallback to curl/Invoke-WebRequest'
-            $global:LASTEXITCODE = 0
+          if (-not (Get-Command 7z -ErrorAction SilentlyContinue)) {
+            throw 'Failed to provision 7z (required for archive operations)'
+          }
+
+          if (-not (Get-Command aria2c -ErrorAction SilentlyContinue)) {
+            choco install aria2 -y --no-progress
+          }
+          if (-not (Get-Command aria2c -ErrorAction SilentlyContinue)) {
+            Write-Warning 'aria2 not available; package_dist.ps1 will fallback to curl/Invoke-WebRequest'
           }
       - name: Build package bundle
         shell: pwsh
