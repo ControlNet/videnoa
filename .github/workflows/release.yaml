@@ -214,7 +214,7 @@ jobs:
           fi
 
       - name: Upload Linux artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: videnoa-linux64-${{ env.DIST_VERSION }}
           path: ${{ runner.temp }}/${{ env.ARCHIVE_NAME }}*
@@ -311,7 +311,7 @@ jobs:
           }
 
       - name: Upload Windows artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: videnoa-win64-${{ env.DIST_VERSION }}
           path: ${{ runner.temp }}/${{ env.ARCHIVE_NAME }}*
@@ -433,9 +433,24 @@ jobs:
             echo "Action: No release was published because the publish gate evaluated to false (for example existing tag, non-master manual dispatch, or no force override)."
           } >> "$GITHUB_STEP_SUMMARY"
 
+  dockerhub-skipped:
+    name: Docker Publish Skipped Summary
+    needs: [version-gate, quality-gate]
+    if: needs.version-gate.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish Docker skip summary
+        run: |
+          {
+            echo "## Docker Publish Outcome"
+            echo "- result: **skipped**"
+            echo
+            echo "Action: Docker image publish was skipped because DOCKERHUB_USERNAME and/or DOCKERHUB_TOKEN are not configured."
+          } >> "$GITHUB_STEP_SUMMARY"
+
   release-verify:
     name: Verify Release Outcome
-    needs: [version-gate, github-release]
+    needs: [version-gate, github-release, dockerhub-publish]
     if: needs.version-gate.outputs.publish == 'true'
     runs-on: ubuntu-latest
     env:
@@ -469,8 +484,12 @@ jobs:
             exit 1
           fi
 
-          docker pull controlnet/videnoa:${RELEASE_VERSION}
-          docker pull controlnet/videnoa:latest
+          if [[ "${{ needs.dockerhub-publish.result }}" == "success" ]]; then
+            docker pull controlnet/videnoa:${RELEASE_VERSION}
+            docker pull controlnet/videnoa:latest
+          else
+            echo "Skipping Docker pull verification because dockerhub-publish result is '${{ needs.dockerhub-publish.result }}'."
+          fi
 
           {
             echo "## Release Outcome"
