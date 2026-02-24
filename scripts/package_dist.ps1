@@ -168,11 +168,11 @@ function Get-RemoteContentLength {
 
         $parsedLength = 0L
         if ($headerValue -and [long]::TryParse([string]$headerValue, [ref]$parsedLength) -and $parsedLength -gt 0) {
-            return [System.Nullable[long]]$parsedLength
+            return [long]$parsedLength
         }
 
         if ($response.BaseResponse -and $response.BaseResponse.ContentLength -gt 0) {
-            return [System.Nullable[long]]([long]$response.BaseResponse.ContentLength)
+            return [long]$response.BaseResponse.ContentLength
         }
     }
     catch {
@@ -198,8 +198,8 @@ function Test-DownloadedAsset {
         return $false
     }
 
-    if ($ExpectedLength.HasValue -and $actualLength -ne $ExpectedLength.Value) {
-        Write-WarnLog ("downloaded file size mismatch for {0}: expected {1} bytes, got {2} bytes" -f $Path, $ExpectedLength.Value, $actualLength)
+    if ($null -ne $ExpectedLength -and $actualLength -ne [long]$ExpectedLength) {
+        Write-WarnLog ("downloaded file size mismatch for {0}: expected {1} bytes, got {2} bytes" -f $Path, ([long]$ExpectedLength), $actualLength)
         return $false
     }
 
@@ -304,8 +304,8 @@ function Download-ReleaseAsset {
     Write-Log "downloading asset: $AssetName"
 
     $expectedLength = Get-RemoteContentLength -Uri $releaseUrl
-    if ($expectedLength.HasValue) {
-        Write-Log ("expected size for {0}: {1} MiB" -f $AssetName, [math]::Round($expectedLength.Value / 1MB, 2))
+    if ($null -ne $expectedLength) {
+        Write-Log ("expected size for {0}: {1} MiB" -f $AssetName, [math]::Round(([double]$expectedLength) / 1MB, 2))
     }
 
     $parent = Split-Path -Parent $OutputFile
@@ -321,9 +321,9 @@ function Download-ReleaseAsset {
             return
         }
 
-        if ($expectedLength.HasValue -and (Test-Path -LiteralPath $OutputFile -PathType Leaf)) {
+        if ($null -ne $expectedLength -and (Test-Path -LiteralPath $OutputFile -PathType Leaf)) {
             $existingBytes = (Get-Item -LiteralPath $OutputFile).Length
-            if ($existingBytes -gt $expectedLength.Value) {
+            if ($existingBytes -gt [long]$expectedLength) {
                 Write-WarnLog ("existing file larger than expected; deleting before retry: {0}" -f $OutputFile)
                 Remove-DownloadArtifacts -Path $OutputFile
             }
