@@ -4,13 +4,19 @@ on:
   push:
     branches:
       - master
+  workflow_dispatch:
+    inputs:
+      force_publish:
+        description: Force release even if tag already exists
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
 concurrency:
   group: release-master
-  cancel-in-progress: true
 
 jobs:
   version-gate:
@@ -23,11 +29,15 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Resolve release version and publish gate
         id: gate
         env:
-          GH_TOKEN: ${{ github.token }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF: ${{ github.ref }}
+          FORCE_PUBLISH: ${{ github.event.inputs.force_publish || 'false' }}
         run: |
           python - <<'PY'
           import os
@@ -89,18 +99,32 @@ jobs:
               raise SystemExit(f"Version mismatch detected across crates: {versions}")
 
           version = versions["app"]
-          tag = version
+          tag = f"v{version}"
 
-          # Exact release existence check: gh release view "<version>"
-          probe = subprocess.run(
-              f'gh release view "{tag}"',
-              stdout=subprocess.DEVNULL,
-              stderr=subprocess.DEVNULL,
-              check=False,
-              text=True,
-              shell=True,
-          )
-          publish = "false" if probe.returncode == 0 else "true"
+          event_name = os.environ.get("GITHUB_EVENT_NAME", "")
+          git_ref = os.environ.get("GITHUB_REF", "")
+          force_publish = os.environ.get("FORCE_PUBLISH", "false").lower() == "true"
+
+          if git_ref != "refs/heads/master":
+              publish = "false"
+          elif force_publish:
+              publish = "true"
+          else:
+              subprocess.run(
+                  ["git", "fetch", "--tags", "--force"],
+                  stdout=subprocess.DEVNULL,
+                  stderr=subprocess.DEVNULL,
+                  check=False,
+                  text=True,
+              )
+              probe = subprocess.run(
+                  ["git", "ls-remote", "--tags", "--exit-code", "origin", f"refs/tags/{tag}"],
+                  stdout=subprocess.DEVNULL,
+                  stderr=subprocess.DEVNULL,
+                  check=False,
+                  text=True,
+              )
+              publish = "false" if probe.returncode == 0 else "true"
 
           github_output = Path(os.environ["GITHUB_OUTPUT"])
           with github_output.open("a", encoding="utf-8") as f:
@@ -193,7 +217,7 @@ jobs:
         uses: actions/upload-artifact@v3
         with:
           name: videnoa-linux64-${{ env.DIST_VERSION }}
-          path: ${{ env.RUNNER_TEMP }}/${{ env.ARCHIVE_NAME }}*
+          path: ${{ runner.temp }}/${{ env.ARCHIVE_NAME }}*
 
   package-win64:
     name: Package Windows release
@@ -290,7 +314,7 @@ jobs:
         uses: actions/upload-artifact@v3
         with:
           name: videnoa-win64-${{ env.DIST_VERSION }}
-          path: ${{ env.RUNNER_TEMP }}/${{ env.ARCHIVE_NAME }}*
+          path: ${{ runner.temp }}/${{ env.ARCHIVE_NAME }}*
 
   dockerhub-publish:
     name: Publish Docker image
@@ -342,8 +366,13 @@ jobs:
       contents: write
     env:
       DIST_VERSION: ${{ needs.version-gate.outputs.version }}
-      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ needs.version-gate.outputs.tag }}
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Download Linux release artifact
         uses: actions/download-artifact@v4
         with:
@@ -356,30 +385,36 @@ jobs:
           name: videnoa-win64-${{ env.DIST_VERSION }}
           path: ${{ runner.temp }}/release/win64
 
-      - name: Create or update GitHub release
+      - name: Create and push release tag
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          version="${DIST_VERSION}"
-          linux_parts=("$RUNNER_TEMP/release/linux64/videnoa-linux64-${version}.7z"*)
-          win_parts=("$RUNNER_TEMP/release/win64/videnoa-win64-${version}.7z"*)
+          git config user.name "ControlNet"
+          git config user.email "smczx@hotmail.com"
+          git fetch --tags --force
 
-          if [[ ${#linux_parts[@]} -eq 0 ]]; then
-            echo "Missing Linux split artifacts for version ${version}" >&2
-            exit 1
-          fi
-          if [[ ${#win_parts[@]} -eq 0 ]]; then
-            echo "Missing Windows split artifacts for version ${version}" >&2
-            exit 1
+          if git ls-remote --tags --exit-code origin "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "Tag ${RELEASE_TAG} already exists on origin; continuing."
+            exit 0
           fi
 
-          assets=("${linux_parts[@]}" "${win_parts[@]}")
-
-          if gh release view "$version" >/dev/null 2>&1; then
-            gh release upload "$version" "${assets[@]}" --clobber
+          if git rev-parse "${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "Tag ${RELEASE_TAG} already exists locally; continuing."
           else
-            gh release create "$version" "${assets[@]}" --title "$version" --notes "Release $version"
+            git tag -a "${RELEASE_TAG}" -m "Release ${RELEASE_TAG}"
           fi
+
+          git push origin "${RELEASE_TAG}"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ env.RELEASE_TAG }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            ${{ runner.temp }}/release/linux64/videnoa-linux64-${{ env.DIST_VERSION }}.7z*
+            ${{ runner.temp }}/release/win64/videnoa-win64-${{ env.DIST_VERSION }}.7z*
 
   release-skipped:
     name: Release Skipped Summary
@@ -395,7 +430,7 @@ jobs:
             echo "- publish flag: \\`${{ needs.version-gate.outputs.publish }}\\`"
             echo "- result: **skipped**"
             echo
-            echo "Action: No release was published because an existing GitHub release already matches this tag."
+            echo "Action: No release was published because the publish gate evaluated to false (for example existing tag, non-master manual dispatch, or no force override)."
           } >> "$GITHUB_STEP_SUMMARY"
 
   release-verify:
@@ -406,14 +441,17 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       RELEASE_TAG: ${{ needs.version-gate.outputs.tag }}
+      RELEASE_VERSION: ${{ needs.version-gate.outputs.version }}
       RELEASE_PUBLISH: ${{ needs.version-gate.outputs.publish }}
     steps:
       - name: Verify release assets and Docker tags
         run: |
           set -euo pipefail
 
-          expected_linux_part0="videnoa-linux64-${RELEASE_TAG}.7z.001"
-          expected_win_part0="videnoa-win64-${RELEASE_TAG}.7z.001"
+          expected_linux_part0="videnoa-linux64-${RELEASE_VERSION}.7z.001"
+          expected_linux_single="videnoa-linux64-${RELEASE_VERSION}.7z"
+          expected_win_part0="videnoa-win64-${RELEASE_VERSION}.7z.001"
+          expected_win_single="videnoa-win64-${RELEASE_VERSION}.7z"
           release_assets="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')"
 
           if [[ -z "$release_assets" ]]; then
@@ -421,17 +459,17 @@ jobs:
             exit 1
           fi
 
-          if ! printf '%s\n' "$release_assets" | grep -Fxq "$expected_linux_part0"; then
-            echo "Release verification failed: missing expected split asset '$expected_linux_part0'" >&2
+          if ! printf '%s\n' "$release_assets" | grep -Fxq "$expected_linux_part0" && ! printf '%s\n' "$release_assets" | grep -Fxq "$expected_linux_single"; then
+            echo "Release verification failed: missing expected linux archive '$expected_linux_part0' or '$expected_linux_single'" >&2
             exit 1
           fi
 
-          if ! printf '%s\n' "$release_assets" | grep -Fxq "$expected_win_part0"; then
-            echo "Release verification failed: missing expected split asset '$expected_win_part0'" >&2
+          if ! printf '%s\n' "$release_assets" | grep -Fxq "$expected_win_part0" && ! printf '%s\n' "$release_assets" | grep -Fxq "$expected_win_single"; then
+            echo "Release verification failed: missing expected windows archive '$expected_win_part0' or '$expected_win_single'" >&2
             exit 1
           fi
 
-          docker pull controlnet/videnoa:${RELEASE_TAG}
+          docker pull controlnet/videnoa:${RELEASE_VERSION}
           docker pull controlnet/videnoa:latest
 
           {
