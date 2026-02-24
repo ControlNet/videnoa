@@ -62,7 +62,7 @@ const themeLabelKeys: Record<ThemeMode, string> = {
 
 type ServerStatus = "offline" | "busy" | "idle";
 
-const PROJECT_REPO_URL = "https://github.com/ControlNet/Videona";
+const PROJECT_REPO_URL = "https://github.com/ControlNet/videnoa";
 
 const serverStatusLabelKeys: Record<ServerStatus, string> = {
 	offline: "header.server.offline",

@@ -8,6 +8,7 @@ ort-dist/
 /lib/
 /bin/
 AGENTS.md
+.beads
 
 # Test/bench artifacts
 *.mkv
@@ -229,6 +230,11 @@ eggs/
 .eggs/
 lib/
 lib64/
+
+# Keep frontend source modules tracked (used by '@/lib/*' imports)
+!web/src/lib/
+!web/src/lib/**
+
 parts/
 sdist/
 var/

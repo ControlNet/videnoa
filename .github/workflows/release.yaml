@@ -1,0 +1,482 @@
+name: Release Workflow
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+    inputs:
+      force_publish:
+        description: Force release even if tag already exists
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-master
+
+jobs:
+  version-gate:
+    name: Version Gate
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.gate.outputs.version }}
+      tag: ${{ steps.gate.outputs.tag }}
+      publish: ${{ steps.gate.outputs.publish }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release version and publish gate
+        id: gate
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF: ${{ github.ref }}
+          FORCE_PUBLISH: ${{ github.event.inputs.force_publish || 'false' }}
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import tomllib
+          import subprocess
+
+          workspace_manifest = Path("Cargo.toml")
+          workspace_data = tomllib.loads(workspace_manifest.read_text(encoding="utf-8"))
+          workspace_version = (
+              workspace_data
+              .get("workspace", {})
+              .get("package", {})
+              .get("version")
+          )
+
+          if workspace_version is not None and not isinstance(workspace_version, str):
+              raise SystemExit(
+                  f"workspace.package.version must be a string, got: {workspace_version!r}"
+              )
+
+          cargo_files = {
+              "app": Path("crates/app/Cargo.toml"),
+              "core": Path("crates/core/Cargo.toml"),
+              "desktop": Path("crates/desktop/Cargo.toml"),
+          }
+
+          def resolve_version(manifest_path: Path) -> str:
+              data = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+              package = data.get("package")
+              if not isinstance(package, dict):
+                  raise SystemExit(f"Missing [package] table in {manifest_path}")
+
+              raw_version = package.get("version")
+              if isinstance(raw_version, str):
+                  return raw_version
+
+              if isinstance(raw_version, dict):
+                  if raw_version.get("workspace") is True:
+                      if workspace_version is None:
+                          raise SystemExit(
+                              f"{manifest_path} uses version.workspace=true but workspace.package.version is missing"
+                          )
+                      return workspace_version
+                  raise SystemExit(
+                      f"Unsupported package.version format in {manifest_path}: {raw_version!r}"
+                  )
+
+              raise SystemExit(
+                  f"Missing package.version in {manifest_path}; expected string or version.workspace=true"
+              )
+
+          versions = {}
+          for crate, cargo_file in cargo_files.items():
+              versions[crate] = resolve_version(cargo_file)
+
+          unique_versions = set(versions.values())
+          if len(unique_versions) != 1:
+              raise SystemExit(f"Version mismatch detected across crates: {versions}")
+
+          version = versions["app"]
+          tag = f"v{version}"
+
+          event_name = os.environ.get("GITHUB_EVENT_NAME", "")
+          git_ref = os.environ.get("GITHUB_REF", "")
+          force_publish = os.environ.get("FORCE_PUBLISH", "false").lower() == "true"
+
+          if git_ref != "refs/heads/master":
+              publish = "false"
+          elif force_publish:
+              publish = "true"
+          else:
+              subprocess.run(
+                  ["git", "fetch", "--tags", "--force"],
+                  stdout=subprocess.DEVNULL,
+                  stderr=subprocess.DEVNULL,
+                  check=False,
+                  text=True,
+              )
+              probe = subprocess.run(
+                  ["git", "ls-remote", "--tags", "--exit-code", "origin", f"refs/tags/{tag}"],
+                  stdout=subprocess.DEVNULL,
+                  stderr=subprocess.DEVNULL,
+                  check=False,
+                  text=True,
+              )
+              publish = "false" if probe.returncode == 0 else "true"
+
+          github_output = Path(os.environ["GITHUB_OUTPUT"])
+          with github_output.open("a", encoding="utf-8") as f:
+              f.write(f"version={version}\n")
+              f.write(f"tag={tag}\n")
+              f.write(f"publish={publish}\n")
+
+          print(f"Resolved version={version}, tag={tag}, publish={publish}")
+          PY
+
+  quality-gate:
+    name: Quality Gate
+    needs: [version-gate]
+    if: needs.version-gate.outputs.publish == 'true'
+    uses: ./.github/workflows/unittest.yaml
+    with:
+      run_packaging_checks: false
+    permissions:
+      contents: read
+
+  package-linux64:
+    name: Package Linux release
+    needs: [version-gate, quality-gate]
+    if: needs.version-gate.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    env:
+      DIST_VERSION: ${{ needs.version-gate.outputs.version }}
+      ARCHIVE_NAME: videnoa-linux64-${{ needs.version-gate.outputs.version }}.7z
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            protobuf-compiler \
+            p7zip-full \
+            libglib2.0-dev \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev
+
+      - name: Package Linux distribution
+        run: bash scripts/package_dist.sh --platform linux64 --release-tag misc --output-dir "$RUNNER_TEMP/dist-linux64" --source-dir "$GITHUB_WORKSPACE" --force
+
+      - name: Create split archive (2000MB volumes)
+        run: |
+          dist_root="$RUNNER_TEMP/dist-linux64"
+          bundle_dir="$dist_root/videnoa"
+          archive_path="$RUNNER_TEMP/${{ env.ARCHIVE_NAME }}"
+          if [[ ! -d "$bundle_dir" ]]; then
+            echo "Expected bundle directory not found: $bundle_dir" >&2
+            exit 1
+          fi
+          rm -f "$archive_path" "$archive_path".*
+          (
+            cd "$dist_root"
+            7z a -t7z -v2000m "$archive_path" videnoa
+          )
+
+      - name: Validate archive root layout
+        run: |
+          archive_base="$RUNNER_TEMP/${{ env.ARCHIVE_NAME }}"
+          first_volume="$archive_base.001"
+          if [[ ! -f "$first_volume" ]]; then
+            if [[ -f "$archive_base" ]]; then
+              first_volume="$archive_base"
+            else
+              echo "Missing split archive output: $archive_base(.001)" >&2
+              exit 1
+            fi
+          fi
+          if ! 7z l "$first_volume" | grep -Eq 'videnoa[/\\]'; then
+            echo "Archive root layout validation failed: missing videnoa/ root" >&2
+            exit 1
+          fi
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: videnoa-linux64-${{ env.DIST_VERSION }}
+          path: ${{ runner.temp }}/${{ env.ARCHIVE_NAME }}*
+
+  package-win64:
+    name: Package Windows release
+    needs: [version-gate, quality-gate]
+    if: needs.version-gate.outputs.publish == 'true'
+    runs-on: windows-latest
+    env:
+      DIST_VERSION: ${{ needs.version-gate.outputs.version }}
+      ARCHIVE_NAME: videnoa-win64-${{ needs.version-gate.outputs.version }}.7z
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Set up protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: '33.5'
+          repo-token: ${{ github.token }}
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          if (-not (Get-Command protoc -ErrorAction SilentlyContinue)) {
+            throw 'protoc not found after setup-protoc step'
+          }
+
+          if (-not (Get-Command 7z -ErrorAction SilentlyContinue)) {
+            choco install 7zip -y --no-progress
+          }
+          if (-not (Get-Command 7z -ErrorAction SilentlyContinue)) {
+            throw 'Failed to provision 7z (required for archive operations)'
+          }
+
+          if (-not (Get-Command aria2c -ErrorAction SilentlyContinue)) {
+            choco install aria2 -y --no-progress
+          }
+          if (-not (Get-Command aria2c -ErrorAction SilentlyContinue)) {
+            Write-Warning 'aria2 not available; package_dist.ps1 will fallback to curl/Invoke-WebRequest'
+          }
+
+      - name: Package Windows distribution
+        shell: pwsh
+        run: |
+          pwsh -File scripts/package_dist.ps1 -Platform win64 -ReleaseTag misc -OutputDir "$env:RUNNER_TEMP\dist-win64" -SourceDir "$env:GITHUB_WORKSPACE" -Force
+
+      - name: Create split archive (2000MB volumes)
+        shell: pwsh
+        run: |
+          $distRoot = Join-Path $env:RUNNER_TEMP 'dist-win64'
+          $bundleDir = Join-Path $distRoot 'videnoa'
+          $archivePath = Join-Path $env:RUNNER_TEMP $env:ARCHIVE_NAME
+          if (-not (Test-Path $bundleDir -PathType Container)) {
+            throw "Expected bundle directory not found: $bundleDir"
+          }
+          Get-ChildItem -Path "$archivePath*" -ErrorAction SilentlyContinue | Remove-Item -Force
+          Push-Location $distRoot
+          try {
+            7z a -t7z -v2000m $archivePath 'videnoa'
+          }
+          finally {
+            Pop-Location
+          }
+
+      - name: Validate archive root layout
+        shell: pwsh
+        run: |
+          $archiveBase = Join-Path $env:RUNNER_TEMP $env:ARCHIVE_NAME
+          $firstVolume = "$archiveBase.001"
+          if (-not (Test-Path $firstVolume -PathType Leaf)) {
+            if (Test-Path $archiveBase -PathType Leaf) {
+              $firstVolume = $archiveBase
+            }
+            else {
+              throw "Missing split archive output: $archiveBase(.001)"
+            }
+          }
+          $listing = 7z l $firstVolume
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to inspect archive listing for $firstVolume"
+          }
+          if (-not ($listing -match 'videnoa[/\\]')) {
+            throw "Archive root layout validation failed: missing videnoa/ root"
+          }
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: videnoa-win64-${{ env.DIST_VERSION }}
+          path: ${{ runner.temp }}/${{ env.ARCHIVE_NAME }}*
+
+  dockerhub-publish:
+    name: Publish Docker image
+    needs: [version-gate, quality-gate]
+    if: needs.version-gate.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Preflight DockerHub credentials
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [[ -z "${DOCKERHUB_USERNAME}" ]]; then
+            echo "Missing required secret: DOCKERHUB_USERNAME" >&2
+            exit 1
+          fi
+          if [[ -z "${DOCKERHUB_TOKEN}" ]]; then
+            echo "Missing required secret: DOCKERHUB_TOKEN" >&2
+            exit 1
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            controlnet/videnoa:${{ needs.version-gate.outputs.version }}
+            controlnet/videnoa:latest
+
+  github-release:
+    name: Publish GitHub Release
+    needs: [version-gate, quality-gate, package-linux64, package-win64, dockerhub-publish]
+    if: needs.version-gate.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      DIST_VERSION: ${{ needs.version-gate.outputs.version }}
+      RELEASE_TAG: ${{ needs.version-gate.outputs.tag }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download Linux release artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: videnoa-linux64-${{ env.DIST_VERSION }}
+          path: ${{ runner.temp }}/release/linux64
+
+      - name: Download Windows release artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: videnoa-win64-${{ env.DIST_VERSION }}
+          path: ${{ runner.temp }}/release/win64
+
+      - name: Create and push release tag
+        run: |
+          set -euo pipefail
+          git config user.name "ControlNet"
+          git config user.email "smczx@hotmail.com"
+          git fetch --tags --force
+
+          if git ls-remote --tags --exit-code origin "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "Tag ${RELEASE_TAG} already exists on origin; continuing."
+            exit 0
+          fi
+
+          if git rev-parse "${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "Tag ${RELEASE_TAG} already exists locally; continuing."
+          else
+            git tag -a "${RELEASE_TAG}" -m "Release ${RELEASE_TAG}"
+          fi
+
+          git push origin "${RELEASE_TAG}"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ env.RELEASE_TAG }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            ${{ runner.temp }}/release/linux64/videnoa-linux64-${{ env.DIST_VERSION }}.7z*
+            ${{ runner.temp }}/release/win64/videnoa-win64-${{ env.DIST_VERSION }}.7z*
+
+  release-skipped:
+    name: Release Skipped Summary
+    needs: [version-gate]
+    if: needs.version-gate.outputs.publish != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish skipped release summary
+        run: |
+          {
+            echo "## Release Outcome"
+            echo "- tag: \\`${{ needs.version-gate.outputs.tag }}\\`"
+            echo "- publish flag: \\`${{ needs.version-gate.outputs.publish }}\\`"
+            echo "- result: **skipped**"
+            echo
+            echo "Action: No release was published because the publish gate evaluated to false (for example existing tag, non-master manual dispatch, or no force override)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  release-verify:
+    name: Verify Release Outcome
+    needs: [version-gate, github-release]
+    if: needs.version-gate.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ needs.version-gate.outputs.tag }}
+      RELEASE_VERSION: ${{ needs.version-gate.outputs.version }}
+      RELEASE_PUBLISH: ${{ needs.version-gate.outputs.publish }}
+    steps:
+      - name: Verify release assets and Docker tags
+        run: |
+          set -euo pipefail
+
+          expected_linux_part0="videnoa-linux64-${RELEASE_VERSION}.7z.001"
+          expected_linux_single="videnoa-linux64-${RELEASE_VERSION}.7z"
+          expected_win_part0="videnoa-win64-${RELEASE_VERSION}.7z.001"
+          expected_win_single="videnoa-win64-${RELEASE_VERSION}.7z"
+          release_assets="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')"
+
+          if [[ -z "$release_assets" ]]; then
+            echo "Release verification failed: release '$RELEASE_TAG' has no assets" >&2
+            exit 1
+          fi
+
+          if ! printf '%s\n' "$release_assets" | grep -Fxq "$expected_linux_part0" && ! printf '%s\n' "$release_assets" | grep -Fxq "$expected_linux_single"; then
+            echo "Release verification failed: missing expected linux archive '$expected_linux_part0' or '$expected_linux_single'" >&2
+            exit 1
+          fi
+
+          if ! printf '%s\n' "$release_assets" | grep -Fxq "$expected_win_part0" && ! printf '%s\n' "$release_assets" | grep -Fxq "$expected_win_single"; then
+            echo "Release verification failed: missing expected windows archive '$expected_win_part0' or '$expected_win_single'" >&2
+            exit 1
+          fi
+
+          docker pull controlnet/videnoa:${RELEASE_VERSION}
+          docker pull controlnet/videnoa:latest
+
+          {
+            echo "## Release Outcome"
+            echo "- tag: \\`${RELEASE_TAG}\\`"
+            echo "- publish flag: \\`${RELEASE_PUBLISH}\\`"
+            echo "- result: **verified**"
+            echo
+            echo "Checks passed: GitHub release exists with assets and Docker tags are pullable (version + latest)."
+          } >> "$GITHUB_STEP_SUMMARY"

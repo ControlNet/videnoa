@@ -1,6 +1,6 @@
 [package]
 name = "videnoa-core"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 
 [dependencies]
@@ -43,16 +43,16 @@ tempfile = "3"
 
 [[example]]
 name = "spike"
-path = "../../examples/spike.rs"
+path = "examples/spike.rs"
 
 [[example]]
 name = "spike_async"
-path = "../../examples/spike_async.rs"
+path = "examples/spike_async.rs"
 
 [[example]]
 name = "spike_trt"
-path = "../../examples/spike_trt.rs"
+path = "examples/spike_trt.rs"
 
 [[example]]
 name = "spike_iobinding"
-path = "../../examples/spike_iobinding.rs"
+path = "examples/spike_iobinding.rs"

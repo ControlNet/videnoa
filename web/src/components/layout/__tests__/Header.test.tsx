@@ -43,7 +43,7 @@ describe('Header desktop runtime gating', () => {
 		const projectLink = screen.getByRole('link', { name: 'Videnoa' })
 		expect(projectLink).toHaveAttribute(
 			'href',
-			'https://github.com/ControlNet/Videona',
+			'https://github.com/ControlNet/videnoa',
 		)
 		expect(projectLink).toHaveAttribute('target', '_blank')
 		expect(projectLink).toHaveAttribute('rel', 'noopener noreferrer')
