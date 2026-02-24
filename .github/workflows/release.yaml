@@ -433,21 +433,6 @@ jobs:
             echo "Action: No release was published because the publish gate evaluated to false (for example existing tag, non-master manual dispatch, or no force override)."
           } >> "$GITHUB_STEP_SUMMARY"
 
-  dockerhub-skipped:
-    name: Docker Publish Skipped Summary
-    needs: [version-gate, quality-gate]
-    if: needs.version-gate.outputs.publish == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Publish Docker skip summary
-        run: |
-          {
-            echo "## Docker Publish Outcome"
-            echo "- result: **skipped**"
-            echo
-            echo "Action: Docker image publish was skipped because DOCKERHUB_USERNAME and/or DOCKERHUB_TOKEN are not configured."
-          } >> "$GITHUB_STEP_SUMMARY"
-
   release-verify:
     name: Verify Release Outcome
     needs: [version-gate, github-release, dockerhub-publish]
@@ -455,6 +440,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
       RELEASE_TAG: ${{ needs.version-gate.outputs.tag }}
       RELEASE_VERSION: ${{ needs.version-gate.outputs.version }}
       RELEASE_PUBLISH: ${{ needs.version-gate.outputs.publish }}
@@ -467,7 +453,7 @@ jobs:
           expected_linux_single="videnoa-linux64-${RELEASE_VERSION}.7z"
           expected_win_part0="videnoa-win64-${RELEASE_VERSION}.7z.001"
           expected_win_single="videnoa-win64-${RELEASE_VERSION}.7z"
-          release_assets="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')"
+          release_assets="$(gh release view "$RELEASE_TAG" --repo "$GH_REPO" --json assets --jq '.assets[].name')"
 
           if [[ -z "$release_assets" ]]; then
             echo "Release verification failed: release '$RELEASE_TAG' has no assets" >&2
