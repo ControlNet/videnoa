@@ -133,13 +133,29 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Package Linux distribution
-        run: bash scripts/package_dist.sh --platform linux64 --release-tag misc --output-dir "$RUNNER_TEMP/dist-linux64" --source-dir "$GITHUB_WORKSPACE" --force
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
 
-      - name: Install 7-Zip
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y p7zip-full
+          sudo apt-get install -y \
+            protobuf-compiler \
+            p7zip-full \
+            libglib2.0-dev \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev
+
+      - name: Package Linux distribution
+        run: bash scripts/package_dist.sh --platform linux64 --release-tag misc --output-dir "$RUNNER_TEMP/dist-linux64" --source-dir "$GITHUB_WORKSPACE" --force
 
       - name: Create split archive (2000MB volumes)
         run: |
@@ -199,9 +215,11 @@ jobs:
         with:
           node-version: 18
 
-      - name: Install 7-Zip
+      - name: Install dependencies
         shell: pwsh
-        run: choco install 7zip -y --no-progress
+        run: |
+          choco install protoc -y --no-progress
+          choco install 7zip -y --no-progress
 
       - name: Package Windows distribution
         shell: pwsh
