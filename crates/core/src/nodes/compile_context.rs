@@ -243,6 +243,7 @@ impl CompileContext for VideoCompileContext {
     fn create_encoder(
         &self,
         node: &mut dyn Node,
+        inputs: &HashMap<String, PortData>,
         outputs: &HashMap<String, PortData>,
     ) -> Result<Box<dyn FrameSink>> {
         if node.node_type() != "video_output" && node.node_type() != "VideoOutput" {
@@ -261,15 +262,15 @@ impl CompileContext for VideoCompileContext {
             None => bail!("VideoOutput output 'output_path' is missing"),
         };
 
-        let codec = match outputs.get("codec") {
+        let codec = match inputs.get("codec") {
             Some(PortData::Str(value)) => value.clone(),
             _ => "libx265".to_string(),
         };
-        let crf = match outputs.get("crf") {
+        let crf = match inputs.get("crf") {
             Some(PortData::Int(value)) => *value,
             _ => 18,
         };
-        let pixel_format = match outputs.get("pixel_format") {
+        let pixel_format = match inputs.get("pixel_format") {
             Some(PortData::Str(value)) => value.clone(),
             _ => "yuv420p10le".to_string(),
         };

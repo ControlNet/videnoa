@@ -48,10 +48,11 @@ pub trait CompileContext {
         outputs: &HashMap<String, PortData>,
     ) -> Result<(Box<dyn Iterator<Item = Result<Frame>> + Send>, Option<u64>)>;
 
-    /// Turn a sink node + its execute() outputs into a FrameSink.
+    /// Turn a sink node + its resolved inputs and execute() outputs into a FrameSink.
     fn create_encoder(
         &self,
         node: &mut dyn Node,
+        inputs: &HashMap<String, PortData>,
         outputs: &HashMap<String, PortData>,
     ) -> Result<Box<dyn FrameSink>>;
 
@@ -287,14 +288,8 @@ pub fn compile_graph_with_debug_hook(
             fallback
         }
     };
+    let encoder = ctx.create_encoder(sink_node.as_mut(), &sink_inputs, &sink_outputs)?;
     outputs_by_node.insert(sink_instance.id.clone(), sink_outputs);
-
-    let encoder = ctx.create_encoder(
-        sink_node.as_mut(),
-        outputs_by_node
-            .get(&sink_instance.id)
-            .expect("sink outputs just inserted"),
-    )?;
 
     let total_output_frames = ctx.total_output_frames().or(total_frames);
 
@@ -463,6 +458,8 @@ mod tests {
     use crate::debug_event::NodeDebugValueEvent;
     use crate::graph::{NodeInstance, PortConnection};
     use crate::node::PortDefinition;
+    use crate::nodes::video_output::VideoOutputNode;
+    use std::cell::RefCell;
 
     struct MockSourceNode {
         #[allow(dead_code)]
@@ -854,6 +851,7 @@ mod tests {
     struct MockCompileContext {
         decoder_frames: Vec<Frame>,
         total_frames: Option<u64>,
+        encoder_settings: RefCell<Option<(String, i64, String)>>,
     }
 
     impl MockCompileContext {
@@ -869,6 +867,7 @@ mod tests {
             Self {
                 total_frames: Some(num_frames as u64),
                 decoder_frames: frames,
+                encoder_settings: RefCell::new(None),
             }
         }
     }
@@ -903,8 +902,23 @@ mod tests {
         fn create_encoder(
             &self,
             _node: &mut dyn Node,
+            inputs: &HashMap<String, PortData>,
             _outputs: &HashMap<String, PortData>,
         ) -> Result<Box<dyn FrameSink>> {
+            let codec = match inputs.get("codec") {
+                Some(PortData::Str(value)) => value.clone(),
+                _ => "libx265".to_string(),
+            };
+            let crf = match inputs.get("crf") {
+                Some(PortData::Int(value)) => *value,
+                _ => 18,
+            };
+            let pixel_format = match inputs.get("pixel_format") {
+                Some(PortData::Str(value)) => value.clone(),
+                _ => "yuv420p10le".to_string(),
+            };
+            self.encoder_settings
+                .replace(Some((codec, crf, pixel_format)));
             Ok(Box::new(MockSink))
         }
 
@@ -941,6 +955,7 @@ mod tests {
         registry.register("mock_processor", |_| Ok(Box::new(MockProcessorNode)));
         registry.register("mock_interpolator", |_| Ok(Box::new(MockInterpolatorNode)));
         registry.register("mock_sink", |_| Ok(Box::new(MockSinkNode)));
+        registry.register("VideoOutput", |_| Ok(Box::new(VideoOutputNode::new())));
 
         registry.register("int_source", |_| {
             Ok(Box::new(IntOnlyNode {
@@ -1339,6 +1354,61 @@ mod tests {
             "should have no processing stages"
         );
         assert_eq!(compiled.total_frames, Some(3));
+    }
+
+    #[test]
+    fn test_compile_preserves_custom_sink_encoder_settings() {
+        let registry = build_video_registry();
+        let compile_ctx = MockCompileContext::new(1);
+        let source_file = tempfile::NamedTempFile::new().expect("source fixture should be created");
+        let output_path = source_file.path().with_extension("out.mkv");
+
+        let mut graph = PipelineGraph::new();
+        graph
+            .add_node(NodeInstance {
+                id: "source".to_string(),
+                node_type: "mock_source".to_string(),
+                params: HashMap::new(),
+            })
+            .expect("source node should be added");
+        graph
+            .add_node(NodeInstance {
+                id: "sink".to_string(),
+                node_type: "VideoOutput".to_string(),
+                params: HashMap::from([
+                    (
+                        "source_path".to_string(),
+                        serde_json::json!(source_file.path()),
+                    ),
+                    ("output_path".to_string(), serde_json::json!(output_path)),
+                    ("codec".to_string(), serde_json::json!("libx264")),
+                    ("crf".to_string(), serde_json::json!(27)),
+                    ("pixel_format".to_string(), serde_json::json!("yuv444p")),
+                    ("width".to_string(), serde_json::json!(1920)),
+                    ("height".to_string(), serde_json::json!(1080)),
+                    ("fps".to_string(), serde_json::json!("24/1")),
+                ]),
+            })
+            .expect("sink node should be added");
+        graph
+            .add_connection(
+                "source",
+                PortConnection {
+                    source_port: "frames".to_string(),
+                    target_port: "frames".to_string(),
+                    port_type: PortType::VideoFrames,
+                },
+                "sink",
+            )
+            .expect("source -> sink frames connection should be added");
+
+        compile_graph(&graph, &registry, &compile_ctx)
+            .expect("source-to-sink graph should compile");
+
+        assert_eq!(
+            compile_ctx.encoder_settings.borrow().as_ref(),
+            Some(&("libx264".to_string(), 27, "yuv444p".to_string()))
+        );
     }
 
     #[test]
