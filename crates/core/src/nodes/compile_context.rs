@@ -15,7 +15,7 @@ use crate::types::{Frame, PortData};
 use crate::nodes::frame_interpolation::{
     FrameInterpolationNode, FrameInterpolationPostprocess, ModelFormat,
 };
-use crate::nodes::super_res::{SuperResNode, SuperResPostprocess};
+use crate::nodes::super_res::{SuperResNode, SuperResOutputMode, SuperResPostprocess};
 use crate::nodes::video_input::{extract_metadata, run_ffprobe, VideoDecoder};
 use crate::nodes::video_output::{EncoderConfig, VideoEncoder};
 
@@ -29,7 +29,9 @@ pub struct VideoCompileContext {
     accumulated_stages: RefCell<Vec<PipelineStage>>,
     source_path: RefCell<Option<PathBuf>>,
     pending_superres_emit_tensor: RefCell<Option<Arc<AtomicBool>>>,
+    pending_superres_direct_rgb: RefCell<Option<Arc<AtomicBool>>>,
     previous_superres_fp16: Cell<bool>,
+    previous_superres_tile_size: Cell<u32>,
     pending_fi_emit_tensor: RefCell<Option<Arc<AtomicBool>>>,
     trt_cache_dir: PathBuf,
 }
@@ -46,7 +48,9 @@ impl VideoCompileContext {
             accumulated_stages: RefCell::new(Vec::new()),
             source_path: RefCell::new(None),
             pending_superres_emit_tensor: RefCell::new(None),
+            pending_superres_direct_rgb: RefCell::new(None),
             previous_superres_fp16: Cell::new(false),
+            previous_superres_tile_size: Cell::new(0),
             pending_fi_emit_tensor: RefCell::new(None),
             trt_cache_dir,
         }
@@ -88,15 +92,20 @@ impl VideoCompileContext {
         }
 
         let emit_tensor = Arc::new(AtomicBool::new(false));
+        let direct_rgb = Arc::new(AtomicBool::new(false));
         self.pending_superres_emit_tensor
             .replace(Some(Arc::clone(&emit_tensor)));
+        self.pending_superres_direct_rgb
+            .replace(Some(Arc::clone(&direct_rgb)));
         self.previous_superres_fp16.set(node.is_fp16());
+        self.previous_superres_tile_size.set(node.tile_size());
         self.pending_fi_emit_tensor.replace(None);
 
         if should_use_superres_micro_stages(node.is_fp16(), node.tile_size()) {
-            let micro = node
+            let mut micro = node
                 .into_micro_stages()
                 .ok_or_else(|| anyhow!("failed to build SuperResolution micro-stages"))?;
+            micro.inference.set_direct_rgb_flag(direct_rgb);
             self.accumulated_stages
                 .borrow_mut()
                 .push(PipelineStage::Processor(Box::new(micro.preprocess)));
@@ -141,10 +150,17 @@ impl VideoCompileContext {
             self.previous_superres_fp16.get(),
         );
 
-        if sr_to_fi {
-            if let Some(emit_tensor) = self.pending_superres_emit_tensor.borrow().as_ref() {
-                emit_tensor.store(true, Ordering::Relaxed);
+        match superres_output_mode(
+            self.previous_superres_fp16.get(),
+            self.previous_superres_tile_size.get(),
+            sr_to_fi,
+        ) {
+            SuperResOutputMode::TensorF16 => {
+                if let Some(emit_tensor) = self.pending_superres_emit_tensor.borrow().as_ref() {
+                    emit_tensor.store(true, Ordering::Relaxed);
+                }
             }
+            SuperResOutputMode::PostprocessRgb | SuperResOutputMode::DirectRgb => {}
         }
 
         let fi_emit_tensor = Arc::new(AtomicBool::new(false));
@@ -178,7 +194,9 @@ impl VideoCompileContext {
         }
 
         self.pending_superres_emit_tensor.replace(None);
+        self.pending_superres_direct_rgb.replace(None);
         self.previous_superres_fp16.set(false);
+        self.previous_superres_tile_size.set(0);
         self.previous_node_type
             .replace(Some("FrameInterpolation".to_string()));
         Ok(take_stages(&self.accumulated_stages))
@@ -234,7 +252,9 @@ impl CompileContext for VideoCompileContext {
         self.total_output_frames.set(total_frames);
         self.previous_node_type.replace(None);
         self.pending_superres_emit_tensor.replace(None);
+        self.pending_superres_direct_rgb.replace(None);
         self.previous_superres_fp16.set(false);
+        self.previous_superres_tile_size.set(0);
         self.pending_fi_emit_tensor.replace(None);
 
         Ok((Box::new(decoder), total_frames))
@@ -248,6 +268,19 @@ impl CompileContext for VideoCompileContext {
     ) -> Result<Box<dyn FrameSink>> {
         if node.node_type() != "video_output" && node.node_type() != "VideoOutput" {
             bail!("expected VideoOutput sink node, got '{}'", node.node_type());
+        }
+
+        match superres_output_mode(
+            self.previous_superres_fp16.get(),
+            self.previous_superres_tile_size.get(),
+            false,
+        ) {
+            SuperResOutputMode::DirectRgb => {
+                if let Some(direct_rgb) = self.pending_superres_direct_rgb.borrow().as_ref() {
+                    direct_rgb.store(true, Ordering::Relaxed);
+                }
+            }
+            SuperResOutputMode::PostprocessRgb | SuperResOutputMode::TensorF16 => {}
         }
 
         let source_path = self
@@ -331,6 +364,7 @@ impl CompileContext for VideoCompileContext {
         self.pending_superres_emit_tensor
             .replace(Some(Arc::clone(&emit_tensor)));
         self.previous_superres_fp16.set(node.is_fp16());
+        self.previous_superres_tile_size.set(node.tile_size());
         self.pending_fi_emit_tensor.replace(None);
         self.previous_node_type
             .replace(Some("SuperResolution".to_string()));
@@ -378,7 +412,9 @@ impl CompileContext for VideoCompileContext {
             .replace(Some(Arc::clone(&fi_emit_tensor)));
 
         self.pending_superres_emit_tensor.replace(None);
+        self.pending_superres_direct_rgb.replace(None);
         self.previous_superres_fp16.set(false);
+        self.previous_superres_tile_size.set(0);
         self.previous_node_type
             .replace(Some("FrameInterpolation".to_string()));
 
@@ -487,10 +523,11 @@ impl Node for SuperResPostprocessStage {
 
 impl FrameProcessor for SuperResPostprocessStage {
     fn process_frame(&mut self, frame: Frame, ctx: &ExecutionContext) -> Result<Frame> {
-        if self.emit_tensor.load(Ordering::Relaxed) {
-            if matches!(frame, Frame::NchwF16 { .. }) {
-                return Ok(frame);
-            }
+        if matches!(frame, Frame::CpuRgb { .. }) {
+            return Ok(frame);
+        }
+        if self.emit_tensor.load(Ordering::Relaxed) && matches!(frame, Frame::NchwF16 { .. }) {
+            return Ok(frame);
         }
         self.inner.process_frame(frame, ctx)
     }
@@ -591,6 +628,21 @@ fn read_positive_u32(inputs: &HashMap<String, PortData>, key: &str, default: u32
 
 fn should_use_superres_micro_stages(is_fp16_model: bool, tile_size: u32) -> bool {
     is_fp16_model && tile_size == 0
+}
+
+fn superres_output_mode(
+    is_fp16_model: bool,
+    tile_size: u32,
+    has_frame_interpolation_downstream: bool,
+) -> SuperResOutputMode {
+    if !should_use_superres_micro_stages(is_fp16_model, tile_size) {
+        return SuperResOutputMode::PostprocessRgb;
+    }
+    if has_frame_interpolation_downstream {
+        SuperResOutputMode::TensorF16
+    } else {
+        SuperResOutputMode::DirectRgb
+    }
 }
 
 fn should_enable_sr_to_fi_passthrough(
@@ -723,6 +775,34 @@ mod tests {
         assert_eq!(superres_stage_count(false, 0), 1);
         assert_eq!(superres_stage_count(true, 64), 1);
         assert_eq!(superres_stage_count(true, 0), 3);
+    }
+
+    #[test]
+    fn terminal_fp16_superres_selects_direct_rgb_output() {
+        assert_eq!(
+            superres_output_mode(true, 0, false),
+            SuperResOutputMode::DirectRgb
+        );
+    }
+
+    #[test]
+    fn fp16_superres_before_frame_interpolation_selects_tensor_output() {
+        assert_eq!(
+            superres_output_mode(true, 0, true),
+            SuperResOutputMode::TensorF16
+        );
+    }
+
+    #[test]
+    fn tiled_or_fp32_superres_keeps_postprocess_output() {
+        assert_eq!(
+            superres_output_mode(true, 64, false),
+            SuperResOutputMode::PostprocessRgb
+        );
+        assert_eq!(
+            superres_output_mode(false, 0, false),
+            SuperResOutputMode::PostprocessRgb
+        );
     }
 
     #[test]

@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, Context, Result};
@@ -18,6 +19,7 @@ use crate::node::{ExecutionContext, FrameProcessor, Node, PortDefinition};
 use crate::types::{Frame, PortData, PortType};
 
 use crate::nodes::backend::{build_session, InferenceBackend, SessionConfig};
+use crate::nodes::fp16_rgb::{f16_nchw_to_rgb, NchwCrop, Quantization};
 
 /// Tile overlap in pixels per side — prevents seam artifacts between tiles.
 const DEFAULT_TILE_OVERLAP: usize = 16;
@@ -96,6 +98,13 @@ pub struct SuperResMicroStages {
     pub postprocess: SuperResPostprocess,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SuperResOutputMode {
+    PostprocessRgb,
+    TensorF16,
+    DirectRgb,
+}
+
 impl SuperResNode {
     /// Split a loaded `SuperResNode` into three pipeline-parallel micro-stages:
     ///
@@ -121,6 +130,7 @@ impl SuperResNode {
                 scale: self.scale as usize,
                 input_name,
                 output_name,
+                direct_rgb: Arc::new(AtomicBool::new(false)),
             },
             postprocess: SuperResPostprocess,
         })
@@ -322,6 +332,13 @@ pub struct SuperResInference {
     scale: usize,
     input_name: String,
     output_name: String,
+    direct_rgb: Arc<AtomicBool>,
+}
+
+impl SuperResInference {
+    pub(crate) fn set_direct_rgb_flag(&mut self, direct_rgb: Arc<AtomicBool>) {
+        self.direct_rgb = direct_rgb;
+    }
 }
 
 impl Node for SuperResInference {
@@ -363,13 +380,40 @@ impl FrameProcessor for SuperResInference {
 
         let padded = pad_f16_nchw(&input_arr, h, w);
 
-        let output_owned = {
-            let mut session = self.session.lock().unwrap();
-            run_direct_fp16_inference(&mut session, &padded, &self.input_name, &self.output_name)?
-        };
-
         let out_h = h * self.scale;
         let out_w = w * self.scale;
+        let input_tensor = Tensor::from_array(padded.clone())?;
+        let output_owned = {
+            let mut session = self.session.lock().unwrap();
+            let outputs = session.run(ort::inputs![self.input_name.as_str() => &input_tensor])?;
+            let output_view = outputs[self.output_name.as_str()].try_extract_array::<f16>()?;
+
+            if self.direct_rgb.load(Ordering::Relaxed) {
+                let shape = output_view.shape();
+                anyhow::ensure!(
+                    shape.len() == 4 && shape[0] == 1 && shape[1] == 3,
+                    "SuperResInference: expected output shape [1, 3, H, W], got {shape:?}"
+                );
+                let values = output_view
+                    .as_slice()
+                    .context("SuperResInference: output tensor must be contiguous")?;
+                let rgb = cropped_f16_output_to_rgb(
+                    values,
+                    [shape[0], shape[1], shape[2], shape[3]],
+                    out_h,
+                    out_w,
+                )?;
+                return Ok(Frame::CpuRgb {
+                    data: rgb,
+                    width: out_w as u32,
+                    height: out_h as u32,
+                    bit_depth: 8,
+                });
+            }
+
+            output_view.to_owned()
+        };
+
         let padded_h = padded.shape()[2];
         let padded_w = padded.shape()[3];
         let pad_h = padded_h - h;
@@ -399,6 +443,28 @@ impl FrameProcessor for SuperResInference {
             width: out_w as u32,
         })
     }
+}
+
+fn cropped_f16_output_to_rgb(
+    values: &[f16],
+    shape: [usize; 4],
+    output_height: usize,
+    output_width: usize,
+) -> Result<Vec<u8>> {
+    anyhow::ensure!(
+        shape[0] == 1 && shape[1] == 3,
+        "FP16 output shape must start with [1, 3], got {shape:?}"
+    );
+    f16_nchw_to_rgb(
+        values,
+        NchwCrop {
+            source_height: shape[2],
+            source_width: shape[3],
+            output_height,
+            output_width,
+        },
+        Quantization::Truncate,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1949,6 +2015,45 @@ mod tests {
         assert_eq!(rgb[6], 0);
         assert_eq!(rgb[7], 0);
         assert_eq!(rgb[8], 63); // f16(0.25) * 255.0 = 63.75 → 63
+    }
+
+    #[test]
+    fn direct_f16_output_rgb_preserves_superres_truncation() {
+        let values = vec![f16::from_f32(0.5); 3];
+        let rgb = cropped_f16_output_to_rgb(&values, [1, 3, 1, 1], 1, 1).unwrap();
+        assert_eq!(rgb, vec![127, 127, 127]);
+    }
+
+    #[test]
+    fn direct_f16_output_rgb_crops_with_padded_plane_stride() {
+        let source_h = 4;
+        let source_w = 4;
+        let out_h = 2;
+        let out_w = 3;
+        let plane = source_h * source_w;
+        let mut values = vec![f16::from_f32(1.0); plane * 3];
+        let channel_values = [
+            [0.0, 0.25, 0.5, 0.75, 1.0, 0.0],
+            [0.25, 0.5, 0.75, 1.0, 0.0, 0.25],
+            [0.5, 0.75, 1.0, 0.0, 0.25, 0.5],
+        ];
+
+        for channel in 0..3 {
+            for y in 0..out_h {
+                for x in 0..out_w {
+                    values[channel * plane + y * source_w + x] =
+                        f16::from_f32(channel_values[channel][y * out_w + x]);
+                }
+            }
+        }
+
+        let rgb =
+            cropped_f16_output_to_rgb(&values, [1, 3, source_h, source_w], out_h, out_w).unwrap();
+
+        let expected = vec![
+            0, 63, 127, 63, 127, 191, 127, 191, 255, 191, 255, 0, 255, 0, 63, 0, 63, 127,
+        ];
+        assert_eq!(rgb, expected);
     }
 
     #[test]
