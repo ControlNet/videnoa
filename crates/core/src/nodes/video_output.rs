@@ -634,20 +634,11 @@ fn add_mkv_statistics_tags(output_path: &Path) {
 }
 
 fn nchw_f16_to_rgb(data: &[u16], h: usize, w: usize) -> Result<Vec<u8>> {
-    use half::f16;
-    use half::slice::HalfFloatSliceExt;
-
-    let expected = 3 * h * w;
-    anyhow::ensure!(
-        data.len() == expected,
-        "NchwF16 length mismatch: expected {expected}, got {}",
-        data.len()
-    );
-    let f16_slice: &[f16] =
-        unsafe { std::slice::from_raw_parts(data.as_ptr() as *const f16, data.len()) };
-    let mut f32_buf = vec![0.0f32; data.len()];
-    f16_slice.convert_to_f32_slice(&mut f32_buf);
-    nchw_f32_to_rgb(&f32_buf, h, w)
+    crate::nodes::fp16_rgb::f16_bits_nchw_to_rgb(
+        data,
+        crate::nodes::fp16_rgb::NchwCrop::full(h, w),
+        crate::nodes::fp16_rgb::Quantization::RoundNearest,
+    )
 }
 
 fn nchw_f32_to_rgb(data: &[f32], h: usize, w: usize) -> Result<Vec<u8>> {
@@ -759,6 +750,19 @@ mod tests {
         let optimized = nchw_f32_to_rgb(&data, h, w).unwrap();
         let scalar = nchw_f32_to_rgb_scalar(&data, h, w).unwrap();
         assert_eq!(optimized, scalar);
+    }
+
+    #[test]
+    fn nchw_f16_fallback_preserves_round_to_nearest() {
+        let data = vec![half::f16::from_f32(0.5).to_bits(); 3];
+        let rgb = nchw_f16_to_rgb(&data, 1, 1).unwrap();
+        assert_eq!(rgb, vec![128, 128, 128]);
+    }
+
+    #[test]
+    fn nchw_f16_fallback_rejects_wrong_length() {
+        let error = nchw_f16_to_rgb(&[0; 2], 1, 1).unwrap_err();
+        assert!(error.to_string().contains("expected 3, got 2"));
     }
 
     #[test]
