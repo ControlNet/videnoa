@@ -944,6 +944,12 @@ fn quantize_high_bit_sample_to_u8(sample: u32, source_max: u32) -> u8 {
 /// Convert NchwF32 data (already in [0,1] range) to Array4<f32> and pad.
 /// Skips ÷255 normalization since tensor data is already normalized.
 fn nchw_f32_to_array4(data: &[f32], h: usize, w: usize) -> Result<(Array4<f32>, usize, usize)> {
+    let array = nchw_f32_vec_to_array4(data.to_vec(), h, w)?;
+    let padded = pad_nchw(&array, h, w);
+    Ok((padded, h, w))
+}
+
+fn nchw_f32_vec_to_array4(data: Vec<f32>, h: usize, w: usize) -> Result<Array4<f32>> {
     let expected = 3 * h * w;
     if data.len() != expected {
         bail!(
@@ -952,11 +958,8 @@ fn nchw_f32_to_array4(data: &[f32], h: usize, w: usize) -> Result<(Array4<f32>, 
         );
     }
 
-    let array = Array4::from_shape_vec((1, 3, h, w), data.to_vec())
-        .context("failed to reshape NchwF32 data to [1,3,H,W]")?;
-
-    let padded = pad_nchw(&array, h, w);
-    Ok((padded, h, w))
+    Array4::from_shape_vec((1, 3, h, w), data)
+        .context("failed to reshape NchwF32 data to [1,3,H,W]")
 }
 
 /// Convert NchwF16 data (raw u16 bits, already in [0,1] range) to Array4<f32> and pad.
@@ -976,7 +979,9 @@ fn nchw_f16_to_array4(data: &[u16], h: usize, w: usize) -> Result<(Array4<f32>, 
     let mut f32_data = vec![0.0f32; data.len()];
     f16_slice.convert_to_f32_slice(&mut f32_data);
 
-    nchw_f32_to_array4(&f32_data, h, w)
+    let array = nchw_f32_vec_to_array4(f32_data, h, w)?;
+    let padded = pad_nchw(&array, h, w);
+    Ok((padded, h, w))
 }
 
 fn pad_nchw(arr: &Array4<f32>, h: usize, w: usize) -> Array4<f32> {
@@ -1881,6 +1886,23 @@ mod tests {
         assert_eq!(orig_w, w);
         assert_eq!(array.shape(), &[1, 3, h, w]);
         assert!((array[[0, 0, 0, 0]] - f32_data[0]).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_nchw_f32_vec_to_array4_reuses_owned_storage() {
+        // Given
+        let h = 30usize;
+        let w = 50usize;
+        let data: Vec<f32> = (0..3 * h * w).map(|i| i as f32 / 1000.0).collect();
+        let data_ptr = data.as_ptr();
+
+        // When
+        let array = nchw_f32_vec_to_array4(data, h, w).unwrap();
+
+        // Then
+        assert_eq!(array.as_ptr(), data_ptr);
+        assert_eq!(array.shape(), &[1, 3, h, w]);
+        assert_eq!(array[[0, 2, h - 1, w - 1]], (3 * h * w - 1) as f32 / 1000.0);
     }
 
     #[test]
