@@ -3,10 +3,10 @@
 
 use std::time::Instant;
 
-use anyhow::{Context, Result};
+use anyhow::{ensure, Context, Result};
 use ndarray::Array4;
 use ort::{
-    execution_providers::CUDAExecutionProvider,
+    ep::CUDAExecutionProvider,
     memory::{AllocationDevice, Allocator, AllocatorType, MemoryInfo, MemoryType},
     session::{builder::GraphOptimizationLevel, Session},
     value::Tensor,
@@ -25,8 +25,10 @@ fn main() -> Result<()> {
     println!("=== videnoa IoBinding validation spike ===\n");
 
     let mut session = Session::builder()?
-        .with_optimization_level(GraphOptimizationLevel::Level3)?
-        .with_execution_providers([CUDAExecutionProvider::default().build().error_on_failure()])?
+        .with_optimization_level(GraphOptimizationLevel::Level3)
+        .map_err(|error| -> ort::Error { error.into() })?
+        .with_execution_providers([CUDAExecutionProvider::default().build().error_on_failure()])
+        .map_err(|error| -> ort::Error { error.into() })?
         .commit_from_file(MODEL_PATH)
         .context("Failed to load ONNX model")?;
 
@@ -131,10 +133,6 @@ fn test_iobinding_preallocated(
 }
 
 fn test_iobinding_pinned_input(session: &mut Session) -> Result<std::time::Duration> {
-    // CUDA_PINNED tensors cannot use extract_array_mut() in ort v2.0-rc.11
-    // (Error: "Cannot extract from value on device CudaPinned, which is not CPU accessible")
-    // Workaround: use regular CPU tensor with bind_input (copies to device automatically)
-    // and pre-allocated CUDA_PINNED output tensor
     let output_mem = MemoryInfo::new(
         AllocationDevice::CUDA_PINNED,
         0,
@@ -160,6 +158,23 @@ fn test_iobinding_pinned_input(session: &mut Session) -> Result<std::time::Durat
         let _outputs = session.run_binding(&binding)?;
         total += t.elapsed();
     }
+
+    let outputs = session.run_binding(&binding)?;
+    let output = outputs["image"].try_extract_array::<f32>()?;
+    ensure!(
+        output.shape() == [1, 3, OUTPUT_H, OUTPUT_W],
+        "unexpected CUDA-pinned output shape: {:?}",
+        output.shape()
+    );
+    ensure!(
+        output.iter().all(|value| value.is_finite()),
+        "CUDA-pinned output contains non-finite values"
+    );
+    println!(
+        "CUDA_PINNED output extraction OK: shape={:?}, first={:.6}",
+        output.shape(),
+        output[[0, 0, 0, 0]]
+    );
 
     Ok(total / NUM_RUNS as u32)
 }
