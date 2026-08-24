@@ -517,7 +517,7 @@ impl FrameProcessor for FrameInterpolationPreprocess {
             } => {
                 // Tensor pass-through from SuperRes: convert f16→f32 and pad
                 let (padded, _h, _w) = nchw_f16_to_array4(&data, height as usize, width as usize)?;
-                let padded_data = padded.as_slice().unwrap().to_vec();
+                let padded_data = into_standard_layout_vec(padded)?;
                 Ok(Frame::NchwF32 {
                     data: padded_data,
                     height,
@@ -529,6 +529,19 @@ impl FrameProcessor for FrameInterpolationPreprocess {
             }
         }
     }
+}
+
+fn into_standard_layout_vec(array: Array4<f32>) -> Result<Vec<f32>> {
+    if !array.is_standard_layout() {
+        bail!("NCHW array must use standard layout before transferring its storage");
+    }
+
+    let (data, offset) = array.into_raw_vec_and_offset();
+    if offset.unwrap_or_default() != 0 {
+        bail!("standard-layout NCHW array must start at offset zero");
+    }
+
+    Ok(data)
 }
 
 // ---------------------------------------------------------------------------
@@ -1325,6 +1338,20 @@ mod tests {
         assert_eq!(padded[[0, 0, 29, 49]], 1.0);
         assert_eq!(padded[[0, 0, 30, 0]], padded[[0, 0, 29, 0]]);
         assert_eq!(padded[[0, 0, 31, 0]], padded[[0, 0, 28, 0]]);
+    }
+
+    #[test]
+    fn test_into_standard_layout_vec_reuses_unaligned_padded_storage() {
+        let mut arr = Array4::<f32>::zeros((1, 3, 30, 50));
+        arr[[0, 2, 29, 49]] = 0.75;
+        let padded = pad_nchw(&arr, 30, 50);
+        let allocation = padded.as_ptr();
+
+        let data = into_standard_layout_vec(padded).unwrap();
+
+        assert_eq!(data.as_ptr(), allocation);
+        assert_eq!(data.len(), 3 * 32 * 64);
+        assert_eq!(data[2 * 32 * 64 + 29 * 64 + 49], 0.75);
     }
 
     #[test]
