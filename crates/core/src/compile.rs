@@ -74,6 +74,10 @@ pub trait CompileContext {
     /// than a regular processor.
     fn is_interpolator_type(&self, node_type: &str) -> bool;
 
+    fn execute_processing_node(&self, _node_type: &str) -> bool {
+        true
+    }
+
     fn total_output_frames(&self) -> Option<u64> {
         None
     }
@@ -228,9 +232,12 @@ pub fn compile_graph_with_debug_hook(
                 )
             })?;
         let inputs = resolve_inputs(graph, registry, node_idx, &outputs_by_node)?;
-        let outputs = node
-            .execute(&inputs, &exec_ctx)
-            .with_context(|| format!("execution failed for node '{}'", instance.id))?;
+        let outputs = if ctx.execute_processing_node(&instance.node_type) {
+            node.execute(&inputs, &exec_ctx)
+                .with_context(|| format!("execution failed for node '{}'", instance.id))?
+        } else {
+            HashMap::new()
+        };
         emit_print_debug_event(
             &instance.id,
             &instance.node_type,

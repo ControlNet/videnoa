@@ -12,6 +12,9 @@ use crate::node::{ExecutionContext, FrameProcessor, Node, PortDefinition};
 use crate::streaming_executor::{FrameInterpolator, FrameSink, PipelineStage};
 use crate::types::{Frame, PortData};
 
+use crate::nodes::backend::{
+    model_trt_cache_dir, InferenceBackend, TrtCacheIdentity, TrtTileIdentity,
+};
 use crate::nodes::frame_interpolation::{
     FrameInterpolationNode, FrameInterpolationPostprocess, ModelFormat,
 };
@@ -58,7 +61,9 @@ impl VideoCompileContext {
 
     fn create_superres_node(&self, inputs: &HashMap<String, PortData>) -> Result<SuperResNode> {
         let mut node = SuperResNode::new();
-        node.set_trt_cache_dir(self.trt_cache_dir.clone());
+        if let Some(cache_dir) = self.resolve_trt_cache_dir(inputs, 4)? {
+            node.set_trt_cache_dir(cache_dir);
+        }
         node.execute(inputs, &ExecutionContext::default())
             .context("failed to initialize SuperResolution node")?;
         Ok(node)
@@ -66,10 +71,57 @@ impl VideoCompileContext {
 
     fn create_fi_node(&self, inputs: &HashMap<String, PortData>) -> Result<FrameInterpolationNode> {
         let mut node = FrameInterpolationNode::new();
-        node.set_trt_cache_dir(self.trt_cache_dir.clone());
+        if let Some(cache_dir) = self.resolve_trt_cache_dir(inputs, 32)? {
+            node.set_trt_cache_dir(cache_dir);
+        }
         node.execute(inputs, &ExecutionContext::default())
             .context("failed to initialize FrameInterpolation node")?;
         Ok(node)
+    }
+
+    fn resolve_trt_cache_dir(
+        &self,
+        inputs: &HashMap<String, PortData>,
+        alignment: usize,
+    ) -> Result<Option<PathBuf>> {
+        let backend = match inputs.get("backend") {
+            Some(PortData::Str(value)) => InferenceBackend::from_str_lossy(value),
+            _ => InferenceBackend::Cuda,
+        };
+        if backend != InferenceBackend::Tensorrt {
+            return Ok(None);
+        }
+
+        let model_path = match inputs.get("model_path") {
+            Some(PortData::Path(path)) => path,
+            Some(_) => bail!("model_path must be a Path"),
+            None => bail!("model_path is required"),
+        };
+        let original_h =
+            usize::try_from(self.output_height.get()).context("video height exceeds usize")?;
+        let original_w =
+            usize::try_from(self.output_width.get()).context("video width exceeds usize")?;
+        let input_h = aligned_dimension(self.output_height.get(), alignment)?;
+        let input_w = aligned_dimension(self.output_width.get(), alignment)?;
+        let tile = match inputs.get("tile_size") {
+            Some(PortData::Int(value)) => {
+                let value = usize::try_from(*value).context("tile_size must be non-negative")?;
+                (value > 0).then_some(TrtTileIdentity {
+                    tile_size: value,
+                    original_h,
+                    original_w,
+                })
+            }
+            Some(_) => bail!("tile_size must be an Int"),
+            None => None,
+        };
+        let identity = TrtCacheIdentity {
+            device_id: 0,
+            input_h,
+            input_w,
+            tile,
+        };
+        model_trt_cache_dir(&self.trt_cache_dir, model_path, identity).map(Some)
     }
 
     fn create_superres_stages(
@@ -428,6 +480,10 @@ impl CompileContext for VideoCompileContext {
         node_type == "FrameInterpolation"
     }
 
+    fn execute_processing_node(&self, node_type: &str) -> bool {
+        node_type != "SuperResolution" && node_type != "FrameInterpolation"
+    }
+
     fn total_output_frames(&self) -> Option<u64> {
         self.total_output_frames.get()
     }
@@ -750,6 +806,14 @@ fn take_stages(stages: &RefCell<Vec<PipelineStage>>) -> Vec<PipelineStage> {
     std::mem::take(&mut *stages.borrow_mut())
 }
 
+fn aligned_dimension(value: u32, alignment: usize) -> Result<usize> {
+    let value = usize::try_from(value).context("video dimension exceeds usize")?;
+    if value == 0 {
+        bail!("video resolution is not initialized");
+    }
+    Ok(value.div_ceil(alignment) * alignment)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -856,5 +920,110 @@ mod tests {
         assert!(!ctx.is_interpolator_type("RIFE"));
         assert!(!ctx.is_interpolator_type("SuperResolution"));
         assert!(!ctx.is_interpolator_type("VideoInput"));
+    }
+
+    #[test]
+    fn video_compile_context_when_rife_input_resolution_changes_uses_separate_cache_namespace() {
+        // Given: one RIFE model and a TensorRT video compile context.
+        let temp = tempfile::tempdir().expect("create temporary cache fixture");
+        let model_path = temp.path().join("rife.onnx");
+        std::fs::write(&model_path, b"rife-model").expect("write model fixture");
+        let ctx = VideoCompileContext::new(temp.path().join("trt-cache"));
+        let inputs = HashMap::from([
+            ("model_path".to_string(), PortData::Path(model_path)),
+            ("backend".to_string(), PortData::Str("tensorrt".to_string())),
+        ]);
+
+        // When: the same model is planned first for 1080p and then for 4K input.
+        ctx.output_width.set(1920);
+        ctx.output_height.set(1080);
+        let hd = ctx
+            .resolve_trt_cache_dir(&inputs, 32)
+            .expect("resolve HD cache namespace")
+            .expect("TensorRT uses a cache namespace");
+        let hd_reuse = ctx
+            .resolve_trt_cache_dir(&inputs, 32)
+            .expect("resolve matching HD cache namespace")
+            .expect("TensorRT uses a cache namespace");
+        ctx.output_width.set(3840);
+        ctx.output_height.set(2160);
+        let uhd = ctx
+            .resolve_trt_cache_dir(&inputs, 32)
+            .expect("resolve UHD cache namespace")
+            .expect("TensorRT uses a cache namespace");
+
+        // Then: matching effective shapes reuse a directory and incompatible shapes do not.
+        assert_eq!(hd, hd_reuse);
+        assert_ne!(hd, uhd);
+        assert!(hd
+            .file_name()
+            .expect("HD cache namespace has a name")
+            .to_string_lossy()
+            .ends_with("1088x1920"));
+        assert!(uhd
+            .file_name()
+            .expect("UHD cache namespace has a name")
+            .to_string_lossy()
+            .ends_with("2176x3840"));
+    }
+
+    #[test]
+    fn video_compile_context_when_superres_tile_size_changes_uses_separate_cache_namespace() {
+        // Given: one super-resolution model, resolution, and TensorRT cache root.
+        let temp = tempfile::tempdir().expect("create temporary cache fixture");
+        let model_path = temp.path().join("superres.onnx");
+        std::fs::write(&model_path, b"superres-model").expect("write model fixture");
+        let ctx = VideoCompileContext::new(temp.path().join("trt-cache"));
+        ctx.output_width.set(1920);
+        ctx.output_height.set(1080);
+        let mut inputs = HashMap::from([
+            ("model_path".to_string(), PortData::Path(model_path)),
+            ("backend".to_string(), PortData::Str("tensorrt".to_string())),
+            ("tile_size".to_string(), PortData::Int(64)),
+        ]);
+
+        // When: the same frame shape is planned with two supported tile sizes.
+        let tile_64 = ctx
+            .resolve_trt_cache_dir(&inputs, 4)
+            .expect("resolve 64-pixel tile namespace")
+            .expect("TensorRT uses a cache namespace");
+        inputs.insert("tile_size".to_string(), PortData::Int(128));
+        let tile_128 = ctx
+            .resolve_trt_cache_dir(&inputs, 4)
+            .expect("resolve 128-pixel tile namespace")
+            .expect("TensorRT uses a cache namespace");
+
+        // Then: incompatible tiled inference shapes do not share cached engines.
+        assert_ne!(tile_64, tile_128);
+    }
+
+    #[test]
+    fn video_compile_context_when_tiled_edge_regime_changes_uses_separate_cache_namespace() {
+        // Given: one tiled super-resolution model and dimensions sharing one padded shape.
+        let temp = tempfile::tempdir().expect("create temporary cache fixture");
+        let model_path = temp.path().join("superres.onnx");
+        std::fs::write(&model_path, b"superres-model").expect("write model fixture");
+        let ctx = VideoCompileContext::new(temp.path().join("trt-cache"));
+        let inputs = HashMap::from([
+            ("model_path".to_string(), PortData::Path(model_path)),
+            ("backend".to_string(), PortData::Str("tensorrt".to_string())),
+            ("tile_size".to_string(), PortData::Int(65)),
+        ]);
+
+        // When: original heights 66 and 68 both align to 68 but create different edge tiles.
+        ctx.output_width.set(68);
+        ctx.output_height.set(66);
+        let height_66 = ctx
+            .resolve_trt_cache_dir(&inputs, 4)
+            .expect("resolve 66-pixel input namespace")
+            .expect("TensorRT uses a cache namespace");
+        ctx.output_height.set(68);
+        let height_68 = ctx
+            .resolve_trt_cache_dir(&inputs, 4)
+            .expect("resolve 68-pixel input namespace")
+            .expect("TensorRT uses a cache namespace");
+
+        // Then: incompatible edge-tile shape sets do not share cached engines.
+        assert_ne!(height_66, height_68);
     }
 }
