@@ -16,6 +16,7 @@ use ort::{
     session::{builder::GraphOptimizationLevel, Session},
     value::{DynTensorValueType, DynValue},
 };
+use sha2::{Digest, Sha256};
 use tracing::{debug, error, info, warn};
 
 /// Inference backend selection.
@@ -296,17 +297,34 @@ pub fn build_session(config: &SessionConfig<'_>) -> Result<Session> {
     Ok(session)
 }
 
-/// Format: `{compute_capability}_{model_hash}_{input_h}x{input_w}`
-pub fn trt_cache_key(
-    compute_capability: &str,
-    model_hash: &str,
-    input_h: usize,
-    input_w: usize,
-) -> String {
-    format!(
-        "{}_{}_{}x{}",
-        compute_capability, model_hash, input_h, input_w
-    )
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TrtTileIdentity {
+    pub tile_size: usize,
+    pub original_h: usize,
+    pub original_w: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TrtCacheIdentity {
+    pub device_id: usize,
+    pub input_h: usize,
+    pub input_w: usize,
+    pub tile: Option<TrtTileIdentity>,
+}
+
+/// Format: `device-{device_id}_{model_hash}_{input_h}x{input_w}[_tile-{tile_size}_orig-{original_h}x{original_w}]`
+pub fn trt_cache_key(identity: TrtCacheIdentity, model_hash: &str) -> String {
+    let base = format!(
+        "device-{}_{}_{}x{}",
+        identity.device_id, model_hash, identity.input_h, identity.input_w
+    );
+    match identity.tile {
+        Some(tile) => format!(
+            "{base}_tile-{}_orig-{}x{}",
+            tile.tile_size, tile.original_h, tile.original_w
+        ),
+        None => base,
+    }
 }
 
 pub fn resolve_trt_cache_dir(base_dir: &Path, cache_key: Option<&str>) -> PathBuf {
@@ -314,6 +332,18 @@ pub fn resolve_trt_cache_dir(base_dir: &Path, cache_key: Option<&str>) -> PathBu
         Some(key) => base_dir.join(key),
         None => base_dir.to_path_buf(),
     }
+}
+
+pub fn model_trt_cache_dir(
+    base_dir: &Path,
+    model_path: &Path,
+    identity: TrtCacheIdentity,
+) -> Result<PathBuf> {
+    let model = std::fs::read(model_path)
+        .with_context(|| format!("failed to read ONNX model: {}", model_path.display()))?;
+    let model_hash = format!("{:x}", Sha256::digest(model));
+    let key = trt_cache_key(identity, &model_hash);
+    Ok(resolve_trt_cache_dir(base_dir, Some(&key)))
 }
 
 #[cfg(test)]
@@ -413,14 +443,34 @@ mod tests {
 
     #[test]
     fn test_trt_cache_key() {
-        let key = trt_cache_key("8.0", "abc123", 1080, 1920);
-        assert_eq!(key, "8.0_abc123_1080x1920");
+        let key = trt_cache_key(
+            TrtCacheIdentity {
+                device_id: 0,
+                input_h: 1080,
+                input_w: 1920,
+                tile: None,
+            },
+            "abc123",
+        );
+        assert_eq!(key, "device-0_abc123_1080x1920");
     }
 
     #[test]
     fn test_trt_cache_key_small_input() {
-        let key = trt_cache_key("8.6", "def456", 160, 240);
-        assert_eq!(key, "8.6_def456_160x240");
+        let key = trt_cache_key(
+            TrtCacheIdentity {
+                device_id: 1,
+                input_h: 160,
+                input_w: 240,
+                tile: Some(TrtTileIdentity {
+                    tile_size: 64,
+                    original_h: 157,
+                    original_w: 239,
+                }),
+            },
+            "def456",
+        );
+        assert_eq!(key, "device-1_def456_160x240_tile-64_orig-157x239");
     }
 
     #[test]
@@ -435,6 +485,57 @@ mod tests {
         let base = PathBuf::from("trt_cache");
         let resolved = resolve_trt_cache_dir(&base, None);
         assert_eq!(resolved, PathBuf::from("trt_cache"));
+    }
+
+    #[test]
+    fn trt_cache_namespace_when_model_device_or_shape_changes_is_isolated() {
+        // Given: two model files and one TensorRT cache root.
+        let temp = tempfile::tempdir().expect("create temporary cache fixture");
+        let model_a = temp.path().join("model-a.onnx");
+        let model_b = temp.path().join("model-b.onnx");
+        std::fs::write(&model_a, b"model-a").expect("write first model fixture");
+        std::fs::write(&model_b, b"model-b").expect("write second model fixture");
+
+        // When: cache namespaces are resolved for different models, devices, and shapes.
+        let base = temp.path().join("trt-cache");
+        let baseline_identity = TrtCacheIdentity {
+            device_id: 0,
+            input_h: 1088,
+            input_w: 1920,
+            tile: None,
+        };
+        let baseline = model_trt_cache_dir(&base, &model_a, baseline_identity)
+            .expect("resolve baseline namespace");
+        let same = model_trt_cache_dir(&base, &model_a, baseline_identity)
+            .expect("resolve matching namespace");
+        let other_model = model_trt_cache_dir(&base, &model_b, baseline_identity)
+            .expect("resolve model namespace");
+        let other_device = model_trt_cache_dir(
+            &base,
+            &model_a,
+            TrtCacheIdentity {
+                device_id: 1,
+                ..baseline_identity
+            },
+        )
+        .expect("resolve device namespace");
+        let other_shape = model_trt_cache_dir(
+            &base,
+            &model_a,
+            TrtCacheIdentity {
+                input_h: 2176,
+                input_w: 3840,
+                ..baseline_identity
+            },
+        )
+        .expect("resolve shape namespace");
+
+        // Then: identical sessions reuse one directory and incompatible sessions do not.
+        assert_eq!(baseline, same);
+        assert_ne!(baseline, other_model);
+        assert_ne!(baseline, other_device);
+        assert_ne!(baseline, other_shape);
+        assert_eq!(baseline.parent(), Some(base.as_path()));
     }
 
     #[test]
