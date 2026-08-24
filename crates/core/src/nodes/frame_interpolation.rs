@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{bail, Context, Result};
 use half::f16;
 use half::slice::HalfFloatSliceExt;
-use ndarray::{s, Array4};
+use ndarray::{s, Array4, ArrayView4};
 use ort::{
     session::Session,
     value::{Tensor, TensorRef},
@@ -585,9 +585,9 @@ impl FrameInterpolator for FrameInterpolationInference {
         let padded_h = orig_h + pad_amount(orig_h);
         let padded_w = orig_w + pad_amount(orig_w);
 
-        let img0 = Array4::from_shape_vec((1, 3, padded_h, padded_w), prev_data)
+        let img0 = ArrayView4::from_shape((1, 3, padded_h, padded_w), prev_data)
             .context("FrameInterpolationInference: failed to reshape previous frame")?;
-        let img1 = Array4::from_shape_vec((1, 3, padded_h, padded_w), curr_data)
+        let img1 = ArrayView4::from_shape((1, 3, padded_h, padded_w), curr_data)
             .context("FrameInterpolationInference: failed to reshape current frame")?;
 
         let target_shape = [1, 7, padded_h, padded_w];
@@ -619,7 +619,7 @@ impl FrameInterpolator for FrameInterpolationInference {
     }
 }
 
-fn extract_nchw_f32(frame: &Frame, label: &str) -> Result<(Vec<f32>, usize, usize)> {
+fn extract_nchw_f32<'a>(frame: &'a Frame, label: &str) -> Result<(&'a [f32], usize, usize)> {
     let Frame::NchwF32 {
         data,
         height,
@@ -628,7 +628,7 @@ fn extract_nchw_f32(frame: &Frame, label: &str) -> Result<(Vec<f32>, usize, usiz
     else {
         bail!("FrameInterpolationInference: expected NchwF32 for {label}, got other variant");
     };
-    Ok((data.clone(), *height as usize, *width as usize))
+    Ok((data, *height as usize, *width as usize))
 }
 
 // ---------------------------------------------------------------------------
@@ -1180,12 +1180,15 @@ fn run_concatenated(
     Ok(result)
 }
 
-fn crop_output(
+fn crop_output<S>(
     output_owned: ndarray::ArrayD<f32>,
-    img0: &Array4<f32>,
+    img0: &ndarray::ArrayBase<S, ndarray::Ix4>,
     orig_h: usize,
     orig_w: usize,
-) -> Result<Array4<f32>> {
+) -> Result<Array4<f32>>
+where
+    S: ndarray::Data<Elem = f32>,
+{
     let output_4d = output_owned.into_dimensionality::<ndarray::Ix4>()?;
 
     let padded_h = img0.shape()[2];
@@ -2218,6 +2221,26 @@ mod tests {
             pre.nchw_buf.is_some(),
             "buffer should be retained for reuse"
         );
+    }
+
+    #[test]
+    fn extract_nchw_f32_when_frame_is_borrowed_reuses_backing_storage() {
+        // Given: an owned NCHW frame with a stable backing allocation.
+        let data = vec![0.25_f32; 3 * 32 * 32];
+        let source_ptr = data.as_ptr();
+        let frame = Frame::NchwF32 {
+            data,
+            height: 32,
+            width: 32,
+        };
+
+        // When: inference extracts the tensor payload.
+        let (extracted, height, width) =
+            extract_nchw_f32(&frame, "test").expect("extract NCHW frame");
+
+        // Then: extraction borrows the original allocation instead of cloning it.
+        assert_eq!(extracted.as_ptr(), source_ptr);
+        assert_eq!((height, width), (32, 32));
     }
 
     #[test]
