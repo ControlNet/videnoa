@@ -21,7 +21,10 @@ use tracing::debug;
 use crate::node::{ExecutionContext, FrameProcessor, Node, PortDefinition};
 use crate::types::{Frame, PortData, PortType};
 
-use crate::nodes::backend::{build_session, InferenceBackend, SessionConfig};
+use crate::nodes::backend::{
+    build_session, ensure_inference_output_memory, inference_output_memory_info, InferenceBackend,
+    SessionConfig,
+};
 use crate::nodes::fp16_rgb::{f16_nchw_to_rgb, NchwCrop, Quantization};
 
 /// Tile overlap in pixels per side — prevents seam artifacts between tiles.
@@ -388,7 +391,12 @@ impl FrameProcessor for SuperResInference {
         let input_tensor = Tensor::from_array(padded.clone())?;
         let output_owned = {
             let mut session = self.session.lock().unwrap();
-            let outputs = session.run(ort::inputs![self.input_name.as_str() => &input_tensor])?;
+            let mut binding = session.create_binding()?;
+            binding.bind_input(self.input_name.as_str(), &input_tensor)?;
+            let output_memory = inference_output_memory_info(&session)?;
+            binding.bind_output_to_device(self.output_name.as_str(), &output_memory)?;
+            let outputs = session.run_binding(&binding)?;
+            ensure_inference_output_memory(&outputs[self.output_name.as_str()], &output_memory)?;
             let output_view = outputs[self.output_name.as_str()].try_extract_array::<f16>()?;
 
             if self.direct_rgb.load(Ordering::Relaxed) {
@@ -1367,8 +1375,10 @@ fn run_with_iobinding(
 ) -> Result<ndarray::ArrayBase<ndarray::OwnedRepr<f32>, ndarray::IxDyn>> {
     let mut binding = session.create_binding()?;
     binding.bind_input(input_name, input_tensor)?;
-    binding.bind_output_to_device(output_name, &session.allocator().memory_info())?;
+    let output_memory = inference_output_memory_info(session)?;
+    binding.bind_output_to_device(output_name, &output_memory)?;
     let outputs = session.run_binding(&binding)?;
+    ensure_inference_output_memory(&outputs[output_name], &output_memory)?;
     let output_view = outputs[output_name].try_extract_array::<f32>()?;
     Ok(output_view.to_owned())
 }
@@ -1388,7 +1398,12 @@ fn run_fp16_inference(
     let shape: Vec<usize> = input.shape().to_vec();
     let fp16_array = ndarray::ArrayD::from_shape_vec(shape, fp16_data)?;
     let input_tensor = Tensor::from_array(fp16_array)?;
-    let outputs = session.run(ort::inputs![input_name => &input_tensor])?;
+    let mut binding = session.create_binding()?;
+    binding.bind_input(input_name, &input_tensor)?;
+    let output_memory = inference_output_memory_info(session)?;
+    binding.bind_output_to_device(output_name, &output_memory)?;
+    let outputs = session.run_binding(&binding)?;
+    ensure_inference_output_memory(&outputs[output_name], &output_memory)?;
     let output_view = outputs[output_name].try_extract_array::<f16>()?;
 
     let fp16_owned;
@@ -1412,7 +1427,12 @@ fn run_direct_fp16_inference(
     output_name: &str,
 ) -> Result<ndarray::ArrayD<f16>> {
     let input_tensor = Tensor::from_array(input.clone())?;
-    let outputs = session.run(ort::inputs![input_name => &input_tensor])?;
+    let mut binding = session.create_binding()?;
+    binding.bind_input(input_name, &input_tensor)?;
+    let output_memory = inference_output_memory_info(session)?;
+    binding.bind_output_to_device(output_name, &output_memory)?;
+    let outputs = session.run_binding(&binding)?;
+    ensure_inference_output_memory(&outputs[output_name], &output_memory)?;
     let output_view = outputs[output_name].try_extract_array::<f16>()?;
     Ok(output_view.to_owned())
 }

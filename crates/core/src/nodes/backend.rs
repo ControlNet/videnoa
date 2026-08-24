@@ -5,13 +5,16 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, RecvTimeoutError};
+use std::sync::Once;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use ort::{
     ep::{CUDAExecutionProvider, ExecutionProvider, TensorRTExecutionProvider},
+    memory::{AllocationDevice, Allocator, AllocatorType, MemoryInfo, MemoryType},
     session::{builder::GraphOptimizationLevel, Session},
+    value::{DynTensorValueType, DynValue},
 };
 use tracing::{debug, error, info, warn};
 
@@ -49,6 +52,51 @@ pub struct SessionConfig<'a> {
     pub model_path: &'a Path,
     pub backend: &'a InferenceBackend,
     pub trt_cache_dir: Option<&'a Path>,
+}
+
+fn output_memory_info(cuda_pinned: bool) -> ort::Result<MemoryInfo> {
+    let (device, memory_type) = if cuda_pinned {
+        (AllocationDevice::CUDA_PINNED, MemoryType::CPUOutput)
+    } else {
+        (AllocationDevice::CPU, MemoryType::Default)
+    };
+    MemoryInfo::new(device, 0, AllocatorType::Device, memory_type)
+}
+
+pub(crate) fn inference_output_memory_info(session: &Session) -> ort::Result<MemoryInfo> {
+    let pinned = output_memory_info(true)?;
+    match Allocator::new(session, pinned.clone()) {
+        Ok(_) => Ok(pinned),
+        Err(_) => output_memory_info(false),
+    }
+}
+
+pub(crate) fn ensure_inference_output_memory(
+    value: &DynValue,
+    expected: &MemoryInfo,
+) -> Result<()> {
+    let tensor = value.downcast_ref::<DynTensorValueType>()?;
+    let memory = tensor.memory_info();
+    anyhow::ensure!(
+        memory.allocation_device() == expected.allocation_device()
+            && memory.memory_type() == expected.memory_type(),
+        "expected inference output memory device={} memory_type={:?}, got device={} memory_type={:?}",
+        expected.allocation_device().as_str(),
+        expected.memory_type(),
+        memory.allocation_device().as_str(),
+        memory.memory_type()
+    );
+
+    static LOG_ONCE: Once = Once::new();
+    LOG_ONCE.call_once(|| {
+        debug!(
+            allocation_device = memory.allocation_device().as_str(),
+            memory_type = ?memory.memory_type(),
+            "Verified inference output memory"
+        );
+    });
+
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -271,6 +319,53 @@ pub fn resolve_trt_cache_dir(base_dir: &Path, cache_key: Option<&str>) -> PathBu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ort::memory::AllocationDevice;
+
+    #[test]
+    fn output_memory_info_when_cuda_pinned_uses_cpu_output_memory() {
+        // Given: output tensors produced by a CUDA execution provider.
+
+        // When: the pinned output memory contract is created.
+        let memory = output_memory_info(true).expect("create pinned output memory info");
+
+        // Then: ONNX Runtime receives CUDA-pinned host memory.
+        assert_eq!(memory.allocation_device(), AllocationDevice::CUDA_PINNED);
+        assert_eq!(memory.memory_type(), MemoryType::CPUOutput);
+    }
+
+    #[test]
+    fn output_memory_info_when_cpu_fallback_uses_default_cpu_memory() {
+        // Given: a session that fell back to the CPU execution provider.
+
+        // When: the fallback output memory contract is created.
+        let memory = output_memory_info(false).expect("create CPU output memory info");
+
+        // Then: output binding remains CPU-compatible.
+        assert_eq!(memory.allocation_device(), AllocationDevice::CPU);
+        assert_eq!(memory.memory_type(), MemoryType::Default);
+    }
+
+    #[test]
+    #[ignore]
+    fn inference_output_memory_info_when_session_is_cpu_only_uses_cpu() {
+        // Given: a real ONNX Runtime session with environment execution providers disabled.
+        let mut builder = Session::builder().expect("create session builder");
+        builder = builder
+            .with_no_environment_execution_providers()
+            .expect("disable environment execution providers");
+        let model_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../models/RealESRGAN_x4plus_anime_6B.onnx");
+        let session = builder
+            .commit_from_file(model_path)
+            .expect("create CPU-only session");
+
+        // When: the session-specific output memory contract is selected.
+        let memory = inference_output_memory_info(&session).expect("select output memory");
+
+        // Then: the CPU session does not request a CUDA-pinned allocator.
+        assert_eq!(memory.allocation_device(), AllocationDevice::CPU);
+        assert_eq!(memory.memory_type(), MemoryType::Default);
+    }
 
     #[test]
     fn test_backend_from_str_lossy() {
