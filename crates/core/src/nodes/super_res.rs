@@ -12,7 +12,10 @@ use anyhow::{bail, Context, Result};
 use half::f16;
 use half::slice::HalfFloatSliceExt;
 use ndarray::{s, Array4};
-use ort::{session::Session, value::Tensor};
+use ort::{
+    session::Session,
+    value::{Tensor, TensorElementType},
+};
 use tracing::debug;
 
 use crate::node::{ExecutionContext, FrameProcessor, Node, PortDefinition};
@@ -634,9 +637,7 @@ impl Node for SuperResNode {
         let input_name = session.inputs()[0].name().to_string();
         let output_name = session.outputs()[0].name().to_string();
         let is_fp16 = match session.inputs()[0].dtype() {
-            ort::value::ValueType::Tensor { ty, .. } => {
-                *ty == ort::tensor::TensorElementType::Float16
-            }
+            ort::value::ValueType::Tensor { ty, .. } => *ty == TensorElementType::Float16,
             _ => false,
         };
 

@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use ort::{
-    execution_providers::{CUDAExecutionProvider, ExecutionProvider, TensorRTExecutionProvider},
+    ep::{CUDAExecutionProvider, ExecutionProvider, TensorRTExecutionProvider},
     session::{builder::GraphOptimizationLevel, Session},
 };
 use tracing::{debug, error, info, warn};
@@ -104,7 +104,9 @@ fn cache_stats(root: &Path) -> CacheStats {
 ///
 /// In both cases, if CUDA EP is also unavailable, ORT falls back to CPU.
 pub fn build_session(config: &SessionConfig<'_>) -> Result<Session> {
-    let builder = Session::builder()?.with_optimization_level(GraphOptimizationLevel::Level3)?;
+    let builder = Session::builder()?
+        .with_optimization_level(GraphOptimizationLevel::Level3)
+        .map_err(|error| -> ort::Error { error.into() })?;
 
     let session = match config.backend {
         InferenceBackend::Tensorrt => {
@@ -168,7 +170,8 @@ pub fn build_session(config: &SessionConfig<'_>) -> Result<Session> {
                         .with_device_id(0)
                         .build(),
                     CUDAExecutionProvider::default().build(),
-                ])?
+                ])
+                .map_err(|error| -> ort::Error { error.into() })?
                 .commit_from_file(config.model_path)
                 .with_context(|| {
                     format!("Failed to load ONNX model: {}", config.model_path.display())
@@ -233,7 +236,8 @@ pub fn build_session(config: &SessionConfig<'_>) -> Result<Session> {
             builder
                 .with_execution_providers([CUDAExecutionProvider::default()
                     .build()
-                    .error_on_failure()])?
+                    .error_on_failure()])
+                .map_err(|error| -> ort::Error { error.into() })?
                 .commit_from_file(config.model_path)
                 .with_context(|| {
                     format!("Failed to load ONNX model: {}", config.model_path.display())
