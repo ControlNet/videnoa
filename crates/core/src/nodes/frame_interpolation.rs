@@ -27,7 +27,10 @@ use crate::node::{ExecutionContext, FrameProcessor, Node, PortDefinition};
 use crate::streaming_executor::FrameInterpolator;
 use crate::types::{Frame, PortData, PortType};
 
-use crate::nodes::backend::{build_session, InferenceBackend, SessionConfig};
+use crate::nodes::backend::{
+    build_session, ensure_inference_output_memory, inference_output_memory_info, InferenceBackend,
+    SessionConfig,
+};
 
 const PAD_ALIGN: usize = 32;
 
@@ -1122,8 +1125,10 @@ fn run_three_input(
         binding.bind_input(INPUT_IMG0, &tensor0)?;
         binding.bind_input(INPUT_IMG1, &tensor1)?;
         binding.bind_input(INPUT_TIMESTEP, &ts_tensor)?;
-        binding.bind_output_to_device(OUTPUT_NAME, &session.allocator().memory_info())?;
+        let output_memory = inference_output_memory_info(&session)?;
+        binding.bind_output_to_device(OUTPUT_NAME, &output_memory)?;
         let outputs = session.run_binding(&binding)?;
+        ensure_inference_output_memory(&outputs[OUTPUT_NAME], &output_memory)?;
         let output_view = outputs[OUTPUT_NAME].try_extract_array::<f32>()?;
         Ok(output_view.to_owned())
     } else {
@@ -1152,8 +1157,10 @@ fn run_concatenated(
     let result = if use_iobinding {
         let mut binding = session.create_binding()?;
         binding.bind_input(INPUT_CONCAT, &tensor)?;
-        binding.bind_output_to_device(OUTPUT_NAME, &session.allocator().memory_info())?;
+        let output_memory = inference_output_memory_info(&session)?;
+        binding.bind_output_to_device(OUTPUT_NAME, &output_memory)?;
         let outputs = session.run_binding(&binding)?;
+        ensure_inference_output_memory(&outputs[OUTPUT_NAME], &output_memory)?;
         let output_view = outputs[OUTPUT_NAME].try_extract_array::<f32>()?;
         output_view.to_owned()
     } else {
