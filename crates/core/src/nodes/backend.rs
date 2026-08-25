@@ -55,12 +55,16 @@ pub struct SessionConfig<'a> {
     pub trt_cache_dir: Option<&'a Path>,
 }
 
-fn output_memory_info(cuda_pinned: bool) -> ort::Result<MemoryInfo> {
-    let (device, memory_type) = if cuda_pinned {
+fn output_memory_contract(cuda_pinned: bool) -> (AllocationDevice, MemoryType) {
+    if cuda_pinned {
         (AllocationDevice::CUDA_PINNED, MemoryType::CPUOutput)
     } else {
         (AllocationDevice::CPU, MemoryType::Default)
-    };
+    }
+}
+
+fn output_memory_info(cuda_pinned: bool) -> ort::Result<MemoryInfo> {
+    let (device, memory_type) = output_memory_contract(cuda_pinned);
     MemoryInfo::new(device, 0, AllocatorType::Device, memory_type)
 }
 
@@ -355,24 +359,24 @@ mod tests {
     fn output_memory_info_when_cuda_pinned_uses_cpu_output_memory() {
         // Given: output tensors produced by a CUDA execution provider.
 
-        // When: the pinned output memory contract is created.
-        let memory = output_memory_info(true).expect("create pinned output memory info");
+        // When: the pinned output memory contract is selected.
+        let (device, memory_type) = output_memory_contract(true);
 
         // Then: ONNX Runtime receives CUDA-pinned host memory.
-        assert_eq!(memory.allocation_device(), AllocationDevice::CUDA_PINNED);
-        assert_eq!(memory.memory_type(), MemoryType::CPUOutput);
+        assert_eq!(device, AllocationDevice::CUDA_PINNED);
+        assert_eq!(memory_type, MemoryType::CPUOutput);
     }
 
     #[test]
     fn output_memory_info_when_cpu_fallback_uses_default_cpu_memory() {
         // Given: a session that fell back to the CPU execution provider.
 
-        // When: the fallback output memory contract is created.
-        let memory = output_memory_info(false).expect("create CPU output memory info");
+        // When: the fallback output memory contract is selected.
+        let (device, memory_type) = output_memory_contract(false);
 
         // Then: output binding remains CPU-compatible.
-        assert_eq!(memory.allocation_device(), AllocationDevice::CPU);
-        assert_eq!(memory.memory_type(), MemoryType::Default);
+        assert_eq!(device, AllocationDevice::CPU);
+        assert_eq!(memory_type, MemoryType::Default);
     }
 
     #[test]
