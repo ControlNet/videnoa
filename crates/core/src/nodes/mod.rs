@@ -3,6 +3,7 @@ pub mod color_space;
 pub mod compile_context;
 pub mod constant;
 pub mod downloader;
+mod fp16_rgb;
 pub mod frame_interpolation;
 pub mod http_request;
 pub mod jellyfin_video;

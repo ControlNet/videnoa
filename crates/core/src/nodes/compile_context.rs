@@ -12,10 +12,13 @@ use crate::node::{ExecutionContext, FrameProcessor, Node, PortDefinition};
 use crate::streaming_executor::{FrameInterpolator, FrameSink, PipelineStage};
 use crate::types::{Frame, PortData};
 
+use crate::nodes::backend::{
+    model_trt_cache_dir, InferenceBackend, TrtCacheIdentity, TrtTileIdentity,
+};
 use crate::nodes::frame_interpolation::{
     FrameInterpolationNode, FrameInterpolationPostprocess, ModelFormat,
 };
-use crate::nodes::super_res::{SuperResNode, SuperResPostprocess};
+use crate::nodes::super_res::{SuperResNode, SuperResOutputMode, SuperResPostprocess};
 use crate::nodes::video_input::{extract_metadata, run_ffprobe, VideoDecoder};
 use crate::nodes::video_output::{EncoderConfig, VideoEncoder};
 
@@ -29,7 +32,9 @@ pub struct VideoCompileContext {
     accumulated_stages: RefCell<Vec<PipelineStage>>,
     source_path: RefCell<Option<PathBuf>>,
     pending_superres_emit_tensor: RefCell<Option<Arc<AtomicBool>>>,
+    pending_superres_direct_rgb: RefCell<Option<Arc<AtomicBool>>>,
     previous_superres_fp16: Cell<bool>,
+    previous_superres_tile_size: Cell<u32>,
     pending_fi_emit_tensor: RefCell<Option<Arc<AtomicBool>>>,
     trt_cache_dir: PathBuf,
 }
@@ -46,7 +51,9 @@ impl VideoCompileContext {
             accumulated_stages: RefCell::new(Vec::new()),
             source_path: RefCell::new(None),
             pending_superres_emit_tensor: RefCell::new(None),
+            pending_superres_direct_rgb: RefCell::new(None),
             previous_superres_fp16: Cell::new(false),
+            previous_superres_tile_size: Cell::new(0),
             pending_fi_emit_tensor: RefCell::new(None),
             trt_cache_dir,
         }
@@ -54,7 +61,9 @@ impl VideoCompileContext {
 
     fn create_superres_node(&self, inputs: &HashMap<String, PortData>) -> Result<SuperResNode> {
         let mut node = SuperResNode::new();
-        node.set_trt_cache_dir(self.trt_cache_dir.clone());
+        if let Some(cache_dir) = self.resolve_trt_cache_dir(inputs, 4)? {
+            node.set_trt_cache_dir(cache_dir);
+        }
         node.execute(inputs, &ExecutionContext::default())
             .context("failed to initialize SuperResolution node")?;
         Ok(node)
@@ -62,10 +71,57 @@ impl VideoCompileContext {
 
     fn create_fi_node(&self, inputs: &HashMap<String, PortData>) -> Result<FrameInterpolationNode> {
         let mut node = FrameInterpolationNode::new();
-        node.set_trt_cache_dir(self.trt_cache_dir.clone());
+        if let Some(cache_dir) = self.resolve_trt_cache_dir(inputs, 32)? {
+            node.set_trt_cache_dir(cache_dir);
+        }
         node.execute(inputs, &ExecutionContext::default())
             .context("failed to initialize FrameInterpolation node")?;
         Ok(node)
+    }
+
+    fn resolve_trt_cache_dir(
+        &self,
+        inputs: &HashMap<String, PortData>,
+        alignment: usize,
+    ) -> Result<Option<PathBuf>> {
+        let backend = match inputs.get("backend") {
+            Some(PortData::Str(value)) => InferenceBackend::from_str_lossy(value),
+            _ => InferenceBackend::Cuda,
+        };
+        if backend != InferenceBackend::Tensorrt {
+            return Ok(None);
+        }
+
+        let model_path = match inputs.get("model_path") {
+            Some(PortData::Path(path)) => path,
+            Some(_) => bail!("model_path must be a Path"),
+            None => bail!("model_path is required"),
+        };
+        let original_h =
+            usize::try_from(self.output_height.get()).context("video height exceeds usize")?;
+        let original_w =
+            usize::try_from(self.output_width.get()).context("video width exceeds usize")?;
+        let input_h = aligned_dimension(self.output_height.get(), alignment)?;
+        let input_w = aligned_dimension(self.output_width.get(), alignment)?;
+        let tile = match inputs.get("tile_size") {
+            Some(PortData::Int(value)) => {
+                let value = usize::try_from(*value).context("tile_size must be non-negative")?;
+                (value > 0).then_some(TrtTileIdentity {
+                    tile_size: value,
+                    original_h,
+                    original_w,
+                })
+            }
+            Some(_) => bail!("tile_size must be an Int"),
+            None => None,
+        };
+        let identity = TrtCacheIdentity {
+            device_id: 0,
+            input_h,
+            input_w,
+            tile,
+        };
+        model_trt_cache_dir(&self.trt_cache_dir, model_path, identity).map(Some)
     }
 
     fn create_superres_stages(
@@ -88,15 +144,20 @@ impl VideoCompileContext {
         }
 
         let emit_tensor = Arc::new(AtomicBool::new(false));
+        let direct_rgb = Arc::new(AtomicBool::new(false));
         self.pending_superres_emit_tensor
             .replace(Some(Arc::clone(&emit_tensor)));
+        self.pending_superres_direct_rgb
+            .replace(Some(Arc::clone(&direct_rgb)));
         self.previous_superres_fp16.set(node.is_fp16());
+        self.previous_superres_tile_size.set(node.tile_size());
         self.pending_fi_emit_tensor.replace(None);
 
         if should_use_superres_micro_stages(node.is_fp16(), node.tile_size()) {
-            let micro = node
+            let mut micro = node
                 .into_micro_stages()
                 .ok_or_else(|| anyhow!("failed to build SuperResolution micro-stages"))?;
+            micro.inference.set_direct_rgb_flag(direct_rgb);
             self.accumulated_stages
                 .borrow_mut()
                 .push(PipelineStage::Processor(Box::new(micro.preprocess)));
@@ -141,10 +202,17 @@ impl VideoCompileContext {
             self.previous_superres_fp16.get(),
         );
 
-        if sr_to_fi {
-            if let Some(emit_tensor) = self.pending_superres_emit_tensor.borrow().as_ref() {
-                emit_tensor.store(true, Ordering::Relaxed);
+        match superres_output_mode(
+            self.previous_superres_fp16.get(),
+            self.previous_superres_tile_size.get(),
+            sr_to_fi,
+        ) {
+            SuperResOutputMode::TensorF16 => {
+                if let Some(emit_tensor) = self.pending_superres_emit_tensor.borrow().as_ref() {
+                    emit_tensor.store(true, Ordering::Relaxed);
+                }
             }
+            SuperResOutputMode::PostprocessRgb | SuperResOutputMode::DirectRgb => {}
         }
 
         let fi_emit_tensor = Arc::new(AtomicBool::new(false));
@@ -178,7 +246,9 @@ impl VideoCompileContext {
         }
 
         self.pending_superres_emit_tensor.replace(None);
+        self.pending_superres_direct_rgb.replace(None);
         self.previous_superres_fp16.set(false);
+        self.previous_superres_tile_size.set(0);
         self.previous_node_type
             .replace(Some("FrameInterpolation".to_string()));
         Ok(take_stages(&self.accumulated_stages))
@@ -234,7 +304,9 @@ impl CompileContext for VideoCompileContext {
         self.total_output_frames.set(total_frames);
         self.previous_node_type.replace(None);
         self.pending_superres_emit_tensor.replace(None);
+        self.pending_superres_direct_rgb.replace(None);
         self.previous_superres_fp16.set(false);
+        self.previous_superres_tile_size.set(0);
         self.pending_fi_emit_tensor.replace(None);
 
         Ok((Box::new(decoder), total_frames))
@@ -243,10 +315,24 @@ impl CompileContext for VideoCompileContext {
     fn create_encoder(
         &self,
         node: &mut dyn Node,
+        inputs: &HashMap<String, PortData>,
         outputs: &HashMap<String, PortData>,
     ) -> Result<Box<dyn FrameSink>> {
         if node.node_type() != "video_output" && node.node_type() != "VideoOutput" {
             bail!("expected VideoOutput sink node, got '{}'", node.node_type());
+        }
+
+        match superres_output_mode(
+            self.previous_superres_fp16.get(),
+            self.previous_superres_tile_size.get(),
+            false,
+        ) {
+            SuperResOutputMode::DirectRgb => {
+                if let Some(direct_rgb) = self.pending_superres_direct_rgb.borrow().as_ref() {
+                    direct_rgb.store(true, Ordering::Relaxed);
+                }
+            }
+            SuperResOutputMode::PostprocessRgb | SuperResOutputMode::TensorF16 => {}
         }
 
         let source_path = self
@@ -261,15 +347,15 @@ impl CompileContext for VideoCompileContext {
             None => bail!("VideoOutput output 'output_path' is missing"),
         };
 
-        let codec = match outputs.get("codec") {
+        let codec = match inputs.get("codec") {
             Some(PortData::Str(value)) => value.clone(),
             _ => "libx265".to_string(),
         };
-        let crf = match outputs.get("crf") {
+        let crf = match inputs.get("crf") {
             Some(PortData::Int(value)) => *value,
             _ => 18,
         };
-        let pixel_format = match outputs.get("pixel_format") {
+        let pixel_format = match inputs.get("pixel_format") {
             Some(PortData::Str(value)) => value.clone(),
             _ => "yuv420p10le".to_string(),
         };
@@ -330,6 +416,7 @@ impl CompileContext for VideoCompileContext {
         self.pending_superres_emit_tensor
             .replace(Some(Arc::clone(&emit_tensor)));
         self.previous_superres_fp16.set(node.is_fp16());
+        self.previous_superres_tile_size.set(node.tile_size());
         self.pending_fi_emit_tensor.replace(None);
         self.previous_node_type
             .replace(Some("SuperResolution".to_string()));
@@ -377,7 +464,9 @@ impl CompileContext for VideoCompileContext {
             .replace(Some(Arc::clone(&fi_emit_tensor)));
 
         self.pending_superres_emit_tensor.replace(None);
+        self.pending_superres_direct_rgb.replace(None);
         self.previous_superres_fp16.set(false);
+        self.previous_superres_tile_size.set(0);
         self.previous_node_type
             .replace(Some("FrameInterpolation".to_string()));
 
@@ -389,6 +478,10 @@ impl CompileContext for VideoCompileContext {
 
     fn is_interpolator_type(&self, node_type: &str) -> bool {
         node_type == "FrameInterpolation"
+    }
+
+    fn execute_processing_node(&self, node_type: &str) -> bool {
+        node_type != "SuperResolution" && node_type != "FrameInterpolation"
     }
 
     fn total_output_frames(&self) -> Option<u64> {
@@ -486,10 +579,11 @@ impl Node for SuperResPostprocessStage {
 
 impl FrameProcessor for SuperResPostprocessStage {
     fn process_frame(&mut self, frame: Frame, ctx: &ExecutionContext) -> Result<Frame> {
-        if self.emit_tensor.load(Ordering::Relaxed) {
-            if matches!(frame, Frame::NchwF16 { .. }) {
-                return Ok(frame);
-            }
+        if matches!(frame, Frame::CpuRgb { .. }) {
+            return Ok(frame);
+        }
+        if self.emit_tensor.load(Ordering::Relaxed) && matches!(frame, Frame::NchwF16 { .. }) {
+            return Ok(frame);
         }
         self.inner.process_frame(frame, ctx)
     }
@@ -590,6 +684,21 @@ fn read_positive_u32(inputs: &HashMap<String, PortData>, key: &str, default: u32
 
 fn should_use_superres_micro_stages(is_fp16_model: bool, tile_size: u32) -> bool {
     is_fp16_model && tile_size == 0
+}
+
+fn superres_output_mode(
+    is_fp16_model: bool,
+    tile_size: u32,
+    has_frame_interpolation_downstream: bool,
+) -> SuperResOutputMode {
+    if !should_use_superres_micro_stages(is_fp16_model, tile_size) {
+        return SuperResOutputMode::PostprocessRgb;
+    }
+    if has_frame_interpolation_downstream {
+        SuperResOutputMode::TensorF16
+    } else {
+        SuperResOutputMode::DirectRgb
+    }
 }
 
 fn should_enable_sr_to_fi_passthrough(
@@ -697,6 +806,14 @@ fn take_stages(stages: &RefCell<Vec<PipelineStage>>) -> Vec<PipelineStage> {
     std::mem::take(&mut *stages.borrow_mut())
 }
 
+fn aligned_dimension(value: u32, alignment: usize) -> Result<usize> {
+    let value = usize::try_from(value).context("video dimension exceeds usize")?;
+    if value == 0 {
+        bail!("video resolution is not initialized");
+    }
+    Ok(value.div_ceil(alignment) * alignment)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -722,6 +839,34 @@ mod tests {
         assert_eq!(superres_stage_count(false, 0), 1);
         assert_eq!(superres_stage_count(true, 64), 1);
         assert_eq!(superres_stage_count(true, 0), 3);
+    }
+
+    #[test]
+    fn terminal_fp16_superres_selects_direct_rgb_output() {
+        assert_eq!(
+            superres_output_mode(true, 0, false),
+            SuperResOutputMode::DirectRgb
+        );
+    }
+
+    #[test]
+    fn fp16_superres_before_frame_interpolation_selects_tensor_output() {
+        assert_eq!(
+            superres_output_mode(true, 0, true),
+            SuperResOutputMode::TensorF16
+        );
+    }
+
+    #[test]
+    fn tiled_or_fp32_superres_keeps_postprocess_output() {
+        assert_eq!(
+            superres_output_mode(true, 64, false),
+            SuperResOutputMode::PostprocessRgb
+        );
+        assert_eq!(
+            superres_output_mode(false, 0, false),
+            SuperResOutputMode::PostprocessRgb
+        );
     }
 
     #[test]
@@ -775,5 +920,110 @@ mod tests {
         assert!(!ctx.is_interpolator_type("RIFE"));
         assert!(!ctx.is_interpolator_type("SuperResolution"));
         assert!(!ctx.is_interpolator_type("VideoInput"));
+    }
+
+    #[test]
+    fn video_compile_context_when_rife_input_resolution_changes_uses_separate_cache_namespace() {
+        // Given: one RIFE model and a TensorRT video compile context.
+        let temp = tempfile::tempdir().expect("create temporary cache fixture");
+        let model_path = temp.path().join("rife.onnx");
+        std::fs::write(&model_path, b"rife-model").expect("write model fixture");
+        let ctx = VideoCompileContext::new(temp.path().join("trt-cache"));
+        let inputs = HashMap::from([
+            ("model_path".to_string(), PortData::Path(model_path)),
+            ("backend".to_string(), PortData::Str("tensorrt".to_string())),
+        ]);
+
+        // When: the same model is planned first for 1080p and then for 4K input.
+        ctx.output_width.set(1920);
+        ctx.output_height.set(1080);
+        let hd = ctx
+            .resolve_trt_cache_dir(&inputs, 32)
+            .expect("resolve HD cache namespace")
+            .expect("TensorRT uses a cache namespace");
+        let hd_reuse = ctx
+            .resolve_trt_cache_dir(&inputs, 32)
+            .expect("resolve matching HD cache namespace")
+            .expect("TensorRT uses a cache namespace");
+        ctx.output_width.set(3840);
+        ctx.output_height.set(2160);
+        let uhd = ctx
+            .resolve_trt_cache_dir(&inputs, 32)
+            .expect("resolve UHD cache namespace")
+            .expect("TensorRT uses a cache namespace");
+
+        // Then: matching effective shapes reuse a directory and incompatible shapes do not.
+        assert_eq!(hd, hd_reuse);
+        assert_ne!(hd, uhd);
+        assert!(hd
+            .file_name()
+            .expect("HD cache namespace has a name")
+            .to_string_lossy()
+            .ends_with("1088x1920"));
+        assert!(uhd
+            .file_name()
+            .expect("UHD cache namespace has a name")
+            .to_string_lossy()
+            .ends_with("2176x3840"));
+    }
+
+    #[test]
+    fn video_compile_context_when_superres_tile_size_changes_uses_separate_cache_namespace() {
+        // Given: one super-resolution model, resolution, and TensorRT cache root.
+        let temp = tempfile::tempdir().expect("create temporary cache fixture");
+        let model_path = temp.path().join("superres.onnx");
+        std::fs::write(&model_path, b"superres-model").expect("write model fixture");
+        let ctx = VideoCompileContext::new(temp.path().join("trt-cache"));
+        ctx.output_width.set(1920);
+        ctx.output_height.set(1080);
+        let mut inputs = HashMap::from([
+            ("model_path".to_string(), PortData::Path(model_path)),
+            ("backend".to_string(), PortData::Str("tensorrt".to_string())),
+            ("tile_size".to_string(), PortData::Int(64)),
+        ]);
+
+        // When: the same frame shape is planned with two supported tile sizes.
+        let tile_64 = ctx
+            .resolve_trt_cache_dir(&inputs, 4)
+            .expect("resolve 64-pixel tile namespace")
+            .expect("TensorRT uses a cache namespace");
+        inputs.insert("tile_size".to_string(), PortData::Int(128));
+        let tile_128 = ctx
+            .resolve_trt_cache_dir(&inputs, 4)
+            .expect("resolve 128-pixel tile namespace")
+            .expect("TensorRT uses a cache namespace");
+
+        // Then: incompatible tiled inference shapes do not share cached engines.
+        assert_ne!(tile_64, tile_128);
+    }
+
+    #[test]
+    fn video_compile_context_when_tiled_edge_regime_changes_uses_separate_cache_namespace() {
+        // Given: one tiled super-resolution model and dimensions sharing one padded shape.
+        let temp = tempfile::tempdir().expect("create temporary cache fixture");
+        let model_path = temp.path().join("superres.onnx");
+        std::fs::write(&model_path, b"superres-model").expect("write model fixture");
+        let ctx = VideoCompileContext::new(temp.path().join("trt-cache"));
+        let inputs = HashMap::from([
+            ("model_path".to_string(), PortData::Path(model_path)),
+            ("backend".to_string(), PortData::Str("tensorrt".to_string())),
+            ("tile_size".to_string(), PortData::Int(65)),
+        ]);
+
+        // When: original heights 66 and 68 both align to 68 but create different edge tiles.
+        ctx.output_width.set(68);
+        ctx.output_height.set(66);
+        let height_66 = ctx
+            .resolve_trt_cache_dir(&inputs, 4)
+            .expect("resolve 66-pixel input namespace")
+            .expect("TensorRT uses a cache namespace");
+        ctx.output_height.set(68);
+        let height_68 = ctx
+            .resolve_trt_cache_dir(&inputs, 4)
+            .expect("resolve 68-pixel input namespace")
+            .expect("TensorRT uses a cache namespace");
+
+        // Then: incompatible edge-tile shape sets do not share cached engines.
+        assert_ne!(height_66, height_68);
     }
 }

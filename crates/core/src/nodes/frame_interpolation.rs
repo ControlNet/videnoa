@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{bail, Context, Result};
 use half::f16;
 use half::slice::HalfFloatSliceExt;
-use ndarray::{s, Array4};
+use ndarray::{s, Array4, ArrayView4};
 use ort::{
     session::Session,
     value::{Tensor, TensorRef},
@@ -27,7 +27,10 @@ use crate::node::{ExecutionContext, FrameProcessor, Node, PortDefinition};
 use crate::streaming_executor::FrameInterpolator;
 use crate::types::{Frame, PortData, PortType};
 
-use crate::nodes::backend::{build_session, InferenceBackend, SessionConfig};
+use crate::nodes::backend::{
+    build_session, ensure_inference_output_memory, inference_output_memory_info, InferenceBackend,
+    SessionConfig,
+};
 
 const PAD_ALIGN: usize = 32;
 
@@ -514,7 +517,7 @@ impl FrameProcessor for FrameInterpolationPreprocess {
             } => {
                 // Tensor pass-through from SuperRes: convert f16→f32 and pad
                 let (padded, _h, _w) = nchw_f16_to_array4(&data, height as usize, width as usize)?;
-                let padded_data = padded.as_slice().unwrap().to_vec();
+                let padded_data = into_standard_layout_vec(padded)?;
                 Ok(Frame::NchwF32 {
                     data: padded_data,
                     height,
@@ -526,6 +529,19 @@ impl FrameProcessor for FrameInterpolationPreprocess {
             }
         }
     }
+}
+
+fn into_standard_layout_vec(array: Array4<f32>) -> Result<Vec<f32>> {
+    if !array.is_standard_layout() {
+        bail!("NCHW array must use standard layout before transferring its storage");
+    }
+
+    let (data, offset) = array.into_raw_vec_and_offset();
+    if offset.unwrap_or_default() != 0 {
+        bail!("standard-layout NCHW array must start at offset zero");
+    }
+
+    Ok(data)
 }
 
 // ---------------------------------------------------------------------------
@@ -582,9 +598,9 @@ impl FrameInterpolator for FrameInterpolationInference {
         let padded_h = orig_h + pad_amount(orig_h);
         let padded_w = orig_w + pad_amount(orig_w);
 
-        let img0 = Array4::from_shape_vec((1, 3, padded_h, padded_w), prev_data)
+        let img0 = ArrayView4::from_shape((1, 3, padded_h, padded_w), prev_data)
             .context("FrameInterpolationInference: failed to reshape previous frame")?;
-        let img1 = Array4::from_shape_vec((1, 3, padded_h, padded_w), curr_data)
+        let img1 = ArrayView4::from_shape((1, 3, padded_h, padded_w), curr_data)
             .context("FrameInterpolationInference: failed to reshape current frame")?;
 
         let target_shape = [1, 7, padded_h, padded_w];
@@ -616,7 +632,7 @@ impl FrameInterpolator for FrameInterpolationInference {
     }
 }
 
-fn extract_nchw_f32(frame: &Frame, label: &str) -> Result<(Vec<f32>, usize, usize)> {
+fn extract_nchw_f32<'a>(frame: &'a Frame, label: &str) -> Result<(&'a [f32], usize, usize)> {
     let Frame::NchwF32 {
         data,
         height,
@@ -625,7 +641,7 @@ fn extract_nchw_f32(frame: &Frame, label: &str) -> Result<(Vec<f32>, usize, usiz
     else {
         bail!("FrameInterpolationInference: expected NchwF32 for {label}, got other variant");
     };
-    Ok((data.clone(), *height as usize, *width as usize))
+    Ok((data, *height as usize, *width as usize))
 }
 
 // ---------------------------------------------------------------------------
@@ -928,6 +944,12 @@ fn quantize_high_bit_sample_to_u8(sample: u32, source_max: u32) -> u8 {
 /// Convert NchwF32 data (already in [0,1] range) to Array4<f32> and pad.
 /// Skips ÷255 normalization since tensor data is already normalized.
 fn nchw_f32_to_array4(data: &[f32], h: usize, w: usize) -> Result<(Array4<f32>, usize, usize)> {
+    let array = nchw_f32_vec_to_array4(data.to_vec(), h, w)?;
+    let padded = pad_nchw(&array, h, w);
+    Ok((padded, h, w))
+}
+
+fn nchw_f32_vec_to_array4(data: Vec<f32>, h: usize, w: usize) -> Result<Array4<f32>> {
     let expected = 3 * h * w;
     if data.len() != expected {
         bail!(
@@ -936,11 +958,8 @@ fn nchw_f32_to_array4(data: &[f32], h: usize, w: usize) -> Result<(Array4<f32>, 
         );
     }
 
-    let array = Array4::from_shape_vec((1, 3, h, w), data.to_vec())
-        .context("failed to reshape NchwF32 data to [1,3,H,W]")?;
-
-    let padded = pad_nchw(&array, h, w);
-    Ok((padded, h, w))
+    Array4::from_shape_vec((1, 3, h, w), data)
+        .context("failed to reshape NchwF32 data to [1,3,H,W]")
 }
 
 /// Convert NchwF16 data (raw u16 bits, already in [0,1] range) to Array4<f32> and pad.
@@ -960,7 +979,9 @@ fn nchw_f16_to_array4(data: &[u16], h: usize, w: usize) -> Result<(Array4<f32>, 
     let mut f32_data = vec![0.0f32; data.len()];
     f16_slice.convert_to_f32_slice(&mut f32_data);
 
-    nchw_f32_to_array4(&f32_data, h, w)
+    let array = nchw_f32_vec_to_array4(f32_data, h, w)?;
+    let padded = pad_nchw(&array, h, w);
+    Ok((padded, h, w))
 }
 
 fn pad_nchw(arr: &Array4<f32>, h: usize, w: usize) -> Array4<f32> {
@@ -1122,8 +1143,10 @@ fn run_three_input(
         binding.bind_input(INPUT_IMG0, &tensor0)?;
         binding.bind_input(INPUT_IMG1, &tensor1)?;
         binding.bind_input(INPUT_TIMESTEP, &ts_tensor)?;
-        binding.bind_output_to_device(OUTPUT_NAME, &session.allocator().memory_info())?;
+        let output_memory = inference_output_memory_info(&session)?;
+        binding.bind_output_to_device(OUTPUT_NAME, &output_memory)?;
         let outputs = session.run_binding(&binding)?;
+        ensure_inference_output_memory(&outputs[OUTPUT_NAME], &output_memory)?;
         let output_view = outputs[OUTPUT_NAME].try_extract_array::<f32>()?;
         Ok(output_view.to_owned())
     } else {
@@ -1152,8 +1175,10 @@ fn run_concatenated(
     let result = if use_iobinding {
         let mut binding = session.create_binding()?;
         binding.bind_input(INPUT_CONCAT, &tensor)?;
-        binding.bind_output_to_device(OUTPUT_NAME, &session.allocator().memory_info())?;
+        let output_memory = inference_output_memory_info(&session)?;
+        binding.bind_output_to_device(OUTPUT_NAME, &output_memory)?;
         let outputs = session.run_binding(&binding)?;
+        ensure_inference_output_memory(&outputs[OUTPUT_NAME], &output_memory)?;
         let output_view = outputs[OUTPUT_NAME].try_extract_array::<f32>()?;
         output_view.to_owned()
     } else {
@@ -1173,12 +1198,15 @@ fn run_concatenated(
     Ok(result)
 }
 
-fn crop_output(
+fn crop_output<S>(
     output_owned: ndarray::ArrayD<f32>,
-    img0: &Array4<f32>,
+    img0: &ndarray::ArrayBase<S, ndarray::Ix4>,
     orig_h: usize,
     orig_w: usize,
-) -> Result<Array4<f32>> {
+) -> Result<Array4<f32>>
+where
+    S: ndarray::Data<Elem = f32>,
+{
     let output_4d = output_owned.into_dimensionality::<ndarray::Ix4>()?;
 
     let padded_h = img0.shape()[2];
@@ -1315,6 +1343,20 @@ mod tests {
         assert_eq!(padded[[0, 0, 29, 49]], 1.0);
         assert_eq!(padded[[0, 0, 30, 0]], padded[[0, 0, 29, 0]]);
         assert_eq!(padded[[0, 0, 31, 0]], padded[[0, 0, 28, 0]]);
+    }
+
+    #[test]
+    fn test_into_standard_layout_vec_reuses_unaligned_padded_storage() {
+        let mut arr = Array4::<f32>::zeros((1, 3, 30, 50));
+        arr[[0, 2, 29, 49]] = 0.75;
+        let padded = pad_nchw(&arr, 30, 50);
+        let allocation = padded.as_ptr();
+
+        let data = into_standard_layout_vec(padded).unwrap();
+
+        assert_eq!(data.as_ptr(), allocation);
+        assert_eq!(data.len(), 3 * 32 * 64);
+        assert_eq!(data[2 * 32 * 64 + 29 * 64 + 49], 0.75);
     }
 
     #[test]
@@ -1847,6 +1889,23 @@ mod tests {
     }
 
     #[test]
+    fn test_nchw_f32_vec_to_array4_reuses_owned_storage() {
+        // Given
+        let h = 30usize;
+        let w = 50usize;
+        let data: Vec<f32> = (0..3 * h * w).map(|i| i as f32 / 1000.0).collect();
+        let data_ptr = data.as_ptr();
+
+        // When
+        let array = nchw_f32_vec_to_array4(data, h, w).unwrap();
+
+        // Then
+        assert_eq!(array.as_ptr(), data_ptr);
+        assert_eq!(array.shape(), &[1, 3, h, w]);
+        assert_eq!(array[[0, 2, h - 1, w - 1]], (3 * h * w - 1) as f32 / 1000.0);
+    }
+
+    #[test]
     fn test_frame_to_nchw_from_nchw_f16_unaligned() {
         let h = 30usize;
         let w = 50usize;
@@ -2211,6 +2270,26 @@ mod tests {
             pre.nchw_buf.is_some(),
             "buffer should be retained for reuse"
         );
+    }
+
+    #[test]
+    fn extract_nchw_f32_when_frame_is_borrowed_reuses_backing_storage() {
+        // Given: an owned NCHW frame with a stable backing allocation.
+        let data = vec![0.25_f32; 3 * 32 * 32];
+        let source_ptr = data.as_ptr();
+        let frame = Frame::NchwF32 {
+            data,
+            height: 32,
+            width: 32,
+        };
+
+        // When: inference extracts the tensor payload.
+        let (extracted, height, width) =
+            extract_nchw_f32(&frame, "test").expect("extract NCHW frame");
+
+        // Then: extraction borrows the original allocation instead of cloning it.
+        assert_eq!(extracted.as_ptr(), source_ptr);
+        assert_eq!((height, width), (32, 32));
     }
 
     #[test]

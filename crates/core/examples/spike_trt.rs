@@ -16,7 +16,7 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use ndarray::Array4;
 use ort::{
-    execution_providers::{CUDAExecutionProvider, ExecutionProvider, TensorRTExecutionProvider},
+    ep::{CUDAExecutionProvider, ExecutionProvider, TensorRTExecutionProvider},
     session::{builder::GraphOptimizationLevel, Session},
     value::Tensor,
 };
@@ -135,7 +135,8 @@ fn main() -> Result<()> {
 
         println!("\n--- TRT→CUDA fallback (graceful degradation) ---");
         let mut session = Session::builder()?
-            .with_optimization_level(GraphOptimizationLevel::Level3)?
+            .with_optimization_level(GraphOptimizationLevel::Level3)
+            .map_err(|error| -> ort::Error { error.into() })?
             .with_execution_providers([
                 TensorRTExecutionProvider::default()
                     .with_engine_cache(true)
@@ -143,7 +144,8 @@ fn main() -> Result<()> {
                     .with_fp16(true)
                     .build(),
                 CUDAExecutionProvider::default().build(),
-            ])?
+            ])
+            .map_err(|error| -> ort::Error { error.into() })?
             .commit_from_file(MODEL_PATH)
             .context("Failed to load model with TRT+CUDA fallback")?;
         println!("Session loaded (TRT unavailable, CUDA EP active as fallback)");
@@ -170,8 +172,9 @@ fn probe_trt_runtime() -> bool {
             b.with_execution_providers([TensorRTExecutionProvider::default()
                 .build()
                 .error_on_failure()])
+                .map_err(|error| -> ort::Error { error.into() })
         })
-        .and_then(|b| b.commit_from_file(MODEL_PATH))
+        .and_then(|mut b| b.commit_from_file(MODEL_PATH))
     {
         Ok(_) => true,
         Err(e) => {
@@ -190,8 +193,10 @@ struct BenchmarkResult {
 fn run_benchmark_with_cuda() -> Result<BenchmarkResult> {
     let t_load = Instant::now();
     let mut session = Session::builder()?
-        .with_optimization_level(GraphOptimizationLevel::Level3)?
-        .with_execution_providers([CUDAExecutionProvider::default().build().error_on_failure()])?
+        .with_optimization_level(GraphOptimizationLevel::Level3)
+        .map_err(|error| -> ort::Error { error.into() })?
+        .with_execution_providers([CUDAExecutionProvider::default().build().error_on_failure()])
+        .map_err(|error| -> ort::Error { error.into() })?
         .commit_from_file(MODEL_PATH)
         .context("Failed to load model with CUDA EP")?;
     let load = t_load.elapsed();
@@ -233,14 +238,16 @@ fn run_trt_inference(is_first_run: bool) -> Result<BenchmarkResult> {
 
     let t_load = Instant::now();
     let mut session = Session::builder()?
-        .with_optimization_level(GraphOptimizationLevel::Level3)?
+        .with_optimization_level(GraphOptimizationLevel::Level3)
+        .map_err(|error| -> ort::Error { error.into() })?
         .with_execution_providers([TensorRTExecutionProvider::default()
             .with_engine_cache(true)
             .with_engine_cache_path(TRT_CACHE_DIR)
             .with_fp16(true)
             .with_device_id(0)
             .build()
-            .error_on_failure()])?
+            .error_on_failure()])
+        .map_err(|error| -> ort::Error { error.into() })?
         .commit_from_file(MODEL_PATH)
         .context("Failed to load model with TRT EP")?;
     let load = t_load.elapsed();

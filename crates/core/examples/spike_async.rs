@@ -7,7 +7,7 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use ndarray::Array4;
 use ort::{
-    execution_providers::CUDAExecutionProvider,
+    ep::CUDAExecutionProvider,
     session::{builder::GraphOptimizationLevel, Session},
     value::Tensor,
 };
@@ -25,10 +25,10 @@ async fn main() -> Result<()> {
     println!("Loading model: {MODEL_PATH}");
     let session = Arc::new(Mutex::new(
         Session::builder()?
-            .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_execution_providers([CUDAExecutionProvider::default()
-                .build()
-                .error_on_failure()])?
+            .with_optimization_level(GraphOptimizationLevel::Level3)
+            .map_err(|error| -> ort::Error { error.into() })?
+            .with_execution_providers([CUDAExecutionProvider::default().build().error_on_failure()])
+            .map_err(|error| -> ort::Error { error.into() })?
             .commit_from_file(MODEL_PATH)
             .context("Failed to load ONNX model")?,
     ));
