@@ -8,6 +8,17 @@ use tokio::sync::{mpsc, watch};
 use crate::node::{ExecutionContext, FrameProcessor};
 use crate::types::Frame;
 
+mod parallel_interpolator;
+
+#[cfg(test)]
+#[path = "streaming_executor/parallel_interpolator_edge_tests.rs"]
+mod parallel_interpolator_edge_tests;
+#[cfg(test)]
+#[path = "streaming_executor/parallel_interpolator_tests.rs"]
+mod parallel_interpolator_tests;
+
+use parallel_interpolator::{run_parallel_interpolator_loop, ParallelInterpolatorRun};
+
 pub const DEFAULT_BUFFER_SIZE: usize = 4;
 
 pub struct IndexedFrame {
@@ -65,6 +76,7 @@ where
 pub enum PipelineStage {
     Processor(Box<dyn FrameProcessor>),
     Interpolator(Box<dyn FrameInterpolator>),
+    ParallelInterpolator(Vec<Box<dyn FrameInterpolator>>),
 }
 
 pub struct StreamingExecutor {
@@ -167,6 +179,25 @@ impl StreamingExecutor {
                         next_tx,
                         total_frames,
                         cancel_state.clone(),
+                        cancel_tx.clone(),
+                        error_tx.clone(),
+                    ));
+                }
+                PipelineStage::ParallelInterpolator(interpolators) => {
+                    let stage_name = interpolators.first().map_or_else(
+                        || "ParallelInterpolator".to_string(),
+                        |lane| lane.stage_name().to_string(),
+                    );
+                    let run = ParallelInterpolatorRun {
+                        interpolators,
+                        input: upstream_rx,
+                        output: next_tx,
+                        total_frames,
+                        cancel_state: cancel_state.clone(),
+                        stage_name,
+                    };
+                    handles.push(spawn_parallel_interpolator_stage(
+                        run,
                         cancel_tx.clone(),
                         error_tx.clone(),
                     ));
@@ -336,6 +367,26 @@ fn spawn_interpolator_stage(
                 &cancel_state,
                 &cancel_tx,
                 error.context(format!("interpolator stage '{stage_name}' failed")),
+            );
+        }
+    })
+}
+
+fn spawn_parallel_interpolator_stage(
+    run: ParallelInterpolatorRun,
+    cancel_tx: watch::Sender<bool>,
+    error_tx: mpsc::UnboundedSender<anyhow::Error>,
+) -> tokio::task::JoinHandle<()> {
+    let stage_name = run.stage_name.clone();
+    let cancel_state = Arc::clone(&run.cancel_state);
+    tokio::task::spawn_blocking(move || {
+        let result = run_parallel_interpolator_loop(run);
+        if let Err(error) = result {
+            report_task_error(
+                &error_tx,
+                &cancel_state,
+                &cancel_tx,
+                error.context(format!("parallel interpolator stage '{stage_name}' failed")),
             );
         }
     })
@@ -806,7 +857,7 @@ mod tests {
         }
     }
 
-    struct DuplicateInterpolator;
+    pub(super) struct DuplicateInterpolator;
 
     impl FrameInterpolator for DuplicateInterpolator {
         fn stage_name(&self) -> &str {
@@ -825,20 +876,20 @@ mod tests {
     }
 
     #[derive(Clone)]
-    struct SharedSinkState {
+    pub(super) struct SharedSinkState {
         values: Arc<Mutex<Vec<u8>>>,
         written: Arc<AtomicUsize>,
     }
 
     impl SharedSinkState {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             Self {
                 values: Arc::new(Mutex::new(Vec::new())),
                 written: Arc::new(AtomicUsize::new(0)),
             }
         }
 
-        fn values(&self) -> Vec<u8> {
+        pub(super) fn values(&self) -> Vec<u8> {
             self.values.lock().expect("values mutex poisoned").clone()
         }
 
@@ -847,13 +898,13 @@ mod tests {
         }
     }
 
-    struct CollectingSink {
+    pub(super) struct CollectingSink {
         state: SharedSinkState,
         delay: Duration,
     }
 
     impl CollectingSink {
-        fn new(state: SharedSinkState) -> Self {
+        pub(super) fn new(state: SharedSinkState) -> Self {
             Self {
                 state,
                 delay: Duration::ZERO,
@@ -913,7 +964,7 @@ mod tests {
         }
     }
 
-    fn sample_frame(value: u8) -> Frame {
+    pub(super) fn sample_frame(value: u8) -> Frame {
         Frame::CpuRgb {
             data: vec![value, value, value],
             width: 1,
@@ -922,7 +973,7 @@ mod tests {
         }
     }
 
-    fn clone_frame(frame: &Frame) -> Result<Frame> {
+    pub(super) fn clone_frame(frame: &Frame) -> Result<Frame> {
         match frame {
             Frame::CpuRgb {
                 data,
@@ -967,7 +1018,7 @@ mod tests {
         }
     }
 
-    fn first_channel_value(frame: &Frame) -> Result<u8> {
+    pub(super) fn first_channel_value(frame: &Frame) -> Result<u8> {
         match frame {
             Frame::CpuRgb { data, .. } => data
                 .first()
@@ -979,7 +1030,7 @@ mod tests {
         }
     }
 
-    fn update_max(target: &Arc<AtomicUsize>, value: usize) {
+    pub(super) fn update_max(target: &Arc<AtomicUsize>, value: usize) {
         let mut current = target.load(Ordering::SeqCst);
         while value > current {
             match target.compare_exchange(current, value, Ordering::SeqCst, Ordering::SeqCst) {
