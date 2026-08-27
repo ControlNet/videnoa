@@ -38,11 +38,12 @@ pub(super) struct PairCoordinator<'a> {
 
 impl<'a> PairCoordinator<'a> {
     pub(super) fn new(channels: CoordinatorChannels<'a>, control: CoordinatorControl<'a>) -> Self {
+        let worker_count = channels.job_senders.len();
         Self {
             channels,
             control,
             previous: None,
-            free_lanes: VecDeque::from([0_usize, 1_usize]),
+            free_lanes: (0..worker_count).collect(),
             completions: BTreeMap::new(),
             next_pair_id: 0,
             next_output_pair_id: 0,

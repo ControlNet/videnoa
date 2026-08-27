@@ -85,6 +85,10 @@ async fn test_parallel_interpolator_preserves_order_and_bounds_work() -> Result<
             Arc::clone(&max_active),
         )),
         Box::new(DelayedDuplicateInterpolator::new(
+            Arc::clone(&active),
+            Arc::clone(&max_active),
+        )),
+        Box::new(DelayedDuplicateInterpolator::new(
             active,
             Arc::clone(&max_active),
         )),
@@ -100,7 +104,7 @@ async fn test_parallel_interpolator_preserves_order_and_bounds_work() -> Result<
 
     // Then
     assert_eq!(state.values(), vec![0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5]);
-    assert_eq!(max_active.load(Ordering::SeqCst), 2);
+    assert_eq!(max_active.load(Ordering::SeqCst), 3);
     Ok(())
 }
 
