@@ -550,8 +550,7 @@ impl FrameProcessor for FrameInterpolationPreprocess {
                 height,
                 width,
             } => {
-                // Tensor pass-through from SuperRes: convert f16→f32 and pad
-                let (padded, _h, _w) = nchw_f16_to_array4(&data, height as usize, width as usize)?;
+                let padded = nchw_f16_to_padded_array4(&data, height as usize, width as usize)?;
                 let padded_data = into_standard_layout_vec(padded)?;
                 Ok(Frame::NchwF32 {
                     data: padded_data,
@@ -999,6 +998,10 @@ fn nchw_f32_vec_to_array4(data: Vec<f32>, h: usize, w: usize) -> Result<Array4<f
 
 /// Convert NchwF16 data (raw u16 bits, already in [0,1] range) to Array4<f32> and pad.
 fn nchw_f16_to_array4(data: &[u16], h: usize, w: usize) -> Result<(Array4<f32>, usize, usize)> {
+    Ok((nchw_f16_to_padded_array4(data, h, w)?, h, w))
+}
+
+fn nchw_f16_to_padded_array4(data: &[u16], h: usize, w: usize) -> Result<Array4<f32>> {
     let expected = 3 * h * w;
     if data.len() != expected {
         bail!(
@@ -1007,16 +1010,56 @@ fn nchw_f16_to_array4(data: &[u16], h: usize, w: usize) -> Result<(Array4<f32>, 
         );
     }
 
-    // Convert u16 bits → f16 → f32 using SIMD batch conversion.
-    // Safety: f16 is #[repr(transparent)] over u16 in the half crate.
-    let f16_slice: &[f16] =
-        unsafe { std::slice::from_raw_parts(data.as_ptr() as *const f16, data.len()) };
-    let mut f32_data = vec![0.0f32; data.len()];
-    f16_slice.convert_to_f32_slice(&mut f32_data);
+    let padded_h = h + pad_amount(h);
+    let padded_w = w + pad_amount(w);
+    let padded_hw = padded_h * padded_w;
+    let mut padded = Array4::<f32>::zeros((1, 3, padded_h, padded_w));
+    let output = padded
+        .as_slice_mut()
+        .context("padded NCHW output must be contiguous")?;
 
-    let array = nchw_f32_vec_to_array4(f32_data, h, w)?;
-    let padded = pad_nchw(&array, h, w);
-    Ok((padded, h, w))
+    const CHUNK: usize = 4096;
+    let mut conversion_buf = [f16::ZERO; CHUNK];
+    for channel in 0..3 {
+        for y in 0..h {
+            let source_row = channel * h * w + y * w;
+            let output_row = channel * padded_hw + y * padded_w;
+            let mut x = 0;
+            while x < w {
+                let len = CHUNK.min(w - x);
+                for index in 0..len {
+                    conversion_buf[index] = f16::from_bits(data[source_row + x + index]);
+                }
+                conversion_buf[..len]
+                    .convert_to_f32_slice(&mut output[output_row + x..output_row + x + len]);
+                x += len;
+            }
+        }
+    }
+
+    let pad_h = padded_h - h;
+    let pad_w = padded_w - w;
+    for y in 0..pad_h {
+        let source_y = h - 1 - y;
+        for channel in 0..3 {
+            let plane = channel * padded_hw;
+            let source_row = plane + source_y * padded_w;
+            let output_row = plane + (h + y) * padded_w;
+            output.copy_within(source_row..source_row + w, output_row);
+        }
+    }
+    for x in 0..pad_w {
+        let source_x = w - 1 - x;
+        for channel in 0..3 {
+            let plane = channel * padded_hw;
+            for y in 0..padded_h {
+                let row = plane + y * padded_w;
+                output[row + w + x] = output[row + source_x];
+            }
+        }
+    }
+
+    Ok(padded)
 }
 
 fn pad_nchw(arr: &Array4<f32>, h: usize, w: usize) -> Array4<f32> {
@@ -1399,6 +1442,54 @@ mod tests {
         let arr = Array4::<f32>::zeros((1, 3, 1080, 1920));
         let padded = pad_nchw(&arr, 1080, 1920);
         assert_eq!(padded.shape(), &[1, 3, 1088, 1920]);
+    }
+
+    #[test]
+    fn test_nchw_f16_preprocess_matches_reference_across_chunk_boundary() {
+        // Given
+        let height = 30;
+        let width = 4097;
+        let element_count = 3 * height * width;
+        let data: Vec<u16> = (0usize..element_count)
+            .map(|index| (index.wrapping_mul(73) & u16::MAX as usize) as u16)
+            .collect();
+        let reference_data: Vec<f32> = data
+            .iter()
+            .copied()
+            .map(f16::from_bits)
+            .map(f32::from)
+            .collect();
+        let reference = Array4::from_shape_vec((1, 3, height, width), reference_data).unwrap();
+        let expected = pad_nchw(&reference, height, width);
+        let expected_bits: Vec<u32> = expected.iter().map(|value| value.to_bits()).collect();
+        let mut preprocess = FrameInterpolationPreprocess { nchw_buf: None };
+        let input = Frame::NchwF16 {
+            data,
+            height: height as u32,
+            width: width as u32,
+        };
+
+        // When
+        let output = preprocess
+            .process_frame(input, &ExecutionContext::default())
+            .unwrap();
+
+        // Then
+        let Frame::NchwF32 {
+            data,
+            height: output_height,
+            width: output_width,
+        } = output
+        else {
+            panic!("expected NchwF32 output");
+        };
+        assert_eq!(output_height, height as u32);
+        assert_eq!(output_width, width as u32);
+        assert_eq!(data.len(), 3 * 32 * 4128);
+        assert_eq!(
+            data.iter().map(|value| value.to_bits()).collect::<Vec<_>>(),
+            expected_bits
+        );
     }
 
     #[test]
