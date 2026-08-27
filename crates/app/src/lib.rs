@@ -18,8 +18,8 @@ use videnoa_core::logging::{
 };
 use videnoa_core::nodes::compile_context::VideoCompileContext;
 use videnoa_core::registry::{register_all_nodes, NodeRegistry};
-use videnoa_core::types::PortData;
 use videnoa_core::server::{app_router_with_static, app_state_with_config};
+use videnoa_core::types::PortData;
 
 #[derive(Parser)]
 #[command(
@@ -260,7 +260,10 @@ fn log_startup_metadata(mode: RuntimeLogMode, data_dir: Option<&Path>) {
             "Runtime startup metadata"
         );
     } else {
-        info!(mode = runtime_mode_name(mode), pid, "Runtime startup metadata");
+        info!(
+            mode = runtime_mode_name(mode),
+            pid, "Runtime startup metadata"
+        );
     }
 }
 
@@ -400,8 +403,10 @@ fn estimate_input_processed(
     }
 }
 
-fn make_progress_callback() -> (Arc<AtomicU64>, Box<dyn Fn(u64, Option<u64>, Option<u64>) + Send>)
-{
+fn make_progress_callback() -> (
+    Arc<AtomicU64>,
+    Box<dyn Fn(u64, Option<u64>, Option<u64>) + Send>,
+) {
     let start = Instant::now();
     let fps_start = Arc::new(Mutex::new(None::<Instant>));
     let frames_written = Arc::new(AtomicU64::new(0));
@@ -425,7 +430,13 @@ fn make_progress_callback() -> (Arc<AtomicU64>, Box<dyn Fn(u64, Option<u64>, Opt
                     .unwrap_or(0.0)
             };
 
-            print_progress(current, total_output, total_input, total_elapsed, fps_elapsed);
+            print_progress(
+                current,
+                total_output,
+                total_input,
+                total_elapsed,
+                fps_elapsed,
+            );
         });
     (frames_written, callback)
 }
@@ -470,10 +481,7 @@ fn inject_params_into_workflow_input(
                 .context("WorkflowInput node missing 'params' object")?;
 
             for (key, value) in params {
-                node_params.insert(
-                    key.clone(),
-                    serde_json::Value::String(value.clone()),
-                );
+                node_params.insert(key.clone(), serde_json::Value::String(value.clone()));
             }
             found = true;
         }
@@ -490,8 +498,20 @@ fn inject_params_into_workflow_input(
 }
 
 const KNOWN_FLAGS: &[&str] = &[
-    "--input", "-i", "--output", "-o", "--param", "--help", "-h",
-    "--version", "-V", "--verbose", "--log-filter", "--port", "--host", "--data-dir",
+    "--input",
+    "-i",
+    "--output",
+    "-o",
+    "--param",
+    "--help",
+    "-h",
+    "--version",
+    "-V",
+    "--verbose",
+    "--log-filter",
+    "--port",
+    "--host",
+    "--data-dir",
 ];
 
 fn parse_dynamic_args(args: &[String], workflow_ports: &[String]) -> HashMap<String, String> {
@@ -687,8 +707,7 @@ mod param_injection_tests {
             "connections": []
         });
 
-        let result =
-            inject_params_into_workflow_input(&workflow, &HashMap::new()).unwrap();
+        let result = inject_params_into_workflow_input(&workflow, &HashMap::new()).unwrap();
         assert_eq!(result, workflow);
     }
 
@@ -706,7 +725,10 @@ mod param_injection_tests {
 
         let result = inject_params_into_workflow_input(&workflow, &params);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("no WorkflowInput node"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("no WorkflowInput node"));
     }
 
     #[test]
@@ -811,10 +833,7 @@ mod format_port_data_tests {
         assert_eq!(format_port_data(&PortData::Bool(true)), "true");
         let path = test_temp_path("x");
         let path_str = path.to_string_lossy().to_string();
-        assert_eq!(
-            format_port_data(&PortData::Path(path)),
-            path_str
-        );
+        assert_eq!(format_port_data(&PortData::Path(path)), path_str);
     }
 }
 
@@ -825,9 +844,13 @@ mod dynamic_args_tests {
     #[test]
     fn extracts_workflow_ports() {
         let args: Vec<String> = vec![
-            "videnoa", "run", "workflow.json",
-            "--input_path", "/path/to/video",
-            "--scale", "4",
+            "videnoa",
+            "run",
+            "workflow.json",
+            "--input_path",
+            "/path/to/video",
+            "--scale",
+            "4",
         ]
         .into_iter()
         .map(String::from)
@@ -841,10 +864,15 @@ mod dynamic_args_tests {
     #[test]
     fn ignores_known_flags() {
         let args: Vec<String> = vec![
-            "videnoa", "run", "workflow.json",
-            "--input", "/path/to/video",
-            "--output", "/path/to/output",
-            "--scale", "4",
+            "videnoa",
+            "run",
+            "workflow.json",
+            "--input",
+            "/path/to/video",
+            "--output",
+            "/path/to/output",
+            "--scale",
+            "4",
         ]
         .into_iter()
         .map(String::from)
@@ -862,13 +890,10 @@ mod dynamic_args_tests {
 
     #[test]
     fn ignores_unknown_ports() {
-        let args: Vec<String> = vec![
-            "videnoa", "run", "workflow.json",
-            "--unknown_arg", "value",
-        ]
-        .into_iter()
-        .map(String::from)
-        .collect();
+        let args: Vec<String> = vec!["videnoa", "run", "workflow.json", "--unknown_arg", "value"]
+            .into_iter()
+            .map(String::from)
+            .collect();
         let ports = vec!["input_path".to_string()];
         let result = parse_dynamic_args(&args, &ports);
         assert!(result.is_empty());
@@ -876,13 +901,10 @@ mod dynamic_args_tests {
 
     #[test]
     fn trailing_flag_without_value_is_skipped() {
-        let args: Vec<String> = vec![
-            "videnoa", "run", "workflow.json",
-            "--scale",
-        ]
-        .into_iter()
-        .map(String::from)
-        .collect();
+        let args: Vec<String> = vec!["videnoa", "run", "workflow.json", "--scale"]
+            .into_iter()
+            .map(String::from)
+            .collect();
         let ports = vec!["scale".to_string()];
         let result = parse_dynamic_args(&args, &ports);
         assert!(result.is_empty());
@@ -890,13 +912,10 @@ mod dynamic_args_tests {
 
     #[test]
     fn empty_ports_returns_empty() {
-        let args: Vec<String> = vec![
-            "videnoa", "run", "workflow.json",
-            "--scale", "4",
-        ]
-        .into_iter()
-        .map(String::from)
-        .collect();
+        let args: Vec<String> = vec!["videnoa", "run", "workflow.json", "--scale", "4"]
+            .into_iter()
+            .map(String::from)
+            .collect();
         let ports: Vec<String> = vec![];
         let result = parse_dynamic_args(&args, &ports);
         assert!(result.is_empty());
@@ -907,7 +926,8 @@ mod dynamic_args_tests {
 mod log_filter_tests {
     use super::*;
 
-    const NOISE: &str = "ort=error,ffmpeg_stderr=error,ffmpeg_encode_stderr=error,ffmpeg_stream_stderr=error";
+    const NOISE: &str =
+        "ort=error,ffmpeg_stderr=error,ffmpeg_encode_stderr=error,ffmpeg_stream_stderr=error";
 
     #[test]
     fn uses_noise_and_default_info_without_overrides() {
