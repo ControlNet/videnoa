@@ -188,6 +188,9 @@ impl VideoCompileContext {
 
     fn create_fi_stages(&self, inputs: &HashMap<String, PortData>) -> Result<Vec<PipelineStage>> {
         let node = self.create_fi_node(inputs)?;
+        let model_format = node.model_format();
+        let inference_concurrency = node.inference_concurrency();
+        let use_parallel_inference = should_use_parallel_fi(inference_concurrency, model_format)?;
 
         let multiplier = read_positive_u32(inputs, "multiplier", 2)?;
         self.output_fps_num
@@ -219,16 +222,31 @@ impl VideoCompileContext {
         self.pending_fi_emit_tensor
             .replace(Some(Arc::clone(&fi_emit_tensor)));
 
-        if should_use_fi_micro_stages(node.model_format(), sr_to_fi) {
+        if should_use_fi_micro_stages(model_format, sr_to_fi) {
             let mut micro = node
                 .into_micro_stages()
                 .ok_or_else(|| anyhow!("failed to build FrameInterpolation micro-stages"))?;
             self.accumulated_stages
                 .borrow_mut()
                 .push(PipelineStage::Processor(Box::new(micro.preprocess)));
-            self.accumulated_stages
-                .borrow_mut()
-                .push(PipelineStage::Interpolator(Box::new(micro.inference)));
+            let inference_stage = if use_parallel_inference {
+                let secondary = self
+                    .create_fi_node(inputs)
+                    .context("failed to initialize second FrameInterpolation inference lane")?;
+                if secondary.model_format() != model_format {
+                    bail!("FrameInterpolation inference lanes detected different model formats");
+                }
+                let secondary_micro = secondary.into_micro_stages().ok_or_else(|| {
+                    anyhow!("failed to build second FrameInterpolation micro-stage lane")
+                })?;
+                PipelineStage::ParallelInterpolator(vec![
+                    Box::new(micro.inference),
+                    Box::new(secondary_micro.inference),
+                ])
+            } else {
+                PipelineStage::Interpolator(Box::new(micro.inference))
+            };
+            self.accumulated_stages.borrow_mut().push(inference_stage);
             micro.postprocess.emit_tensor = fi_emit_tensor.load(Ordering::Relaxed);
             self.accumulated_stages
                 .borrow_mut()
@@ -716,6 +734,17 @@ fn should_use_fi_micro_stages(model_format: ModelFormat, _tensor_passthrough: bo
     model_format == ModelFormat::Concatenated
 }
 
+fn should_use_parallel_fi(inference_concurrency: usize, model_format: ModelFormat) -> Result<bool> {
+    match (inference_concurrency, model_format) {
+        (1, _) => Ok(false),
+        (2, ModelFormat::Concatenated) => Ok(true),
+        (2, ModelFormat::ThreeInput) => {
+            bail!("inference_concurrency=2 requires a concatenated RIFE model")
+        }
+        (other, _) => bail!("unsupported FrameInterpolation inference concurrency {other}"),
+    }
+}
+
 fn fps_to_rational(fps: f64) -> (u32, u32) {
     if !fps.is_finite() || fps <= 0.0 {
         return (24000, 1001);
@@ -873,6 +902,18 @@ mod tests {
     fn test_video_compile_context_fi_only() {
         assert_eq!(fi_stage_count(ModelFormat::ThreeInput, false), 1);
         assert_eq!(fi_stage_count(ModelFormat::Concatenated, false), 3);
+    }
+
+    #[test]
+    fn frame_interpolation_parallel_lanes_require_concatenated_model() {
+        assert!(!should_use_parallel_fi(1, ModelFormat::ThreeInput)
+            .expect("single-lane legacy model should remain supported"));
+        assert!(should_use_parallel_fi(2, ModelFormat::Concatenated)
+            .expect("concatenated model should support two lanes"));
+
+        let error = should_use_parallel_fi(2, ModelFormat::ThreeInput)
+            .expect_err("legacy model must reject two lanes");
+        assert!(format!("{error:#}").contains("requires a concatenated RIFE model"));
     }
 
     #[test]
