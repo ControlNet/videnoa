@@ -91,7 +91,12 @@ pub fn register_all_nodes(registry: &mut NodeRegistry) {
     registry.register("SuperResolution", |_params| {
         Ok(Box::new(SuperResNode::new()))
     });
-    registry.register("FrameInterpolation", |_params| {
+    registry.register("FrameInterpolation", |params| {
+        if params.contains_key("inference_concurrency") {
+            return Err(anyhow!(
+                "FrameInterpolation parameter 'inference_concurrency' was renamed to 'num_workers'"
+            ));
+        }
         Ok(Box::new(FrameInterpolationNode::new()))
     });
     registry.register("VideoOutput", |_params| {
@@ -270,6 +275,23 @@ mod tests {
             };
             assert_eq!(err.to_string(), format!("unknown node type: {node_type}"));
         }
+    }
+
+    #[test]
+    fn test_frame_interpolation_factory_rejects_removed_worker_parameter() {
+        let mut registry = NodeRegistry::new();
+        register_all_nodes(&mut registry);
+        let params = HashMap::from([("inference_concurrency".to_string(), serde_json::json!(2))]);
+
+        let error = match registry.create("FrameInterpolation", params) {
+            Ok(_) => panic!("removed FrameInterpolation worker parameter must be rejected"),
+            Err(error) => error,
+        };
+
+        assert_eq!(
+            error.to_string(),
+            "FrameInterpolation parameter 'inference_concurrency' was renamed to 'num_workers'"
+        );
     }
 
     #[test]
