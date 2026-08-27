@@ -9,6 +9,7 @@ use crate::node::{ExecutionContext, FrameProcessor};
 use crate::types::Frame;
 
 mod parallel_interpolator;
+mod parallel_processor;
 
 #[cfg(test)]
 #[path = "streaming_executor/parallel_interpolator_edge_tests.rs"]
@@ -16,8 +17,12 @@ mod parallel_interpolator_edge_tests;
 #[cfg(test)]
 #[path = "streaming_executor/parallel_interpolator_tests.rs"]
 mod parallel_interpolator_tests;
+#[cfg(test)]
+#[path = "streaming_executor/parallel_processor_tests.rs"]
+mod parallel_processor_tests;
 
 use parallel_interpolator::{run_parallel_interpolator_loop, ParallelInterpolatorRun};
+use parallel_processor::{run_parallel_processor_loop, ParallelProcessorRun};
 
 pub const DEFAULT_BUFFER_SIZE: usize = 4;
 
@@ -75,6 +80,7 @@ where
 
 pub enum PipelineStage {
     Processor(Box<dyn FrameProcessor>),
+    ParallelProcessor(Vec<Box<dyn FrameProcessor>>),
     Interpolator(Box<dyn FrameInterpolator>),
     ParallelInterpolator(Vec<Box<dyn FrameInterpolator>>),
 }
@@ -168,6 +174,25 @@ impl StreamingExecutor {
                         next_tx,
                         total_frames,
                         cancel_state.clone(),
+                        cancel_tx.clone(),
+                        error_tx.clone(),
+                    ));
+                }
+                PipelineStage::ParallelProcessor(processors) => {
+                    let stage_name = processors.first().map_or_else(
+                        || "ParallelProcessor".to_string(),
+                        |lane| lane.node_type().to_string(),
+                    );
+                    let run = ParallelProcessorRun {
+                        processors,
+                        input: upstream_rx,
+                        output: next_tx,
+                        total_frames,
+                        cancel_state: cancel_state.clone(),
+                        stage_name,
+                    };
+                    handles.push(spawn_parallel_processor_stage(
+                        run,
                         cancel_tx.clone(),
                         error_tx.clone(),
                     ));
@@ -367,6 +392,26 @@ fn spawn_interpolator_stage(
                 &cancel_state,
                 &cancel_tx,
                 error.context(format!("interpolator stage '{stage_name}' failed")),
+            );
+        }
+    })
+}
+
+fn spawn_parallel_processor_stage(
+    run: ParallelProcessorRun,
+    cancel_tx: watch::Sender<bool>,
+    error_tx: mpsc::UnboundedSender<anyhow::Error>,
+) -> tokio::task::JoinHandle<()> {
+    let stage_name = run.stage_name.clone();
+    let cancel_state = Arc::clone(&run.cancel_state);
+    tokio::task::spawn_blocking(move || {
+        let result = run_parallel_processor_loop(run);
+        if let Err(error) = result {
+            report_task_error(
+                &error_tx,
+                &cancel_state,
+                &cancel_tx,
+                error.context(format!("parallel processor stage '{stage_name}' failed")),
             );
         }
     })
