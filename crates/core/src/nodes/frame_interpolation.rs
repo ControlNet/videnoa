@@ -31,6 +31,7 @@ use crate::nodes::backend::{
     build_session, ensure_inference_output_memory, inference_output_memory_info, InferenceBackend,
     SessionConfig,
 };
+use crate::nodes::worker_count::WorkerCount;
 
 const PAD_ALIGN: usize = 32;
 
@@ -61,7 +62,7 @@ pub enum ModelFormat {
 pub struct FrameInterpolationNode {
     session: Option<Arc<Mutex<Session>>>,
     multiplier: u32,
-    num_workers: usize,
+    num_workers: WorkerCount,
     backend: InferenceBackend,
     use_iobinding: bool,
     trt_cache_dir: Option<PathBuf>,
@@ -76,6 +77,7 @@ pub struct FrameInterpolationNode {
     /// In consecutive pairs (frame_N, frame_N+1) → (frame_N+1, frame_N+2),
     /// frame_N+1's NCHW is identical — cache it to skip ~22ms of preprocessing.
     cached_img1_nchw: Option<(Array4<f32>, usize, usize)>, // (padded_array, orig_h, orig_w)
+    reuse_pair_cache: bool,
     /// When true, emit Frame::NchwF32 instead of CpuRgb.
     /// Set by compile_graph when downstream node can accept tensor input.
     pub emit_tensor: bool,
@@ -86,7 +88,7 @@ impl FrameInterpolationNode {
         Self {
             session: None,
             multiplier: 2,
-            num_workers: 1,
+            num_workers: WorkerCount::ONE,
             backend: InferenceBackend::default(),
             use_iobinding: true,
             trt_cache_dir: None,
@@ -95,6 +97,7 @@ impl FrameInterpolationNode {
             nchw_buf_0: None,
             nchw_buf_1: None,
             cached_img1_nchw: None,
+            reuse_pair_cache: true,
             emit_tensor: false,
         }
     }
@@ -112,7 +115,12 @@ impl FrameInterpolationNode {
     }
 
     pub fn num_workers(&self) -> usize {
-        self.num_workers
+        self.num_workers.get()
+    }
+
+    pub(crate) fn disable_pair_cache(&mut self) {
+        self.reuse_pair_cache = false;
+        self.cached_img1_nchw = None;
     }
 
     /// Returns the detected ONNX model input format.
@@ -165,23 +173,27 @@ impl FrameInterpolationNode {
                 let orig_h = *h0 as usize;
                 let orig_w = *w0 as usize;
 
-                let img0 = match self.cached_img1_nchw.take() {
-                    Some((cached_arr, cached_h, cached_w))
-                        if cached_h == orig_h && cached_w == orig_w =>
-                    {
-                        debug!("RIFE cache hit: reusing cached img1 as img0");
-                        cached_arr
-                    }
-                    stale => {
-                        if stale.is_some() {
-                            debug!(
-                                "RIFE cache miss: dimension mismatch, computing img0 from scratch"
-                            );
-                        } else {
-                            debug!("RIFE cache miss: computing img0 from scratch");
+                let img0 = if self.reuse_pair_cache {
+                    match self.cached_img1_nchw.take() {
+                        Some((cached_arr, cached_h, cached_w))
+                            if cached_h == orig_h && cached_w == orig_w =>
+                        {
+                            debug!("RIFE cache hit: reusing cached img1 as img0");
+                            cached_arr
                         }
-                        cpu_rgb_to_nchw_buffered(data0, *w0, *h0, *bd0, self.nchw_buf_0.take())?
+                        stale => {
+                            if stale.is_some() {
+                                debug!(
+                                    "RIFE cache miss: dimension mismatch, computing img0 from scratch"
+                                );
+                            } else {
+                                debug!("RIFE cache miss: computing img0 from scratch");
+                            }
+                            cpu_rgb_to_nchw_buffered(data0, *w0, *h0, *bd0, self.nchw_buf_0.take())?
+                        }
                     }
+                } else {
+                    cpu_rgb_to_nchw_buffered(data0, *w0, *h0, *bd0, self.nchw_buf_0.take())?
                 };
 
                 let img1 = cpu_rgb_to_nchw_buffered(data1, *w1, *h1, *bd1, self.nchw_buf_1.take())?;
@@ -210,21 +222,23 @@ impl FrameInterpolationNode {
         let steps = self.timesteps();
 
         if scene_change {
-            if let Frame::CpuRgb {
-                data,
-                width,
-                height,
-                bit_depth,
-            } = frame1
-            {
-                let img1_nchw = cpu_rgb_to_nchw_buffered(
+            if self.reuse_pair_cache {
+                if let Frame::CpuRgb {
                     data,
-                    *width,
-                    *height,
-                    *bit_depth,
-                    self.nchw_buf_1.take(),
-                )?;
-                self.cached_img1_nchw = Some((img1_nchw, *height as usize, *width as usize));
+                    width,
+                    height,
+                    bit_depth,
+                } = frame1
+                {
+                    let img1_nchw = cpu_rgb_to_nchw_buffered(
+                        data,
+                        *width,
+                        *height,
+                        *bit_depth,
+                        self.nchw_buf_1.take(),
+                    )?;
+                    self.cached_img1_nchw = Some((img1_nchw, *height as usize, *width as usize));
+                }
             }
             return duplicate_first_frame(frame0, steps.len());
         }
@@ -331,7 +345,11 @@ impl FrameInterpolationNode {
 
         if reuse_buffers {
             self.nchw_buf_0 = Some(img0);
-            self.cached_img1_nchw = Some((img1, orig_h, orig_w));
+            if self.reuse_pair_cache {
+                self.cached_img1_nchw = Some((img1, orig_h, orig_w));
+            } else {
+                self.nchw_buf_1 = Some(img1);
+            }
         }
 
         let total_ms = t_pre.elapsed().as_secs_f64() * 1000.0;
@@ -432,20 +450,13 @@ impl Node for FrameInterpolationNode {
         }
 
         if let Some(value) = inputs.get("num_workers") {
-            let PortData::Int(value) = value else {
-                bail!("num_workers must be an Int");
-            };
-            let num_workers = usize::try_from(*value).context("num_workers must be positive")?;
-            if !(1..=2).contains(&num_workers) {
-                bail!("num_workers must be 1 or 2, got {num_workers}");
-            }
-            self.num_workers = num_workers;
+            self.num_workers = WorkerCount::parse(value)?;
         }
 
         debug!(
             model = %model_path.display(),
             multiplier = self.multiplier,
-            num_workers = self.num_workers,
+            num_workers = self.num_workers.get(),
             backend = %self.backend,
             use_iobinding = self.use_iobinding,
             "Loading ONNX RIFE model"
@@ -1692,10 +1703,10 @@ mod tests {
     }
 
     #[test]
-    fn test_execute_rejects_invalid_num_workers() {
+    fn test_execute_rejects_zero_num_workers() {
         let mut node = FrameInterpolationNode::new();
         let ctx = ExecutionContext::default();
-        let mut inputs = HashMap::from([
+        let inputs = HashMap::from([
             (
                 "model_path".to_string(),
                 PortData::Path(std::env::temp_dir().join("model.onnx")),
@@ -1707,14 +1718,7 @@ mod tests {
             .execute(&inputs, &ctx)
             .err()
             .expect("zero workers should fail");
-        assert!(format!("{error:#}").contains("num_workers must be 1 or 2"));
-
-        inputs.insert("num_workers".to_string(), PortData::Int(3));
-        let error = node
-            .execute(&inputs, &ctx)
-            .err()
-            .expect("worker count above two should fail");
-        assert!(format!("{error:#}").contains("num_workers must be 1 or 2"));
+        assert!(format!("{error:#}").contains("num_workers must be positive"));
     }
 
     #[test]
@@ -1748,6 +1752,31 @@ mod tests {
             Frame::CpuRgb { data, .. } => assert!(data.iter().all(|&b| b == 123)),
             _ => panic!("Expected CpuRgb"),
         }
+    }
+
+    #[test]
+    fn disabled_pair_cache_does_not_retain_scene_change_input() {
+        let mut node = FrameInterpolationNode::new();
+        node.disable_pair_cache();
+        let frame0 = Frame::CpuRgb {
+            data: vec![123u8; 32 * 32 * 3],
+            width: 32,
+            height: 32,
+            bit_depth: 8,
+        };
+        let frame1 = Frame::CpuRgb {
+            data: vec![200u8; 32 * 32 * 3],
+            width: 32,
+            height: 32,
+            bit_depth: 8,
+        };
+
+        let result = node
+            .process_frame_pair(&frame0, &frame1, true)
+            .expect("scene-change duplication should not require a loaded model");
+
+        assert_eq!(result.len(), 1);
+        assert!(node.cached_img1_nchw.is_none());
     }
 
     #[test]

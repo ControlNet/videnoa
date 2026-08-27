@@ -26,6 +26,7 @@ use crate::nodes::backend::{
     SessionConfig,
 };
 use crate::nodes::fp16_rgb::{f16_nchw_to_rgb, NchwCrop, Quantization};
+use crate::nodes::worker_count::WorkerCount;
 
 /// Tile overlap in pixels per side — prevents seam artifacts between tiles.
 const DEFAULT_TILE_OVERLAP: usize = 16;
@@ -37,6 +38,7 @@ pub struct SuperResNode {
     session: Option<Arc<Mutex<Session>>>,
     scale: u32,
     tile_size: u32,
+    num_workers: WorkerCount,
     backend: InferenceBackend,
     use_iobinding: bool,
     trt_cache_dir: Option<PathBuf>,
@@ -58,6 +60,7 @@ impl SuperResNode {
             session: None,
             scale: 4,
             tile_size: 0,
+            num_workers: WorkerCount::ONE,
             backend: InferenceBackend::default(),
             use_iobinding: true,
             trt_cache_dir: None,
@@ -84,6 +87,10 @@ impl SuperResNode {
 
     pub fn tile_size(&self) -> u32 {
         self.tile_size
+    }
+
+    pub fn num_workers(&self) -> usize {
+        self.num_workers.get()
     }
 }
 
@@ -595,6 +602,12 @@ impl Node for SuperResNode {
                 required: false,
                 default_value: Some(serde_json::json!("cuda")),
             },
+            PortDefinition {
+                name: "num_workers".to_string(),
+                port_type: PortType::Int,
+                required: false,
+                default_value: Some(serde_json::json!(1)),
+            },
         ]
     }
 
@@ -625,10 +638,15 @@ impl Node for SuperResNode {
             self.backend = InferenceBackend::from_str_lossy(b);
         }
 
+        if let Some(value) = inputs.get("num_workers") {
+            self.num_workers = WorkerCount::parse(value)?;
+        }
+
         debug!(
             model = %model_path.display(),
             scale = self.scale,
             tile_size = self.tile_size,
+            num_workers = self.num_workers.get(),
             backend = %self.backend,
             use_iobinding = self.use_iobinding,
             "Loading ONNX super-resolution model"
@@ -1827,7 +1845,7 @@ mod tests {
         assert_eq!(node.node_type(), "SuperResolution");
 
         let inputs = node.input_ports();
-        assert_eq!(inputs.len(), 4);
+        assert_eq!(inputs.len(), 5);
         assert_eq!(inputs[0].name, "model_path");
         assert_eq!(inputs[0].port_type, PortType::Path);
         assert!(inputs[0].required);
@@ -1844,6 +1862,11 @@ mod tests {
         assert_eq!(inputs[3].port_type, PortType::Str);
         assert!(!inputs[3].required);
 
+        assert_eq!(inputs[4].name, "num_workers");
+        assert_eq!(inputs[4].port_type, PortType::Int);
+        assert!(!inputs[4].required);
+        assert_eq!(inputs[4].default_value, Some(serde_json::json!(1)));
+
         let outputs = node.output_ports();
         assert!(outputs.is_empty());
     }
@@ -1852,6 +1875,7 @@ mod tests {
     fn test_super_res_node_default_backend() {
         let node = SuperResNode::new();
         assert_eq!(node.backend, InferenceBackend::Cuda);
+        assert_eq!(node.num_workers(), 1);
         assert!(node.use_iobinding);
         assert!(node.trt_cache_dir.is_none());
     }
