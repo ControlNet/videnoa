@@ -61,6 +61,7 @@ pub enum ModelFormat {
 pub struct FrameInterpolationNode {
     session: Option<Arc<Mutex<Session>>>,
     multiplier: u32,
+    inference_concurrency: usize,
     backend: InferenceBackend,
     use_iobinding: bool,
     trt_cache_dir: Option<PathBuf>,
@@ -85,6 +86,7 @@ impl FrameInterpolationNode {
         Self {
             session: None,
             multiplier: 2,
+            inference_concurrency: 1,
             backend: InferenceBackend::default(),
             use_iobinding: true,
             trt_cache_dir: None,
@@ -107,6 +109,10 @@ impl FrameInterpolationNode {
 
     pub fn timesteps(&self) -> Vec<f32> {
         timesteps_for_multiplier(self.multiplier)
+    }
+
+    pub fn inference_concurrency(&self) -> usize {
+        self.inference_concurrency
     }
 
     /// Returns the detected ONNX model input format.
@@ -389,6 +395,12 @@ impl Node for FrameInterpolationNode {
                 required: false,
                 default_value: Some(serde_json::json!("cuda")),
             },
+            PortDefinition {
+                name: "inference_concurrency".to_string(),
+                port_type: PortType::Int,
+                required: false,
+                default_value: Some(serde_json::json!(1)),
+            },
         ]
     }
 
@@ -419,9 +431,22 @@ impl Node for FrameInterpolationNode {
             self.backend = InferenceBackend::from_str_lossy(b);
         }
 
+        if let Some(value) = inputs.get("inference_concurrency") {
+            let PortData::Int(value) = value else {
+                bail!("inference_concurrency must be an Int");
+            };
+            let concurrency =
+                usize::try_from(*value).context("inference_concurrency must be positive")?;
+            if !(1..=2).contains(&concurrency) {
+                bail!("inference_concurrency must be 1 or 2, got {concurrency}");
+            }
+            self.inference_concurrency = concurrency;
+        }
+
         debug!(
             model = %model_path.display(),
             multiplier = self.multiplier,
+            inference_concurrency = self.inference_concurrency,
             backend = %self.backend,
             use_iobinding = self.use_iobinding,
             "Loading ONNX RIFE model"
@@ -1635,7 +1660,7 @@ mod tests {
         assert_eq!(node.node_type(), "FrameInterpolation");
 
         let inputs = node.input_ports();
-        assert_eq!(inputs.len(), 3);
+        assert_eq!(inputs.len(), 4);
         assert_eq!(inputs[0].name, "model_path");
         assert_eq!(inputs[0].port_type, PortType::Path);
         assert!(inputs[0].required);
@@ -1649,6 +1674,11 @@ mod tests {
         assert_eq!(inputs[2].port_type, PortType::Str);
         assert!(!inputs[2].required);
 
+        assert_eq!(inputs[3].name, "inference_concurrency");
+        assert_eq!(inputs[3].port_type, PortType::Int);
+        assert!(!inputs[3].required);
+        assert_eq!(inputs[3].default_value, Some(serde_json::json!(1)));
+
         let outputs = node.output_ports();
         assert!(outputs.is_empty());
     }
@@ -1657,8 +1687,35 @@ mod tests {
     fn test_fi_node_default_backend() {
         let node = FrameInterpolationNode::new();
         assert_eq!(node.backend, InferenceBackend::Cuda);
+        assert_eq!(node.inference_concurrency(), 1);
         assert!(node.use_iobinding);
         assert!(node.trt_cache_dir.is_none());
+    }
+
+    #[test]
+    fn test_execute_rejects_invalid_inference_concurrency() {
+        let mut node = FrameInterpolationNode::new();
+        let ctx = ExecutionContext::default();
+        let mut inputs = HashMap::from([
+            (
+                "model_path".to_string(),
+                PortData::Path(std::env::temp_dir().join("model.onnx")),
+            ),
+            ("inference_concurrency".to_string(), PortData::Int(0)),
+        ]);
+
+        let error = node
+            .execute(&inputs, &ctx)
+            .err()
+            .expect("zero concurrency should fail");
+        assert!(format!("{error:#}").contains("inference_concurrency must be 1 or 2"));
+
+        inputs.insert("inference_concurrency".to_string(), PortData::Int(3));
+        let error = node
+            .execute(&inputs, &ctx)
+            .err()
+            .expect("concurrency above two should fail");
+        assert!(format!("{error:#}").contains("inference_concurrency must be 1 or 2"));
     }
 
     #[test]
