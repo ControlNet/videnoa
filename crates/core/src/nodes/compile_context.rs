@@ -189,8 +189,8 @@ impl VideoCompileContext {
     fn create_fi_stages(&self, inputs: &HashMap<String, PortData>) -> Result<Vec<PipelineStage>> {
         let node = self.create_fi_node(inputs)?;
         let model_format = node.model_format();
-        let inference_concurrency = node.inference_concurrency();
-        let use_parallel_inference = should_use_parallel_fi(inference_concurrency, model_format)?;
+        let num_workers = node.num_workers();
+        let use_parallel_inference = should_use_parallel_fi(num_workers, model_format)?;
 
         let multiplier = read_positive_u32(inputs, "multiplier", 2)?;
         self.output_fps_num
@@ -734,14 +734,14 @@ fn should_use_fi_micro_stages(model_format: ModelFormat, _tensor_passthrough: bo
     model_format == ModelFormat::Concatenated
 }
 
-fn should_use_parallel_fi(inference_concurrency: usize, model_format: ModelFormat) -> Result<bool> {
-    match (inference_concurrency, model_format) {
+fn should_use_parallel_fi(num_workers: usize, model_format: ModelFormat) -> Result<bool> {
+    match (num_workers, model_format) {
         (1, _) => Ok(false),
         (2, ModelFormat::Concatenated) => Ok(true),
         (2, ModelFormat::ThreeInput) => {
-            bail!("inference_concurrency=2 requires a concatenated RIFE model")
+            bail!("num_workers=2 requires a concatenated RIFE model")
         }
-        (other, _) => bail!("unsupported FrameInterpolation inference concurrency {other}"),
+        (other, _) => bail!("unsupported FrameInterpolation worker count {other}"),
     }
 }
 
