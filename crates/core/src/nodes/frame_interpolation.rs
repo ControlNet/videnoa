@@ -11,9 +11,9 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use half::f16;
 use half::slice::HalfFloatSliceExt;
 use ndarray::{s, Array4, ArrayView4};
@@ -21,6 +21,8 @@ use ort::{
     session::Session,
     value::{Tensor, TensorRef},
 };
+use rayon::prelude::*;
+use rayon::{ThreadPool, ThreadPoolBuilder};
 use tracing::debug;
 
 use crate::node::{ExecutionContext, FrameProcessor, Node, PortDefinition};
@@ -34,6 +36,15 @@ use crate::nodes::backend::{
 use crate::nodes::worker_count::WorkerCount;
 
 const PAD_ALIGN: usize = 32;
+const RGB_PARALLEL_BANDS: usize = 2;
+static RGB_CONVERSION_POOL: LazyLock<std::result::Result<ThreadPool, String>> =
+    LazyLock::new(|| {
+        ThreadPoolBuilder::new()
+            .num_threads(RGB_PARALLEL_BANDS)
+            .thread_name(|index| format!("fi-rgb-{index}"))
+            .build()
+            .map_err(|error| error.to_string())
+    });
 
 const INPUT_IMG0: &str = "img0";
 const INPUT_IMG1: &str = "img1";
@@ -1111,8 +1122,15 @@ fn pad_amount(dim: usize) -> usize {
 }
 
 fn nchw_to_cpu_rgb(arr: &Array4<f32>, out_h: usize, out_w: usize) -> Result<Vec<u8>> {
+    nchw_to_cpu_rgb_parallel(arr, out_h, out_w)
+}
+
+fn nchw_to_cpu_rgb_parallel(arr: &Array4<f32>, out_h: usize, out_w: usize) -> Result<Vec<u8>> {
     let hw = out_h * out_w;
     let mut rgb = vec![0u8; hw * 3];
+    if rgb.is_empty() {
+        return Ok(rgb);
+    }
 
     // Contiguous-slice gather: read from channel planes [R: 0..hw, G: hw..2hw, B: 2hw..3hw]
     let contiguous = arr.as_standard_layout();
@@ -1125,26 +1143,35 @@ fn nchw_to_cpu_rgb(arr: &Array4<f32>, out_h: usize, out_w: usize) -> Result<Vec<
     let b_plane = &arr_slice[2 * hw..3 * hw];
 
     const CHUNK: usize = 4096;
-
-    let mut offset = 0;
-    while offset < hw {
-        let len = CHUNK.min(hw - offset);
-        let r_chunk = &r_plane[offset..offset + len];
-        let g_chunk = &g_plane[offset..offset + len];
-        let b_chunk = &b_plane[offset..offset + len];
-        let dst = &mut rgb[offset * 3..(offset + len) * 3];
-
-        for j in 0..len {
-            let r = (r_chunk[j] * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
-            let g = (g_chunk[j] * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
-            let b = (b_chunk[j] * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
-            dst[j * 3] = r;
-            dst[j * 3 + 1] = g;
-            dst[j * 3 + 2] = b;
-        }
-
-        offset += len;
-    }
+    let row_bytes = out_w * 3;
+    let rows_per_band = out_h.div_ceil(RGB_PARALLEL_BANDS);
+    let pool = RGB_CONVERSION_POOL
+        .as_ref()
+        .map_err(|error| anyhow!("failed to initialize FI RGB worker pool: {error}"))?;
+    pool.install(|| {
+        rgb.par_chunks_mut(rows_per_band * row_bytes)
+            .enumerate()
+            .for_each(|(band, output_band)| {
+                for (row, output_row) in output_band.chunks_mut(row_bytes).enumerate() {
+                    let source_row = (band * rows_per_band + row) * out_w;
+                    let mut x = 0;
+                    while x < out_w {
+                        let len = CHUNK.min(out_w - x);
+                        let source = source_row + x;
+                        let output = &mut output_row[x * 3..(x + len) * 3];
+                        for index in 0..len {
+                            output[index * 3] =
+                                (r_plane[source + index] * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
+                            output[index * 3 + 1] =
+                                (g_plane[source + index] * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
+                            output[index * 3 + 2] =
+                                (b_plane[source + index] * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
+                        }
+                        x += len;
+                    }
+                }
+            });
+    });
     Ok(rgb)
 }
 
@@ -1159,9 +1186,9 @@ fn nchw_to_cpu_rgb_scalar(arr: &Array4<f32>, out_h: usize, out_w: usize) -> Resu
 
     for i in 0..hw {
         let dst = i * 3;
-        rgb[dst] = (arr_slice[i] * 255.0).clamp(0.0, 255.0) as u8;
-        rgb[dst + 1] = (arr_slice[hw + i] * 255.0).clamp(0.0, 255.0) as u8;
-        rgb[dst + 2] = (arr_slice[2 * hw + i] * 255.0).clamp(0.0, 255.0) as u8;
+        rgb[dst] = (arr_slice[i] * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
+        rgb[dst + 1] = (arr_slice[hw + i] * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
+        rgb[dst + 2] = (arr_slice[2 * hw + i] * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
     }
     Ok(rgb)
 }
@@ -1631,6 +1658,23 @@ mod tests {
                 "mismatch at index {i}: optimized={a}, scalar={b}"
             );
         }
+    }
+
+    #[test]
+    fn parallel_nchw_to_cpu_rgb_matches_serial_across_row_bands() {
+        let h = 5;
+        let w = 7;
+        let mut arr = Array4::<f32>::zeros((1, 3, h, w));
+        let samples = [-0.25, 0.0, 0.5 / 255.0, 127.5 / 255.0, 1.0, 1.25];
+        for (index, value) in arr.iter_mut().enumerate() {
+            *value = samples[index % samples.len()];
+        }
+
+        let serial = nchw_to_cpu_rgb_scalar(&arr, h, w).expect("serial conversion should succeed");
+        let parallel = nchw_to_cpu_rgb_parallel(&arr, h, w)
+            .expect("parallel conversion should preserve serial output");
+
+        assert_eq!(parallel, serial);
     }
 
     #[test]
