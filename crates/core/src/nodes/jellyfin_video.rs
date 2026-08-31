@@ -217,8 +217,7 @@ mod tests {
     #[test]
     fn test_build_download_url_rejects_non_base_url() {
         let err = JellyfinVideoNode::build_download_url("mailto:test@example.com", "id", "key")
-            .err()
-            .expect("non-http(s) base URL should fail");
+            .expect_err("non-http(s) base URL should fail");
         assert!(err.to_string().contains("invalid Jellyfin base URL"));
     }
 }
