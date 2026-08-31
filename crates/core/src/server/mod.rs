@@ -86,6 +86,7 @@ const WORKFLOW_SOURCE_API_RUN_PRESETS: &str = "api_run_presets";
 const DEFAULT_WORKFLOW_NAME_API_JOBS: &str = "ad-hoc workflow";
 const DEFAULT_WORKFLOW_NAME_API_BATCH: &str = "batch workflow";
 const RERUN_COMPLETED_REJECTION: &str = "cannot rerun completed job";
+const PREVIEW_VSYNC_MODE: &str = "vfr";
 
 impl AppState {
     pub fn new(
@@ -2138,7 +2139,7 @@ async fn extract_frames(
             "-frames:v",
             &payload.count.to_string(),
             "-vsync",
-            "vfn",
+            PREVIEW_VSYNC_MODE,
             output_pattern
                 .to_str()
                 .ok_or_else(|| AppError::Internal("invalid path encoding".to_string()))?,
@@ -2645,6 +2646,11 @@ mod tests {
     use axum::http::Request;
     use rusqlite::Connection;
     use tower::{Service, ServiceExt};
+
+    #[test]
+    fn preview_extraction_uses_variable_frame_rate_sync_mode() {
+        assert_eq!(PREVIEW_VSYNC_MODE, "vfr");
+    }
 
     fn test_state() -> AppState {
         test_state_with_data_dir(test_data_dir())
