@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
 
-use crate::compile::CompileContext;
+use crate::compile::{CompileContext, DecoderResult};
 use crate::node::{ExecutionContext, FrameProcessor, Node, PortDefinition};
 use crate::streaming_executor::{FrameInterpolator, FrameSink, PipelineStage};
 use crate::types::{Frame, PortData};
@@ -430,7 +430,7 @@ impl CompileContext for VideoCompileContext {
         &self,
         node: &mut dyn Node,
         outputs: &HashMap<String, PortData>,
-    ) -> Result<(Box<dyn Iterator<Item = Result<Frame>> + Send>, Option<u64>)> {
+    ) -> DecoderResult {
         if node.node_type() != "video_input" && node.node_type() != "VideoInput" {
             bail!(
                 "expected VideoInput source node, got '{}'",
