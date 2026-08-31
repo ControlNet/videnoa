@@ -87,7 +87,7 @@ fn test_iobinding_dynamic(
 ) -> Result<std::time::Duration> {
     let mut binding = session.create_binding()?;
     binding.bind_input("image.1", input_tensor)?;
-    binding.bind_output_to_device("image", &session.allocator().memory_info())?;
+    binding.bind_output_to_device("image", session.allocator().memory_info())?;
 
     session.run_binding(&binding)?;
 
