@@ -34,6 +34,19 @@ const DEFAULT_TILE_OVERLAP: usize = 16;
 /// Model requires spatial dimensions to be multiples of this.
 const PAD_ALIGN: usize = 4;
 
+#[derive(Clone, Copy)]
+struct InferenceShape {
+    height: usize,
+    width: usize,
+    scale: usize,
+}
+
+#[derive(Clone, Copy)]
+struct ModelBindings<'a> {
+    input: &'a str,
+    output: &'a str,
+}
+
 pub struct SuperResNode {
     session: Option<Arc<Mutex<Session>>>,
     scale: u32,
@@ -564,8 +577,8 @@ impl FrameProcessor for SuperResPostprocess {
 
         Ok(Frame::CpuRgb {
             data: rgb,
-            width: width,
-            height: height,
+            width,
+            height,
             bit_depth: 8,
         })
     }
@@ -713,17 +726,23 @@ impl FrameProcessor for SuperResNode {
                         bit_depth,
                         &mut self.f16_nchw_buf,
                     )?;
+                    let shape = InferenceShape {
+                        height: orig_h,
+                        width: orig_w,
+                        scale,
+                    };
+                    let bindings = ModelBindings {
+                        input: in_name,
+                        output: out_name,
+                    };
 
                     let output_f16 = if tile_size > 0 {
                         run_tiled_f16_inference(
                             &session_arc,
                             &input_f16,
-                            orig_h,
-                            orig_w,
+                            shape,
                             tile_size,
-                            scale,
-                            in_name,
-                            out_name,
+                            bindings,
                         )?
                     } else {
                         run_single_f16_inference(
@@ -771,31 +790,32 @@ impl FrameProcessor for SuperResNode {
                         bit_depth,
                         &mut self.f32_nchw_buf,
                     )?;
+                    let shape = InferenceShape {
+                        height: orig_h,
+                        width: orig_w,
+                        scale,
+                    };
+                    let bindings = ModelBindings {
+                        input: in_name,
+                        output: out_name,
+                    };
 
                     let output_array = if tile_size > 0 {
                         run_tiled_inference(
                             &session_arc,
                             &input_array,
-                            orig_h,
-                            orig_w,
+                            shape,
                             tile_size,
-                            scale,
                             use_iobinding,
-                            in_name,
-                            out_name,
-                            false,
+                            bindings,
                         )?
                     } else {
                         run_single_inference(
                             &session_arc,
                             &input_array,
-                            orig_h,
-                            orig_w,
-                            scale,
+                            shape,
                             use_iobinding,
-                            in_name,
-                            out_name,
-                            false,
+                            bindings,
                         )?
                     };
 
@@ -822,6 +842,15 @@ impl FrameProcessor for SuperResNode {
                 let out_name = self.output_name.as_deref().unwrap_or("image");
                 let h = height as usize;
                 let w = width as usize;
+                let shape = InferenceShape {
+                    height: h,
+                    width: w,
+                    scale,
+                };
+                let bindings = ModelBindings {
+                    input: in_name,
+                    output: out_name,
+                };
 
                 if self.is_fp16_model {
                     let input_f16 = nchw_f32_to_f16_padded(&data, h, w)?;
@@ -830,12 +859,9 @@ impl FrameProcessor for SuperResNode {
                         run_tiled_f16_inference(
                             &session_arc,
                             &input_f16,
-                            h,
-                            w,
+                            shape,
                             tile_size,
-                            scale,
-                            in_name,
-                            out_name,
+                            bindings,
                         )?
                     } else {
                         run_single_f16_inference(
@@ -886,27 +912,13 @@ impl FrameProcessor for SuperResNode {
                         run_tiled_inference(
                             &session_arc,
                             &padded,
-                            h,
-                            w,
+                            shape,
                             tile_size,
-                            scale,
                             use_iobinding,
-                            in_name,
-                            out_name,
-                            false,
+                            bindings,
                         )?
                     } else {
-                        run_single_inference(
-                            &session_arc,
-                            &padded,
-                            h,
-                            w,
-                            scale,
-                            use_iobinding,
-                            in_name,
-                            out_name,
-                            false,
-                        )?
+                        run_single_inference(&session_arc, &padded, shape, use_iobinding, bindings)?
                     };
 
                     let out_h = h * scale;
@@ -1343,36 +1355,30 @@ fn f16_nchw_to_cpu_rgb(arr: &ndarray::ArrayD<f16>, out_h: usize, out_w: usize) -
 fn run_single_inference(
     session_arc: &Arc<Mutex<Session>>,
     input: &Array4<f32>,
-    orig_h: usize,
-    orig_w: usize,
-    scale: usize,
+    shape: InferenceShape,
     use_iobinding: bool,
-    input_name: &str,
-    output_name: &str,
-    is_fp16: bool,
+    bindings: ModelBindings<'_>,
 ) -> Result<Array4<f32>> {
     let output_owned = {
         let mut session = session_arc.lock().unwrap();
-        if is_fp16 {
-            run_fp16_inference(&mut session, input, input_name, output_name)?
-        } else if use_iobinding {
+        if use_iobinding {
             let input_tensor = Tensor::from_array(input.clone())?;
-            run_with_iobinding(&mut session, input_name, &input_tensor, output_name)?
+            run_with_iobinding(&mut session, bindings.input, &input_tensor, bindings.output)?
         } else {
             let input_tensor = Tensor::from_array(input.clone())?;
-            let outputs = session.run(ort::inputs![input_name => &input_tensor])?;
-            let output_view = outputs[output_name].try_extract_array::<f32>()?;
+            let outputs = session.run(ort::inputs![bindings.input => &input_tensor])?;
+            let output_view = outputs[bindings.output].try_extract_array::<f32>()?;
             output_view.to_owned()
         }
     };
 
     let padded_h = input.shape()[2];
     let padded_w = input.shape()[3];
-    let pad_h = padded_h - orig_h;
-    let pad_w = padded_w - orig_w;
+    let pad_h = padded_h - shape.height;
+    let pad_w = padded_w - shape.width;
 
-    let out_h = orig_h * scale;
-    let out_w = orig_w * scale;
+    let out_h = shape.height * shape.scale;
+    let out_w = shape.width * shape.scale;
 
     if pad_h > 0 || pad_w > 0 {
         let cropped = output_owned
@@ -1401,43 +1407,6 @@ fn run_with_iobinding(
     Ok(output_view.to_owned())
 }
 
-fn run_fp16_inference(
-    session: &mut Session,
-    input: &Array4<f32>,
-    input_name: &str,
-    output_name: &str,
-) -> Result<ndarray::ArrayBase<ndarray::OwnedRepr<f32>, ndarray::IxDyn>> {
-    let f32_slice = input
-        .as_slice()
-        .expect("input must be contiguous for SIMD f16 conversion");
-    let mut fp16_data = vec![f16::ZERO; f32_slice.len()];
-    fp16_data.convert_from_f32_slice(f32_slice);
-
-    let shape: Vec<usize> = input.shape().to_vec();
-    let fp16_array = ndarray::ArrayD::from_shape_vec(shape, fp16_data)?;
-    let input_tensor = Tensor::from_array(fp16_array)?;
-    let mut binding = session.create_binding()?;
-    binding.bind_input(input_name, &input_tensor)?;
-    let output_memory = inference_output_memory_info(session)?;
-    binding.bind_output_to_device(output_name, &output_memory)?;
-    let outputs = session.run_binding(&binding)?;
-    ensure_inference_output_memory(&outputs[output_name], &output_memory)?;
-    let output_view = outputs[output_name].try_extract_array::<f16>()?;
-
-    let fp16_owned;
-    let fp16_slice = if let Some(s) = output_view.as_slice() {
-        s
-    } else {
-        fp16_owned = output_view.as_standard_layout().into_owned();
-        fp16_owned.as_slice().unwrap()
-    };
-    let mut f32_data = vec![0.0f32; fp16_slice.len()];
-    fp16_slice.convert_to_f32_slice(&mut f32_data);
-
-    let f32_array = ndarray::ArrayD::from_shape_vec(output_view.shape().to_vec(), f32_data)?;
-    Ok(f32_array)
-}
-
 fn run_direct_fp16_inference(
     session: &mut Session,
     input: &ndarray::ArrayD<f16>,
@@ -1458,17 +1427,13 @@ fn run_direct_fp16_inference(
 fn run_tiled_inference(
     session_arc: &Arc<Mutex<Session>>,
     input: &Array4<f32>,
-    orig_h: usize,
-    orig_w: usize,
+    shape: InferenceShape,
     tile_size: usize,
-    scale: usize,
     use_iobinding: bool,
-    input_name: &str,
-    output_name: &str,
-    is_fp16: bool,
+    bindings: ModelBindings<'_>,
 ) -> Result<Array4<f32>> {
-    let out_h = orig_h * scale;
-    let out_w = orig_w * scale;
+    let out_h = shape.height * shape.scale;
+    let out_w = shape.width * shape.scale;
     let mut output = Array4::<f32>::zeros((1, 3, out_h, out_w));
 
     let overlap = DEFAULT_TILE_OVERLAP;
@@ -1486,9 +1451,9 @@ fn run_tiled_inference(
     );
 
     let mut y = 0usize;
-    while y < orig_h {
+    while y < shape.height {
         let mut x = 0usize;
-        while x < orig_w {
+        while x < shape.width {
             let in_y0 = y.saturating_sub(overlap);
             let in_x0 = x.saturating_sub(overlap);
             let in_y1 = (y + tile_size).min(padded_h);
@@ -1518,28 +1483,31 @@ fn run_tiled_inference(
 
             let tile_output_owned = {
                 let mut session = session_arc.lock().unwrap();
-                if is_fp16 {
-                    run_fp16_inference(&mut session, &tile_input, input_name, output_name)?
-                } else if use_iobinding {
+                if use_iobinding {
                     let input_tensor = Tensor::from_array(tile_input)?;
-                    run_with_iobinding(&mut session, input_name, &input_tensor, output_name)?
+                    run_with_iobinding(
+                        &mut session,
+                        bindings.input,
+                        &input_tensor,
+                        bindings.output,
+                    )?
                 } else {
                     let input_tensor = Tensor::from_array(tile_input)?;
-                    let outputs = session.run(ort::inputs![input_name => &input_tensor])?;
-                    let output_view = outputs[output_name].try_extract_array::<f32>()?;
+                    let outputs = session.run(ort::inputs![bindings.input => &input_tensor])?;
+                    let output_view = outputs[bindings.output].try_extract_array::<f32>()?;
                     output_view.to_owned()
                 }
             };
 
-            let out_y0 = y * scale;
-            let out_x0 = x * scale;
-            let crop_y0 = (y - in_y0) * scale;
-            let crop_x0 = (x - in_x0) * scale;
+            let out_y0 = y * shape.scale;
+            let out_x0 = x * shape.scale;
+            let crop_y0 = (y - in_y0) * shape.scale;
+            let crop_x0 = (x - in_x0) * shape.scale;
 
-            let usable_h = (tile_h - (y - in_y0)).min(orig_h - y);
-            let usable_w = (tile_w - (x - in_x0)).min(orig_w - x);
-            let out_tile_h = usable_h * scale;
-            let out_tile_w = usable_w * scale;
+            let usable_h = (tile_h - (y - in_y0)).min(shape.height - y);
+            let usable_w = (tile_w - (x - in_x0)).min(shape.width - x);
+            let out_tile_h = usable_h * shape.scale;
+            let out_tile_w = usable_w * shape.scale;
 
             let end_y = (out_y0 + out_tile_h).min(out_h);
             let end_x = (out_x0 + out_tile_w).min(out_w);
@@ -1598,15 +1566,12 @@ fn run_single_f16_inference(
 fn run_tiled_f16_inference(
     session_arc: &Arc<Mutex<Session>>,
     input: &ndarray::ArrayD<f16>,
-    orig_h: usize,
-    orig_w: usize,
+    shape: InferenceShape,
     tile_size: usize,
-    scale: usize,
-    input_name: &str,
-    output_name: &str,
+    bindings: ModelBindings<'_>,
 ) -> Result<ndarray::ArrayD<f16>> {
-    let out_h = orig_h * scale;
-    let out_w = orig_w * scale;
+    let out_h = shape.height * shape.scale;
+    let out_w = shape.width * shape.scale;
     let mut output = ndarray::ArrayD::from_elem(ndarray::IxDyn(&[1, 3, out_h, out_w]), f16::ZERO);
 
     let overlap = DEFAULT_TILE_OVERLAP;
@@ -1624,9 +1589,9 @@ fn run_tiled_f16_inference(
     );
 
     let mut y = 0usize;
-    while y < orig_h {
+    while y < shape.height {
         let mut x = 0usize;
-        while x < orig_w {
+        while x < shape.width {
             let in_y0 = y.saturating_sub(overlap);
             let in_x0 = x.saturating_sub(overlap);
             let in_y1 = (y + tile_size).min(padded_h);
@@ -1651,18 +1616,23 @@ fn run_tiled_f16_inference(
 
             let tile_output_owned = {
                 let mut session = session_arc.lock().unwrap();
-                run_direct_fp16_inference(&mut session, &tile_input, input_name, output_name)?
+                run_direct_fp16_inference(
+                    &mut session,
+                    &tile_input,
+                    bindings.input,
+                    bindings.output,
+                )?
             };
 
-            let out_y0 = y * scale;
-            let out_x0 = x * scale;
-            let crop_y0 = (y - in_y0) * scale;
-            let crop_x0 = (x - in_x0) * scale;
+            let out_y0 = y * shape.scale;
+            let out_x0 = x * shape.scale;
+            let crop_y0 = (y - in_y0) * shape.scale;
+            let crop_x0 = (x - in_x0) * shape.scale;
 
-            let usable_h = (tile_h - (y - in_y0)).min(orig_h - y);
-            let usable_w = (tile_w - (x - in_x0)).min(orig_w - x);
-            let out_tile_h = usable_h * scale;
-            let out_tile_w = usable_w * scale;
+            let usable_h = (tile_h - (y - in_y0)).min(shape.height - y);
+            let usable_w = (tile_w - (x - in_x0)).min(shape.width - x);
+            let out_tile_h = usable_h * shape.scale;
+            let out_tile_w = usable_w * shape.scale;
 
             let end_y = (out_y0 + out_tile_h).min(out_h);
             let end_x = (out_x0 + out_tile_w).min(out_w);
@@ -1827,8 +1797,8 @@ mod tests {
     #[test]
     fn test_roundtrip_conversion() {
         let mut data = vec![0u8; 4 * 4 * 3];
-        for i in 0..48 {
-            data[i] = (i * 5) as u8;
+        for (i, value) in data.iter_mut().enumerate() {
+            *value = (i * 5) as u8;
         }
         let (arr, h, w) = cpu_rgb_to_nchw(&data, 4, 4, 8).unwrap();
         assert_eq!(h, 4);
@@ -2213,8 +2183,8 @@ mod tests {
     #[test]
     fn test_preprocess_postprocess_roundtrip() {
         let mut input_data = vec![0u8; 4 * 4 * 3];
-        for i in 0..48 {
-            input_data[i] = (i * 5) as u8;
+        for (i, value) in input_data.iter_mut().enumerate() {
+            *value = (i * 5) as u8;
         }
         let frame = Frame::CpuRgb {
             data: input_data.clone(),
@@ -2313,8 +2283,8 @@ mod tests {
     #[test]
     fn test_f16_roundtrip() {
         let mut data = vec![0u8; 4 * 4 * 3];
-        for i in 0..48 {
-            data[i] = (i * 5) as u8;
+        for (i, value) in data.iter_mut().enumerate() {
+            *value = (i * 5) as u8;
         }
         let (arr, h, w) = cpu_rgb_to_f16_nchw(&data, 4, 4).unwrap();
         assert_eq!(h, 4);

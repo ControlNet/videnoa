@@ -52,6 +52,7 @@ const INPUT_TIMESTEP: &str = "timestep";
 /// Single concatenated input name for v4.22+ models
 const INPUT_CONCAT: &str = "input";
 const OUTPUT_NAME: &str = "output";
+type PreprocessedPair = (Array4<f32>, Array4<f32>, usize, usize, bool);
 
 /// ONNX model input format detected at load time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,11 +162,7 @@ impl FrameInterpolationNode {
         })
     }
 
-    fn preprocess_pair(
-        &mut self,
-        frame0: &Frame,
-        frame1: &Frame,
-    ) -> Result<(Array4<f32>, Array4<f32>, usize, usize, bool)> {
+    fn preprocess_pair(&mut self, frame0: &Frame, frame1: &Frame) -> Result<PreprocessedPair> {
         match (frame0, frame1) {
             (
                 Frame::CpuRgb {
@@ -327,7 +324,6 @@ impl FrameInterpolationNode {
                         orig_h,
                         orig_w,
                         use_iobinding,
-                        model_format,
                     )?;
                     inference_ms_total += t_inf.elapsed().as_secs_f64() * 1000.0;
 
@@ -778,8 +774,8 @@ impl FrameProcessor for FrameInterpolationPostprocess {
         let rgb = nchw_to_cpu_rgb(&arr, h, w)?;
         Ok(Frame::CpuRgb {
             data: rgb,
-            width: width,
-            height: height,
+            width,
+            height,
             bit_depth: 8,
         })
     }
@@ -1210,7 +1206,6 @@ fn run_interpolation(
     orig_h: usize,
     orig_w: usize,
     use_iobinding: bool,
-    _model_format: ModelFormat,
 ) -> Result<Array4<f32>> {
     let t0 = std::time::Instant::now();
     let output_owned = run_three_input(session_arc, img0, img1, timestep, use_iobinding)?;
@@ -1598,7 +1593,7 @@ mod tests {
     fn test_cpu_rgb_to_nchw_data_mismatch() {
         let data = vec![0u8; 10];
         let result = cpu_rgb_to_nchw(&data, 32, 32, 8);
-        let err = result.err().expect("should fail");
+        let err = result.expect_err("should fail");
         assert!(err.to_string().contains("Data length mismatch"));
     }
 
@@ -1680,8 +1675,8 @@ mod tests {
     #[test]
     fn test_roundtrip_conversion_aligned() {
         let mut data = vec![0u8; 32 * 32 * 3];
-        for i in 0..data.len() {
-            data[i] = (i % 256) as u8;
+        for (i, value) in data.iter_mut().enumerate() {
+            *value = (i % 256) as u8;
         }
         let (arr, h, w) = cpu_rgb_to_nchw(&data, 32, 32, 8).unwrap();
         let restored = nchw_to_cpu_rgb(&arr, h, w).unwrap();
