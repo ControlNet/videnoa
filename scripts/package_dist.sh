@@ -250,6 +250,34 @@ validate_bundle_layout() {
   fi
 }
 
+validate_linux_runtime_libs() {
+  local lib_dir="$1"
+  local required=(
+    "libcudnn.so.9"
+    "libcudnn_adv.so.9"
+    "libcudnn_cnn.so.9"
+    "libcudnn_engines_precompiled.so.9"
+    "libcudnn_engines_runtime_compiled.so.9"
+    "libcudnn_graph.so.9"
+    "libcudnn_heuristic.so.9"
+    "libcudnn_ops.so.9"
+  )
+
+  local missing=()
+  local name
+  for name in "${required[@]}"; do
+    if [[ ! -f "$lib_dir/$name" ]]; then
+      missing+=("$name")
+    fi
+  done
+
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    printf '[package_dist][error] Linux runtime bundle is missing required cuDNN libraries:\n' >&2
+    printf '  - %s\n' "${missing[@]}" >&2
+    die "Linux runtime library validation failed"
+  fi
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --repo)
@@ -319,6 +347,7 @@ case "$PLATFORM" in
     BIN_ASSET="bin_linux64.zip"
     LIB_PART_1="lib_linux64.zip.001"
     LIB_PART_2="lib_linux64.zip.002"
+    CUDNN_ASSET="cudnn_linux64_9.14.zip"
     EXE_SUFFIX=""
     DIST_BINARY_NAME="videnoa"
     DIST_DESKTOP_BINARY_NAME="videnoa-desktop"
@@ -327,6 +356,7 @@ case "$PLATFORM" in
     BIN_ASSET="bin_win64.zip"
     LIB_PART_1="lib_win64.zip.001"
     LIB_PART_2="lib_win64.zip.002"
+    CUDNN_ASSET=""
     EXE_SUFFIX=".exe"
     DIST_BINARY_NAME="videnoa.exe"
     DIST_DESKTOP_BINARY_NAME="videnoa-desktop.exe"
@@ -390,6 +420,9 @@ download_release_asset "$BIN_ASSET" "$DOWNLOAD_DIR/$BIN_ASSET"
 download_release_asset "$LIB_PART_1" "$DOWNLOAD_DIR/$LIB_PART_1"
 download_release_asset "$LIB_PART_2" "$DOWNLOAD_DIR/$LIB_PART_2"
 download_release_asset "models.zip" "$DOWNLOAD_DIR/models.zip"
+if [[ -n "$CUDNN_ASSET" ]]; then
+  download_release_asset "$CUDNN_ASSET" "$DOWNLOAD_DIR/$CUDNN_ASSET"
+fi
 
 log "merging split lib archive"
 MERGED_LIB_ZIP="$DOWNLOAD_DIR/lib_${PLATFORM}.zip"
@@ -416,6 +449,9 @@ if [[ "$PLATFORM" == "linux64" ]]; then
 fi
 
 extract_zip_into_dir "$MERGED_LIB_ZIP" "lib" "$BUNDLE_DIR/lib"
+if [[ -n "$CUDNN_ASSET" ]]; then
+  extract_zip_into_dir "$DOWNLOAD_DIR/$CUDNN_ASSET" "lib" "$BUNDLE_DIR/lib"
+fi
 extract_zip_into_dir "$DOWNLOAD_DIR/$BIN_ASSET" "bin" "$BUNDLE_DIR/bin"
 extract_zip_into_dir "$DOWNLOAD_DIR/models.zip" "models" "$BUNDLE_DIR/models"
 
@@ -424,5 +460,8 @@ cp "$CLONE_DIR/README.md" "$BUNDLE_DIR/README.md"
 cp "$CLONE_DIR/LICENSE" "$BUNDLE_DIR/LICENSE"
 
 validate_bundle_layout "$BUNDLE_DIR" "$DIST_BINARY_NAME" "$DIST_DESKTOP_BINARY_NAME"
+if [[ "$PLATFORM" == "linux64" ]]; then
+  validate_linux_runtime_libs "$BUNDLE_DIR/lib"
+fi
 
 log "bundle created successfully: $BUNDLE_DIR"
