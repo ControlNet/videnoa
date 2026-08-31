@@ -180,8 +180,10 @@ fn prepend_candidate_dirs_to_path(dirs: &[PathBuf]) {
 /// by `libonnxruntime.so`, which is loaded later by the ORT crate itself.
 ///
 ///   0 — CUDA runtime (libcudart, libcublas, libcublasLt, libcufft, libcurand)
-///   1 — cuDNN (libcudnn*)
-///   2 — TensorRT (libnvinfer*, libnvonnxparser*)
+///   1 — cuDNN core and graph
+///   2 — cuDNN engines, heuristics, and ops
+///   3 — cuDNN adv and cnn
+///   4 — TensorRT (libnvinfer*, libnvonnxparser*)
 #[cfg(unix)]
 fn load_priority(name: &str) -> Option<u8> {
     let name = name.to_ascii_lowercase();
@@ -192,10 +194,17 @@ fn load_priority(name: &str) -> Option<u8> {
         || name.starts_with("libcurand")
     {
         Some(0)
-    } else if name.starts_with("libcudnn") {
+    } else if name.starts_with("libcudnn.so") || name.starts_with("libcudnn_graph") {
         Some(1)
-    } else if name.starts_with("libnvinfer") || name.starts_with("libnvonnxparser") {
+    } else if name.starts_with("libcudnn_engines")
+        || name.starts_with("libcudnn_heuristic")
+        || name.starts_with("libcudnn_ops")
+    {
         Some(2)
+    } else if name.starts_with("libcudnn_adv") || name.starts_with("libcudnn_cnn") {
+        Some(3)
+    } else if name.starts_with("libnvinfer") || name.starts_with("libnvonnxparser") {
+        Some(4)
     } else {
         None
     }
@@ -302,13 +311,18 @@ unsafe fn load_library(path: &Path) {
     }
 }
 
+const fn should_preload_discovered_runtime_libs(explicit_ort_path: bool) -> bool {
+    !explicit_ort_path
+}
+
 /// Auto-detect and configure runtime library paths before ORT initialization.
 ///
 /// Call this at the very start of `main()`, before any ORT or tracing init.
 pub fn setup_runtime_libs() {
     let dirs = candidate_lib_dirs();
+    let explicit_ort_path = env::var_os("ORT_DYLIB_PATH").is_some();
 
-    if env::var_os("ORT_DYLIB_PATH").is_none() {
+    if !explicit_ort_path {
         if let Some(path) = find_ort_dylib_in_dirs(&dirs) {
             env::set_var("ORT_DYLIB_PATH", &path);
         }
@@ -317,7 +331,9 @@ pub fn setup_runtime_libs() {
         prepend_candidate_dirs_to_path(&dirs);
     }
 
-    preload_libs_from_dirs(&dirs);
+    if should_preload_discovered_runtime_libs(explicit_ort_path) {
+        preload_libs_from_dirs(&dirs);
+    }
 }
 
 /// Log which runtime libraries were resolved, for diagnostics.
@@ -362,6 +378,12 @@ mod tests {
     }
 
     #[test]
+    fn explicit_ort_path_owns_runtime_dependencies() {
+        assert!(!should_preload_discovered_runtime_libs(true));
+        assert!(should_preload_discovered_runtime_libs(false));
+    }
+
+    #[test]
     fn candidate_bin_dirs_includes_cwd_bin() {
         let dirs = candidate_bin_dirs();
         if let Ok(cwd) = env::current_dir() {
@@ -396,6 +418,19 @@ mod tests {
         assert!(load_priority("libcudart.so.12") < load_priority("libcudnn.so.9"));
         assert!(load_priority("libcublas.so.12") < load_priority("libcudnn_ops.so.9"));
         assert!(load_priority("libcudnn.so.9") < load_priority("libnvinfer.so.10"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_priority_orders_cudnn_split_library_dependencies() {
+        assert!(
+            load_priority("libcudnn_graph.so.9")
+                < load_priority("libcudnn_engines_precompiled.so.9")
+        );
+        assert!(load_priority("libcudnn_graph.so.9") < load_priority("libcudnn_ops.so.9"));
+        assert!(load_priority("libcudnn_ops.so.9") < load_priority("libcudnn_adv.so.9"));
+        assert!(load_priority("libcudnn_ops.so.9") < load_priority("libcudnn_cnn.so.9"));
+        assert!(load_priority("libcudnn_adv.so.9") < load_priority("libnvinfer.so.10"));
     }
 
     #[cfg(windows)]
