@@ -354,7 +354,7 @@ fn filename_from_content_disposition(headers: &reqwest::header::HeaderMap) -> Op
 fn filename_from_url_basename(url: &Url) -> Option<String> {
     let raw = url
         .path_segments()
-        .and_then(|segments| segments.filter(|segment| !segment.is_empty()).next_back())?;
+        .and_then(|mut segments| segments.rfind(|segment| !segment.is_empty()))?;
 
     let decoded = percent_decode(raw)
         .map(|bytes| String::from_utf8_lossy(bytes.as_slice()).into_owned())
@@ -378,8 +378,7 @@ fn sanitize_filename_candidate(raw: &str) -> Option<String> {
     let normalized = no_controls.replace('\\', "/");
     let leaf = normalized
         .split('/')
-        .filter(|segment| !segment.is_empty() && *segment != "." && *segment != "..")
-        .next_back()
+        .rfind(|segment| !segment.is_empty() && *segment != "." && *segment != "..")
         .unwrap_or("");
 
     let mut cleaned = String::with_capacity(leaf.len());
