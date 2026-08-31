@@ -8,7 +8,9 @@ use crate::debug_event::{build_print_debug_value_event, NodeDebugEventCallback};
 use crate::graph::PipelineGraph;
 use crate::node::ExecutionContext;
 use crate::registry::NodeRegistry;
-use crate::streaming_executor::{FrameSink, StreamingExecutor, DEFAULT_BUFFER_SIZE};
+use crate::streaming_executor::{
+    FrameSink, PipelineFrameCounts, ProgressCallback, StreamingExecutor, DEFAULT_BUFFER_SIZE,
+};
 use crate::types::{Chapter, Frame, MediaMetadata, PortData, PortType, StreamInfo};
 
 impl FrameSink for Box<dyn FrameSink> {
@@ -35,7 +37,7 @@ impl SequentialExecutor {
         graph: &PipelineGraph,
         registry: &NodeRegistry,
         compile_ctx: Option<&dyn CompileContext>,
-        progress_callback: Option<Box<dyn Fn(u64, Option<u64>, Option<u64>) + Send>>,
+        progress_callback: Option<ProgressCallback>,
         cancel_rx: Option<tokio::sync::watch::Receiver<bool>>,
     ) -> Result<HashMap<String, HashMap<String, PortData>>> {
         Self::execute_with_context_and_debug_hook(
@@ -52,7 +54,7 @@ impl SequentialExecutor {
         graph: &PipelineGraph,
         registry: &NodeRegistry,
         compile_ctx: Option<&dyn CompileContext>,
-        progress_callback: Option<Box<dyn Fn(u64, Option<u64>, Option<u64>) + Send>>,
+        progress_callback: Option<ProgressCallback>,
         cancel_rx: Option<tokio::sync::watch::Receiver<bool>>,
         mut node_debug_callback: Option<&mut NodeDebugEventCallback<'_>>,
     ) -> Result<HashMap<String, HashMap<String, PortData>>> {
@@ -80,8 +82,7 @@ impl SequentialExecutor {
                 compiled.decoder,
                 compiled.stages,
                 compiled.encoder,
-                compiled.total_frames,
-                compiled.total_output_frames,
+                PipelineFrameCounts::new(compiled.total_frames, compiled.total_output_frames),
                 cancel_rx,
                 progress_callback,
             );

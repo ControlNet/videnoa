@@ -25,6 +25,19 @@ use parallel_interpolator::{run_parallel_interpolator_loop, ParallelInterpolator
 use parallel_processor::{run_parallel_processor_loop, ParallelProcessorRun};
 
 pub const DEFAULT_BUFFER_SIZE: usize = 4;
+pub type ProgressCallback = Box<dyn Fn(u64, Option<u64>, Option<u64>) + Send>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PipelineFrameCounts {
+    pub input: Option<u64>,
+    pub output: Option<u64>,
+}
+
+impl PipelineFrameCounts {
+    pub const fn new(input: Option<u64>, output: Option<u64>) -> Self {
+        Self { input, output }
+    }
+}
 
 pub struct IndexedFrame {
     pub index: u64,
@@ -103,7 +116,7 @@ impl StreamingExecutor {
         encoder: E,
         total_frames: Option<u64>,
         cancel: watch::Receiver<bool>,
-        progress_callback: Option<Box<dyn Fn(u64, Option<u64>, Option<u64>) + Send>>,
+        progress_callback: Option<ProgressCallback>,
     ) -> Result<()>
     where
         D: Iterator<Item = Result<Frame>> + Send + 'static,
@@ -118,8 +131,7 @@ impl StreamingExecutor {
             decoder,
             stages,
             encoder,
-            total_frames,
-            total_frames,
+            PipelineFrameCounts::new(total_frames, total_frames),
             cancel,
             progress_callback,
         )
@@ -131,10 +143,9 @@ impl StreamingExecutor {
         decoder: D,
         stages: Vec<PipelineStage>,
         encoder: E,
-        total_frames: Option<u64>,
-        total_output_frames: Option<u64>,
+        frame_counts: PipelineFrameCounts,
         cancel: watch::Receiver<bool>,
-        progress_callback: Option<Box<dyn Fn(u64, Option<u64>, Option<u64>) + Send>>,
+        progress_callback: Option<ProgressCallback>,
     ) -> Result<()>
     where
         D: Iterator<Item = Result<Frame>> + Send + 'static,
@@ -172,7 +183,7 @@ impl StreamingExecutor {
                         processor,
                         upstream_rx,
                         next_tx,
-                        total_frames,
+                        frame_counts.input,
                         cancel_state.clone(),
                         cancel_tx.clone(),
                         error_tx.clone(),
@@ -187,7 +198,7 @@ impl StreamingExecutor {
                         processors,
                         input: upstream_rx,
                         output: next_tx,
-                        total_frames,
+                        total_frames: frame_counts.input,
                         cancel_state: cancel_state.clone(),
                         stage_name,
                     };
@@ -202,7 +213,7 @@ impl StreamingExecutor {
                         interpolator,
                         upstream_rx,
                         next_tx,
-                        total_frames,
+                        frame_counts.input,
                         cancel_state.clone(),
                         cancel_tx.clone(),
                         error_tx.clone(),
@@ -217,7 +228,7 @@ impl StreamingExecutor {
                         interpolators,
                         input: upstream_rx,
                         output: next_tx,
-                        total_frames,
+                        total_frames: frame_counts.input,
                         cancel_state: cancel_state.clone(),
                         stage_name,
                     };
@@ -235,8 +246,7 @@ impl StreamingExecutor {
         handles.push(spawn_encoder_stage(
             encoder,
             upstream_rx,
-            total_output_frames,
-            total_frames,
+            frame_counts,
             progress_callback,
             cancel_state.clone(),
             cancel_tx.clone(),
@@ -440,9 +450,8 @@ fn spawn_parallel_interpolator_stage(
 fn spawn_encoder_stage<E>(
     mut encoder: E,
     input: mpsc::Receiver<IndexedFrame>,
-    total_output_frames: Option<u64>,
-    total_input_frames: Option<u64>,
-    progress_callback: Option<Box<dyn Fn(u64, Option<u64>, Option<u64>) + Send>>,
+    frame_counts: PipelineFrameCounts,
+    progress_callback: Option<ProgressCallback>,
     cancel_state: Arc<AtomicBool>,
     cancel_tx: watch::Sender<bool>,
     error_tx: mpsc::UnboundedSender<anyhow::Error>,
@@ -454,8 +463,7 @@ where
         let result = run_encoder_loop(
             &mut encoder,
             input,
-            total_output_frames,
-            total_input_frames,
+            frame_counts,
             progress_callback,
             cancel_state.clone(),
         );
@@ -726,9 +734,8 @@ fn run_interpolator_loop(
 fn run_encoder_loop<E>(
     encoder: &mut E,
     mut input: mpsc::Receiver<IndexedFrame>,
-    total_output_frames: Option<u64>,
-    total_input_frames: Option<u64>,
-    progress_callback: Option<Box<dyn Fn(u64, Option<u64>, Option<u64>) + Send>>,
+    frame_counts: PipelineFrameCounts,
+    progress_callback: Option<ProgressCallback>,
     cancel_state: Arc<AtomicBool>,
 ) -> Result<()>
 where
@@ -758,7 +765,7 @@ where
         written = written.saturating_add(1);
 
         if let Some(callback) = progress_callback.as_ref() {
-            callback(written, total_output_frames, total_input_frames);
+            callback(written, frame_counts.output, frame_counts.input);
         }
     }
 
@@ -1164,7 +1171,7 @@ mod tests {
             .await;
 
         assert!(result.is_err(), "pipeline should fail");
-        let error_message = result.err().expect("should be Err").to_string();
+        let error_message = result.expect_err("should be Err").to_string();
         assert!(
             error_message.contains("processor stage 'failing' failed"),
             "unexpected error message: {error_message}"
@@ -1208,7 +1215,14 @@ mod tests {
         let (_cancel_tx, cancel_rx) = watch::channel(false);
 
         executor
-            .execute_pipeline_stages(frames, stages, sink, Some(10), Some(19), cancel_rx, None)
+            .execute_pipeline_stages(
+                frames,
+                stages,
+                sink,
+                PipelineFrameCounts::new(Some(10), Some(19)),
+                cancel_rx,
+                None,
+            )
             .await
             .expect("pipeline with interpolator should complete");
 
@@ -1229,13 +1243,12 @@ mod tests {
 
         let progress_state = Arc::new(Mutex::new(Vec::new()));
         let progress_state_clone = progress_state.clone();
-        let callback: Box<dyn Fn(u64, Option<u64>, Option<u64>) + Send> =
-            Box::new(move |current, total_output, total_input| {
-                progress_state_clone
-                    .lock()
-                    .expect("progress mutex poisoned")
-                    .push((current, total_output, total_input));
-            });
+        let callback: ProgressCallback = Box::new(move |current, total_output, total_input| {
+            progress_state_clone
+                .lock()
+                .expect("progress mutex poisoned")
+                .push((current, total_output, total_input));
+        });
 
         let sink_state = SharedSinkState::new();
         let sink = CollectingSink::new(sink_state);

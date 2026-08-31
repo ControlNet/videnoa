@@ -99,7 +99,14 @@ async fn test_parallel_interpolator_preserves_order_and_bounds_work() -> Result<
 
     // When
     executor
-        .execute_pipeline_stages(frames, stages, sink, Some(6), Some(11), cancel_rx, None)
+        .execute_pipeline_stages(
+            frames,
+            stages,
+            sink,
+            PipelineFrameCounts::new(Some(6), Some(11)),
+            cancel_rx,
+            None,
+        )
         .await?;
 
     // Then
@@ -170,7 +177,14 @@ async fn test_parallel_interpolator_propagates_worker_error() -> Result<()> {
 
     // When
     let result = executor
-        .execute_pipeline_stages(frames, stages, sink, Some(8), Some(15), cancel_rx, None)
+        .execute_pipeline_stages(
+            frames,
+            stages,
+            sink,
+            PipelineFrameCounts::new(Some(8), Some(15)),
+            cancel_rx,
+            None,
+        )
         .await;
 
     // Then

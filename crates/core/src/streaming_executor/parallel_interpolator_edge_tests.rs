@@ -45,8 +45,7 @@ async fn test_parallel_interpolator_handles_empty_input() -> Result<()> {
             std::iter::empty::<Result<Frame>>(),
             stages,
             sink,
-            Some(0),
-            Some(0),
+            PipelineFrameCounts::new(Some(0), Some(0)),
             cancel_rx,
             None,
         )
@@ -75,8 +74,7 @@ async fn test_parallel_interpolator_emits_single_input_frame() -> Result<()> {
             std::iter::once(Ok(sample_frame(7))),
             stages,
             sink,
-            Some(1),
-            Some(1),
+            PipelineFrameCounts::new(Some(1), Some(1)),
             cancel_rx,
             None,
         )
@@ -118,7 +116,14 @@ async fn test_parallel_interpolator_cancels_with_both_lanes_active() -> Result<(
 
     // When
     executor
-        .execute_pipeline_stages(frames, stages, sink, Some(6), Some(11), cancel_rx, None)
+        .execute_pipeline_stages(
+            frames,
+            stages,
+            sink,
+            PipelineFrameCounts::new(Some(6), Some(11)),
+            cancel_rx,
+            None,
+        )
         .await?;
 
     // Then

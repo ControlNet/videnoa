@@ -145,7 +145,14 @@ async fn parallel_processor_preserves_order_and_bounds_work() -> Result<()> {
     let (_cancel_tx, cancel_rx) = watch::channel(false);
 
     executor
-        .execute_pipeline_stages(frames, stages, sink, Some(8), Some(8), cancel_rx, None)
+        .execute_pipeline_stages(
+            frames,
+            stages,
+            sink,
+            PipelineFrameCounts::new(Some(8), Some(8)),
+            cancel_rx,
+            None,
+        )
         .await?;
 
     assert_eq!(state.values(), vec![10, 11, 12, 13, 14, 15, 16, 17]);
@@ -172,7 +179,14 @@ async fn parallel_processor_propagates_worker_error() -> Result<()> {
     let (_cancel_tx, cancel_rx) = watch::channel(false);
 
     let result = executor
-        .execute_pipeline_stages(frames, stages, sink, Some(8), Some(8), cancel_rx, None)
+        .execute_pipeline_stages(
+            frames,
+            stages,
+            sink,
+            PipelineFrameCounts::new(Some(8), Some(8)),
+            cancel_rx,
+            None,
+        )
         .await;
 
     let error = result.expect_err("parallel processor worker failure should stop pipeline");
@@ -213,7 +227,14 @@ async fn parallel_processor_cancels_with_all_lanes_active() -> Result<()> {
     });
 
     executor
-        .execute_pipeline_stages(frames, stages, sink, Some(8), Some(8), cancel_rx, None)
+        .execute_pipeline_stages(
+            frames,
+            stages,
+            sink,
+            PipelineFrameCounts::new(Some(8), Some(8)),
+            cancel_rx,
+            None,
+        )
         .await?;
 
     assert!(
