@@ -141,7 +141,7 @@ jobs:
     if: needs.version-gate.outputs.publish == 'true'
     uses: ./.github/workflows/unittest.yaml
     with:
-      run_packaging_checks: false
+      run_packaging_checks: true
     permissions:
       contents: read
 
@@ -149,7 +149,7 @@ jobs:
     name: Package Linux release
     needs: [version-gate, quality-gate]
     if: needs.version-gate.outputs.publish == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     env:
       DIST_VERSION: ${{ needs.version-gate.outputs.version }}
       ARCHIVE_NAME: videnoa-linux64-${{ needs.version-gate.outputs.version }}.7z
@@ -169,6 +169,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            binutils \
             protobuf-compiler \
             p7zip-full \
             libglib2.0-dev \
@@ -180,6 +181,9 @@ jobs:
 
       - name: Package Linux distribution
         run: bash scripts/package_dist.sh --platform linux64 --release-tag misc --output-dir "$RUNNER_TEMP/dist-linux64" --source-dir "$GITHUB_WORKSPACE" --force
+
+      - name: Verify Linux runtime compatibility
+        run: bash scripts/check_linux_package_compat.sh "$RUNNER_TEMP/dist-linux64/videnoa"
 
       - name: Create split archive (2000MB volumes)
         run: |
