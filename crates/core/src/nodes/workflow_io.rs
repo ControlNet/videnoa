@@ -289,10 +289,12 @@ impl Node for WorkflowNode {
         // Build inner registry (same as outer — reuse the standard set)
         let registry = crate::registry::build_default_registry();
 
-        let mut inner_ctx = ExecutionContext::default();
-        inner_ctx.executing_workflows = ctx.executing_workflows.clone();
+        let mut inner_ctx = ExecutionContext {
+            executing_workflows: ctx.executing_workflows.clone(),
+            nesting_depth: ctx.nesting_depth + 1,
+            ..ExecutionContext::default()
+        };
         inner_ctx.executing_workflows.insert(path);
-        inner_ctx.nesting_depth = ctx.nesting_depth + 1;
 
         // Inject our inputs as params for the inner WorkflowInput node
         let mut inner_params = HashMap::new();
@@ -305,7 +307,7 @@ impl Node for WorkflowNode {
 
         // Collect results from the inner WorkflowOutput node
         let mut results = HashMap::new();
-        for (_node_id, node_outputs) in &outputs {
+        for node_outputs in outputs.values() {
             for (port_name, port_data) in node_outputs {
                 if self.interface_outputs.iter().any(|p| p.name == *port_name) {
                     results.insert(port_name.clone(), clone_port_data(port_data));
@@ -866,8 +868,10 @@ mod tests {
             interface_outputs: vec![],
         };
 
-        let mut ctx = ExecutionContext::default();
-        ctx.nesting_depth = 10;
+        let ctx = ExecutionContext {
+            nesting_depth: 10,
+            ..ExecutionContext::default()
+        };
 
         match node.execute(&HashMap::new(), &ctx) {
             Err(e) => assert!(
@@ -895,8 +899,10 @@ mod tests {
             interface_outputs: vec![make_port("x", PortType::Int, None)],
         };
 
-        let mut ctx = ExecutionContext::default();
-        ctx.nesting_depth = 9;
+        let ctx = ExecutionContext {
+            nesting_depth: 9,
+            ..ExecutionContext::default()
+        };
 
         let mut inputs = HashMap::new();
         inputs.insert("x".to_string(), PortData::Int(99));
