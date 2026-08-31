@@ -34,6 +34,7 @@ use crate::model_inspect::{self, ModelInspection};
 use crate::model_registry::{ModelEntry, ModelRegistry};
 use crate::nodes::compile_context::VideoCompileContext;
 use crate::registry::{register_all_nodes, NodeRegistry};
+use crate::streaming_executor::ProgressCallback;
 use persistence::JobsPersistence;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1730,7 +1731,7 @@ async fn list_workflows(State(state): State<AppState>) -> Json<Vec<WorkflowEntry
     if let Ok(read_dir) = std::fs::read_dir(dir) {
         for entry in read_dir.flatten() {
             let path = entry.path();
-            if !path.extension().is_some_and(|e| e == "json") {
+            if path.extension().is_none_or(|e| e != "json") {
                 continue;
             }
             if let Ok(contents) = std::fs::read_to_string(&path) {
@@ -1767,7 +1768,7 @@ async fn list_workflows(State(state): State<AppState>) -> Json<Vec<WorkflowEntry
             }
         }
     }
-    entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    entries.sort_by_key(|a| a.name.to_lowercase());
     Json(entries)
 }
 
@@ -2013,12 +2014,12 @@ async fn browse_fs(
         .filter(|s| !s.is_empty())
         .unwrap_or(".");
 
-    let resolved_path = if raw_path.starts_with('~') {
+    let resolved_path = if let Some(suffix) = raw_path.strip_prefix('~') {
         #[cfg(unix)]
         let home = std::env::var("HOME").unwrap_or_default();
         #[cfg(windows)]
         let home = std::env::var("USERPROFILE").unwrap_or_default();
-        format!("{home}{}", &raw_path[1..])
+        format!("{home}{suffix}")
     } else {
         raw_path.to_string()
     };
@@ -2393,7 +2394,7 @@ async fn run_job(state: AppState, job_id: String) {
                 let ws_tx_for_debug = ws_tx.clone();
 
                 let inner_for_cb = Arc::clone(&inner);
-                let progress_cb: Box<dyn Fn(u64, Option<u64>, Option<u64>) + Send> =
+                let progress_cb: ProgressCallback =
                     Box::new(move |current_frame, total_frames, _hint| {
                         let now = Instant::now();
                         let fps = {
@@ -4940,7 +4941,7 @@ mod tests {
         assert_eq!(json["op_count"], 1);
         assert_eq!(json["param_count"], 3);
         assert!(json["inputs"].as_array().unwrap().len() >= 2);
-        assert!(json["outputs"].as_array().unwrap().len() >= 1);
+        assert!(!json["outputs"].as_array().unwrap().is_empty());
         assert_eq!(json["nodes"][0]["op_type"], "Add");
 
         let _ = std::fs::remove_dir_all(&dir);
