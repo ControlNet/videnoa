@@ -36,6 +36,7 @@ pub struct ServerConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
+#[derive(Default)]
 pub struct PerformanceConfig {
     pub profiling_enabled: bool,
 }
@@ -79,14 +80,6 @@ impl Default for ServerConfig {
         Self {
             port: 3000,
             host: "0.0.0.0".to_string(),
-        }
-    }
-}
-
-impl Default for PerformanceConfig {
-    fn default() -> Self {
-        Self {
-            profiling_enabled: false,
         }
     }
 }
