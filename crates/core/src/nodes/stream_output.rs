@@ -36,9 +36,9 @@ fn detect_format_from_url(url: &str) -> Option<&'static str> {
     let lower = url.to_ascii_lowercase();
     if lower.starts_with("rtmp://") || lower.starts_with("rtmps://") {
         Some("flv")
-    } else if lower.starts_with("http://") || lower.starts_with("https://") {
-        Some("mpegts")
-    } else if lower.starts_with("srt://")
+    } else if lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("srt://")
         || lower.starts_with("udp://")
         || lower.starts_with("rtp://")
     {
@@ -619,7 +619,7 @@ mod tests {
 
     #[test]
     fn test_default_trait() {
-        let node = StreamOutputNode::default();
+        let node = StreamOutputNode;
         assert_eq!(node.node_type(), "stream_output");
     }
 }
