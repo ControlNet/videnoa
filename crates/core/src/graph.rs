@@ -12,6 +12,9 @@ use crate::node::PortDefinition;
 use crate::registry::NodeRegistry;
 use crate::types::PortType;
 
+type PortDefinitions = (Vec<PortDefinition>, Vec<PortDefinition>);
+type NodePortDefinitions = HashMap<NodeIndex, PortDefinitions>;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkflowInterface {
     pub inputs: Vec<WorkflowPort>,
@@ -267,10 +270,7 @@ impl PipelineGraph {
             .collect()
     }
 
-    fn collect_port_definitions(
-        &self,
-        registry: &NodeRegistry,
-    ) -> Result<HashMap<NodeIndex, (Vec<PortDefinition>, Vec<PortDefinition>)>> {
+    fn collect_port_definitions(&self, registry: &NodeRegistry) -> Result<NodePortDefinitions> {
         let mut definitions = HashMap::new();
 
         for idx in self.graph.node_indices() {
@@ -891,7 +891,7 @@ mod tests {
             Some(&serde_json::json!([{"name": "name", "port_type": "Str"}]))
         );
         assert!(
-            graph.node(sink_idx).params.get("name").is_none(),
+            !graph.node(sink_idx).params.contains_key("name"),
             "non-WorkflowInput nodes should remain unchanged"
         );
     }

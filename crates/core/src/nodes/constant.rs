@@ -264,7 +264,7 @@ mod tests {
 
         let outputs = node.execute(&inputs, &ctx).unwrap();
         match outputs.get("value") {
-            Some(PortData::Float(v)) => assert!((v - 3.14).abs() < f64::EPSILON),
+            Some(PortData::Float(v)) => assert!((v - (314.0 / 100.0)).abs() < f64::EPSILON),
             _ => panic!("expected PortData::Float(3.14)"),
         }
     }

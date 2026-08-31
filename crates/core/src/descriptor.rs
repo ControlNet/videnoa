@@ -135,6 +135,7 @@ pub fn all_node_descriptors() -> Vec<NodeDescriptor> {
                     enum_options: Some(vec!["cuda".to_string(), "tensorrt".to_string()]),
                     ..param_opt("backend", "Str", serde_json::json!("cuda"))
                 },
+                param_opt("num_workers", "Int", serde_json::json!(1)),
             ],
             outputs: vec![
                 // stream
@@ -164,6 +165,7 @@ pub fn all_node_descriptors() -> Vec<NodeDescriptor> {
                     enum_options: Some(vec!["cuda".to_string(), "tensorrt".to_string()]),
                     ..param_opt("backend", "Str", serde_json::json!("cuda"))
                 },
+                param_opt("num_workers", "Int", serde_json::json!(1)),
             ],
             outputs: vec![stream("frames", "VideoFrames")],
         },
@@ -709,10 +711,32 @@ mod tests {
             .unwrap();
         assert_eq!(sr.display_name, "Super Resolution");
         assert_eq!(sr.category, "processing");
-        assert_eq!(sr.inputs.len(), 6);
+        assert_eq!(sr.inputs.len(), 7);
         assert_eq!(sr.outputs.len(), 1);
         let backend = sr.inputs.iter().find(|p| p.name == "backend").unwrap();
         assert!(backend.enum_options.is_some());
+        let workers = sr
+            .inputs
+            .iter()
+            .find(|p| p.name == "num_workers")
+            .expect("SuperResolution descriptor should expose num_workers");
+        assert_eq!(workers.default_value, Some(serde_json::json!(1)));
+    }
+
+    #[test]
+    fn test_frame_interpolation_descriptor_exposes_workers() {
+        let descs = all_node_descriptors();
+        let fi = descs
+            .iter()
+            .find(|d| d.node_type == "FrameInterpolation")
+            .expect("FrameInterpolation descriptor should exist");
+        let workers = fi
+            .inputs
+            .iter()
+            .find(|p| p.name == "num_workers")
+            .expect("FrameInterpolation descriptor should expose num_workers");
+
+        assert_eq!(workers.default_value, Some(serde_json::json!(1)));
     }
 
     #[test]

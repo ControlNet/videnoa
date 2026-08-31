@@ -30,6 +30,7 @@
         "params": {
           "model_path": "models/rife_v4.26.onnx",
           "multiplier": 3,
+          "num_workers": 2,
           "backend": "tensorrt"
         }
       },

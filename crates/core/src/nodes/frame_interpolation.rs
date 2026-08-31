@@ -11,9 +11,9 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use half::f16;
 use half::slice::HalfFloatSliceExt;
 use ndarray::{s, Array4, ArrayView4};
@@ -21,6 +21,8 @@ use ort::{
     session::Session,
     value::{Tensor, TensorRef},
 };
+use rayon::prelude::*;
+use rayon::{ThreadPool, ThreadPoolBuilder};
 use tracing::debug;
 
 use crate::node::{ExecutionContext, FrameProcessor, Node, PortDefinition};
@@ -31,8 +33,18 @@ use crate::nodes::backend::{
     build_session, ensure_inference_output_memory, inference_output_memory_info, InferenceBackend,
     SessionConfig,
 };
+use crate::nodes::worker_count::WorkerCount;
 
 const PAD_ALIGN: usize = 32;
+const RGB_PARALLEL_BANDS: usize = 2;
+static RGB_CONVERSION_POOL: LazyLock<std::result::Result<ThreadPool, String>> =
+    LazyLock::new(|| {
+        ThreadPoolBuilder::new()
+            .num_threads(RGB_PARALLEL_BANDS)
+            .thread_name(|index| format!("fi-rgb-{index}"))
+            .build()
+            .map_err(|error| error.to_string())
+    });
 
 const INPUT_IMG0: &str = "img0";
 const INPUT_IMG1: &str = "img1";
@@ -40,6 +52,7 @@ const INPUT_TIMESTEP: &str = "timestep";
 /// Single concatenated input name for v4.22+ models
 const INPUT_CONCAT: &str = "input";
 const OUTPUT_NAME: &str = "output";
+type PreprocessedPair = (Array4<f32>, Array4<f32>, usize, usize, bool);
 
 /// ONNX model input format detected at load time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +74,7 @@ pub enum ModelFormat {
 pub struct FrameInterpolationNode {
     session: Option<Arc<Mutex<Session>>>,
     multiplier: u32,
+    num_workers: WorkerCount,
     backend: InferenceBackend,
     use_iobinding: bool,
     trt_cache_dir: Option<PathBuf>,
@@ -75,6 +89,7 @@ pub struct FrameInterpolationNode {
     /// In consecutive pairs (frame_N, frame_N+1) → (frame_N+1, frame_N+2),
     /// frame_N+1's NCHW is identical — cache it to skip ~22ms of preprocessing.
     cached_img1_nchw: Option<(Array4<f32>, usize, usize)>, // (padded_array, orig_h, orig_w)
+    reuse_pair_cache: bool,
     /// When true, emit Frame::NchwF32 instead of CpuRgb.
     /// Set by compile_graph when downstream node can accept tensor input.
     pub emit_tensor: bool,
@@ -85,6 +100,7 @@ impl FrameInterpolationNode {
         Self {
             session: None,
             multiplier: 2,
+            num_workers: WorkerCount::ONE,
             backend: InferenceBackend::default(),
             use_iobinding: true,
             trt_cache_dir: None,
@@ -93,6 +109,7 @@ impl FrameInterpolationNode {
             nchw_buf_0: None,
             nchw_buf_1: None,
             cached_img1_nchw: None,
+            reuse_pair_cache: true,
             emit_tensor: false,
         }
     }
@@ -107,6 +124,15 @@ impl FrameInterpolationNode {
 
     pub fn timesteps(&self) -> Vec<f32> {
         timesteps_for_multiplier(self.multiplier)
+    }
+
+    pub fn num_workers(&self) -> usize {
+        self.num_workers.get()
+    }
+
+    pub(crate) fn disable_pair_cache(&mut self) {
+        self.reuse_pair_cache = false;
+        self.cached_img1_nchw = None;
     }
 
     /// Returns the detected ONNX model input format.
@@ -136,11 +162,7 @@ impl FrameInterpolationNode {
         })
     }
 
-    fn preprocess_pair(
-        &mut self,
-        frame0: &Frame,
-        frame1: &Frame,
-    ) -> Result<(Array4<f32>, Array4<f32>, usize, usize, bool)> {
+    fn preprocess_pair(&mut self, frame0: &Frame, frame1: &Frame) -> Result<PreprocessedPair> {
         match (frame0, frame1) {
             (
                 Frame::CpuRgb {
@@ -159,23 +181,27 @@ impl FrameInterpolationNode {
                 let orig_h = *h0 as usize;
                 let orig_w = *w0 as usize;
 
-                let img0 = match self.cached_img1_nchw.take() {
-                    Some((cached_arr, cached_h, cached_w))
-                        if cached_h == orig_h && cached_w == orig_w =>
-                    {
-                        debug!("RIFE cache hit: reusing cached img1 as img0");
-                        cached_arr
-                    }
-                    stale => {
-                        if stale.is_some() {
-                            debug!(
-                                "RIFE cache miss: dimension mismatch, computing img0 from scratch"
-                            );
-                        } else {
-                            debug!("RIFE cache miss: computing img0 from scratch");
+                let img0 = if self.reuse_pair_cache {
+                    match self.cached_img1_nchw.take() {
+                        Some((cached_arr, cached_h, cached_w))
+                            if cached_h == orig_h && cached_w == orig_w =>
+                        {
+                            debug!("RIFE cache hit: reusing cached img1 as img0");
+                            cached_arr
                         }
-                        cpu_rgb_to_nchw_buffered(data0, *w0, *h0, *bd0, self.nchw_buf_0.take())?
+                        stale => {
+                            if stale.is_some() {
+                                debug!(
+                                    "RIFE cache miss: dimension mismatch, computing img0 from scratch"
+                                );
+                            } else {
+                                debug!("RIFE cache miss: computing img0 from scratch");
+                            }
+                            cpu_rgb_to_nchw_buffered(data0, *w0, *h0, *bd0, self.nchw_buf_0.take())?
+                        }
                     }
+                } else {
+                    cpu_rgb_to_nchw_buffered(data0, *w0, *h0, *bd0, self.nchw_buf_0.take())?
                 };
 
                 let img1 = cpu_rgb_to_nchw_buffered(data1, *w1, *h1, *bd1, self.nchw_buf_1.take())?;
@@ -204,21 +230,23 @@ impl FrameInterpolationNode {
         let steps = self.timesteps();
 
         if scene_change {
-            if let Frame::CpuRgb {
-                data,
-                width,
-                height,
-                bit_depth,
-            } = frame1
-            {
-                let img1_nchw = cpu_rgb_to_nchw_buffered(
+            if self.reuse_pair_cache {
+                if let Frame::CpuRgb {
                     data,
-                    *width,
-                    *height,
-                    *bit_depth,
-                    self.nchw_buf_1.take(),
-                )?;
-                self.cached_img1_nchw = Some((img1_nchw, *height as usize, *width as usize));
+                    width,
+                    height,
+                    bit_depth,
+                } = frame1
+                {
+                    let img1_nchw = cpu_rgb_to_nchw_buffered(
+                        data,
+                        *width,
+                        *height,
+                        *bit_depth,
+                        self.nchw_buf_1.take(),
+                    )?;
+                    self.cached_img1_nchw = Some((img1_nchw, *height as usize, *width as usize));
+                }
             }
             return duplicate_first_frame(frame0, steps.len());
         }
@@ -296,7 +324,6 @@ impl FrameInterpolationNode {
                         orig_h,
                         orig_w,
                         use_iobinding,
-                        model_format,
                     )?;
                     inference_ms_total += t_inf.elapsed().as_secs_f64() * 1000.0;
 
@@ -325,7 +352,11 @@ impl FrameInterpolationNode {
 
         if reuse_buffers {
             self.nchw_buf_0 = Some(img0);
-            self.cached_img1_nchw = Some((img1, orig_h, orig_w));
+            if self.reuse_pair_cache {
+                self.cached_img1_nchw = Some((img1, orig_h, orig_w));
+            } else {
+                self.nchw_buf_1 = Some(img1);
+            }
         }
 
         let total_ms = t_pre.elapsed().as_secs_f64() * 1000.0;
@@ -389,6 +420,12 @@ impl Node for FrameInterpolationNode {
                 required: false,
                 default_value: Some(serde_json::json!("cuda")),
             },
+            PortDefinition {
+                name: "num_workers".to_string(),
+                port_type: PortType::Int,
+                required: false,
+                default_value: Some(serde_json::json!(1)),
+            },
         ]
     }
 
@@ -419,9 +456,14 @@ impl Node for FrameInterpolationNode {
             self.backend = InferenceBackend::from_str_lossy(b);
         }
 
+        if let Some(value) = inputs.get("num_workers") {
+            self.num_workers = WorkerCount::parse(value)?;
+        }
+
         debug!(
             model = %model_path.display(),
             multiplier = self.multiplier,
+            num_workers = self.num_workers.get(),
             backend = %self.backend,
             use_iobinding = self.use_iobinding,
             "Loading ONNX RIFE model"
@@ -515,8 +557,7 @@ impl FrameProcessor for FrameInterpolationPreprocess {
                 height,
                 width,
             } => {
-                // Tensor pass-through from SuperRes: convert f16→f32 and pad
-                let (padded, _h, _w) = nchw_f16_to_array4(&data, height as usize, width as usize)?;
+                let padded = nchw_f16_to_padded_array4(&data, height as usize, width as usize)?;
                 let padded_data = into_standard_layout_vec(padded)?;
                 Ok(Frame::NchwF32 {
                     data: padded_data,
@@ -733,8 +774,8 @@ impl FrameProcessor for FrameInterpolationPostprocess {
         let rgb = nchw_to_cpu_rgb(&arr, h, w)?;
         Ok(Frame::CpuRgb {
             data: rgb,
-            width: width,
-            height: height,
+            width,
+            height,
             bit_depth: 8,
         })
     }
@@ -964,6 +1005,10 @@ fn nchw_f32_vec_to_array4(data: Vec<f32>, h: usize, w: usize) -> Result<Array4<f
 
 /// Convert NchwF16 data (raw u16 bits, already in [0,1] range) to Array4<f32> and pad.
 fn nchw_f16_to_array4(data: &[u16], h: usize, w: usize) -> Result<(Array4<f32>, usize, usize)> {
+    Ok((nchw_f16_to_padded_array4(data, h, w)?, h, w))
+}
+
+fn nchw_f16_to_padded_array4(data: &[u16], h: usize, w: usize) -> Result<Array4<f32>> {
     let expected = 3 * h * w;
     if data.len() != expected {
         bail!(
@@ -972,16 +1017,56 @@ fn nchw_f16_to_array4(data: &[u16], h: usize, w: usize) -> Result<(Array4<f32>, 
         );
     }
 
-    // Convert u16 bits → f16 → f32 using SIMD batch conversion.
-    // Safety: f16 is #[repr(transparent)] over u16 in the half crate.
-    let f16_slice: &[f16] =
-        unsafe { std::slice::from_raw_parts(data.as_ptr() as *const f16, data.len()) };
-    let mut f32_data = vec![0.0f32; data.len()];
-    f16_slice.convert_to_f32_slice(&mut f32_data);
+    let padded_h = h + pad_amount(h);
+    let padded_w = w + pad_amount(w);
+    let padded_hw = padded_h * padded_w;
+    let mut padded = Array4::<f32>::zeros((1, 3, padded_h, padded_w));
+    let output = padded
+        .as_slice_mut()
+        .context("padded NCHW output must be contiguous")?;
 
-    let array = nchw_f32_vec_to_array4(f32_data, h, w)?;
-    let padded = pad_nchw(&array, h, w);
-    Ok((padded, h, w))
+    const CHUNK: usize = 4096;
+    let mut conversion_buf = [f16::ZERO; CHUNK];
+    for channel in 0..3 {
+        for y in 0..h {
+            let source_row = channel * h * w + y * w;
+            let output_row = channel * padded_hw + y * padded_w;
+            let mut x = 0;
+            while x < w {
+                let len = CHUNK.min(w - x);
+                for index in 0..len {
+                    conversion_buf[index] = f16::from_bits(data[source_row + x + index]);
+                }
+                conversion_buf[..len]
+                    .convert_to_f32_slice(&mut output[output_row + x..output_row + x + len]);
+                x += len;
+            }
+        }
+    }
+
+    let pad_h = padded_h - h;
+    let pad_w = padded_w - w;
+    for y in 0..pad_h {
+        let source_y = h - 1 - y;
+        for channel in 0..3 {
+            let plane = channel * padded_hw;
+            let source_row = plane + source_y * padded_w;
+            let output_row = plane + (h + y) * padded_w;
+            output.copy_within(source_row..source_row + w, output_row);
+        }
+    }
+    for x in 0..pad_w {
+        let source_x = w - 1 - x;
+        for channel in 0..3 {
+            let plane = channel * padded_hw;
+            for y in 0..padded_h {
+                let row = plane + y * padded_w;
+                output[row + w + x] = output[row + source_x];
+            }
+        }
+    }
+
+    Ok(padded)
 }
 
 fn pad_nchw(arr: &Array4<f32>, h: usize, w: usize) -> Array4<f32> {
@@ -1033,8 +1118,15 @@ fn pad_amount(dim: usize) -> usize {
 }
 
 fn nchw_to_cpu_rgb(arr: &Array4<f32>, out_h: usize, out_w: usize) -> Result<Vec<u8>> {
+    nchw_to_cpu_rgb_parallel(arr, out_h, out_w)
+}
+
+fn nchw_to_cpu_rgb_parallel(arr: &Array4<f32>, out_h: usize, out_w: usize) -> Result<Vec<u8>> {
     let hw = out_h * out_w;
     let mut rgb = vec![0u8; hw * 3];
+    if rgb.is_empty() {
+        return Ok(rgb);
+    }
 
     // Contiguous-slice gather: read from channel planes [R: 0..hw, G: hw..2hw, B: 2hw..3hw]
     let contiguous = arr.as_standard_layout();
@@ -1047,26 +1139,35 @@ fn nchw_to_cpu_rgb(arr: &Array4<f32>, out_h: usize, out_w: usize) -> Result<Vec<
     let b_plane = &arr_slice[2 * hw..3 * hw];
 
     const CHUNK: usize = 4096;
-
-    let mut offset = 0;
-    while offset < hw {
-        let len = CHUNK.min(hw - offset);
-        let r_chunk = &r_plane[offset..offset + len];
-        let g_chunk = &g_plane[offset..offset + len];
-        let b_chunk = &b_plane[offset..offset + len];
-        let dst = &mut rgb[offset * 3..(offset + len) * 3];
-
-        for j in 0..len {
-            let r = (r_chunk[j] * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
-            let g = (g_chunk[j] * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
-            let b = (b_chunk[j] * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
-            dst[j * 3] = r;
-            dst[j * 3 + 1] = g;
-            dst[j * 3 + 2] = b;
-        }
-
-        offset += len;
-    }
+    let row_bytes = out_w * 3;
+    let rows_per_band = out_h.div_ceil(RGB_PARALLEL_BANDS);
+    let pool = RGB_CONVERSION_POOL
+        .as_ref()
+        .map_err(|error| anyhow!("failed to initialize FI RGB worker pool: {error}"))?;
+    pool.install(|| {
+        rgb.par_chunks_mut(rows_per_band * row_bytes)
+            .enumerate()
+            .for_each(|(band, output_band)| {
+                for (row, output_row) in output_band.chunks_mut(row_bytes).enumerate() {
+                    let source_row = (band * rows_per_band + row) * out_w;
+                    let mut x = 0;
+                    while x < out_w {
+                        let len = CHUNK.min(out_w - x);
+                        let source = source_row + x;
+                        let output = &mut output_row[x * 3..(x + len) * 3];
+                        for index in 0..len {
+                            output[index * 3] =
+                                (r_plane[source + index] * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
+                            output[index * 3 + 1] =
+                                (g_plane[source + index] * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
+                            output[index * 3 + 2] =
+                                (b_plane[source + index] * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
+                        }
+                        x += len;
+                    }
+                }
+            });
+    });
     Ok(rgb)
 }
 
@@ -1081,9 +1182,9 @@ fn nchw_to_cpu_rgb_scalar(arr: &Array4<f32>, out_h: usize, out_w: usize) -> Resu
 
     for i in 0..hw {
         let dst = i * 3;
-        rgb[dst] = (arr_slice[i] * 255.0).clamp(0.0, 255.0) as u8;
-        rgb[dst + 1] = (arr_slice[hw + i] * 255.0).clamp(0.0, 255.0) as u8;
-        rgb[dst + 2] = (arr_slice[2 * hw + i] * 255.0).clamp(0.0, 255.0) as u8;
+        rgb[dst] = (arr_slice[i] * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
+        rgb[dst + 1] = (arr_slice[hw + i] * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
+        rgb[dst + 2] = (arr_slice[2 * hw + i] * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
     }
     Ok(rgb)
 }
@@ -1105,7 +1206,6 @@ fn run_interpolation(
     orig_h: usize,
     orig_w: usize,
     use_iobinding: bool,
-    _model_format: ModelFormat,
 ) -> Result<Array4<f32>> {
     let t0 = std::time::Instant::now();
     let output_owned = run_three_input(session_arc, img0, img1, timestep, use_iobinding)?;
@@ -1367,6 +1467,54 @@ mod tests {
     }
 
     #[test]
+    fn test_nchw_f16_preprocess_matches_reference_across_chunk_boundary() {
+        // Given
+        let height = 30;
+        let width = 4097;
+        let element_count = 3 * height * width;
+        let data: Vec<u16> = (0usize..element_count)
+            .map(|index| (index.wrapping_mul(73) & u16::MAX as usize) as u16)
+            .collect();
+        let reference_data: Vec<f32> = data
+            .iter()
+            .copied()
+            .map(f16::from_bits)
+            .map(f32::from)
+            .collect();
+        let reference = Array4::from_shape_vec((1, 3, height, width), reference_data).unwrap();
+        let expected = pad_nchw(&reference, height, width);
+        let expected_bits: Vec<u32> = expected.iter().map(|value| value.to_bits()).collect();
+        let mut preprocess = FrameInterpolationPreprocess { nchw_buf: None };
+        let input = Frame::NchwF16 {
+            data,
+            height: height as u32,
+            width: width as u32,
+        };
+
+        // When
+        let output = preprocess
+            .process_frame(input, &ExecutionContext::default())
+            .unwrap();
+
+        // Then
+        let Frame::NchwF32 {
+            data,
+            height: output_height,
+            width: output_width,
+        } = output
+        else {
+            panic!("expected NchwF32 output");
+        };
+        assert_eq!(output_height, height as u32);
+        assert_eq!(output_width, width as u32);
+        assert_eq!(data.len(), 3 * 32 * 4128);
+        assert_eq!(
+            data.iter().map(|value| value.to_bits()).collect::<Vec<_>>(),
+            expected_bits
+        );
+    }
+
+    #[test]
     fn test_cpu_rgb_to_nchw_normalised() {
         let data = vec![255u8; 32 * 32 * 3];
         let (arr, h, w) = cpu_rgb_to_nchw(&data, 32, 32, 8).unwrap();
@@ -1445,7 +1593,7 @@ mod tests {
     fn test_cpu_rgb_to_nchw_data_mismatch() {
         let data = vec![0u8; 10];
         let result = cpu_rgb_to_nchw(&data, 32, 32, 8);
-        let err = result.err().expect("should fail");
+        let err = result.expect_err("should fail");
         assert!(err.to_string().contains("Data length mismatch"));
     }
 
@@ -1508,10 +1656,27 @@ mod tests {
     }
 
     #[test]
+    fn parallel_nchw_to_cpu_rgb_matches_serial_across_row_bands() {
+        let h = 5;
+        let w = 7;
+        let mut arr = Array4::<f32>::zeros((1, 3, h, w));
+        let samples = [-0.25, 0.0, 0.5 / 255.0, 127.5 / 255.0, 1.0, 1.25];
+        for (index, value) in arr.iter_mut().enumerate() {
+            *value = samples[index % samples.len()];
+        }
+
+        let serial = nchw_to_cpu_rgb_scalar(&arr, h, w).expect("serial conversion should succeed");
+        let parallel = nchw_to_cpu_rgb_parallel(&arr, h, w)
+            .expect("parallel conversion should preserve serial output");
+
+        assert_eq!(parallel, serial);
+    }
+
+    #[test]
     fn test_roundtrip_conversion_aligned() {
         let mut data = vec![0u8; 32 * 32 * 3];
-        for i in 0..data.len() {
-            data[i] = (i % 256) as u8;
+        for (i, value) in data.iter_mut().enumerate() {
+            *value = (i % 256) as u8;
         }
         let (arr, h, w) = cpu_rgb_to_nchw(&data, 32, 32, 8).unwrap();
         let restored = nchw_to_cpu_rgb(&arr, h, w).unwrap();
@@ -1635,7 +1800,7 @@ mod tests {
         assert_eq!(node.node_type(), "FrameInterpolation");
 
         let inputs = node.input_ports();
-        assert_eq!(inputs.len(), 3);
+        assert_eq!(inputs.len(), 4);
         assert_eq!(inputs[0].name, "model_path");
         assert_eq!(inputs[0].port_type, PortType::Path);
         assert!(inputs[0].required);
@@ -1649,6 +1814,11 @@ mod tests {
         assert_eq!(inputs[2].port_type, PortType::Str);
         assert!(!inputs[2].required);
 
+        assert_eq!(inputs[3].name, "num_workers");
+        assert_eq!(inputs[3].port_type, PortType::Int);
+        assert!(!inputs[3].required);
+        assert_eq!(inputs[3].default_value, Some(serde_json::json!(1)));
+
         let outputs = node.output_ports();
         assert!(outputs.is_empty());
     }
@@ -1657,8 +1827,28 @@ mod tests {
     fn test_fi_node_default_backend() {
         let node = FrameInterpolationNode::new();
         assert_eq!(node.backend, InferenceBackend::Cuda);
+        assert_eq!(node.num_workers(), 1);
         assert!(node.use_iobinding);
         assert!(node.trt_cache_dir.is_none());
+    }
+
+    #[test]
+    fn test_execute_rejects_zero_num_workers() {
+        let mut node = FrameInterpolationNode::new();
+        let ctx = ExecutionContext::default();
+        let inputs = HashMap::from([
+            (
+                "model_path".to_string(),
+                PortData::Path(std::env::temp_dir().join("model.onnx")),
+            ),
+            ("num_workers".to_string(), PortData::Int(0)),
+        ]);
+
+        let error = node
+            .execute(&inputs, &ctx)
+            .err()
+            .expect("zero workers should fail");
+        assert!(format!("{error:#}").contains("num_workers must be positive"));
     }
 
     #[test]
@@ -1692,6 +1882,31 @@ mod tests {
             Frame::CpuRgb { data, .. } => assert!(data.iter().all(|&b| b == 123)),
             _ => panic!("Expected CpuRgb"),
         }
+    }
+
+    #[test]
+    fn disabled_pair_cache_does_not_retain_scene_change_input() {
+        let mut node = FrameInterpolationNode::new();
+        node.disable_pair_cache();
+        let frame0 = Frame::CpuRgb {
+            data: vec![123u8; 32 * 32 * 3],
+            width: 32,
+            height: 32,
+            bit_depth: 8,
+        };
+        let frame1 = Frame::CpuRgb {
+            data: vec![200u8; 32 * 32 * 3],
+            width: 32,
+            height: 32,
+            bit_depth: 8,
+        };
+
+        let result = node
+            .process_frame_pair(&frame0, &frame1, true)
+            .expect("scene-change duplication should not require a loaded model");
+
+        assert_eq!(result.len(), 1);
+        assert!(node.cached_img1_nchw.is_none());
     }
 
     #[test]

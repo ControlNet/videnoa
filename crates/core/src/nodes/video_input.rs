@@ -1051,8 +1051,8 @@ mod tests {
         assert_eq!(info.codec_name, "hevc");
         assert_eq!(info.bit_depth, 8);
 
-        assert!(metadata.audio_streams.len() >= 1);
-        assert!(metadata.subtitle_streams.len() >= 1);
+        assert!(!metadata.audio_streams.is_empty());
+        assert!(!metadata.subtitle_streams.is_empty());
         println!("container: {}", metadata.container_format);
         println!("audio streams: {}", metadata.audio_streams.len());
         println!("subtitle streams: {}", metadata.subtitle_streams.len());
@@ -1114,7 +1114,7 @@ mod tests {
 
         match outputs.get("metadata") {
             Some(PortData::Metadata(m)) => {
-                assert!(m.audio_streams.len() >= 1);
+                assert!(!m.audio_streams.is_empty());
                 assert_eq!(m.source_path, path);
             }
             _ => panic!("expected Metadata output"),

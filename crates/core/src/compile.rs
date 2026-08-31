@@ -12,9 +12,12 @@ use crate::registry::NodeRegistry;
 use crate::streaming_executor::{FrameInterpolator, FrameSink, PipelineStage};
 use crate::types::{Frame, PortData, PortType};
 
+pub type FrameDecoder = Box<dyn Iterator<Item = Result<Frame>> + Send>;
+pub type DecoderResult = Result<(FrameDecoder, Option<u64>)>;
+
 /// Compiled pipeline ready for `StreamingExecutor::execute_pipeline_stages()`.
 pub struct CompiledPipeline {
-    pub decoder: Box<dyn Iterator<Item = Result<Frame>> + Send>,
+    pub decoder: FrameDecoder,
     pub stages: Vec<PipelineStage>,
     pub encoder: Box<dyn FrameSink>,
     /// Total number of **input** frames (from the decoder / source probe).
@@ -46,7 +49,7 @@ pub trait CompileContext {
         &self,
         node: &mut dyn Node,
         outputs: &HashMap<String, PortData>,
-    ) -> Result<(Box<dyn Iterator<Item = Result<Frame>> + Send>, Option<u64>)>;
+    ) -> DecoderResult;
 
     /// Turn a sink node + its resolved inputs and execute() outputs into a FrameSink.
     fn create_encoder(

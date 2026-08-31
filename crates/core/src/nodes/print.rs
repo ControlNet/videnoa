@@ -121,14 +121,14 @@ fn parse_supported_type(raw: &str) -> Result<PortType> {
 }
 
 fn is_value_type_match(value: &PortData, value_type: &PortType) -> bool {
-    match (value_type, value) {
-        (PortType::Int, PortData::Int(_)) => true,
-        (PortType::Float, PortData::Float(_)) => true,
-        (PortType::Str, PortData::Str(_)) => true,
-        (PortType::Bool, PortData::Bool(_)) => true,
-        (PortType::Path, PortData::Path(_)) => true,
-        _ => false,
-    }
+    matches!(
+        (value_type, value),
+        (PortType::Int, PortData::Int(_))
+            | (PortType::Float, PortData::Float(_))
+            | (PortType::Str, PortData::Str(_))
+            | (PortType::Bool, PortData::Bool(_))
+            | (PortType::Path, PortData::Path(_))
+    )
 }
 
 fn clone_port_data(value: &PortData) -> PortData {

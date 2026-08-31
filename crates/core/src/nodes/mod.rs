@@ -20,4 +20,5 @@ pub mod super_res;
 pub mod type_conversion;
 pub mod video_input;
 pub mod video_output;
+mod worker_count;
 pub mod workflow_io;

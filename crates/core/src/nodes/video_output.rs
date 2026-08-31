@@ -1225,7 +1225,7 @@ mod tests {
         );
 
         assert!(
-            out_meta.audio_streams.len() >= 1,
+            !out_meta.audio_streams.is_empty(),
             "audio streams should be preserved from source"
         );
 

@@ -704,7 +704,7 @@ mod tests {
         let inputs = HashMap::from([
             ("input_type".to_string(), PortData::Str("Float".to_string())),
             ("output_type".to_string(), PortData::Str("Int".to_string())),
-            ("value".to_string(), PortData::Float(3.14)),
+            ("value".to_string(), PortData::Float(314.0 / 100.0)),
         ]);
 
         let err = match node.execute(&inputs, &ctx) {

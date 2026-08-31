@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
 
-use crate::compile::CompileContext;
+use crate::compile::{CompileContext, DecoderResult};
 use crate::node::{ExecutionContext, FrameProcessor, Node, PortDefinition};
 use crate::streaming_executor::{FrameInterpolator, FrameSink, PipelineStage};
 use crate::types::{Frame, PortData};
@@ -39,6 +39,25 @@ pub struct VideoCompileContext {
     trt_cache_dir: PathBuf,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SuperResDimensions {
+    input_width: u32,
+    input_height: u32,
+    output_width: u32,
+    output_height: u32,
+}
+
+impl SuperResDimensions {
+    fn new(input_width: u32, input_height: u32, scale: u32) -> Self {
+        Self {
+            input_width,
+            input_height,
+            output_width: input_width.saturating_mul(scale),
+            output_height: input_height.saturating_mul(scale),
+        }
+    }
+}
+
 impl VideoCompileContext {
     pub fn new(trt_cache_dir: PathBuf) -> Self {
         Self {
@@ -59,9 +78,18 @@ impl VideoCompileContext {
         }
     }
 
-    fn create_superres_node(&self, inputs: &HashMap<String, PortData>) -> Result<SuperResNode> {
+    fn create_superres_node(
+        &self,
+        inputs: &HashMap<String, PortData>,
+        dimensions: SuperResDimensions,
+    ) -> Result<SuperResNode> {
         let mut node = SuperResNode::new();
-        if let Some(cache_dir) = self.resolve_trt_cache_dir(inputs, 4)? {
+        if let Some(cache_dir) = self.resolve_trt_cache_dir_for_dimensions(
+            inputs,
+            4,
+            dimensions.input_width,
+            dimensions.input_height,
+        )? {
             node.set_trt_cache_dir(cache_dir);
         }
         node.execute(inputs, &ExecutionContext::default())
@@ -84,6 +112,21 @@ impl VideoCompileContext {
         inputs: &HashMap<String, PortData>,
         alignment: usize,
     ) -> Result<Option<PathBuf>> {
+        self.resolve_trt_cache_dir_for_dimensions(
+            inputs,
+            alignment,
+            self.output_width.get(),
+            self.output_height.get(),
+        )
+    }
+
+    fn resolve_trt_cache_dir_for_dimensions(
+        &self,
+        inputs: &HashMap<String, PortData>,
+        alignment: usize,
+        input_width: u32,
+        input_height: u32,
+    ) -> Result<Option<PathBuf>> {
         let backend = match inputs.get("backend") {
             Some(PortData::Str(value)) => InferenceBackend::from_str_lossy(value),
             _ => InferenceBackend::Cuda,
@@ -97,12 +140,10 @@ impl VideoCompileContext {
             Some(_) => bail!("model_path must be a Path"),
             None => bail!("model_path is required"),
         };
-        let original_h =
-            usize::try_from(self.output_height.get()).context("video height exceeds usize")?;
-        let original_w =
-            usize::try_from(self.output_width.get()).context("video width exceeds usize")?;
-        let input_h = aligned_dimension(self.output_height.get(), alignment)?;
-        let input_w = aligned_dimension(self.output_width.get(), alignment)?;
+        let original_h = usize::try_from(input_height).context("video height exceeds usize")?;
+        let original_w = usize::try_from(input_width).context("video width exceeds usize")?;
+        let input_h = aligned_dimension(input_height, alignment)?;
+        let input_w = aligned_dimension(input_width, alignment)?;
         let tile = match inputs.get("tile_size") {
             Some(PortData::Int(value)) => {
                 let value = usize::try_from(*value).context("tile_size must be non-negative")?;
@@ -128,12 +169,13 @@ impl VideoCompileContext {
         &self,
         inputs: &HashMap<String, PortData>,
     ) -> Result<Vec<PipelineStage>> {
-        let node = self.create_superres_node(inputs)?;
         let scale = read_positive_u32(inputs, "scale", 4)?;
-        self.output_width
-            .set(self.output_width.get().saturating_mul(scale));
-        self.output_height
-            .set(self.output_height.get().saturating_mul(scale));
+        let dimensions =
+            SuperResDimensions::new(self.output_width.get(), self.output_height.get(), scale);
+        let node = self.create_superres_node(inputs, dimensions)?;
+        let num_workers = node.num_workers();
+        let is_fp16_model = node.is_fp16();
+        let tile_size = node.tile_size();
 
         let fi_to_sr =
             should_enable_fi_to_sr_passthrough(self.previous_node_type.borrow().as_deref());
@@ -149,21 +191,52 @@ impl VideoCompileContext {
             .replace(Some(Arc::clone(&emit_tensor)));
         self.pending_superres_direct_rgb
             .replace(Some(Arc::clone(&direct_rgb)));
-        self.previous_superres_fp16.set(node.is_fp16());
-        self.previous_superres_tile_size.set(node.tile_size());
+        self.previous_superres_fp16.set(is_fp16_model);
+        self.previous_superres_tile_size.set(tile_size);
         self.pending_fi_emit_tensor.replace(None);
 
-        if should_use_superres_micro_stages(node.is_fp16(), node.tile_size()) {
+        if should_use_superres_micro_stages(is_fp16_model, tile_size) {
             let mut micro = node
                 .into_micro_stages()
                 .ok_or_else(|| anyhow!("failed to build SuperResolution micro-stages"))?;
-            micro.inference.set_direct_rgb_flag(direct_rgb);
+            let mut inference_lanes: Vec<Box<dyn FrameProcessor>> = Vec::new();
+            inference_lanes
+                .try_reserve_exact(num_workers)
+                .context("failed to reserve SuperResolution inference lanes")?;
+            micro.inference.set_direct_rgb_flag(Arc::clone(&direct_rgb));
+            inference_lanes.push(Box::new(micro.inference));
+            for lane_index in 1..num_workers {
+                let worker = self
+                    .create_superres_node(inputs, dimensions)
+                    .with_context(|| {
+                        format!(
+                            "failed to initialize SuperResolution inference lane {}",
+                            lane_index + 1
+                        )
+                    })?;
+                if worker.is_fp16() != is_fp16_model || worker.tile_size() != tile_size {
+                    bail!(
+                        "SuperResolution inference lane {} detected incompatible model settings",
+                        lane_index + 1
+                    );
+                }
+                let mut worker_micro = worker.into_micro_stages().ok_or_else(|| {
+                    anyhow!(
+                        "failed to build SuperResolution inference lane {}",
+                        lane_index + 1
+                    )
+                })?;
+                worker_micro
+                    .inference
+                    .set_direct_rgb_flag(Arc::clone(&direct_rgb));
+                inference_lanes.push(Box::new(worker_micro.inference));
+            }
             self.accumulated_stages
                 .borrow_mut()
                 .push(PipelineStage::Processor(Box::new(micro.preprocess)));
             self.accumulated_stages
                 .borrow_mut()
-                .push(PipelineStage::Processor(Box::new(micro.inference)));
+                .push(ordered_processor_stage(inference_lanes)?);
             self.accumulated_stages
                 .borrow_mut()
                 .push(PipelineStage::Processor(Box::new(
@@ -173,13 +246,41 @@ impl VideoCompileContext {
                     },
                 )));
         } else {
+            let mut worker_lanes: Vec<Box<dyn FrameProcessor>> = Vec::new();
+            worker_lanes
+                .try_reserve_exact(num_workers)
+                .context("failed to reserve SuperResolution worker lanes")?;
+            worker_lanes.push(Box::new(SuperResSingleStage {
+                inner: node,
+                emit_tensor: Arc::clone(&emit_tensor),
+            }));
+            for lane_index in 1..num_workers {
+                let worker = self
+                    .create_superres_node(inputs, dimensions)
+                    .with_context(|| {
+                        format!(
+                            "failed to initialize SuperResolution worker lane {}",
+                            lane_index + 1
+                        )
+                    })?;
+                if worker.is_fp16() != is_fp16_model || worker.tile_size() != tile_size {
+                    bail!(
+                        "SuperResolution worker lane {} detected incompatible model settings",
+                        lane_index + 1
+                    );
+                }
+                worker_lanes.push(Box::new(SuperResSingleStage {
+                    inner: worker,
+                    emit_tensor: Arc::clone(&emit_tensor),
+                }));
+            }
             self.accumulated_stages
                 .borrow_mut()
-                .push(PipelineStage::Processor(Box::new(SuperResSingleStage {
-                    inner: node,
-                    emit_tensor,
-                })));
+                .push(ordered_processor_stage(worker_lanes)?);
         }
+
+        self.output_width.set(dimensions.output_width);
+        self.output_height.set(dimensions.output_height);
 
         self.previous_node_type
             .replace(Some("SuperResolution".to_string()));
@@ -188,6 +289,9 @@ impl VideoCompileContext {
 
     fn create_fi_stages(&self, inputs: &HashMap<String, PortData>) -> Result<Vec<PipelineStage>> {
         let node = self.create_fi_node(inputs)?;
+        let model_format = node.model_format();
+        let num_workers = node.num_workers();
+        let use_parallel_inference = should_use_parallel_fi(num_workers, model_format);
 
         let multiplier = read_positive_u32(inputs, "multiplier", 2)?;
         self.output_fps_num
@@ -219,16 +323,42 @@ impl VideoCompileContext {
         self.pending_fi_emit_tensor
             .replace(Some(Arc::clone(&fi_emit_tensor)));
 
-        if should_use_fi_micro_stages(node.model_format(), sr_to_fi) {
+        if should_use_fi_micro_stages(model_format, sr_to_fi) {
             let mut micro = node
                 .into_micro_stages()
                 .ok_or_else(|| anyhow!("failed to build FrameInterpolation micro-stages"))?;
             self.accumulated_stages
                 .borrow_mut()
                 .push(PipelineStage::Processor(Box::new(micro.preprocess)));
+            let mut inference_lanes: Vec<Box<dyn FrameInterpolator>> = Vec::new();
+            inference_lanes
+                .try_reserve_exact(num_workers)
+                .context("failed to reserve FrameInterpolation inference lanes")?;
+            inference_lanes.push(Box::new(micro.inference));
+            for lane_index in 1..num_workers {
+                let worker = self.create_fi_node(inputs).with_context(|| {
+                    format!(
+                        "failed to initialize FrameInterpolation inference lane {}",
+                        lane_index + 1
+                    )
+                })?;
+                if worker.model_format() != model_format {
+                    bail!(
+                        "FrameInterpolation inference lane {} detected a different model format",
+                        lane_index + 1
+                    );
+                }
+                let worker_micro = worker.into_micro_stages().ok_or_else(|| {
+                    anyhow!(
+                        "failed to build FrameInterpolation inference lane {}",
+                        lane_index + 1
+                    )
+                })?;
+                inference_lanes.push(Box::new(worker_micro.inference));
+            }
             self.accumulated_stages
                 .borrow_mut()
-                .push(PipelineStage::Interpolator(Box::new(micro.inference)));
+                .push(ordered_interpolator_stage(inference_lanes)?);
             micro.postprocess.emit_tensor = fi_emit_tensor.load(Ordering::Relaxed);
             self.accumulated_stages
                 .borrow_mut()
@@ -237,12 +367,40 @@ impl VideoCompileContext {
                     emit_tensor: fi_emit_tensor,
                 })));
         } else {
+            let mut worker_lanes: Vec<Box<dyn FrameInterpolator>> = Vec::new();
+            worker_lanes
+                .try_reserve_exact(num_workers)
+                .context("failed to reserve FrameInterpolation worker lanes")?;
+            let mut primary = node;
+            if use_parallel_inference {
+                primary.disable_pair_cache();
+            }
+            worker_lanes.push(Box::new(FISingleStage {
+                inner: primary,
+                emit_tensor: Arc::clone(&fi_emit_tensor),
+            }));
+            for lane_index in 1..num_workers {
+                let mut worker = self.create_fi_node(inputs).with_context(|| {
+                    format!(
+                        "failed to initialize FrameInterpolation worker lane {}",
+                        lane_index + 1
+                    )
+                })?;
+                if worker.model_format() != model_format {
+                    bail!(
+                        "FrameInterpolation worker lane {} detected a different model format",
+                        lane_index + 1
+                    );
+                }
+                worker.disable_pair_cache();
+                worker_lanes.push(Box::new(FISingleStage {
+                    inner: worker,
+                    emit_tensor: Arc::clone(&fi_emit_tensor),
+                }));
+            }
             self.accumulated_stages
                 .borrow_mut()
-                .push(PipelineStage::Interpolator(Box::new(FISingleStage {
-                    inner: node,
-                    emit_tensor: fi_emit_tensor,
-                })));
+                .push(ordered_interpolator_stage(worker_lanes)?);
         }
 
         self.pending_superres_emit_tensor.replace(None);
@@ -272,7 +430,7 @@ impl CompileContext for VideoCompileContext {
         &self,
         node: &mut dyn Node,
         outputs: &HashMap<String, PortData>,
-    ) -> Result<(Box<dyn Iterator<Item = Result<Frame>> + Send>, Option<u64>)> {
+    ) -> DecoderResult {
         if node.node_type() != "video_input" && node.node_type() != "VideoInput" {
             bail!(
                 "expected VideoInput source node, got '{}'",
@@ -397,12 +555,12 @@ impl CompileContext for VideoCompileContext {
             );
         }
 
-        let node = self.create_superres_node(inputs)?;
         let scale = read_positive_u32(inputs, "scale", 4)?;
-        self.output_width
-            .set(self.output_width.get().saturating_mul(scale));
-        self.output_height
-            .set(self.output_height.get().saturating_mul(scale));
+        let dimensions =
+            SuperResDimensions::new(self.output_width.get(), self.output_height.get(), scale);
+        let node = self.create_superres_node(inputs, dimensions)?;
+        self.output_width.set(dimensions.output_width);
+        self.output_height.set(dimensions.output_height);
 
         let fi_to_sr =
             should_enable_fi_to_sr_passthrough(self.previous_node_type.borrow().as_deref());
@@ -669,6 +827,32 @@ impl FrameProcessor for FIPostprocessStage {
     }
 }
 
+fn ordered_processor_stage(mut workers: Vec<Box<dyn FrameProcessor>>) -> Result<PipelineStage> {
+    match workers.len() {
+        0 => bail!("ordered processor stage requires at least one worker"),
+        1 => Ok(PipelineStage::Processor(
+            workers
+                .pop()
+                .context("ordered processor stage lost its only worker")?,
+        )),
+        _ => Ok(PipelineStage::ParallelProcessor(workers)),
+    }
+}
+
+fn ordered_interpolator_stage(
+    mut workers: Vec<Box<dyn FrameInterpolator>>,
+) -> Result<PipelineStage> {
+    match workers.len() {
+        0 => bail!("ordered interpolator stage requires at least one worker"),
+        1 => {
+            Ok(PipelineStage::Interpolator(workers.pop().context(
+                "ordered interpolator stage lost its only worker",
+            )?))
+        }
+        _ => Ok(PipelineStage::ParallelInterpolator(workers)),
+    }
+}
+
 fn read_positive_u32(inputs: &HashMap<String, PortData>, key: &str, default: u32) -> Result<u32> {
     match inputs.get(key) {
         Some(PortData::Int(value)) => {
@@ -714,6 +898,10 @@ fn should_enable_fi_to_sr_passthrough(previous_node_type: Option<&str>) -> bool 
 
 fn should_use_fi_micro_stages(model_format: ModelFormat, _tensor_passthrough: bool) -> bool {
     model_format == ModelFormat::Concatenated
+}
+
+const fn should_use_parallel_fi(num_workers: usize, _model_format: ModelFormat) -> bool {
+    num_workers > 1
 }
 
 fn fps_to_rational(fps: f64) -> (u32, u32) {
@@ -873,6 +1061,61 @@ mod tests {
     fn test_video_compile_context_fi_only() {
         assert_eq!(fi_stage_count(ModelFormat::ThreeInput, false), 1);
         assert_eq!(fi_stage_count(ModelFormat::Concatenated, false), 3);
+    }
+
+    #[test]
+    fn frame_interpolation_parallel_lanes_support_any_model_format() {
+        assert!(!should_use_parallel_fi(1, ModelFormat::ThreeInput));
+        for model_format in [ModelFormat::ThreeInput, ModelFormat::Concatenated] {
+            assert!(should_use_parallel_fi(7, model_format));
+        }
+    }
+
+    #[test]
+    fn superres_worker_cache_identity_uses_pre_scale_dimensions() {
+        let id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should follow the Unix epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("videnoa_sr_cache_identity_{id}"));
+        std::fs::create_dir_all(&root).expect("temporary cache root should be created");
+        let model_path = root.join("model.onnx");
+        std::fs::write(&model_path, b"test model identity")
+            .expect("temporary model should be written");
+        let context = VideoCompileContext::new(root.join("cache"));
+        context.output_width.set(1920);
+        context.output_height.set(1080);
+        let inputs = HashMap::from([
+            ("backend".to_string(), PortData::Str("tensorrt".to_string())),
+            ("model_path".to_string(), PortData::Path(model_path)),
+        ]);
+        let dimensions = SuperResDimensions::new(1920, 1080, 4);
+
+        let first_lane = context
+            .resolve_trt_cache_dir_for_dimensions(
+                &inputs,
+                4,
+                dimensions.input_width,
+                dimensions.input_height,
+            )
+            .expect("first lane cache identity should resolve");
+        context.output_width.set(dimensions.output_width);
+        context.output_height.set(dimensions.output_height);
+        let second_lane = context
+            .resolve_trt_cache_dir_for_dimensions(
+                &inputs,
+                4,
+                dimensions.input_width,
+                dimensions.input_height,
+            )
+            .expect("second lane cache identity should resolve");
+
+        assert_eq!(first_lane, second_lane);
+        assert!(first_lane
+            .expect("TensorRT should produce a cache directory")
+            .to_string_lossy()
+            .contains("1080x1920"));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

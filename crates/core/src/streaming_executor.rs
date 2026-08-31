@@ -8,7 +8,36 @@ use tokio::sync::{mpsc, watch};
 use crate::node::{ExecutionContext, FrameProcessor};
 use crate::types::Frame;
 
+mod parallel_interpolator;
+mod parallel_processor;
+
+#[cfg(test)]
+#[path = "streaming_executor/parallel_interpolator_edge_tests.rs"]
+mod parallel_interpolator_edge_tests;
+#[cfg(test)]
+#[path = "streaming_executor/parallel_interpolator_tests.rs"]
+mod parallel_interpolator_tests;
+#[cfg(test)]
+#[path = "streaming_executor/parallel_processor_tests.rs"]
+mod parallel_processor_tests;
+
+use parallel_interpolator::{run_parallel_interpolator_loop, ParallelInterpolatorRun};
+use parallel_processor::{run_parallel_processor_loop, ParallelProcessorRun};
+
 pub const DEFAULT_BUFFER_SIZE: usize = 4;
+pub type ProgressCallback = Box<dyn Fn(u64, Option<u64>, Option<u64>) + Send>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PipelineFrameCounts {
+    pub input: Option<u64>,
+    pub output: Option<u64>,
+}
+
+impl PipelineFrameCounts {
+    pub const fn new(input: Option<u64>, output: Option<u64>) -> Self {
+        Self { input, output }
+    }
+}
 
 pub struct IndexedFrame {
     pub index: u64,
@@ -64,7 +93,9 @@ where
 
 pub enum PipelineStage {
     Processor(Box<dyn FrameProcessor>),
+    ParallelProcessor(Vec<Box<dyn FrameProcessor>>),
     Interpolator(Box<dyn FrameInterpolator>),
+    ParallelInterpolator(Vec<Box<dyn FrameInterpolator>>),
 }
 
 pub struct StreamingExecutor {
@@ -85,7 +116,7 @@ impl StreamingExecutor {
         encoder: E,
         total_frames: Option<u64>,
         cancel: watch::Receiver<bool>,
-        progress_callback: Option<Box<dyn Fn(u64, Option<u64>, Option<u64>) + Send>>,
+        progress_callback: Option<ProgressCallback>,
     ) -> Result<()>
     where
         D: Iterator<Item = Result<Frame>> + Send + 'static,
@@ -100,8 +131,7 @@ impl StreamingExecutor {
             decoder,
             stages,
             encoder,
-            total_frames,
-            total_frames,
+            PipelineFrameCounts::new(total_frames, total_frames),
             cancel,
             progress_callback,
         )
@@ -113,10 +143,9 @@ impl StreamingExecutor {
         decoder: D,
         stages: Vec<PipelineStage>,
         encoder: E,
-        total_frames: Option<u64>,
-        total_output_frames: Option<u64>,
+        frame_counts: PipelineFrameCounts,
         cancel: watch::Receiver<bool>,
-        progress_callback: Option<Box<dyn Fn(u64, Option<u64>, Option<u64>) + Send>>,
+        progress_callback: Option<ProgressCallback>,
     ) -> Result<()>
     where
         D: Iterator<Item = Result<Frame>> + Send + 'static,
@@ -154,8 +183,27 @@ impl StreamingExecutor {
                         processor,
                         upstream_rx,
                         next_tx,
-                        total_frames,
+                        frame_counts.input,
                         cancel_state.clone(),
+                        cancel_tx.clone(),
+                        error_tx.clone(),
+                    ));
+                }
+                PipelineStage::ParallelProcessor(processors) => {
+                    let stage_name = processors.first().map_or_else(
+                        || "ParallelProcessor".to_string(),
+                        |lane| lane.node_type().to_string(),
+                    );
+                    let run = ParallelProcessorRun {
+                        processors,
+                        input: upstream_rx,
+                        output: next_tx,
+                        total_frames: frame_counts.input,
+                        cancel_state: cancel_state.clone(),
+                        stage_name,
+                    };
+                    handles.push(spawn_parallel_processor_stage(
+                        run,
                         cancel_tx.clone(),
                         error_tx.clone(),
                     ));
@@ -165,8 +213,27 @@ impl StreamingExecutor {
                         interpolator,
                         upstream_rx,
                         next_tx,
-                        total_frames,
+                        frame_counts.input,
                         cancel_state.clone(),
+                        cancel_tx.clone(),
+                        error_tx.clone(),
+                    ));
+                }
+                PipelineStage::ParallelInterpolator(interpolators) => {
+                    let stage_name = interpolators.first().map_or_else(
+                        || "ParallelInterpolator".to_string(),
+                        |lane| lane.stage_name().to_string(),
+                    );
+                    let run = ParallelInterpolatorRun {
+                        interpolators,
+                        input: upstream_rx,
+                        output: next_tx,
+                        total_frames: frame_counts.input,
+                        cancel_state: cancel_state.clone(),
+                        stage_name,
+                    };
+                    handles.push(spawn_parallel_interpolator_stage(
+                        run,
                         cancel_tx.clone(),
                         error_tx.clone(),
                     ));
@@ -179,8 +246,7 @@ impl StreamingExecutor {
         handles.push(spawn_encoder_stage(
             encoder,
             upstream_rx,
-            total_output_frames,
-            total_frames,
+            frame_counts,
             progress_callback,
             cancel_state.clone(),
             cancel_tx.clone(),
@@ -341,12 +407,51 @@ fn spawn_interpolator_stage(
     })
 }
 
+fn spawn_parallel_processor_stage(
+    run: ParallelProcessorRun,
+    cancel_tx: watch::Sender<bool>,
+    error_tx: mpsc::UnboundedSender<anyhow::Error>,
+) -> tokio::task::JoinHandle<()> {
+    let stage_name = run.stage_name.clone();
+    let cancel_state = Arc::clone(&run.cancel_state);
+    tokio::task::spawn_blocking(move || {
+        let result = run_parallel_processor_loop(run);
+        if let Err(error) = result {
+            report_task_error(
+                &error_tx,
+                &cancel_state,
+                &cancel_tx,
+                error.context(format!("parallel processor stage '{stage_name}' failed")),
+            );
+        }
+    })
+}
+
+fn spawn_parallel_interpolator_stage(
+    run: ParallelInterpolatorRun,
+    cancel_tx: watch::Sender<bool>,
+    error_tx: mpsc::UnboundedSender<anyhow::Error>,
+) -> tokio::task::JoinHandle<()> {
+    let stage_name = run.stage_name.clone();
+    let cancel_state = Arc::clone(&run.cancel_state);
+    tokio::task::spawn_blocking(move || {
+        let result = run_parallel_interpolator_loop(run);
+        if let Err(error) = result {
+            report_task_error(
+                &error_tx,
+                &cancel_state,
+                &cancel_tx,
+                error.context(format!("parallel interpolator stage '{stage_name}' failed")),
+            );
+        }
+    })
+}
+
 fn spawn_encoder_stage<E>(
     mut encoder: E,
     input: mpsc::Receiver<IndexedFrame>,
-    total_output_frames: Option<u64>,
-    total_input_frames: Option<u64>,
-    progress_callback: Option<Box<dyn Fn(u64, Option<u64>, Option<u64>) + Send>>,
+    frame_counts: PipelineFrameCounts,
+    progress_callback: Option<ProgressCallback>,
     cancel_state: Arc<AtomicBool>,
     cancel_tx: watch::Sender<bool>,
     error_tx: mpsc::UnboundedSender<anyhow::Error>,
@@ -358,8 +463,7 @@ where
         let result = run_encoder_loop(
             &mut encoder,
             input,
-            total_output_frames,
-            total_input_frames,
+            frame_counts,
             progress_callback,
             cancel_state.clone(),
         );
@@ -630,9 +734,8 @@ fn run_interpolator_loop(
 fn run_encoder_loop<E>(
     encoder: &mut E,
     mut input: mpsc::Receiver<IndexedFrame>,
-    total_output_frames: Option<u64>,
-    total_input_frames: Option<u64>,
-    progress_callback: Option<Box<dyn Fn(u64, Option<u64>, Option<u64>) + Send>>,
+    frame_counts: PipelineFrameCounts,
+    progress_callback: Option<ProgressCallback>,
     cancel_state: Arc<AtomicBool>,
 ) -> Result<()>
 where
@@ -662,7 +765,7 @@ where
         written = written.saturating_add(1);
 
         if let Some(callback) = progress_callback.as_ref() {
-            callback(written, total_output_frames, total_input_frames);
+            callback(written, frame_counts.output, frame_counts.input);
         }
     }
 
@@ -806,7 +909,7 @@ mod tests {
         }
     }
 
-    struct DuplicateInterpolator;
+    pub(super) struct DuplicateInterpolator;
 
     impl FrameInterpolator for DuplicateInterpolator {
         fn stage_name(&self) -> &str {
@@ -825,20 +928,20 @@ mod tests {
     }
 
     #[derive(Clone)]
-    struct SharedSinkState {
+    pub(super) struct SharedSinkState {
         values: Arc<Mutex<Vec<u8>>>,
         written: Arc<AtomicUsize>,
     }
 
     impl SharedSinkState {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             Self {
                 values: Arc::new(Mutex::new(Vec::new())),
                 written: Arc::new(AtomicUsize::new(0)),
             }
         }
 
-        fn values(&self) -> Vec<u8> {
+        pub(super) fn values(&self) -> Vec<u8> {
             self.values.lock().expect("values mutex poisoned").clone()
         }
 
@@ -847,13 +950,13 @@ mod tests {
         }
     }
 
-    struct CollectingSink {
+    pub(super) struct CollectingSink {
         state: SharedSinkState,
         delay: Duration,
     }
 
     impl CollectingSink {
-        fn new(state: SharedSinkState) -> Self {
+        pub(super) fn new(state: SharedSinkState) -> Self {
             Self {
                 state,
                 delay: Duration::ZERO,
@@ -913,7 +1016,7 @@ mod tests {
         }
     }
 
-    fn sample_frame(value: u8) -> Frame {
+    pub(super) fn sample_frame(value: u8) -> Frame {
         Frame::CpuRgb {
             data: vec![value, value, value],
             width: 1,
@@ -922,7 +1025,7 @@ mod tests {
         }
     }
 
-    fn clone_frame(frame: &Frame) -> Result<Frame> {
+    pub(super) fn clone_frame(frame: &Frame) -> Result<Frame> {
         match frame {
             Frame::CpuRgb {
                 data,
@@ -967,7 +1070,7 @@ mod tests {
         }
     }
 
-    fn first_channel_value(frame: &Frame) -> Result<u8> {
+    pub(super) fn first_channel_value(frame: &Frame) -> Result<u8> {
         match frame {
             Frame::CpuRgb { data, .. } => data
                 .first()
@@ -979,7 +1082,7 @@ mod tests {
         }
     }
 
-    fn update_max(target: &Arc<AtomicUsize>, value: usize) {
+    pub(super) fn update_max(target: &Arc<AtomicUsize>, value: usize) {
         let mut current = target.load(Ordering::SeqCst);
         while value > current {
             match target.compare_exchange(current, value, Ordering::SeqCst, Ordering::SeqCst) {
@@ -1068,7 +1171,7 @@ mod tests {
             .await;
 
         assert!(result.is_err(), "pipeline should fail");
-        let error_message = result.err().expect("should be Err").to_string();
+        let error_message = result.expect_err("should be Err").to_string();
         assert!(
             error_message.contains("processor stage 'failing' failed"),
             "unexpected error message: {error_message}"
@@ -1112,7 +1215,14 @@ mod tests {
         let (_cancel_tx, cancel_rx) = watch::channel(false);
 
         executor
-            .execute_pipeline_stages(frames, stages, sink, Some(10), Some(19), cancel_rx, None)
+            .execute_pipeline_stages(
+                frames,
+                stages,
+                sink,
+                PipelineFrameCounts::new(Some(10), Some(19)),
+                cancel_rx,
+                None,
+            )
             .await
             .expect("pipeline with interpolator should complete");
 
@@ -1133,13 +1243,12 @@ mod tests {
 
         let progress_state = Arc::new(Mutex::new(Vec::new()));
         let progress_state_clone = progress_state.clone();
-        let callback: Box<dyn Fn(u64, Option<u64>, Option<u64>) + Send> =
-            Box::new(move |current, total_output, total_input| {
-                progress_state_clone
-                    .lock()
-                    .expect("progress mutex poisoned")
-                    .push((current, total_output, total_input));
-            });
+        let callback: ProgressCallback = Box::new(move |current, total_output, total_input| {
+            progress_state_clone
+                .lock()
+                .expect("progress mutex poisoned")
+                .push((current, total_output, total_input));
+        });
 
         let sink_state = SharedSinkState::new();
         let sink = CollectingSink::new(sink_state);
