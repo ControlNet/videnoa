@@ -5,18 +5,22 @@ use std::path::PathBuf;
 #[cfg(debug_assertions)]
 use std::path::Path;
 
+use axum::extract::Request;
 use axum::http::StatusCode;
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
 use axum::Json;
 use axum::Router;
+use percent_encoding::percent_decode_str;
 use serde::Serialize;
 
 #[cfg(not(debug_assertions))]
 use axum::extract::OriginalUri;
 #[cfg(not(debug_assertions))]
 use axum::http::header;
-#[cfg(not(debug_assertions))]
-use axum::response::{IntoResponse, Response};
+#[cfg(debug_assertions)]
+use axum::routing::get_service;
 #[cfg(not(debug_assertions))]
 use rust_embed::RustEmbed;
 #[cfg(debug_assertions)]
@@ -114,6 +118,43 @@ async fn api_route_not_found() -> (StatusCode, Json<ApiErrorResponse>) {
     )
 }
 
+async fn reject_ambiguous_api_paths(request: Request, next: Next) -> Response {
+    let raw_path = request.uri().path();
+    let Ok(decoded_path) = decode_request_path(raw_path) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+
+    if decoded_path != raw_path && is_api_path(&decoded_path) {
+        return api_route_not_found().await.into_response();
+    }
+
+    next.run(request).await
+}
+
+fn decode_request_path(raw_path: &str) -> Result<std::borrow::Cow<'_, str>, ()> {
+    let bytes = raw_path.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let Some(encoded_byte) = bytes.get(index + 1..index + 3) else {
+                return Err(());
+            };
+            if !encoded_byte.iter().all(u8::is_ascii_hexdigit) {
+                return Err(());
+            }
+            index += 3;
+        } else {
+            index += 1;
+        }
+    }
+
+    percent_decode_str(raw_path).decode_utf8().map_err(|_| ())
+}
+
+fn is_api_path(path: &str) -> bool {
+    path == "/api" || path.starts_with("/api/")
+}
+
 #[cfg(not(debug_assertions))]
 #[derive(RustEmbed)]
 #[folder = "../../controller-web/dist/"]
@@ -154,17 +195,19 @@ pub fn app_router(assets: &FrontendAssets) -> Router {
         .route("/api/", any(api_route_not_found))
         .route("/api/{*path}", any(api_route_not_found));
 
-    match &assets.source {
+    let router = match &assets.source {
         #[cfg(debug_assertions)]
         FrontendAssetSource::Directory(directory) => {
             let index_path = directory.join("index.html");
-            router.fallback_service(
+            router.fallback_service(get_service(
                 ServeDir::new(directory.clone()).fallback(ServeFile::new(index_path)),
-            )
+            ))
         }
         #[cfg(not(debug_assertions))]
-        FrontendAssetSource::Embedded => router.fallback(embedded_static),
-    }
+        FrontendAssetSource::Embedded => router.fallback_service(get(embedded_static)),
+    };
+
+    router.layer(middleware::from_fn(reject_ambiguous_api_paths))
 }
 
 /// Serves the Controller API and frontend until the HTTP server exits.

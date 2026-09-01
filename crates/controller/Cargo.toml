@@ -12,6 +12,7 @@ path = "src/main.rs"
 axum.workspace = true
 clap.workspace = true
 mime_guess.workspace = true
+percent-encoding.workspace = true
 rust-embed.workspace = true
 serde.workspace = true
 thiserror = "2"

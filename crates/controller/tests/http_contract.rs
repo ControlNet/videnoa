@@ -2,6 +2,7 @@ use std::error::Error;
 
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Method, Request, StatusCode};
+use axum::response::Response;
 use tower::ServiceExt;
 use videnoa_controller::{app_router, FrontendAssets};
 
@@ -18,6 +19,7 @@ struct TestAssets {
     #[cfg(debug_assertions)]
     _directory: TempDir,
     assets: FrontendAssets,
+    spa_marker: &'static [u8],
 }
 
 #[cfg(debug_assertions)]
@@ -32,6 +34,7 @@ fn test_assets() -> Result<TestAssets, Box<dyn Error + Send + Sync>> {
     Ok(TestAssets {
         _directory: directory,
         assets,
+        spa_marker: b"fixture shell",
     })
 }
 
@@ -39,6 +42,7 @@ fn test_assets() -> Result<TestAssets, Box<dyn Error + Send + Sync>> {
 fn test_assets() -> Result<TestAssets, Box<dyn Error + Send + Sync>> {
     Ok(TestAssets {
         assets: FrontendAssets::embedded()?,
+        spa_marker: b"Videnoa Controller",
     })
 }
 
@@ -60,6 +64,67 @@ async fn assert_api_not_found(method: Method, uri: &'static str) -> TestResult {
     );
     let body = to_bytes(response.into_body(), 1024).await?;
     assert_eq!(body.as_ref(), br#"{"error":"not_found"}"#);
+    Ok(())
+}
+
+async fn assert_spa_get_response(response: Response, marker: &'static [u8]) -> TestResult {
+    assert_eq!(response.status(), StatusCode::OK);
+    let content_type = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .ok_or_else(|| std::io::Error::other("SPA response is missing content type"))?;
+    assert!(content_type.as_bytes().starts_with(b"text/html"));
+    let body = to_bytes(response.into_body(), 1024 * 1024).await?;
+    assert!(body.windows(marker.len()).any(|part| part == marker));
+    Ok(())
+}
+
+async fn assert_spa_head_response(response: Response) -> TestResult {
+    assert_eq!(response.status(), StatusCode::OK);
+    let content_type = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .ok_or_else(|| std::io::Error::other("SPA response is missing content type"))?;
+    assert!(content_type.as_bytes().starts_with(b"text/html"));
+    let body = to_bytes(response.into_body(), 1024).await?;
+    assert!(body.is_empty());
+    Ok(())
+}
+
+async fn assert_spa_method_rejected(method: Method) -> TestResult {
+    let test_assets = test_assets()?;
+    let response = app_router(&test_assets.assets)
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri("/tasks/example")
+                .body(Body::empty())?,
+        )
+        .await?;
+
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    let is_html = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .is_some_and(|value| value.as_bytes().starts_with(b"text/html"));
+    assert!(!is_html);
+    let body = to_bytes(response.into_body(), 4096).await?;
+    assert!(!body.starts_with(b"<!doctype html>"));
+    Ok(())
+}
+
+async fn assert_invalid_path_rejected(uri: &'static str) -> TestResult {
+    let test_assets = test_assets()?;
+    let response = app_router(&test_assets.assets)
+        .oneshot(Request::get(uri).body(Body::empty())?)
+        .await?;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let is_html = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .is_some_and(|value| value.as_bytes().starts_with(b"text/html"));
+    assert!(!is_html);
     Ok(())
 }
 
@@ -118,6 +183,61 @@ async fn unknown_api_route_returns_not_found_for_delete() -> TestResult {
 }
 
 #[tokio::test]
+async fn encoded_api_spellings_return_not_found_for_get() -> TestResult {
+    // Given: API paths with encoded names, separators, and percent-hex casing.
+    let encoded_paths = [
+        "/api%2Funknown",
+        "/api%2F",
+        "/%61pi/unknown",
+        "/api%2funknown",
+    ];
+
+    // When: a client requests each raw encoded path.
+    for path in encoded_paths {
+        assert_api_not_found(Method::GET, path).await?;
+    }
+
+    // Then: every decoded API boundary returned the exact JSON error.
+    Ok(())
+}
+
+#[tokio::test]
+async fn invalid_percent_encoding_returns_bad_request() -> TestResult {
+    // Given: incomplete percent encoding and percent-encoded invalid UTF-8.
+    let invalid_paths = ["/api%2", "/%FFapi/unknown"];
+
+    // When: a client requests each invalid raw path.
+    for path in invalid_paths {
+        assert_invalid_path_rejected(path).await?;
+    }
+
+    // Then: neither path reached the SPA fallback.
+    Ok(())
+}
+
+#[tokio::test]
+async fn spa_fallback_rejects_post_when_route_is_nested() -> TestResult {
+    // Given: a nested client-side route.
+
+    // When: a client posts to a nested client-side route.
+    let result = assert_spa_method_rejected(Method::POST).await;
+
+    // Then: both profiles reject the method without serving SPA HTML.
+    result
+}
+
+#[tokio::test]
+async fn spa_fallback_rejects_options_when_route_is_nested() -> TestResult {
+    // Given: a nested client-side route.
+
+    // When: a client sends OPTIONS to a nested client-side route.
+    let result = assert_spa_method_rejected(Method::OPTIONS).await;
+
+    // Then: both profiles reject the method without serving SPA HTML.
+    result
+}
+
+#[tokio::test]
 async fn spa_fallback_returns_index_when_route_is_root() -> TestResult {
     // Given: a Controller router backed by valid frontend assets.
     let test_assets = test_assets()?;
@@ -127,14 +247,8 @@ async fn spa_fallback_returns_index_when_route_is_root() -> TestResult {
         .oneshot(Request::get("/").body(Body::empty())?)
         .await?;
 
-    // Then: the SPA index is returned.
-    assert_eq!(response.status(), StatusCode::OK);
-    let content_type = response
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .ok_or_else(|| std::io::Error::other("SPA response is missing content type"))?;
-    assert!(content_type.as_bytes().starts_with(b"text/html"));
-    Ok(())
+    // Then: the actual SPA index body is returned.
+    assert_spa_get_response(response, test_assets.spa_marker).await
 }
 
 #[tokio::test]
@@ -147,13 +261,29 @@ async fn spa_fallback_returns_index_when_route_is_nested() -> TestResult {
         .oneshot(Request::get("/tasks/example").body(Body::empty())?)
         .await?;
 
-    // Then: the SPA index is returned instead of a misleading 404.
-    assert_eq!(response.status(), StatusCode::OK);
-    let content_type = response
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .ok_or_else(|| std::io::Error::other("SPA response is missing content type"))?;
-    assert!(content_type.as_bytes().starts_with(b"text/html"));
+    // Then: the actual SPA index body is returned instead of a misleading 404.
+    assert_spa_get_response(response, test_assets.spa_marker).await
+}
+
+#[tokio::test]
+async fn spa_fallback_returns_head_for_client_routes() -> TestResult {
+    // Given: a Controller router backed by valid frontend assets.
+    let test_assets = test_assets()?;
+
+    // When: a client sends HEAD to root and nested client-side routes.
+    for path in ["/", "/tasks/example"] {
+        let response = app_router(&test_assets.assets)
+            .oneshot(
+                Request::builder()
+                    .method(Method::HEAD)
+                    .uri(path)
+                    .body(Body::empty())?,
+            )
+            .await?;
+        assert_spa_head_response(response).await?;
+    }
+
+    // Then: both responses contain SPA metadata with empty bodies.
     Ok(())
 }
 
