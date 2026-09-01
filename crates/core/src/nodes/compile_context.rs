@@ -909,14 +909,26 @@ fn fps_to_rational(fps: f64) -> (u32, u32) {
         return (24000, 1001);
     }
 
-    let den = 1000u32;
-    let num = (fps * den as f64).round() as u32;
-    if num == 0 {
+    let mut best_num = fps.round() as u32;
+    let mut best_den = 1_u32;
+    let mut best_error = (fps - f64::from(best_num)).abs();
+
+    for den in 2_u32..=1001 {
+        let num = (fps * f64::from(den)).round() as u32;
+        let error = (fps - f64::from(num) / f64::from(den)).abs();
+        if error < best_error {
+            best_num = num;
+            best_den = den;
+            best_error = error;
+        }
+    }
+
+    if best_num == 0 {
         return (24000, 1001);
     }
 
-    let divisor = gcd(num, den).max(1);
-    (num / divisor, den / divisor)
+    let divisor = gcd(best_num, best_den).max(1);
+    (best_num / divisor, best_den / divisor)
 }
 
 fn gcd(mut a: u32, mut b: u32) -> u32 {
@@ -1061,6 +1073,18 @@ mod tests {
     fn test_video_compile_context_fi_only() {
         assert_eq!(fi_stage_count(ModelFormat::ThreeInput, false), 1);
         assert_eq!(fi_stage_count(ModelFormat::Concatenated, false), 3);
+    }
+
+    #[test]
+    fn ntsc_frame_rate_keeps_its_exact_rational() {
+        // Given: the floating-point value parsed from 24000/1001.
+        let fps = 24_000.0 / 1_001.0;
+
+        // When: the compile context converts it back to an encoder rate.
+        let rational = fps_to_rational(fps);
+
+        // Then: frame interpolation can multiply the standard rational exactly.
+        assert_eq!(rational, (24_000, 1_001));
     }
 
     #[test]

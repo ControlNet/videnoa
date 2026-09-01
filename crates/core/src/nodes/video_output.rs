@@ -63,7 +63,7 @@ impl EncoderConfig {
         // conversion with dithering.
         let vf_filter = format!(
             "format={pf},setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709,\
-             zscale=range=limited:dither=error_diffusion",
+             zscale=range=limited:dither=error_diffusion,setsar=1",
             pf = self.pixel_format,
         );
 
@@ -131,12 +131,25 @@ impl EncoderConfig {
             "1".into(),
             "-map_chapters".into(),
             "1".into(),
+            "-disposition:v:0".into(),
+            "default".into(),
             "-copy_unknown".into(),
         ]);
 
         if self.codec == "libx265" && self.pixel_format.contains("10") {
             args.push("-x265-params".into());
             args.push("profile=main10".into());
+        }
+
+        if self
+            .output_path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| {
+                extension.eq_ignore_ascii_case("mkv") || extension.eq_ignore_ascii_case("mka")
+            })
+        {
+            args.extend(["-default_mode".into(), "passthrough".into()]);
         }
 
         args.push(self.output_path.to_string_lossy().into_owned());
@@ -878,6 +891,47 @@ mod tests {
 
         assert!(args.contains(&"3840x2160".to_string()));
         assert!(args.contains(&"24000/1001".to_string()));
+    }
+
+    #[test]
+    fn matroska_output_preserves_source_default_track_flags() {
+        // Given: an MKV output whose source can contain multiple default tracks.
+        let config = default_config();
+
+        // When: FFmpeg arguments are built for the final mux.
+        let args = config.build_ffmpeg_args();
+
+        // Then: the Matroska muxer uses source dispositions without re-inferring them.
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "-default_mode" && w[1] == "passthrough"));
+    }
+
+    #[test]
+    fn raw_video_output_is_marked_as_the_default_video_track() {
+        // Given: the generated rawvideo input has no source disposition metadata.
+        let config = default_config();
+
+        // When: FFmpeg arguments are built for the final mux.
+        let args = config.build_ffmpeg_args();
+
+        // Then: the single generated video stream remains the default video track.
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "-disposition:v:0" && w[1] == "default"));
+    }
+
+    #[test]
+    fn video_filter_marks_ai_output_as_square_pixel() {
+        // Given: raw RGB frames, which do not carry a sample aspect ratio.
+        let config = default_config();
+
+        // When: FFmpeg arguments are built for encoding.
+        let args = config.build_ffmpeg_args();
+
+        // Then: the encoded video explicitly carries square-pixel display metadata.
+        let vf_idx = args.iter().position(|arg| arg == "-vf").unwrap();
+        assert!(args[vf_idx + 1].contains("setsar=1"));
     }
 
     #[test]
