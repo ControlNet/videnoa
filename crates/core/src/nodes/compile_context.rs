@@ -20,7 +20,9 @@ use crate::nodes::frame_interpolation::{
 };
 use crate::nodes::super_res::{SuperResNode, SuperResOutputMode, SuperResPostprocess};
 use crate::nodes::video_input::{extract_metadata, run_ffprobe, VideoDecoder};
-use crate::nodes::video_output::{EncoderConfig, VideoEncoder};
+use crate::nodes::video_output::{
+    compatible_pixel_format, default_pixel_format_for_codec, EncoderConfig, VideoEncoder,
+};
 
 pub struct VideoCompileContext {
     output_width: Cell<u32>,
@@ -84,10 +86,11 @@ impl VideoCompileContext {
             Some(PortData::Int(value)) => *value,
             _ => 18,
         };
-        let pixel_format = match inputs.get("pixel_format") {
-            Some(PortData::Str(value)) => value.clone(),
-            _ => "yuv420p10le".to_string(),
+        let requested_pixel_format = match inputs.get("pixel_format") {
+            Some(PortData::Str(value)) => value.as_str(),
+            _ => default_pixel_format_for_codec(&codec),
         };
+        let pixel_format = compatible_pixel_format(&codec, requested_pixel_format).to_string();
         let cq_value = match inputs.get("cq_value") {
             Some(PortData::Int(value)) => Some(*value),
             _ => None,
@@ -1141,6 +1144,31 @@ mod tests {
         assert_eq!(config.cq_value, Some(17));
         assert_eq!(config.nvenc_preset.as_deref(), Some("p6"));
         assert_eq!(config.x265_preset.as_deref(), Some("slow"));
+    }
+
+    #[test]
+    fn video_compile_context_uses_codec_compatible_pixel_format() {
+        // Given: a workflow that selects HEVC NVENC without overriding pixel format.
+        let context = VideoCompileContext::default();
+        context
+            .source_path
+            .replace(Some(PathBuf::from("input.mkv")));
+        context.output_width.set(3840);
+        context.output_height.set(2160);
+        let inputs =
+            HashMap::from([("codec".to_string(), PortData::Str("hevc_nvenc".to_string()))]);
+        let outputs = HashMap::from([(
+            "output_path".to_string(),
+            PortData::Path(PathBuf::from("output.mkv")),
+        )]);
+
+        // When: the production compile path assembles the encoder configuration.
+        let config = context
+            .encoder_config(&inputs, &outputs)
+            .expect("encoder settings should produce a configuration");
+
+        // Then: the NVENC-compatible 10-bit surface format is selected.
+        assert_eq!(config.pixel_format, "p010le");
     }
 
     #[test]
