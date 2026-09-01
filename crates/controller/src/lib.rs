@@ -15,6 +15,9 @@ use axum::Router;
 use percent_encoding::percent_decode_str;
 use serde::Serialize;
 
+mod asset_path;
+use asset_path::ExactAssetPath;
+
 #[cfg(not(debug_assertions))]
 use rust_embed::RustEmbed;
 
@@ -204,20 +207,16 @@ struct EmbeddedFrontend;
 
 #[cfg(not(debug_assertions))]
 async fn embedded_static(Extension(decoded_path): Extension<DecodedPath>) -> Response {
-    let requested_path = decoded_path.as_str().trim_start_matches('/');
-    let asset_path = if requested_path.is_empty() {
-        "index.html"
-    } else {
-        requested_path
-    };
-
-    if let Some(asset) = EmbeddedFrontend::get(asset_path) {
-        let content_type = mime_guess::from_path(asset_path).first_or_octet_stream();
-        return (
-            [(header::CONTENT_TYPE, content_type.essence_str())],
-            asset.data.into_owned(),
-        )
-            .into_response();
+    if let Some(asset_path) = ExactAssetPath::from_decoded_path(decoded_path.as_str()) {
+        let asset_path = asset_path.as_str();
+        if let Some(asset) = EmbeddedFrontend::get(asset_path) {
+            let content_type = mime_guess::from_path(asset_path).first_or_octet_stream();
+            return (
+                [(header::CONTENT_TYPE, content_type.essence_str())],
+                asset.data.into_owned(),
+            )
+                .into_response();
+        }
     }
 
     match EmbeddedFrontend::get("index.html") {
@@ -235,10 +234,9 @@ async fn directory_static(
     Extension(decoded_path): Extension<DecodedPath>,
     Extension(directory): Extension<PathBuf>,
 ) -> Response {
-    let requested_path = decoded_path.as_str().trim_start_matches('/');
-    if !requested_path.is_empty() && !requested_path.ends_with('/') {
-        if let Ok(asset) = tokio::fs::read(directory.join(requested_path)).await {
-            let content_type = mime_guess::from_path(requested_path).first_or_octet_stream();
+    if let Some(asset_path) = ExactAssetPath::from_decoded_path(decoded_path.as_str()) {
+        if let Ok(asset) = tokio::fs::read(asset_path.join_to(&directory)).await {
+            let content_type = mime_guess::from_path(asset_path.as_str()).first_or_octet_stream();
             return ([(header::CONTENT_TYPE, content_type.essence_str())], asset).into_response();
         }
     }
