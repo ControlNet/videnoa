@@ -16,7 +16,7 @@ use percent_encoding::percent_decode_str;
 use serde::Serialize;
 
 #[cfg(not(debug_assertions))]
-use axum::extract::OriginalUri;
+use axum::extract::Extension;
 #[cfg(not(debug_assertions))]
 use axum::http::header;
 #[cfg(debug_assertions)]
@@ -118,20 +118,30 @@ async fn api_route_not_found() -> (StatusCode, Json<ApiErrorResponse>) {
     )
 }
 
-async fn reject_ambiguous_api_paths(request: Request, next: Next) -> Response {
+#[derive(Clone, Debug)]
+struct DecodedPath(Box<str>);
+
+impl DecodedPath {
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+async fn reject_ambiguous_api_paths(mut request: Request, next: Next) -> Response {
     let raw_path = request.uri().path();
     let Ok(decoded_path) = decode_request_path(raw_path) else {
         return StatusCode::BAD_REQUEST.into_response();
     };
 
-    if decoded_path != raw_path && is_api_path(&decoded_path) {
+    if decoded_path.as_str() != raw_path && is_api_path(decoded_path.as_str()) {
         return api_route_not_found().await.into_response();
     }
 
+    request.extensions_mut().insert(decoded_path);
     next.run(request).await
 }
 
-fn decode_request_path(raw_path: &str) -> Result<std::borrow::Cow<'_, str>, ()> {
+fn decode_request_path(raw_path: &str) -> Result<DecodedPath, ()> {
     let bytes = raw_path.as_bytes();
     let mut index = 0;
     while index < bytes.len() {
@@ -148,7 +158,15 @@ fn decode_request_path(raw_path: &str) -> Result<std::borrow::Cow<'_, str>, ()> 
         }
     }
 
-    percent_decode_str(raw_path).decode_utf8().map_err(|_| ())
+    let decoded_path = percent_decode_str(raw_path).decode_utf8().map_err(|_| ())?;
+    if decoded_path
+        .chars()
+        .any(|character| character == '\\' || character.is_control())
+    {
+        return Err(());
+    }
+
+    Ok(DecodedPath(decoded_path.into_owned().into_boxed_str()))
 }
 
 fn is_api_path(path: &str) -> bool {
@@ -161,8 +179,8 @@ fn is_api_path(path: &str) -> bool {
 struct EmbeddedFrontend;
 
 #[cfg(not(debug_assertions))]
-async fn embedded_static(OriginalUri(uri): OriginalUri) -> Response {
-    let requested_path = uri.path().trim_start_matches('/');
+async fn embedded_static(Extension(decoded_path): Extension<DecodedPath>) -> Response {
+    let requested_path = decoded_path.as_str().trim_start_matches('/');
     let asset_path = if requested_path.is_empty() {
         "index.html"
     } else {
@@ -180,7 +198,7 @@ async fn embedded_static(OriginalUri(uri): OriginalUri) -> Response {
 
     match EmbeddedFrontend::get("index.html") {
         Some(index) => (
-            [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+            [(header::CONTENT_TYPE, "text/html")],
             index.data.into_owned(),
         )
             .into_response(),

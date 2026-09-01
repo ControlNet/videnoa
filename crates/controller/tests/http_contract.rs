@@ -1,10 +1,14 @@
-use std::error::Error;
-
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Method, Request, StatusCode};
-use axum::response::Response;
 use tower::ServiceExt;
 use videnoa_controller::{app_router, FrontendAssets};
+
+mod support;
+use support::{
+    assert_api_not_found, assert_invalid_path_rejected, assert_spa_get_response,
+    assert_spa_head_response, assert_spa_method_rejected, asset_response, static_asset_path,
+    test_assets, TestResult,
+};
 
 #[cfg(debug_assertions)]
 use std::fs;
@@ -12,121 +16,6 @@ use std::fs;
 use tempfile::TempDir;
 #[cfg(debug_assertions)]
 use videnoa_controller::StartupError;
-
-type TestResult = Result<(), Box<dyn Error + Send + Sync>>;
-
-struct TestAssets {
-    #[cfg(debug_assertions)]
-    _directory: TempDir,
-    assets: FrontendAssets,
-    spa_marker: &'static [u8],
-}
-
-#[cfg(debug_assertions)]
-fn test_assets() -> Result<TestAssets, Box<dyn Error + Send + Sync>> {
-    let directory = TempDir::new()?;
-    fs::write(
-        directory.path().join("index.html"),
-        "<!doctype html><title>Controller fixture</title><main>fixture shell</main>",
-    )?;
-    fs::write(directory.path().join("app.js"), "console.info('fixture')")?;
-    let assets = FrontendAssets::from_dist(directory.path())?;
-    Ok(TestAssets {
-        _directory: directory,
-        assets,
-        spa_marker: b"fixture shell",
-    })
-}
-
-#[cfg(not(debug_assertions))]
-fn test_assets() -> Result<TestAssets, Box<dyn Error + Send + Sync>> {
-    Ok(TestAssets {
-        assets: FrontendAssets::embedded()?,
-        spa_marker: b"Videnoa Controller",
-    })
-}
-
-async fn assert_api_not_found(method: Method, uri: &'static str) -> TestResult {
-    let test_assets = test_assets()?;
-    let response = app_router(&test_assets.assets)
-        .oneshot(
-            Request::builder()
-                .method(method)
-                .uri(uri)
-                .body(Body::empty())?,
-        )
-        .await?;
-
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    assert_eq!(
-        response.headers().get(header::CONTENT_TYPE),
-        Some(&header::HeaderValue::from_static("application/json")),
-    );
-    let body = to_bytes(response.into_body(), 1024).await?;
-    assert_eq!(body.as_ref(), br#"{"error":"not_found"}"#);
-    Ok(())
-}
-
-async fn assert_spa_get_response(response: Response, marker: &'static [u8]) -> TestResult {
-    assert_eq!(response.status(), StatusCode::OK);
-    let content_type = response
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .ok_or_else(|| std::io::Error::other("SPA response is missing content type"))?;
-    assert!(content_type.as_bytes().starts_with(b"text/html"));
-    let body = to_bytes(response.into_body(), 1024 * 1024).await?;
-    assert!(body.windows(marker.len()).any(|part| part == marker));
-    Ok(())
-}
-
-async fn assert_spa_head_response(response: Response) -> TestResult {
-    assert_eq!(response.status(), StatusCode::OK);
-    let content_type = response
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .ok_or_else(|| std::io::Error::other("SPA response is missing content type"))?;
-    assert!(content_type.as_bytes().starts_with(b"text/html"));
-    let body = to_bytes(response.into_body(), 1024).await?;
-    assert!(body.is_empty());
-    Ok(())
-}
-
-async fn assert_spa_method_rejected(method: Method) -> TestResult {
-    let test_assets = test_assets()?;
-    let response = app_router(&test_assets.assets)
-        .oneshot(
-            Request::builder()
-                .method(method)
-                .uri("/tasks/example")
-                .body(Body::empty())?,
-        )
-        .await?;
-
-    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
-    let is_html = response
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .is_some_and(|value| value.as_bytes().starts_with(b"text/html"));
-    assert!(!is_html);
-    let body = to_bytes(response.into_body(), 4096).await?;
-    assert!(!body.starts_with(b"<!doctype html>"));
-    Ok(())
-}
-
-async fn assert_invalid_path_rejected(uri: &'static str) -> TestResult {
-    let test_assets = test_assets()?;
-    let response = app_router(&test_assets.assets)
-        .oneshot(Request::get(uri).body(Body::empty())?)
-        .await?;
-
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    let is_html = response
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .is_some_and(|value| value.as_bytes().starts_with(b"text/html"));
-    assert!(!is_html);
-    Ok(())
-}
 
 #[tokio::test]
 async fn health_returns_ok_json_when_controller_is_running() -> TestResult {
@@ -213,6 +102,56 @@ async fn invalid_percent_encoding_returns_bad_request() -> TestResult {
 
     // Then: neither path reached the SPA fallback.
     Ok(())
+}
+
+#[tokio::test]
+async fn encoded_static_asset_matches_canonical_asset() -> TestResult {
+    // Given: a real generated or fixture asset whose filename contains a hyphen.
+    let test_assets = test_assets()?;
+    let canonical_path = static_asset_path(&test_assets).await?;
+    let encoded_path = canonical_path.replace('-', "%2D");
+    assert_ne!(encoded_path, canonical_path);
+
+    // When: canonical and safely encoded asset paths are requested.
+    let canonical = asset_response(&test_assets, &canonical_path).await?;
+    let encoded = asset_response(&test_assets, &encoded_path).await?;
+
+    // Then: both requests return the same asset rather than the SPA index.
+    assert_eq!(canonical.status, StatusCode::OK);
+    assert_eq!(encoded.status, canonical.status);
+    assert_eq!(encoded.content_type, canonical.content_type);
+    assert_eq!(encoded.body, canonical.body);
+    #[cfg(debug_assertions)]
+    assert_eq!(canonical.body, "console.info('encoded fixture asset')");
+    Ok(())
+}
+
+#[tokio::test]
+async fn decoded_backslash_and_control_paths_return_bad_request() -> TestResult {
+    // Given: encoded backslashes, NUL, and another C0 control byte.
+    let invalid_paths = ["/assets%5Capp.js", "/assets%5capp.js", "/%00", "/%1F"];
+
+    // When: each encoded path reaches the Controller boundary.
+    for path in invalid_paths {
+        assert_invalid_path_rejected(path).await?;
+    }
+
+    // Then: every response is an empty non-HTML 400.
+    Ok(())
+}
+
+#[tokio::test]
+async fn double_encoded_api_separator_is_not_recursively_decoded() -> TestResult {
+    // Given: a path that becomes encoded API syntax after exactly one decode.
+    let test_assets = test_assets()?;
+
+    // When: the double-encoded path is requested.
+    let response = app_router(&test_assets.assets)
+        .oneshot(Request::get("/api%252Funknown").body(Body::empty())?)
+        .await?;
+
+    // Then: it remains a client route and returns the actual SPA body.
+    assert_spa_get_response(response, test_assets.spa_marker).await
 }
 
 #[tokio::test]
