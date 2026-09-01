@@ -43,11 +43,14 @@ COPY Cargo.toml Cargo.toml
 COPY crates/core/Cargo.toml crates/core/Cargo.toml
 COPY crates/app/Cargo.toml crates/app/Cargo.toml
 COPY crates/desktop/Cargo.toml crates/desktop/Cargo.toml
+COPY crates/controller/Cargo.toml crates/controller/Cargo.toml
 
 RUN mkdir -p crates/core/src && echo "" > crates/core/src/lib.rs \
     && mkdir -p crates/app/src && echo "" > crates/app/src/lib.rs \
     && echo "fn main() {}" > crates/app/src/main.rs \
-    && mkdir -p crates/desktop/src && echo "fn main() {}" > crates/desktop/src/main.rs
+    && mkdir -p crates/desktop/src && echo "fn main() {}" > crates/desktop/src/main.rs \
+    && mkdir -p crates/controller/src && echo "" > crates/controller/src/lib.rs \
+    && echo "fn main() {}" > crates/controller/src/main.rs
 
 RUN cargo build --release -p videnoa-app --bin videnoa 2>/dev/null || true
 

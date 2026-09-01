@@ -1,0 +1,212 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: light dark;
+  font-family: Manrope, "Avenir Next", "Segoe UI", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  --color-background: oklch(0.98 0.005 260);
+  --color-surface: oklch(1 0 0);
+  --color-text: oklch(0.15 0.02 260);
+  --color-text-muted: oklch(0.45 0.015 260);
+  --color-border: oklch(0.88 0.01 260);
+  --color-accent: oklch(0.55 0.22 292);
+  --color-accent-border: color-mix(in oklch, var(--color-accent), var(--color-border) 55%);
+  --color-healthy: oklch(0.54 0.16 145);
+  --type-product: 0.875rem;
+  --type-heading: clamp(2rem, 5vw, 4rem);
+  --type-body: 1rem;
+  --type-label: 0.75rem;
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-12: 3rem;
+  --radius-shell: 0.75rem;
+  --border-default: 1px solid var(--color-border);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--color-background);
+}
+
+body {
+  margin: 0;
+  min-inline-size: 20rem;
+  min-block-size: 100dvb;
+  background: var(--color-background);
+  color: var(--color-text);
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+.controller-shell {
+  display: grid;
+  min-block-size: 100dvb;
+  padding: var(--space-4);
+  place-items: center;
+}
+
+.controller-panel {
+  display: grid;
+  inline-size: min(100%, 72rem);
+  min-block-size: min(42rem, calc(100dvb - (2 * var(--space-4))));
+  grid-template-rows: auto 1fr auto;
+  overflow: hidden;
+  border: var(--border-default);
+  border-radius: var(--radius-shell);
+  background: var(--color-surface);
+}
+
+.product-header,
+.service-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-6);
+}
+
+.product-header {
+  border-block-end: var(--border-default);
+}
+
+.product-mark {
+  display: grid;
+  inline-size: var(--space-8);
+  block-size: var(--space-8);
+  border: var(--border-default);
+  border-color: var(--color-accent-border);
+  border-radius: calc(var(--radius-shell) / 2);
+  color: var(--color-accent);
+  font-family: "Geist Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: var(--type-product);
+  font-weight: 600;
+  place-items: center;
+}
+
+.product-name,
+.product-role,
+.section-label,
+.workspace-summary {
+  margin: 0;
+}
+
+.product-name {
+  font-family: "Geist Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: var(--type-product);
+  font-weight: 600;
+}
+
+.product-role {
+  margin-inline-start: auto;
+  color: var(--color-text-muted);
+  font-size: var(--type-label);
+  font-weight: 600;
+}
+
+.workspace-intro {
+  align-self: center;
+  max-inline-size: 46rem;
+  padding: var(--space-12);
+}
+
+.section-label {
+  margin-block-end: var(--space-4);
+  color: var(--color-accent);
+  font-family: "Geist Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: var(--type-label);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+h1 {
+  max-inline-size: 10ch;
+  margin: 0;
+  font-size: var(--type-heading);
+  font-weight: 600;
+  letter-spacing: -0.045em;
+  line-height: 1.05;
+}
+
+.workspace-summary {
+  max-inline-size: 48ch;
+  margin-block-start: var(--space-6);
+  color: var(--color-text-muted);
+  font-size: var(--type-body);
+  line-height: 1.6;
+}
+
+.service-status {
+  border-block-start: var(--border-default);
+  color: var(--color-text-muted);
+  font-size: var(--type-label);
+}
+
+.status-message {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.status-indicator {
+  inline-size: var(--space-2);
+  block-size: var(--space-2);
+  border-radius: 50%;
+  background: var(--color-healthy);
+}
+
+.status-label {
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.service-status code {
+  margin-inline-start: auto;
+  color: var(--color-text-muted);
+  font-family: "Geist Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: var(--type-label);
+}
+
+@media (min-width: 48rem) {
+  .controller-shell {
+    padding: var(--space-12);
+  }
+
+  .controller-panel {
+    min-block-size: min(42rem, calc(100dvb - (2 * var(--space-12))));
+  }
+}
+
+@media (max-width: 30rem) {
+  .product-role {
+    display: none;
+  }
+
+  .workspace-intro {
+    padding: var(--space-8) var(--space-6);
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-background: oklch(0.13 0.028 260);
+    --color-surface: oklch(0.16 0.028 260);
+    --color-text: oklch(0.97 0.005 260);
+    --color-text-muted: oklch(0.7 0.015 260);
+    --color-border: oklch(0.28 0.02 260);
+    --color-accent: oklch(0.58 0.22 292);
+    --color-healthy: oklch(0.72 0.17 145);
+  }
+}

@@ -1,0 +1,32 @@
+[package]
+name = "videnoa-controller"
+version.workspace = true
+edition = "2024"
+build = "build.rs"
+
+[[bin]]
+name = "videnoa-controller"
+path = "src/main.rs"
+
+[dependencies]
+axum.workspace = true
+clap.workspace = true
+mime_guess.workspace = true
+rust-embed.workspace = true
+serde.workspace = true
+thiserror = "2"
+tokio.workspace = true
+tower-http.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile = "3"
+tower.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+module_name_repetitions = "allow"
