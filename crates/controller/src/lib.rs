@@ -127,10 +127,24 @@ impl DecodedPath {
     }
 }
 
-async fn reject_ambiguous_api_paths(mut request: Request, next: Next) -> Response {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PathParseError {
+    MalformedPercentEncoding,
+    InvalidUtf8,
+    UnsafeCharacter,
+    AmbiguousSegment,
+}
+
+async fn parse_request_path(mut request: Request, next: Next) -> Response {
     let raw_path = request.uri().path();
-    let Ok(decoded_path) = decode_request_path(raw_path) else {
-        return StatusCode::BAD_REQUEST.into_response();
+    let decoded_path = match decode_request_path(raw_path) {
+        Ok(decoded_path) => decoded_path,
+        Err(
+            PathParseError::MalformedPercentEncoding
+            | PathParseError::InvalidUtf8
+            | PathParseError::UnsafeCharacter
+            | PathParseError::AmbiguousSegment,
+        ) => return StatusCode::BAD_REQUEST.into_response(),
     };
 
     if decoded_path.as_str() != raw_path && is_api_path(decoded_path.as_str()) {
@@ -141,16 +155,16 @@ async fn reject_ambiguous_api_paths(mut request: Request, next: Next) -> Respons
     next.run(request).await
 }
 
-fn decode_request_path(raw_path: &str) -> Result<DecodedPath, ()> {
+fn decode_request_path(raw_path: &str) -> Result<DecodedPath, PathParseError> {
     let bytes = raw_path.as_bytes();
     let mut index = 0;
     while index < bytes.len() {
         if bytes[index] == b'%' {
             let Some(encoded_byte) = bytes.get(index + 1..index + 3) else {
-                return Err(());
+                return Err(PathParseError::MalformedPercentEncoding);
             };
             if !encoded_byte.iter().all(u8::is_ascii_hexdigit) {
-                return Err(());
+                return Err(PathParseError::MalformedPercentEncoding);
             }
             index += 3;
         } else {
@@ -158,12 +172,30 @@ fn decode_request_path(raw_path: &str) -> Result<DecodedPath, ()> {
         }
     }
 
-    let decoded_path = percent_decode_str(raw_path).decode_utf8().map_err(|_| ())?;
+    let decoded_path = percent_decode_str(raw_path)
+        .decode_utf8()
+        .map_err(|_| PathParseError::InvalidUtf8)?;
     if decoded_path
         .chars()
         .any(|character| character == '\\' || character.is_control())
     {
-        return Err(());
+        return Err(PathParseError::UnsafeCharacter);
+    }
+
+    let path_without_root = decoded_path
+        .strip_prefix('/')
+        .ok_or(PathParseError::AmbiguousSegment)?;
+    if !path_without_root.is_empty() {
+        let segments_path = path_without_root
+            .strip_suffix('/')
+            .unwrap_or(path_without_root);
+        if segments_path.is_empty()
+            || segments_path
+                .split('/')
+                .any(|segment| segment.is_empty() || segment == "." || segment == "..")
+        {
+            return Err(PathParseError::AmbiguousSegment);
+        }
     }
 
     Ok(DecodedPath(decoded_path.into_owned().into_boxed_str()))
@@ -225,7 +257,7 @@ pub fn app_router(assets: &FrontendAssets) -> Router {
         FrontendAssetSource::Embedded => router.fallback_service(get(embedded_static)),
     };
 
-    router.layer(middleware::from_fn(reject_ambiguous_api_paths))
+    router.layer(middleware::from_fn(parse_request_path))
 }
 
 /// Serves the Controller API and frontend until the HTTP server exits.

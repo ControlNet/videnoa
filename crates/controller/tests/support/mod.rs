@@ -94,6 +94,15 @@ pub async fn asset_response(
     })
 }
 
+pub async fn spa_response_body(
+    test_assets: &TestAssets,
+) -> Result<Bytes, Box<dyn Error + Send + Sync>> {
+    let response = app_router(&test_assets.assets)
+        .oneshot(Request::get("/").body(Body::empty())?)
+        .await?;
+    Ok(to_bytes(response.into_body(), 1024 * 1024).await?)
+}
+
 #[cfg(not(debug_assertions))]
 pub fn test_assets() -> Result<TestAssets, Box<dyn Error + Send + Sync>> {
     Ok(TestAssets {
@@ -169,7 +178,7 @@ pub async fn assert_spa_method_rejected(method: Method) -> TestResult {
     Ok(())
 }
 
-pub async fn assert_invalid_path_rejected(uri: &'static str) -> TestResult {
+pub async fn assert_invalid_path_rejected(uri: &str) -> TestResult {
     let test_assets = test_assets()?;
     let response = app_router(&test_assets.assets)
         .oneshot(Request::get(uri).body(Body::empty())?)

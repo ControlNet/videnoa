@@ -6,8 +6,8 @@ use videnoa_controller::{app_router, FrontendAssets};
 mod support;
 use support::{
     assert_api_not_found, assert_invalid_path_rejected, assert_spa_get_response,
-    assert_spa_head_response, assert_spa_method_rejected, asset_response, static_asset_path,
-    test_assets, TestResult,
+    assert_spa_head_response, assert_spa_method_rejected, asset_response, spa_response_body,
+    static_asset_path, test_assets, TestResult,
 };
 
 #[cfg(debug_assertions)]
@@ -105,24 +105,62 @@ async fn invalid_percent_encoding_returns_bad_request() -> TestResult {
 }
 
 #[tokio::test]
-async fn encoded_static_asset_matches_canonical_asset() -> TestResult {
+async fn safely_encoded_static_assets_match_canonical_asset() -> TestResult {
     // Given: a real generated or fixture asset whose filename contains a hyphen.
     let test_assets = test_assets()?;
     let canonical_path = static_asset_path(&test_assets).await?;
-    let encoded_path = canonical_path.replace('-', "%2D");
-    assert_ne!(encoded_path, canonical_path);
+    let encoded_hyphen_path = canonical_path.replace('-', "%2D");
+    let encoded_slash_path = canonical_path.replacen("/assets/", "/assets%2F", 1);
+    assert_ne!(encoded_hyphen_path, canonical_path);
+    assert_ne!(encoded_slash_path, canonical_path);
 
     // When: canonical and safely encoded asset paths are requested.
     let canonical = asset_response(&test_assets, &canonical_path).await?;
-    let encoded = asset_response(&test_assets, &encoded_path).await?;
+    let encoded_hyphen = asset_response(&test_assets, &encoded_hyphen_path).await?;
+    let encoded_slash = asset_response(&test_assets, &encoded_slash_path).await?;
+    let spa_body = spa_response_body(&test_assets).await?;
 
-    // Then: both requests return the same asset rather than the SPA index.
+    // Then: every spelling returns the expected non-HTML asset rather than the SPA index.
     assert_eq!(canonical.status, StatusCode::OK);
-    assert_eq!(encoded.status, canonical.status);
-    assert_eq!(encoded.content_type, canonical.content_type);
-    assert_eq!(encoded.body, canonical.body);
+    assert_eq!(canonical.content_type, "text/javascript");
+    assert!(!canonical.body.is_empty());
+    assert_ne!(canonical.body, spa_body);
+    for encoded in [encoded_hyphen, encoded_slash] {
+        assert_eq!(encoded.status, canonical.status);
+        assert_eq!(encoded.content_type, canonical.content_type);
+        assert_eq!(encoded.body, canonical.body);
+    }
     #[cfg(debug_assertions)]
     assert_eq!(canonical.body, "console.info('encoded fixture asset')");
+    Ok(())
+}
+
+#[tokio::test]
+async fn ambiguous_dot_and_empty_segments_return_bad_request() -> TestResult {
+    // Given: a real asset addressed through literal/encoded dot segments and repeated separators.
+    let test_assets = test_assets()?;
+    let canonical_path = static_asset_path(&test_assets).await?;
+    let filename = canonical_path
+        .strip_prefix("/assets/")
+        .ok_or_else(|| std::io::Error::other("asset path is outside /assets"))?;
+    let ambiguous_paths = [
+        format!("/assets/%2e/{filename}"),
+        format!("/%2e/assets/{filename}"),
+        format!("/assets/./{filename}"),
+        format!("/./assets/{filename}"),
+        format!("/assets/%2e%2e/{filename}"),
+        format!("/%2e%2e/assets/{filename}"),
+        format!("/assets/../assets/{filename}"),
+        format!("/../assets/{filename}"),
+        format!("/assets//{filename}"),
+    ];
+
+    // When: each ambiguous path reaches the decoded boundary.
+    for path in ambiguous_paths {
+        assert_invalid_path_rejected(&path).await?;
+    }
+
+    // Then: every profile returns the same empty non-HTML 400 outcome.
     Ok(())
 }
 
@@ -202,6 +240,28 @@ async fn spa_fallback_returns_index_when_route_is_nested() -> TestResult {
 
     // Then: the actual SPA index body is returned instead of a misleading 404.
     assert_spa_get_response(response, test_assets.spa_marker).await
+}
+
+#[tokio::test]
+async fn ordinary_unicode_query_and_trailing_slash_routes_return_spa() -> TestResult {
+    // Given: harmless client routes containing Unicode, a dot in the query, or a trailing slash.
+    let test_assets = test_assets()?;
+    let routes = [
+        "/tasks/%E6%97%A5%E6%9C%AC%E8%AA%9E",
+        "/tasks/example?view=.",
+        "/tasks/example/",
+    ];
+
+    // When: each ordinary client route is requested.
+    for route in routes {
+        let response = app_router(&test_assets.assets)
+            .oneshot(Request::get(route).body(Body::empty())?)
+            .await?;
+        assert_spa_get_response(response, test_assets.spa_marker).await?;
+    }
+
+    // Then: path parsing preserves legitimate routes and ignores query-string punctuation.
+    Ok(())
 }
 
 #[tokio::test]
