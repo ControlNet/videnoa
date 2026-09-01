@@ -17,6 +17,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
 petgraph = { workspace = true }
+pathdiff = "0.2"
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 tower = { workspace = true }
