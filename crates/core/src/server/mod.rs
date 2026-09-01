@@ -22,7 +22,12 @@ use tower_http::services::{ServeDir, ServeFile};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
+mod files;
 mod persistence;
+
+#[cfg(test)]
+#[path = "tests/files/mod.rs"]
+mod files_tests;
 
 use crate::config::AppConfig;
 use crate::debug_event::NodeDebugValueEvent;
@@ -75,6 +80,7 @@ struct AppStateInner {
     config: RwLock<AppConfig>,
     config_path: PathBuf,
     data_dir: PathBuf,
+    workspace_root: PathBuf,
     preview_sessions: DashMap<String, PathBuf>,
     performance_series: Mutex<VecDeque<RuntimePerformanceSeriesSample>>,
 }
@@ -99,6 +105,14 @@ impl AppState {
         data_dir: PathBuf,
     ) -> Self {
         let jobs = DashMap::new();
+        let workspace_root = data_dir.join("workspace");
+        if let Err(err) = std::fs::create_dir_all(&workspace_root) {
+            warn!(
+                error = %err,
+                workspace_root = %workspace_root.display(),
+                "Failed to initialize remote file workspace"
+            );
+        }
 
         let jobs_persistence = match JobsPersistence::new(&data_dir) {
             Ok(persistence) => Some(persistence),
@@ -148,6 +162,7 @@ impl AppState {
                 config: RwLock::new(config),
                 config_path,
                 data_dir,
+                workspace_root,
                 preview_sessions: DashMap::new(),
                 performance_series: Mutex::new(VecDeque::new()),
             }),
@@ -588,6 +603,14 @@ pub fn app_router_with_static(state: AppState, static_dir: Option<&StdPath>) -> 
         .route("/api/workflows/{filename}", delete(delete_workflow))
         .route("/api/jellyfin/libraries", get(jellyfin_libraries))
         .route("/api/jellyfin/items", get(jellyfin_items))
+        .route("/api/files", delete(files::reject_workspace_root_delete))
+        .route("/api/files/", delete(files::reject_workspace_root_delete))
+        .route(
+            "/api/files/{*path}",
+            get(files::get_file_or_stat)
+                .put(files::upload_file)
+                .delete(files::delete_file),
+        )
         .route("/api/fs/list", get(list_fs))
         .route("/api/fs/browse", get(browse_fs))
         .route("/api/preview/extract", post(extract_frames))
