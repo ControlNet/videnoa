@@ -59,6 +59,70 @@ impl SuperResDimensions {
 }
 
 impl VideoCompileContext {
+    fn encoder_config(
+        &self,
+        inputs: &HashMap<String, PortData>,
+        outputs: &HashMap<String, PortData>,
+    ) -> Result<EncoderConfig> {
+        let source_path = self
+            .source_path
+            .borrow()
+            .clone()
+            .ok_or_else(|| anyhow!("source path is unavailable in compile context"))?;
+
+        let output_path = match outputs.get("output_path") {
+            Some(PortData::Path(path)) => path.clone(),
+            Some(_) => bail!("VideoOutput output 'output_path' must be Path"),
+            None => bail!("VideoOutput output 'output_path' is missing"),
+        };
+
+        let codec = match inputs.get("codec") {
+            Some(PortData::Str(value)) => value.clone(),
+            _ => "libx265".to_string(),
+        };
+        let crf = match inputs.get("crf") {
+            Some(PortData::Int(value)) => *value,
+            _ => 18,
+        };
+        let pixel_format = match inputs.get("pixel_format") {
+            Some(PortData::Str(value)) => value.clone(),
+            _ => "yuv420p10le".to_string(),
+        };
+        let cq_value = match inputs.get("cq_value") {
+            Some(PortData::Int(value)) => Some(*value),
+            _ => None,
+        };
+        let nvenc_preset = match inputs.get("nvenc_preset") {
+            Some(PortData::Str(value)) => Some(value.clone()),
+            _ => None,
+        };
+        let x265_preset = match inputs.get("x265_preset") {
+            Some(PortData::Str(value)) => Some(value.clone()),
+            _ => None,
+        };
+
+        let width = self.output_width.get();
+        let height = self.output_height.get();
+        if width == 0 || height == 0 {
+            bail!("output resolution is not initialized");
+        }
+
+        Ok(EncoderConfig {
+            source_path,
+            output_path,
+            codec,
+            crf,
+            pixel_format,
+            width,
+            height,
+            fps: self.output_fps_string(),
+            bit_depth: 8,
+            cq_value,
+            nvenc_preset,
+            x265_preset,
+        })
+    }
+
     pub fn new(trt_cache_dir: PathBuf) -> Self {
         Self {
             output_width: Cell::new(0),
@@ -493,51 +557,7 @@ impl CompileContext for VideoCompileContext {
             SuperResOutputMode::PostprocessRgb | SuperResOutputMode::TensorF16 => {}
         }
 
-        let source_path = self
-            .source_path
-            .borrow()
-            .clone()
-            .ok_or_else(|| anyhow!("source path is unavailable in compile context"))?;
-
-        let output_path = match outputs.get("output_path") {
-            Some(PortData::Path(path)) => path.clone(),
-            Some(_) => bail!("VideoOutput output 'output_path' must be Path"),
-            None => bail!("VideoOutput output 'output_path' is missing"),
-        };
-
-        let codec = match inputs.get("codec") {
-            Some(PortData::Str(value)) => value.clone(),
-            _ => "libx265".to_string(),
-        };
-        let crf = match inputs.get("crf") {
-            Some(PortData::Int(value)) => *value,
-            _ => 18,
-        };
-        let pixel_format = match inputs.get("pixel_format") {
-            Some(PortData::Str(value)) => value.clone(),
-            _ => "yuv420p10le".to_string(),
-        };
-
-        let width = self.output_width.get();
-        let height = self.output_height.get();
-        if width == 0 || height == 0 {
-            bail!("output resolution is not initialized");
-        }
-
-        let config = EncoderConfig {
-            source_path,
-            output_path,
-            codec,
-            crf,
-            pixel_format,
-            width,
-            height,
-            fps: self.output_fps_string(),
-            bit_depth: 8,
-            cq_value: None,
-            nvenc_preset: None,
-            x265_preset: None,
-        };
+        let config = self.encoder_config(inputs, outputs)?;
 
         let encoder = VideoEncoder::new(&config).context("failed to create video encoder")?;
         Ok(Box::new(encoder))
@@ -1085,6 +1105,42 @@ mod tests {
 
         // Then: frame interpolation can multiply the standard rational exactly.
         assert_eq!(rational, (24_000, 1_001));
+    }
+
+    #[test]
+    fn video_compile_context_preserves_non_default_encoder_settings() {
+        // Given: a compile context and user-selected encoder settings.
+        let context = VideoCompileContext::default();
+        context
+            .source_path
+            .replace(Some(PathBuf::from("input.mkv")));
+        context.output_width.set(3840);
+        context.output_height.set(2160);
+        let inputs = HashMap::from([
+            ("codec".to_string(), PortData::Str("hevc_nvenc".to_string())),
+            ("crf".to_string(), PortData::Int(23)),
+            (
+                "pixel_format".to_string(),
+                PortData::Str("p010le".to_string()),
+            ),
+            ("cq_value".to_string(), PortData::Int(17)),
+            ("nvenc_preset".to_string(), PortData::Str("p6".to_string())),
+            ("x265_preset".to_string(), PortData::Str("slow".to_string())),
+        ]);
+        let outputs = HashMap::from([(
+            "output_path".to_string(),
+            PortData::Path(PathBuf::from("output.mkv")),
+        )]);
+
+        // When: the production compile path assembles its encoder configuration.
+        let config = context
+            .encoder_config(&inputs, &outputs)
+            .expect("encoder settings should produce a configuration");
+
+        // Then: every non-default quality and preset setting reaches the encoder.
+        assert_eq!(config.cq_value, Some(17));
+        assert_eq!(config.nvenc_preset.as_deref(), Some("p6"));
+        assert_eq!(config.x265_preset.as_deref(), Some("slow"));
     }
 
     #[test]

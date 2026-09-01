@@ -185,12 +185,40 @@ pub fn all_node_descriptors() -> Vec<NodeDescriptor> {
                 param_required("source_path", "Path"),
                 param_required("output_path", "Path"),
                 PortDescriptor {
-                    enum_options: Some(vec!["libx265".to_string(), "libx264".to_string()]),
+                    enum_options: Some(vec![
+                        "libx265".to_string(),
+                        "libx264".to_string(),
+                        "hevc_nvenc".to_string(),
+                        "h264_nvenc".to_string(),
+                    ]),
                     ..param_opt("codec", "Str", serde_json::json!("libx265"))
                 },
                 param_opt("crf", "Int", serde_json::json!(18)),
+                param_opt("cq_value", "Int", serde_json::json!(20)),
                 PortDescriptor {
-                    enum_options: Some(vec!["yuv420p10le".to_string(), "yuv420p".to_string()]),
+                    enum_options: Some(
+                        ["p1", "p2", "p3", "p4", "p5", "p6", "p7"]
+                            .into_iter()
+                            .map(str::to_string)
+                            .collect(),
+                    ),
+                    ..param_opt("nvenc_preset", "Str", serde_json::json!("p4"))
+                },
+                PortDescriptor {
+                    enum_options: Some(
+                        ["ultrafast", "fast", "medium", "slow", "veryslow"]
+                            .into_iter()
+                            .map(str::to_string)
+                            .collect(),
+                    ),
+                    ..param_opt("x265_preset", "Str", serde_json::json!("medium"))
+                },
+                PortDescriptor {
+                    enum_options: Some(vec![
+                        "yuv420p10le".to_string(),
+                        "p010le".to_string(),
+                        "yuv420p".to_string(),
+                    ]),
                     ..param_opt("pixel_format", "Str", serde_json::json!("yuv420p10le"))
                 },
                 param_required("width", "Int"),
@@ -737,6 +765,39 @@ mod tests {
             .expect("FrameInterpolation descriptor should expose num_workers");
 
         assert_eq!(workers.default_value, Some(serde_json::json!(1)));
+    }
+
+    #[test]
+    fn test_video_output_descriptor_exposes_hardware_encoder_controls() {
+        let descs = all_node_descriptors();
+        let output = descs
+            .iter()
+            .find(|descriptor| descriptor.node_type == "VideoOutput")
+            .expect("VideoOutput descriptor should exist");
+
+        let codec = output
+            .inputs
+            .iter()
+            .find(|port| port.name == "codec")
+            .expect("VideoOutput descriptor should expose codec");
+        assert_eq!(
+            codec.enum_options.as_ref(),
+            Some(&vec![
+                "libx265".to_string(),
+                "libx264".to_string(),
+                "hevc_nvenc".to_string(),
+                "h264_nvenc".to_string(),
+            ])
+        );
+
+        let input_names: Vec<&str> = output
+            .inputs
+            .iter()
+            .map(|port| port.name.as_str())
+            .collect();
+        assert!(input_names.contains(&"cq_value"));
+        assert!(input_names.contains(&"nvenc_preset"));
+        assert!(input_names.contains(&"x265_preset"));
     }
 
     #[test]

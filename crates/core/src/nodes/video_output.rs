@@ -97,6 +97,13 @@ impl EncoderConfig {
         if is_nvenc {
             let cq = self.cq_value.unwrap_or(20);
             let preset = self.nvenc_preset.as_deref().unwrap_or("p4");
+            let profile = if self.codec == "h264_nvenc" {
+                "high"
+            } else if self.pixel_format.contains("10") || self.pixel_format == "p010le" {
+                "main10"
+            } else {
+                "main"
+            };
             args.extend([
                 "-rc".into(),
                 "vbr".into(),
@@ -105,7 +112,7 @@ impl EncoderConfig {
                 "-preset".into(),
                 preset.into(),
                 "-profile:v".into(),
-                "main10".into(),
+                profile.into(),
                 "-b:v".into(),
                 "0".into(),
             ]);
@@ -428,6 +435,24 @@ impl Node for VideoOutputNode {
                 default_value: Some(serde_json::json!(18)),
             },
             PortDefinition {
+                name: "cq_value".to_string(),
+                port_type: PortType::Int,
+                required: false,
+                default_value: Some(serde_json::json!(20)),
+            },
+            PortDefinition {
+                name: "nvenc_preset".to_string(),
+                port_type: PortType::Str,
+                required: false,
+                default_value: Some(serde_json::json!("p4")),
+            },
+            PortDefinition {
+                name: "x265_preset".to_string(),
+                port_type: PortType::Str,
+                required: false,
+                default_value: Some(serde_json::json!("medium")),
+            },
+            PortDefinition {
                 name: "pixel_format".to_string(),
                 port_type: PortType::Str,
                 required: false,
@@ -584,6 +609,21 @@ pub fn encoder_config_from_inputs(
         _ => "yuv420p10le".to_string(),
     };
 
+    let cq_value = match inputs.get("cq_value") {
+        Some(PortData::Int(value)) => Some(*value),
+        _ => None,
+    };
+
+    let nvenc_preset = match inputs.get("nvenc_preset") {
+        Some(PortData::Str(value)) => Some(value.clone()),
+        _ => None,
+    };
+
+    let x265_preset = match inputs.get("x265_preset") {
+        Some(PortData::Str(value)) => Some(value.clone()),
+        _ => None,
+    };
+
     Ok(EncoderConfig {
         source_path,
         output_path,
@@ -594,9 +634,9 @@ pub fn encoder_config_from_inputs(
         height,
         fps,
         bit_depth,
-        cq_value: None,
-        nvenc_preset: None,
-        x265_preset: None,
+        cq_value,
+        nvenc_preset,
+        x265_preset,
     })
 }
 
@@ -945,7 +985,7 @@ mod tests {
         let node = VideoOutputNode::new();
         let ports = node.input_ports();
 
-        assert_eq!(ports.len(), 8);
+        assert_eq!(ports.len(), 11);
 
         let names: Vec<&str> = ports.iter().map(|p| p.name.as_str()).collect();
         assert!(names.contains(&"source_path"));
@@ -953,6 +993,9 @@ mod tests {
         assert!(names.contains(&"codec"));
         assert!(names.contains(&"crf"));
         assert!(names.contains(&"pixel_format"));
+        assert!(names.contains(&"cq_value"));
+        assert!(names.contains(&"nvenc_preset"));
+        assert!(names.contains(&"x265_preset"));
         assert!(names.contains(&"width"));
         assert!(names.contains(&"height"));
         assert!(names.contains(&"fps"));
@@ -970,6 +1013,9 @@ mod tests {
         assert!(!required.contains(&"codec"));
         assert!(!required.contains(&"crf"));
         assert!(!required.contains(&"pixel_format"));
+        assert!(!required.contains(&"cq_value"));
+        assert!(!required.contains(&"nvenc_preset"));
+        assert!(!required.contains(&"x265_preset"));
     }
 
     #[test]
@@ -1100,12 +1146,18 @@ mod tests {
             "pixel_format".to_string(),
             PortData::Str("yuv420p".to_string()),
         );
+        inputs.insert("cq_value".to_string(), PortData::Int(17));
+        inputs.insert("nvenc_preset".to_string(), PortData::Str("p6".to_string()));
+        inputs.insert("x265_preset".to_string(), PortData::Str("slow".to_string()));
 
         let config = encoder_config_from_inputs(&inputs, 10).unwrap();
         assert_eq!(config.codec, "libx264");
         assert_eq!(config.crf, 22);
         assert_eq!(config.pixel_format, "yuv420p");
         assert_eq!(config.bit_depth, 10);
+        assert_eq!(config.cq_value, Some(17));
+        assert_eq!(config.nvenc_preset.as_deref(), Some("p6"));
+        assert_eq!(config.x265_preset.as_deref(), Some("slow"));
     }
 
     #[test]
@@ -1124,6 +1176,19 @@ mod tests {
             .windows(2)
             .any(|w| w[0] == "-profile:v" && w[1] == "main10"));
         assert!(args.windows(2).any(|w| w[0] == "-b:v" && w[1] == "0"));
+    }
+
+    #[test]
+    fn test_ffmpeg_args_h264_nvenc_uses_high_profile() {
+        let mut config = default_config();
+        config.codec = "h264_nvenc".to_string();
+        config.pixel_format = "yuv420p".to_string();
+        let args = config.build_ffmpeg_args();
+
+        assert!(args
+            .windows(2)
+            .any(|window| window[0] == "-profile:v" && window[1] == "high"));
+        assert!(!args.contains(&"main10".to_string()));
     }
 
     #[test]
