@@ -13,7 +13,7 @@ Videnoa Controller is a quiet operational surface for coordinating video-process
 | Text | `--color-text` | `oklch(0.15 0.02 260)` | `oklch(0.97 0.005 260)` | Primary copy |
 | Muted text | `--color-text-muted` | `oklch(0.45 0.015 260)` | `oklch(0.7 0.015 260)` | Supporting copy |
 | Border | `--color-border` | `oklch(0.88 0.01 260)` | `oklch(0.28 0.02 260)` | Structural separation |
-| Accent | `--color-accent` | `oklch(0.55 0.22 292)` | `oklch(0.58 0.22 292)` | Product mark and focus |
+| Accent | `--color-accent` | `oklch(0.55 0.22 292)` | `oklch(0.61 0.22 292)` | Product mark and focus |
 | Accent border | `--color-accent-border` | Accent mixed with 55% border | Accent mixed with 55% border | Product mark outline |
 | Healthy | `--color-healthy` | `oklch(0.54 0.16 145)` | `oklch(0.72 0.17 145)` | Live service status |
 

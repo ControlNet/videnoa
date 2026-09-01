@@ -52,6 +52,28 @@ async fn health_returns_ok_json_when_controller_is_running() -> TestResult {
 
 #[cfg(debug_assertions)]
 #[tokio::test]
+async fn unknown_api_route_returns_not_found_without_spa_html() -> TestResult {
+    // Given: a Controller router backed by a valid debug SPA fixture.
+    let (_directory, assets) = debug_assets()?;
+
+    // When: a client requests an API route that the Controller does not expose.
+    let response = app_router(&assets)
+        .oneshot(Request::get("/api/unknown").body(Body::empty())?)
+        .await?;
+
+    // Then: the API boundary returns 404 instead of the SPA document.
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_ne!(
+        response.headers().get(header::CONTENT_TYPE),
+        Some(&header::HeaderValue::from_static("text/html")),
+    );
+    let body = to_bytes(response.into_body(), 4096).await?;
+    assert!(!body.starts_with(b"<!doctype html>"));
+    Ok(())
+}
+
+#[cfg(debug_assertions)]
+#[tokio::test]
 async fn spa_fallback_returns_index_when_route_is_nested() -> TestResult {
     // Given: a Controller router backed by a valid debug SPA fixture.
     let (_directory, assets) = debug_assets()?;

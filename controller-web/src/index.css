@@ -206,7 +206,7 @@ h1 {
     --color-text: oklch(0.97 0.005 260);
     --color-text-muted: oklch(0.7 0.015 260);
     --color-border: oklch(0.28 0.02 260);
-    --color-accent: oklch(0.58 0.22 292);
+    --color-accent: oklch(0.61 0.22 292);
     --color-healthy: oklch(0.72 0.17 145);
   }
 }

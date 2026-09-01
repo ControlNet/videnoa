@@ -7,13 +7,14 @@ use std::path::Path;
 
 use axum::Json;
 use axum::Router;
-use axum::routing::get;
+use axum::http::StatusCode;
+use axum::routing::{any, get};
 use serde::Serialize;
 
 #[cfg(not(debug_assertions))]
 use axum::extract::OriginalUri;
 #[cfg(not(debug_assertions))]
-use axum::http::{StatusCode, header};
+use axum::http::header;
 #[cfg(not(debug_assertions))]
 use axum::response::{IntoResponse, Response};
 #[cfg(not(debug_assertions))]
@@ -97,8 +98,20 @@ struct HealthResponse {
     status: &'static str,
 }
 
+#[derive(Serialize)]
+struct ApiErrorResponse {
+    error: &'static str,
+}
+
 async fn health() -> Json<HealthResponse> {
     Json(HealthResponse { status: "ok" })
+}
+
+async fn api_route_not_found() -> (StatusCode, Json<ApiErrorResponse>) {
+    (
+        StatusCode::NOT_FOUND,
+        Json(ApiErrorResponse { error: "not_found" }),
+    )
 }
 
 #[cfg(not(debug_assertions))]
@@ -135,7 +148,9 @@ async fn embedded_static(OriginalUri(uri): OriginalUri) -> Response {
 }
 
 pub fn app_router(assets: &FrontendAssets) -> Router {
-    let router = Router::new().route("/api/health", get(health));
+    let router = Router::new()
+        .route("/api/health", get(health))
+        .route("/api/{*path}", any(api_route_not_found));
 
     match &assets.source {
         #[cfg(debug_assertions)]
