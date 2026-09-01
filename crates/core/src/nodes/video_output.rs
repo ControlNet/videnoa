@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::thread::{self, JoinHandle};
 
 use anyhow::{bail, Context, Result};
@@ -61,32 +61,26 @@ impl EncoderConfig {
         }
     }
 
-    fn software_fallback_for_nvenc_error(&self, stderr: &str) -> Option<Self> {
-        if !self.is_nvenc()
-            || !(stderr.contains("unsupported device")
-                || stderr.contains("No capable devices found"))
-        {
-            return None;
-        }
-
-        let mut fallback = self.clone();
-        if self.codec == "h264_nvenc" {
-            fallback.codec = "libx264".to_string();
-            fallback.pixel_format = "yuv420p".to_string();
-        } else {
-            fallback.codec = "libx265".to_string();
-            fallback.pixel_format = "yuv420p10le".to_string();
-        }
-        Some(fallback)
+    fn nvenc_probe_error(&self, details: &str) -> anyhow::Error {
+        anyhow::anyhow!(
+            "NVENC probe failed for requested codec '{}'; software fallback was not applied: {}",
+            self.codec,
+            details.trim()
+        )
     }
 
-    fn probe_nvenc(&self) -> Result<Option<Self>> {
+    fn probe_nvenc(&self) -> Result<()> {
         if !self.is_nvenc() {
-            return Ok(None);
+            return Ok(());
         }
 
+        let mut command = crate::runtime::command_for("ffmpeg");
+        self.run_nvenc_probe(&mut command)
+    }
+
+    fn run_nvenc_probe(&self, command: &mut Command) -> Result<()> {
         let cq = self.cq_value.unwrap_or(20).to_string();
-        let output = crate::runtime::command_for("ffmpeg")
+        let output = command
             .args([
                 "-hide_banner",
                 "-loglevel",
@@ -118,22 +112,20 @@ impl EncoderConfig {
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .output()
-            .context("failed to probe NVENC availability")?;
+            .map_err(|error| {
+                self.nvenc_probe_error(&format!("failed to execute FFmpeg probe: {error}"))
+            })?;
 
         if output.status.success() {
-            return Ok(None);
+            return Ok(());
         }
 
         let stderr = String::from_utf8_lossy(&output.stderr);
-        if let Some(fallback) = self.software_fallback_for_nvenc_error(&stderr) {
-            return Ok(Some(fallback));
-        }
-
-        bail!(
-            "NVENC probe failed with status {}: {}",
+        Err(self.nvenc_probe_error(&format!(
+            "FFmpeg exited with {}: {}",
             output.status,
             stderr.trim()
-        );
+        )))
     }
 
     pub fn build_ffmpeg_args(&self) -> Vec<String> {
@@ -264,18 +256,7 @@ pub struct VideoEncoder {
 
 impl VideoEncoder {
     pub fn new(config: &EncoderConfig) -> Result<Self> {
-        let fallback;
-        let config = if let Some(resolved) = config.probe_nvenc()? {
-            warn!(
-                requested_codec = %config.codec,
-                fallback_codec = %resolved.codec,
-                "NVENC is unavailable; using software video encoder"
-            );
-            fallback = resolved;
-            &fallback
-        } else {
-            config
-        };
+        config.probe_nvenc()?;
         let args = config.build_ffmpeg_args();
         let frame_size = config.frame_size();
 
@@ -1308,36 +1289,75 @@ mod tests {
         assert!(!args.contains(&"main10".to_string()));
     }
 
+    #[cfg(unix)]
     #[test]
-    fn nvenc_unavailable_when_ffmpeg_reports_no_capable_device_uses_software_fallback() {
-        // Given: FFmpeg rejected the NVENC session because the GPU has no encoder engine.
-        let stderr = "OpenEncodeSessionEx failed: unsupported device (2)\nNo capable devices found";
+    fn nvenc_unavailable_reports_requested_codec_and_ffmpeg_cause() {
+        // Given: an FFmpeg probe process that reports unsupported NVENC hardware.
         let mut config = default_config();
         config.codec = "hevc_nvenc".to_string();
         config.pixel_format = "p010le".to_string();
+        let mut command = std::process::Command::new("sh");
+        command.args([
+            "-c",
+            "printf 'OpenEncodeSessionEx failed: unsupported device (2)\\nNo capable devices found\\n' >&2; exit 7",
+        ]);
 
-        // When: the encoder resolves the unavailable hardware codec.
-        let fallback = config
-            .software_fallback_for_nvenc_error(stderr)
-            .expect("unsupported NVENC hardware should select a software fallback");
+        // When: the actual probe execution returns a non-zero status.
+        let error = config
+            .run_nvenc_probe(&mut command)
+            .expect_err("unsupported NVENC hardware should fail encoder creation");
+        let message = error.to_string();
 
-        // Then: HEVC remains 10-bit while switching to the software encoder.
-        assert_eq!(fallback.codec, "libx265");
-        assert_eq!(fallback.pixel_format, "yuv420p10le");
+        // Then: the requested codec, exit status, and original FFmpeg cause remain visible.
+        assert!(message.contains("hevc_nvenc"));
+        assert!(message.contains("exit status: 7"));
+        assert!(message.contains("unsupported device (2)"));
+        assert!(message.contains("No capable devices found"));
+        assert!(message.contains("software fallback was not applied"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unrelated_ffmpeg_failure_remains_visible() {
+        // Given: an FFmpeg probe process that rejects an invalid encoder option.
+        let mut config = default_config();
+        config.codec = "hevc_nvenc".to_string();
+        let mut command = std::process::Command::new("sh");
+        command.args([
+            "-c",
+            "printf \"Undefined constant or missing '(' in 'invalid-preset'\\n\" >&2; exit 8",
+        ]);
+
+        // When: the actual probe execution returns a non-zero status.
+        let error = config
+            .run_nvenc_probe(&mut command)
+            .expect_err("invalid encoder options should fail encoder creation");
+        let message = error.to_string();
+
+        // Then: configuration errors remain visible instead of being hidden.
+        assert!(message.contains("exit status: 8"));
+        assert!(message.contains("invalid-preset"));
+        assert!(message.contains("software fallback was not applied"));
     }
 
     #[test]
-    fn unrelated_ffmpeg_failure_does_not_use_software_fallback() {
-        // Given: FFmpeg rejected an invalid user-selected encoder option.
-        let stderr = "Undefined constant or missing '(' in 'invalid-preset'";
+    fn nvenc_probe_execution_failure_reports_requested_codec() {
+        // Given: the selected FFmpeg probe executable does not exist.
         let mut config = default_config();
         config.codec = "hevc_nvenc".to_string();
+        let temp = tempfile::tempdir().expect("temporary directory should be created");
+        let mut command = std::process::Command::new(temp.path().join("missing-ffmpeg"));
 
-        // When: the failure is classified.
-        let fallback = config.software_fallback_for_nvenc_error(stderr);
+        // When: the operating system cannot start the probe process.
+        let error = config
+            .run_nvenc_probe(&mut command)
+            .expect_err("missing FFmpeg should fail encoder creation");
+        let message = error.to_string();
 
-        // Then: configuration errors remain visible instead of being hidden by fallback.
-        assert!(fallback.is_none());
+        // Then: the execution error follows the same explicit no-fallback contract.
+        assert!(message.contains("hevc_nvenc"));
+        assert!(message.contains("failed to execute FFmpeg probe"));
+        assert!(message.contains("software fallback was not applied"));
     }
 
     #[test]
