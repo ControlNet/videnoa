@@ -5,8 +5,8 @@ use std::path::PathBuf;
 #[cfg(debug_assertions)]
 use std::path::Path;
 
-use axum::extract::Request;
-use axum::http::StatusCode;
+use axum::extract::{Extension, Request};
+use axum::http::{header, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
@@ -16,15 +16,7 @@ use percent_encoding::percent_decode_str;
 use serde::Serialize;
 
 #[cfg(not(debug_assertions))]
-use axum::extract::Extension;
-#[cfg(not(debug_assertions))]
-use axum::http::header;
-#[cfg(debug_assertions)]
-use axum::routing::get_service;
-#[cfg(not(debug_assertions))]
 use rust_embed::RustEmbed;
-#[cfg(debug_assertions)]
-use tower_http::services::{ServeDir, ServeFile};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StartupError {
@@ -238,6 +230,25 @@ async fn embedded_static(Extension(decoded_path): Extension<DecodedPath>) -> Res
     }
 }
 
+#[cfg(debug_assertions)]
+async fn directory_static(
+    Extension(decoded_path): Extension<DecodedPath>,
+    Extension(directory): Extension<PathBuf>,
+) -> Response {
+    let requested_path = decoded_path.as_str().trim_start_matches('/');
+    if !requested_path.is_empty() && !requested_path.ends_with('/') {
+        if let Ok(asset) = tokio::fs::read(directory.join(requested_path)).await {
+            let content_type = mime_guess::from_path(requested_path).first_or_octet_stream();
+            return ([(header::CONTENT_TYPE, content_type.essence_str())], asset).into_response();
+        }
+    }
+
+    match tokio::fs::read(directory.join("index.html")).await {
+        Ok(index) => ([(header::CONTENT_TYPE, "text/html")], index).into_response(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
 pub fn app_router(assets: &FrontendAssets) -> Router {
     let router = Router::new()
         .route("/api/health", get(health))
@@ -248,10 +259,7 @@ pub fn app_router(assets: &FrontendAssets) -> Router {
     let router = match &assets.source {
         #[cfg(debug_assertions)]
         FrontendAssetSource::Directory(directory) => {
-            let index_path = directory.join("index.html");
-            router.fallback_service(get_service(
-                ServeDir::new(directory.clone()).fallback(ServeFile::new(index_path)),
-            ))
+            router.fallback_service(get(directory_static).layer(Extension(directory.clone())))
         }
         #[cfg(not(debug_assertions))]
         FrontendAssetSource::Embedded => router.fallback_service(get(embedded_static)),

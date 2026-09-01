@@ -136,6 +136,26 @@ async fn safely_encoded_static_assets_match_canonical_asset() -> TestResult {
 }
 
 #[tokio::test]
+async fn asset_with_trailing_separator_returns_spa_body() -> TestResult {
+    // Given: a real generated or fixture asset and the actual SPA body.
+    let test_assets = test_assets()?;
+    let canonical_path = static_asset_path(&test_assets).await?;
+    let spa_body = spa_response_body(&test_assets).await?;
+    let suffixed_paths = [format!("{canonical_path}/"), format!("{canonical_path}%2F")];
+
+    // When: the asset is requested with a literal or encoded trailing separator.
+    for path in suffixed_paths {
+        let response = asset_response(&test_assets, &path).await?;
+
+        // Then: exact lookup misses the file and returns the actual SPA response.
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(response.content_type, "text/html");
+        assert_eq!(response.body, spa_body);
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn ambiguous_dot_and_empty_segments_return_bad_request() -> TestResult {
     // Given: a real asset addressed through literal/encoded dot segments and repeated separators.
     let test_assets = test_assets()?;
