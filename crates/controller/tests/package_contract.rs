@@ -70,11 +70,9 @@ fn workspace_keeps_existing_products_and_adds_controller() -> TestResult {
         "videnoa-desktop",
         "videnoa-controller",
     ] {
-        assert!(
-            workspace_packages
-                .iter()
-                .any(|package| package.name == expected)
-        );
+        assert!(workspace_packages
+            .iter()
+            .any(|package| package.name == expected));
     }
 
     let controller = workspace_packages

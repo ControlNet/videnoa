@@ -5,10 +5,10 @@ use std::path::PathBuf;
 #[cfg(debug_assertions)]
 use std::path::Path;
 
-use axum::Json;
-use axum::Router;
 use axum::http::StatusCode;
 use axum::routing::{any, get};
+use axum::Json;
+use axum::Router;
 use serde::Serialize;
 
 #[cfg(not(debug_assertions))]
@@ -150,6 +150,8 @@ async fn embedded_static(OriginalUri(uri): OriginalUri) -> Response {
 pub fn app_router(assets: &FrontendAssets) -> Router {
     let router = Router::new()
         .route("/api/health", get(health))
+        .route("/api", any(api_route_not_found))
+        .route("/api/", any(api_route_not_found))
         .route("/api/{*path}", any(api_route_not_found));
 
     match &assets.source {

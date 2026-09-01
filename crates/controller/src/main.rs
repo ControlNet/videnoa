@@ -4,7 +4,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 
 use clap::Parser;
-use videnoa_controller::{FrontendAssets, StartupError, serve};
+use videnoa_controller::{serve, FrontendAssets, StartupError};
 
 #[derive(Debug, Parser)]
 #[command(
