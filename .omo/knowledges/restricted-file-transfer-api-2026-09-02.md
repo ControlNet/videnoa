@@ -8,6 +8,13 @@
 - Upload uses Axum `Body::into_data_stream`, `StreamReader`, and `tokio::io::copy`; download uses `ReaderStream` and `Body::from_stream` with `Content-Length`.
 - Metadata is `GET /api/files/{path}/stat`; the final `/stat` suffix is reserved because Axum catch-all parameters must terminate the route.
 
+## Path Coordinates
+
+- `/api/files/*` request paths remain relative to `workspace_root` and continue through the restricted request parser.
+- `UploadResponse.path` and `FileStatResponse.path` are instead relative to `std::env::current_dir()` so callers can pass them directly to Workflow `Path` parameters.
+- Response paths are ordinary filesystem paths and may contain `..` when the workspace is outside the process working directory; they must not be treated as File API request paths.
+- `pathdiff::diff_paths` performs the cross-platform coordinate conversion after secure request resolution.
+
 ## Security Boundary
 
 - Only UTF-8 workspace-relative paths are accepted.
