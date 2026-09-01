@@ -1,4 +1,5 @@
 use std::io::ErrorKind;
+use std::path::Path as StdPath;
 
 use axum::body::Body;
 use axum::extract::{Path, Request, State};
@@ -94,7 +95,7 @@ pub(super) async fn upload_file(
         .map_err(|error| io_error("flush upload", &resolved.absolute, error))?;
 
     Ok(Json(UploadResponse {
-        path: resolved.relative,
+        path: workflow_response_path(&resolved.absolute)?,
         size,
     }))
 }
@@ -113,7 +114,7 @@ pub(super) async fn get_file_or_stat(
             .map_err(|error| io_error("read file metadata", &resolved.absolute, error))?;
 
         return Ok(Json(FileStatResponse {
-            path: resolved.relative,
+            path: workflow_response_path(&resolved.absolute)?,
             size: metadata.len(),
             is_file: metadata.is_file(),
             is_dir: metadata.is_dir(),
@@ -192,4 +193,26 @@ fn io_error(action: &str, path: &std::path::Path, error: std::io::Error) -> AppE
     } else {
         AppError::Internal(format!("failed to {action} {}: {error}", path.display()))
     }
+}
+
+fn workflow_response_path(path: &StdPath) -> Result<String, AppError> {
+    let current_dir = std::env::current_dir().map_err(|error| {
+        AppError::Internal(format!(
+            "failed to read process current directory for file metadata: {error}"
+        ))
+    })?;
+    let relative = pathdiff::diff_paths(path, &current_dir).ok_or_else(|| {
+        AppError::Internal(format!(
+            "failed to make {} relative to process current directory {}",
+            path.display(),
+            current_dir.display()
+        ))
+    })?;
+
+    relative.to_str().map(str::to_owned).ok_or_else(|| {
+        AppError::Internal(format!(
+            "workflow path is not valid UTF-8: {}",
+            relative.display()
+        ))
+    })
 }

@@ -62,6 +62,28 @@ fn workspace_path(data_dir: &StdPath, relative: &str) -> PathBuf {
     data_dir.join("workspace").join(relative)
 }
 
+fn assert_workflow_path(response_path: &str, expected_path: &StdPath) {
+    let response_path = StdPath::new(response_path);
+    assert!(response_path.is_relative());
+
+    let current_dir = std::env::current_dir().expect("read process current directory");
+    if !expected_path.starts_with(&current_dir) {
+        assert!(response_path
+            .components()
+            .any(|component| component == std::path::Component::ParentDir));
+    }
+
+    assert_eq!(
+        current_dir
+            .join(response_path)
+            .canonicalize()
+            .expect("resolve workflow response path"),
+        expected_path
+            .canonicalize()
+            .expect("resolve expected workspace path")
+    );
+}
+
 fn create_workspace_file(data_dir: &StdPath, relative: &str, bytes: &[u8]) {
     let path = workspace_path(data_dir, relative);
     std::fs::create_dir_all(path.parent().expect("workspace file parent"))
