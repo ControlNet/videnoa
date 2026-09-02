@@ -2,6 +2,7 @@ use crate::domain::{FailureCode, FailureInfo, FailureStage, TaskStatus};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DownstreamFailure {
+    Upload,
     Download,
     Verification,
     Publication,
@@ -74,6 +75,11 @@ impl LifecycleFailure {
     #[must_use]
     pub fn downstream(stage: DownstreamFailure, message: impl Into<String>) -> Self {
         let (expected_status, failure_stage, failure_code) = match stage {
+            DownstreamFailure::Upload => (
+                TaskStatus::Uploading,
+                FailureStage::Upload,
+                FailureCode::TransferFailed,
+            ),
             DownstreamFailure::Download => (
                 TaskStatus::Downloading,
                 FailureStage::Download,

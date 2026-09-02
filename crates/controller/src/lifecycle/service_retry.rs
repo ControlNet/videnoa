@@ -1,15 +1,38 @@
 use chrono::{DateTime, Utc};
 
-use crate::domain::{FailureCode, TaskStatus};
+use crate::domain::{FailureCode, RetryMetadata, TaskStatus};
 use crate::persistence::{AttemptRecord, TaskRecord};
 
 use super::service::{applied, attempt_cas};
 use super::{
     CommittedCommand, DurableAction, Lifecycle, LifecycleError, LifecycleService,
     ProcessingRetryCommand, ProcessingRetryWrite, ResumeStage, RetryMode, RetryWrite,
+    TransferRetryWrite,
 };
 
 impl LifecycleService {
+    pub(crate) async fn schedule_transfer_retry(
+        &self,
+        task: &TaskRecord,
+        attempt: &AttemptRecord,
+        retry: RetryMetadata,
+        occurred_at: DateTime<Utc>,
+    ) -> Result<CommittedCommand, LifecycleError> {
+        let write = TransferRetryWrite {
+            task_id: task.id,
+            task_version: task.version,
+            attempt: attempt_cas(task, attempt)?,
+            retry,
+            occurred_at,
+        };
+        let version = applied(self.store().schedule_transfer_retry(&write).await?)?;
+        Ok(CommittedCommand::new(
+            task.status,
+            version,
+            DurableAction::None,
+        ))
+    }
+
     /// Resumes a failed stage on the existing attempt without repeating compute.
     ///
     /// # Errors
