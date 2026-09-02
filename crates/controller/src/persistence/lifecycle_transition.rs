@@ -1,8 +1,9 @@
 use sqlx::{Sqlite, Transaction};
 
-use crate::lifecycle::{CancellationWrite, FailureWrite, PairedTransition, SubmissionEvidence};
+use crate::lifecycle::{CancellationWrite, FailureWrite, PairedTransition, TransitionEvidence};
 
 use super::codec::{failure_code, failure_stage, sqlite_u64, task_status, timestamp};
+use super::lifecycle_evidence::{bind_submission, bind_upload};
 use super::{CasOutcome, PersistenceError, Store};
 
 impl Store {
@@ -15,9 +16,16 @@ impl Store {
             transaction.rollback().await?;
             return Ok(CasOutcome::Conflict);
         }
-        let attempt_rows = match write.submission.as_ref() {
-            Some(evidence) => bind_submission(&mut transaction, write, evidence).await?,
-            None => update_attempt_status(&mut transaction, write).await?,
+        let attempt_rows = match &write.evidence {
+            TransitionEvidence::None | TransitionEvidence::Download(_) => {
+                update_attempt_status(&mut transaction, write).await?
+            }
+            TransitionEvidence::Upload(evidence) => {
+                bind_upload(&mut transaction, write, evidence).await?
+            }
+            TransitionEvidence::Submission(evidence) => {
+                bind_submission(&mut transaction, write, evidence).await?
+            }
         };
         if attempt_rows != 1 {
             transaction.rollback().await?;
@@ -145,6 +153,16 @@ async fn update_task_status(
 ) -> Result<u64, PersistenceError> {
     let occurred_at = timestamp(write.occurred_at);
     let status = task_status(write.to);
+    let download = match write.evidence {
+        TransitionEvidence::Download(evidence) => Some(evidence),
+        TransitionEvidence::None
+        | TransitionEvidence::Upload(_)
+        | TransitionEvidence::Submission(_) => None,
+    };
+    let expected_size = download
+        .map(|evidence| sqlite_u64("expected_output_size", evidence.size))
+        .transpose()?;
+    let expected_sha = download.map(|evidence| evidence.sha256.as_bytes().to_vec());
     let result = sqlx::query(
         "UPDATE tasks SET status = ?, version = version + 1, updated_at_ms = ?,
             upload_started_at_ms = CASE WHEN ? = 'uploading' THEN ? ELSE upload_started_at_ms END,
@@ -156,21 +174,41 @@ async fn update_task_status(
             verified_at_ms = CASE WHEN ? = 'verifying' THEN ? ELSE verified_at_ms END,
             publishing_started_at_ms = CASE WHEN ? = 'publishing' THEN ? ELSE publishing_started_at_ms END,
             remote_cleanup_started_at_ms = CASE WHEN ? = 'remote_cleanup' THEN ? ELSE remote_cleanup_started_at_ms END,
-            completed_at_ms = CASE WHEN ? = 'completed' THEN ? ELSE completed_at_ms END
+            completed_at_ms = CASE WHEN ? = 'completed' THEN ? ELSE completed_at_ms END,
+            expected_output_size = CASE WHEN ? = 'verifying' THEN ? ELSE expected_output_size END,
+            expected_output_sha256 = CASE WHEN ? = 'verifying' THEN ? ELSE expected_output_sha256 END,
+            retry_count = CASE WHEN ? IN ('staged', 'verifying') THEN 0 ELSE retry_count END,
+            next_retry_at_ms = CASE WHEN ? IN ('staged', 'verifying') THEN NULL ELSE next_retry_at_ms END
          WHERE id = ? AND status = ? AND version = ?",
     )
     .bind(status)
     .bind(occurred_at)
-    .bind(status).bind(occurred_at)
-    .bind(status).bind(occurred_at)
-    .bind(status).bind(occurred_at)
-    .bind(status).bind(occurred_at)
-    .bind(status).bind(occurred_at)
-    .bind(status).bind(occurred_at)
-    .bind(status).bind(occurred_at)
-    .bind(status).bind(occurred_at)
-    .bind(status).bind(occurred_at)
-    .bind(status).bind(occurred_at)
+    .bind(status)
+    .bind(occurred_at)
+    .bind(status)
+    .bind(occurred_at)
+    .bind(status)
+    .bind(occurred_at)
+    .bind(status)
+    .bind(occurred_at)
+    .bind(status)
+    .bind(occurred_at)
+    .bind(status)
+    .bind(occurred_at)
+    .bind(status)
+    .bind(occurred_at)
+    .bind(status)
+    .bind(occurred_at)
+    .bind(status)
+    .bind(occurred_at)
+    .bind(status)
+    .bind(occurred_at)
+    .bind(status)
+    .bind(expected_size)
+    .bind(status)
+    .bind(expected_sha)
+    .bind(status)
+    .bind(status)
     .bind(write.task_id.to_string())
     .bind(task_status(write.from))
     .bind(sqlite_u64("task_version", write.task_version)?)
@@ -189,43 +227,21 @@ async fn update_attempt_status(
         "UPDATE task_attempts SET status = ?, version = version + 1, updated_at_ms = ?,
             started_at_ms = CASE WHEN ? = 'processing' THEN ? ELSE started_at_ms END,
             completed_at_ms = CASE WHEN ? IN ('completed', 'failed', 'cancelled')
-                THEN ? ELSE completed_at_ms END
+                THEN ? ELSE completed_at_ms END,
+            retry_count = CASE WHEN ? IN ('staged', 'verifying') THEN 0 ELSE retry_count END,
+            next_retry_at_ms = CASE WHEN ? IN ('staged', 'verifying') THEN NULL ELSE next_retry_at_ms END
          WHERE id = ? AND status = ? AND version = ?",
     )
     .bind(status)
     .bind(occurred_at)
+    .bind(status)
+    .bind(status)
     .bind(status)
     .bind(occurred_at)
     .bind(status)
     .bind(occurred_at)
     .bind(write.attempt.id.to_string())
     .bind(task_status(write.attempt.status))
-    .bind(sqlite_u64("attempt_version", write.attempt.version)?)
-    .execute(&mut **transaction)
-    .await?;
-    Ok(result.rows_affected())
-}
-
-async fn bind_submission(
-    transaction: &mut Transaction<'_, Sqlite>,
-    write: &PairedTransition,
-    evidence: &SubmissionEvidence,
-) -> Result<u64, PersistenceError> {
-    let occurred_at = timestamp(write.occurred_at);
-    let result = sqlx::query(
-        "UPDATE task_attempts SET status = 'processing', remote_job_id = ?,
-            remote_input_path = ?, remote_output_path = ?, submitted_at_ms = ?,
-            started_at_ms = ?, version = version + 1, updated_at_ms = ?
-         WHERE id = ? AND status = 'submitting' AND version = ?
-           AND remote_job_id IS NULL AND remote_input_path IS NULL AND remote_output_path IS NULL",
-    )
-    .bind(evidence.remote_job_id.to_string())
-    .bind(evidence.remote_input_path.as_str())
-    .bind(evidence.remote_output_path.as_str())
-    .bind(occurred_at)
-    .bind(occurred_at)
-    .bind(occurred_at)
-    .bind(write.attempt.id.to_string())
     .bind(sqlite_u64("attempt_version", write.attempt.version)?)
     .execute(&mut **transaction)
     .await?;

@@ -8,7 +8,7 @@ use videnoa_controller::domain::{
     WorkerCapabilities, WorkerId, WorkerName, WorkflowKind, WorkflowName, WorkflowSummary,
 };
 use videnoa_controller::lifecycle::{
-    AdvanceCommand, CancelAction, DurableAction, LifecycleService, ReserveCommand,
+    AdvanceCommand, CancelAction, DurableAction, LifecycleService, ReserveCommand, UploadEvidence,
 };
 use videnoa_controller::persistence::{
     AttemptRecord, Database, DatabaseOptions, InputIdentity, NewTask, NewWorker, Store, TaskRecord,
@@ -122,7 +122,7 @@ pub async fn submitting_attempt(fixture: &Fixture) -> TestResult<AttemptId> {
     let attempt_id = reserve(fixture).await?;
     for command in [
         AdvanceCommand::StartUpload,
-        AdvanceCommand::FinishUpload,
+        AdvanceCommand::FinishUpload(upload_evidence()),
         AdvanceCommand::StartSubmission,
     ] {
         let task = load_task(fixture).await?;
@@ -133,6 +133,13 @@ pub async fn submitting_attempt(fixture: &Fixture) -> TestResult<AttemptId> {
             .await?;
     }
     Ok(attempt_id)
+}
+
+pub fn upload_evidence() -> UploadEvidence {
+    UploadEvidence {
+        remote_input_path: videnoa_controller::domain::RemotePath::new("task/input.mkv"),
+        remote_output_path: videnoa_controller::domain::RemotePath::new("task/output.mp4"),
+    }
 }
 
 pub async fn request_submitting_cancellation(
