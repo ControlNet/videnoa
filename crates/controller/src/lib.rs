@@ -17,6 +17,7 @@ use percent_encoding::percent_decode_str;
 mod asset_path;
 pub mod config;
 pub mod domain;
+pub mod persistence;
 use asset_path::ExactAssetPath;
 
 #[cfg(not(debug_assertions))]
