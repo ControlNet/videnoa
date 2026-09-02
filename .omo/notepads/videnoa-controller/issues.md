@@ -84,3 +84,8 @@
 - Strict Clippy initially exposed the shared harness as public from the new integration target, promoting test helpers into undocumented public APIs. Keeping the harness private and compiling the existing harness scenarios into that target preserves dead-code coverage without lint suppression.
 - The first Rust 1.83 run failed while parsing inactive `cpufeatures 0.3.1`; downgrading the reqwest lock graph's QUIC packages restored MSRV compatibility without changing the active HTTP/1 rustls feature tree.
 - Separate top-level integration tests each compiled the full shared support module and produced strict dead-code failures. One test crate with focused submodules now compiles the reusable harness once.
+
+## 2026-09-02 Task 8 Preset Contract Follow-up
+
+- The original mock incorrectly allowed extensionless preset IDs to resolve through the saved-workflow interface endpoint, masking a production contract mismatch. Production-shaped slug and UUID fixtures reproduced both presets as incompatible before the fix.
+- The mock and production clients now consume typed embedded preset interfaces, while real-TCP journal assertions prevent future synthetic preset interface requests.
