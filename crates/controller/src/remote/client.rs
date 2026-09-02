@@ -23,6 +23,7 @@ impl VidenoaClient {
         let http = reqwest::Client::builder()
             .connect_timeout(timeouts.connect)
             .pool_max_idle_per_host(8)
+            .redirect(reqwest::redirect::Policy::none())
             .user_agent(concat!(
                 env!("CARGO_PKG_NAME"),
                 "/",

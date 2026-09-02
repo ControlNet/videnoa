@@ -81,7 +81,7 @@ impl TransferExecutor {
                 .ok_or(TransferError::MissingEvidence)?;
             let client = VidenoaClient::new(
                 worker.api_url,
-                self.config.remote_timeouts,
+                self.config.runtime_settings.remote_timeouts(),
                 self.config.payload_limits,
             )?;
             let remote_path = FileApiPath::parse(&format!(

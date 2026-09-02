@@ -26,11 +26,7 @@ impl LifecycleService {
             occurred_at,
         };
         let version = applied(self.store().schedule_transfer_retry(&write).await?)?;
-        Ok(CommittedCommand::new(
-            task.status,
-            version,
-            DurableAction::None,
-        ))
+        Ok(self.committed(task.id, task.status, version, DurableAction::None))
     }
 
     /// Resumes a failed stage on the existing attempt without repeating compute.
@@ -58,11 +54,7 @@ impl LifecycleService {
             occurred_at,
         };
         let version = applied(self.store().retry_lifecycle_stage(&write).await?)?;
-        Ok(CommittedCommand::new(
-            stage.status(),
-            version,
-            stage_action(stage),
-        ))
+        Ok(self.committed(task.id, stage.status(), version, stage_action(stage)))
     }
 
     /// Creates a new attempt only after terminal remote and workspace-cleanup evidence.
@@ -117,11 +109,7 @@ impl LifecycleService {
             occurred_at,
         };
         let version = applied(self.store().retry_processing_attempt(&write).await?)?;
-        Ok(CommittedCommand::new(
-            TaskStatus::Reserved,
-            version,
-            DurableAction::None,
-        ))
+        Ok(self.committed(task.id, TaskStatus::Reserved, version, DurableAction::None))
     }
 }
 

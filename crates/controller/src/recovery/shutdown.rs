@@ -5,14 +5,13 @@ use std::time::Duration;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-use crate::persistence::{CasOutcome, PersistenceError, SettingsUpdate, Store};
+use crate::persistence::SettingsUpdate;
+use crate::scheduler::{Scheduler, SchedulerError};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ShutdownError {
     #[error(transparent)]
-    Persistence(#[from] PersistenceError),
-    #[error("controller settings changed while shutdown was being persisted")]
-    Conflict,
+    Scheduler(#[from] SchedulerError),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -110,25 +109,22 @@ impl ShutdownCoordinator {
     /// Returns an error when settings cannot be loaded or the pause cannot be committed.
     pub async fn shutdown(
         &self,
-        store: &Store,
+        scheduler: &Scheduler,
         now: chrono::DateTime<chrono::Utc>,
         bound: Duration,
     ) -> Result<DrainOutcome, ShutdownError> {
-        let settings = store.settings().await?;
-        let mut scheduler = settings.scheduler;
-        scheduler.paused = true;
-        let outcome = store
-            .update_settings(&SettingsUpdate {
+        let settings = scheduler.settings().await?;
+        let mut status = settings.scheduler;
+        status.paused = true;
+        scheduler
+            .update_settings(SettingsUpdate {
                 expected_version: settings.version,
-                scheduler,
+                scheduler: status,
                 timeouts: settings.timeouts,
                 retry: settings.retry,
                 updated_at: now,
             })
             .await?;
-        if outcome == CasOutcome::Conflict {
-            return Err(ShutdownError::Conflict);
-        }
         self.stop_stage_intake();
         Ok(self.drain(bound).await)
     }

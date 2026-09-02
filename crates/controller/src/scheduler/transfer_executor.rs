@@ -6,11 +6,11 @@ use chrono::{DateTime, Utc};
 use crate::domain::{RetryMetadata, TaskId};
 use crate::lifecycle::{
     AutomaticRetry, DownstreamFailure, JitterSample, LifecycleFailure, LifecycleService,
-    RetryDecision, RetryPolicy, UploadEvidence,
+    RetryDecision, UploadEvidence,
 };
 use crate::paths::PathCapabilities;
 use crate::persistence::{Sha256Digest, Store};
-use crate::remote::{PayloadLimits, RemoteTimeouts};
+use crate::remote::PayloadLimits;
 
 use super::transfer_checkpoint::noop_observer;
 use super::{
@@ -27,9 +27,8 @@ pub struct TransferResources {
 #[derive(Clone, Debug)]
 pub struct TransferConfig {
     pub temp_root: PathBuf,
-    pub remote_timeouts: RemoteTimeouts,
     pub payload_limits: PayloadLimits,
-    pub retry_policy: RetryPolicy,
+    pub runtime_settings: super::RuntimeSettings,
 }
 
 #[derive(Clone)]
@@ -151,11 +150,11 @@ impl TransferExecutor {
         now: DateTime<Utc>,
         jitter: JitterSample,
     ) -> Result<RetryResult, TransferError> {
-        match self
-            .config
-            .retry_policy
-            .decide(operation, task.retry.retry_count, jitter)
-        {
+        match self.config.runtime_settings.retry_policy().decide(
+            operation,
+            task.retry.retry_count,
+            jitter,
+        ) {
             RetryDecision::Schedule {
                 retry_count, delay, ..
             } => {

@@ -1,7 +1,8 @@
 use chrono::{DateTime, Utc};
 
 use crate::domain::TaskId;
-use crate::persistence::{CasOutcome, WorkerHealthUpdate, WorkerRecord};
+use crate::persistence::{WorkerHealthUpdate, WorkerRecord};
+use crate::workers::WorkerRegistry;
 
 use super::{Reconciler, RecoveryError, RecoveryReport, StagePermit};
 
@@ -44,9 +45,8 @@ impl Reconciler {
             "worker health check failed during recovery"
         };
         let _write = stage.begin_write();
-        let outcome = self
-            .store
-            .update_worker_health(&WorkerHealthUpdate {
+        WorkerRegistry::new(self.store.clone())
+            .refresh_health(WorkerHealthUpdate {
                 id: worker.id,
                 expected_version: worker.version,
                 online: false,
@@ -58,10 +58,7 @@ impl Reconciler {
                 updated_at: now,
             })
             .await?;
-        match outcome {
-            CasOutcome::Applied { .. } => report.defer(task_id),
-            CasOutcome::Conflict => return Err(RecoveryError::Conflict),
-        }
+        report.defer(task_id);
         Ok(())
     }
 }

@@ -221,3 +221,27 @@ async fn scheduler_settings_update_has_typed_stale_conflict_and_reconfigures_lim
     drop((first, second, downloads));
     Ok(())
 }
+
+#[tokio::test]
+async fn invalid_runtime_settings_are_rejected_before_persistence() -> TestResult {
+    let fixture = fixture().await?;
+    let scheduler = Scheduler::load(fixture.store.clone()).await?;
+    let settings = fixture.store.settings().await?;
+    let mut invalid = settings.clone();
+    invalid.timeouts.health_seconds = 0;
+
+    let error = scheduler
+        .update_settings(SettingsUpdate {
+            expected_version: invalid.version,
+            scheduler: invalid.scheduler,
+            timeouts: invalid.timeouts,
+            retry: invalid.retry,
+            updated_at: fixture.now + Duration::seconds(1),
+        })
+        .await
+        .expect_err("zero timeout must be rejected");
+
+    assert_eq!(error.code(), SchedulerErrorCode::Internal);
+    assert_eq!(fixture.store.settings().await?, settings);
+    Ok(())
+}

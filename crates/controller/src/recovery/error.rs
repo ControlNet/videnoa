@@ -8,6 +8,8 @@ pub enum RecoveryError {
     ClientConfig(#[from] crate::remote::ClientConfigError),
     #[error(transparent)]
     Remote(#[from] crate::remote::VidenoaClientError),
+    #[error(transparent)]
+    Worker(#[from] crate::workers::WorkerRegistryError),
     #[error("durable task is missing its current attempt")]
     MissingAttempt,
     #[error("durable task is missing its assigned worker")]

@@ -4,8 +4,8 @@ use crate::domain::{
     WorkerCapacity, WorkerCreateRequest, WorkerId, WorkerName, WorkerUpdateRequest,
 };
 use crate::persistence::{
-    CasOutcome, NewWorker, PersistenceError, Store, WorkerDeleteOutcome, WorkerHealthUpdate,
-    WorkerIdentityConflict, WorkerRecord, WorkerUpdate, WorkerUpdateOutcome,
+    CasOutcome, DurableChange, NewWorker, PersistenceError, Store, WorkerDeleteOutcome,
+    WorkerHealthUpdate, WorkerIdentityConflict, WorkerRecord, WorkerUpdate, WorkerUpdateOutcome,
 };
 
 use super::WorkerRegistryError;
@@ -40,13 +40,15 @@ impl WorkerRegistry {
             compute_slots: request.compute_slots,
             created_at: now,
         };
-        match self.store.insert_worker(&worker).await {
+        let record = match self.store.insert_worker(&worker).await {
             Ok(()) => self.load(worker.id).await,
             Err(error) if unique_violation(&error) => Err(self
                 .identity_error(None, &worker.name, &worker.api_url)
                 .await?),
             Err(error) => Err(error.into()),
-        }
+        }?;
+        self.store.notify_change(DurableChange::Worker(record.id));
+        Ok(record)
     }
 
     /// Loads one durable worker record.
@@ -83,7 +85,7 @@ impl WorkerRegistry {
             compute_slots: request.compute_slots,
             updated_at: now,
         };
-        match self.store.update_worker(&update).await {
+        let record = match self.store.update_worker(&update).await {
             Ok(WorkerUpdateOutcome::Applied { .. }) => self.load(id).await,
             Ok(WorkerUpdateOutcome::Conflict) => Err(WorkerRegistryError::Conflict),
             Ok(WorkerUpdateOutcome::CapacityBelowUsage) => {
@@ -93,7 +95,9 @@ impl WorkerRegistry {
                 .identity_error(Some(id), &update.name, &update.api_url)
                 .await?),
             Err(error) => Err(error.into()),
-        }
+        }?;
+        self.store.notify_change(DurableChange::Worker(record.id));
+        Ok(record)
     }
 
     /// Changes only the worker enabled policy while preserving assignments.
@@ -136,10 +140,12 @@ impl WorkerRegistry {
         if self.worker(update.id).await?.is_none() {
             return Err(WorkerRegistryError::NotFound);
         }
-        match self.store.update_worker_health(&update).await? {
+        let record = match self.store.update_worker_health(&update).await? {
             CasOutcome::Applied { .. } => self.load(update.id).await,
             CasOutcome::Conflict => Err(WorkerRegistryError::Conflict),
-        }
+        }?;
+        self.store.notify_change(DurableChange::Worker(record.id));
+        Ok(record)
     }
 
     /// Deletes a worker only when its version is current and no task references it.
@@ -152,7 +158,10 @@ impl WorkerRegistry {
         expected_version: u64,
     ) -> Result<(), WorkerRegistryError> {
         match self.store.delete_worker(id, expected_version).await? {
-            WorkerDeleteOutcome::Deleted => Ok(()),
+            WorkerDeleteOutcome::Deleted => {
+                self.store.notify_change(DurableChange::WorkerDeleted);
+                Ok(())
+            }
             WorkerDeleteOutcome::NotFound => Err(WorkerRegistryError::NotFound),
             WorkerDeleteOutcome::Conflict => Err(WorkerRegistryError::Conflict),
             WorkerDeleteOutcome::Referenced => Err(WorkerRegistryError::Referenced),

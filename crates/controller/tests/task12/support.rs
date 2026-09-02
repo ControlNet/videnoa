@@ -13,7 +13,7 @@ use videnoa_controller::domain::{
     WorkerCapabilities, WorkerId, WorkerName, WorkflowKind, WorkflowName, WorkflowSummary,
 };
 use videnoa_controller::lifecycle::{
-    AdvanceCommand, JitterSample, LifecycleService, ReserveCommand, RetryPolicy, SubmissionEvidence,
+    AdvanceCommand, JitterSample, LifecycleService, ReserveCommand, SubmissionEvidence,
 };
 use videnoa_controller::paths::PathCapabilities;
 use videnoa_controller::persistence::{
@@ -22,7 +22,7 @@ use videnoa_controller::persistence::{
 };
 use videnoa_controller::remote::{PayloadLimits, RemoteTimeouts, VidenoaClient};
 use videnoa_controller::scheduler::{
-    TransferConfig, TransferCoordinator, TransferExecutor, TransferResources,
+    RuntimeSettings, TransferConfig, TransferCoordinator, TransferExecutor, TransferResources,
 };
 
 use crate::mock_videnoa::server::MockVidenoa;
@@ -160,18 +160,19 @@ impl Fixture {
             },
             TransferConfig {
                 temp_root: self.temp_root.clone(),
-                remote_timeouts: RemoteTimeouts::new(
-                    Duration::from_secs(1),
-                    Duration::from_secs(3),
-                    Duration::from_secs(1),
-                )?,
                 payload_limits: PayloadLimits::new(1024 * 1024, 4096)?,
-                retry_policy: RetryPolicy::from_config(&videnoa_controller::config::RetryConfig {
-                    initial: Duration::from_secs(1),
-                    maximum: Duration::from_secs(4),
-                    max_attempts: std::num::NonZeroU32::new(3)
-                        .ok_or_else(|| std::io::Error::other("invalid retry bound"))?,
-                }),
+                runtime_settings: RuntimeSettings::new(
+                    &videnoa_controller::domain::TimeoutSettingsDto {
+                        health_seconds: 1,
+                        poll_seconds: 3,
+                        transfer_seconds: 1,
+                    },
+                    &videnoa_controller::domain::RetrySettingsDto {
+                        initial_seconds: 1,
+                        maximum_seconds: 4,
+                        max_attempts: 3,
+                    },
+                )?,
             },
         ))
     }
