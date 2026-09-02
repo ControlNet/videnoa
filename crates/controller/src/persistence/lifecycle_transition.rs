@@ -17,7 +17,9 @@ impl Store {
             return Ok(CasOutcome::Conflict);
         }
         let attempt_rows = match &write.evidence {
-            TransitionEvidence::None | TransitionEvidence::Download(_) => {
+            TransitionEvidence::None
+            | TransitionEvidence::Download(_)
+            | TransitionEvidence::Publication(_) => {
                 update_attempt_status(&mut transaction, write).await?
             }
             TransitionEvidence::Upload(evidence) => {
@@ -157,7 +159,15 @@ async fn update_task_status(
         TransitionEvidence::Download(evidence) => Some(evidence),
         TransitionEvidence::None
         | TransitionEvidence::Upload(_)
-        | TransitionEvidence::Submission(_) => None,
+        | TransitionEvidence::Submission(_)
+        | TransitionEvidence::Publication(_) => None,
+    };
+    let staging_name = match &write.evidence {
+        TransitionEvidence::Publication(intent) => Some(intent.destination_staging_name()),
+        TransitionEvidence::None
+        | TransitionEvidence::Upload(_)
+        | TransitionEvidence::Submission(_)
+        | TransitionEvidence::Download(_) => None,
     };
     let expected_size = download
         .map(|evidence| sqlite_u64("expected_output_size", evidence.size))
@@ -177,6 +187,7 @@ async fn update_task_status(
             completed_at_ms = CASE WHEN ? = 'completed' THEN ? ELSE completed_at_ms END,
             expected_output_size = CASE WHEN ? = 'verifying' THEN ? ELSE expected_output_size END,
             expected_output_sha256 = CASE WHEN ? = 'verifying' THEN ? ELSE expected_output_sha256 END,
+            destination_staging_name = CASE WHEN ? = 'publishing' THEN ? ELSE destination_staging_name END,
             retry_count = CASE WHEN ? IN ('staged', 'verifying') THEN 0 ELSE retry_count END,
             next_retry_at_ms = CASE WHEN ? IN ('staged', 'verifying') THEN NULL ELSE next_retry_at_ms END
          WHERE (? != 'uploading' OR (SELECT paused FROM controller_settings WHERE id = 1) = 0)
@@ -208,6 +219,8 @@ async fn update_task_status(
     .bind(expected_size)
     .bind(status)
     .bind(expected_sha)
+    .bind(status)
+    .bind(staging_name)
     .bind(status)
     .bind(status)
     .bind(status)
