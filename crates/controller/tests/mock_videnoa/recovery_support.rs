@@ -11,7 +11,8 @@ use videnoa_controller::domain::{
     WorkflowSummary,
 };
 use videnoa_controller::lifecycle::{
-    AdvanceCommand, LifecycleService, ReserveCommand, SubmissionEvidence,
+    AdvanceCommand, DownloadEvidence, LifecycleService, ReserveCommand, SubmissionEvidence,
+    UploadEvidence,
 };
 use videnoa_controller::persistence::{
     Database, DatabaseOptions, InputIdentity, NewTask, NewWorker, SettingsUpdate, Store,
@@ -127,8 +128,16 @@ impl Fixture {
             return Ok(StateFixture { task_id });
         }
         let (client, upload) = self.upload_input(task_id).await?;
-        self.advance(task_id, attempt_id, AdvanceCommand::FinishUpload)
-            .await?;
+        let output = videnoa_controller::remote::sibling_output_path(&upload.path, "output.mp4")?;
+        self.advance(
+            task_id,
+            attempt_id,
+            AdvanceCommand::FinishUpload(UploadEvidence {
+                remote_input_path: upload.path.clone(),
+                remote_output_path: output,
+            }),
+        )
+        .await?;
         if status == TaskStatus::Staged {
             return Ok(StateFixture { task_id });
         }
@@ -154,8 +163,15 @@ impl Fixture {
         if status == TaskStatus::Downloading {
             return Ok(StateFixture { task_id });
         }
-        self.advance(task_id, attempt_id, AdvanceCommand::FinishDownload)
-            .await?;
+        self.advance(
+            task_id,
+            attempt_id,
+            AdvanceCommand::FinishDownload(DownloadEvidence {
+                size: 4,
+                sha256: videnoa_controller::persistence::Sha256Digest::new([1; 32]),
+            }),
+        )
+        .await?;
         if status == TaskStatus::Verifying {
             return Ok(StateFixture { task_id });
         }

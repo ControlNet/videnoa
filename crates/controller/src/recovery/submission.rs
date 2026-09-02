@@ -3,11 +3,12 @@ use chrono::{DateTime, Utc};
 use crate::domain::TaskStatus;
 use crate::lifecycle::{
     AdvanceCommand, LifecycleService, SubmissionCancellationReconciliation, SubmissionEvidence,
+    UploadEvidence,
 };
 use crate::persistence::{AttemptRecord, TaskRecord};
-use crate::remote::{VidenoaClient, VidenoaClientError};
+use crate::remote::{sibling_output_path, VidenoaClient, VidenoaClientError};
 
-use super::paths::{input_path, output_path, submission_params};
+use super::paths::{input_path, submission_params};
 use super::{Reconciler, RecoveryCommandKind, RecoveryError, RecoveryReport, StagePermit};
 
 impl Reconciler {
@@ -20,14 +21,25 @@ impl Reconciler {
         stage: &StagePermit,
     ) -> Result<(), RecoveryError> {
         let path = input_path(task)?;
-        if client
-            .stat(&path)
-            .await
-            .is_ok_and(|stat| stat.is_file && stat.size == task.input_size)
-        {
+        if let Ok(stat) = client.stat(&path).await {
+            if !stat.is_file || stat.size != task.input_size {
+                return Ok(());
+            }
             let _write = stage.begin_write();
+            let output = sibling_output_path(
+                &stat.path,
+                &format!("output.{}", task.output_extension.as_str()),
+            )?;
             LifecycleService::new(self.store.clone())
-                .advance(task, attempt, AdvanceCommand::FinishUpload, now)
+                .advance(
+                    task,
+                    attempt,
+                    AdvanceCommand::FinishUpload(UploadEvidence {
+                        remote_input_path: stat.path,
+                        remote_output_path: output,
+                    }),
+                    now,
+                )
                 .await?;
         }
         Ok(())
@@ -60,13 +72,12 @@ impl Reconciler {
                 .await?
                 .ok_or(RecoveryError::MissingAttempt)?;
         }
-        let input = input_path(&task)?;
-        let output = output_path(&task)?;
+        let (input, output) = remote_paths(&attempt)?;
         let submitted = client
             .run(
                 &task.request.workflow,
                 attempt.attempt.submission_key,
-                &submission_params(&input, &output),
+                &submission_params(input, output),
             )
             .await?;
         let _write = stage.begin_write();
@@ -74,7 +85,11 @@ impl Reconciler {
             .advance(
                 &task,
                 &attempt,
-                AdvanceCommand::PersistSubmission(evidence(submitted.receipt.id, &input, &output)),
+                AdvanceCommand::PersistSubmission(SubmissionEvidence {
+                    remote_job_id: submitted.receipt.id,
+                    remote_input_path: input.clone(),
+                    remote_output_path: output.clone(),
+                }),
                 now,
             )
             .await?;
@@ -135,21 +150,20 @@ impl Reconciler {
         stage: &StagePermit,
         report: &mut RecoveryReport,
     ) -> Result<(), RecoveryError> {
-        let input = input_path(&task)?;
-        let output = output_path(&task)?;
+        let (input, output) = remote_paths(&attempt)?;
         let reconciliation = match client
             .run(
                 &task.request.workflow,
                 attempt.attempt.submission_key,
-                &submission_params(&input, &output),
+                &submission_params(input, output),
             )
             .await
         {
-            Ok(submitted) => SubmissionCancellationReconciliation::Accepted(evidence(
-                submitted.receipt.id,
-                &input,
-                &output,
-            )),
+            Ok(submitted) => SubmissionCancellationReconciliation::Accepted(SubmissionEvidence {
+                remote_job_id: submitted.receipt.id,
+                remote_input_path: input.clone(),
+                remote_output_path: output.clone(),
+            }),
             Err(VidenoaClientError::NotFound | VidenoaClientError::ClientStatus { .. }) => {
                 SubmissionCancellationReconciliation::NotAccepted
             }
@@ -202,14 +216,18 @@ impl Reconciler {
     }
 }
 
-fn evidence(
-    remote_job_id: crate::domain::RemoteJobId,
-    input: &crate::remote::FileApiPath,
-    output: &crate::remote::FileApiPath,
-) -> SubmissionEvidence {
-    SubmissionEvidence {
-        remote_job_id,
-        remote_input_path: crate::domain::RemotePath::new(input.as_str()),
-        remote_output_path: crate::domain::RemotePath::new(output.as_str()),
-    }
+fn remote_paths(
+    attempt: &AttemptRecord,
+) -> Result<(&crate::domain::RemotePath, &crate::domain::RemotePath), RecoveryError> {
+    let input = attempt
+        .attempt
+        .remote_input_path
+        .as_ref()
+        .ok_or(RecoveryError::MissingRemoteEvidence)?;
+    let output = attempt
+        .attempt
+        .remote_output_path
+        .as_ref()
+        .ok_or(RecoveryError::MissingRemoteEvidence)?;
+    Ok((input, output))
 }

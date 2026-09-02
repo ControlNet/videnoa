@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use serde_json::Value;
 
+use crate::domain::RemotePath;
 use crate::persistence::TaskRecord;
 use crate::remote::FileApiPath;
 
@@ -16,18 +17,9 @@ pub(super) fn input_path(task: &TaskRecord) -> Result<FileApiPath, RecoveryError
     .map_err(Into::into)
 }
 
-pub(super) fn output_path(task: &TaskRecord) -> Result<FileApiPath, RecoveryError> {
-    FileApiPath::parse(&format!(
-        "{}/output.{}",
-        task.id,
-        task.output_extension.as_str()
-    ))
-    .map_err(Into::into)
-}
-
 pub(super) fn submission_params(
-    input: &FileApiPath,
-    output: &FileApiPath,
+    input: &RemotePath,
+    output: &RemotePath,
 ) -> BTreeMap<String, Value> {
     BTreeMap::from([
         ("input".to_owned(), Value::String(input.as_str().to_owned())),
