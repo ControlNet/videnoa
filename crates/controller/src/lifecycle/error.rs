@@ -18,6 +18,8 @@ pub enum LifecycleError {
     Conflict,
     #[error("cancellation intent is required before cancellation completion")]
     CancellationIntentRequired,
+    #[error("submitting cancellation requires keyed submission reconciliation")]
+    SubmissionReconciliationRequired,
     #[error("task and attempt lifecycle snapshots disagree")]
     AttemptMismatch,
     #[error("a lifecycle attempt is required for this command")]
@@ -38,9 +40,9 @@ impl LifecycleError {
     #[must_use]
     pub const fn code(&self) -> LifecycleErrorCode {
         match self {
-            Self::IllegalCommand | Self::CancellationIntentRequired => {
-                LifecycleErrorCode::IllegalCommand
-            }
+            Self::IllegalCommand
+            | Self::CancellationIntentRequired
+            | Self::SubmissionReconciliationRequired => LifecycleErrorCode::IllegalCommand,
             Self::Conflict
             | Self::AttemptMismatch
             | Self::AttemptRequired

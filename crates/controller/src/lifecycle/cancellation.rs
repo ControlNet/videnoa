@@ -6,7 +6,7 @@ use crate::persistence::{AttemptRecord, TaskRecord};
 use super::service::{applied, attempt_cas};
 use super::{
     CancellationWrite, CommandKind, CommittedCommand, DurableAction, Lifecycle, LifecycleError,
-    LifecycleService, PairedTransition, TransitionTarget,
+    LifecycleService, PairedTransition, SubmissionCancellationReconciliation, TransitionTarget,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -80,6 +80,47 @@ impl LifecycleService {
         ))
     }
 
+    /// Commits the keyed submission reconciliation result before authorizing cleanup.
+    ///
+    /// # Errors
+    /// Returns an error when intent is absent, the state is not submitting, or CAS conflicts.
+    pub async fn reconcile_submission_cancellation(
+        &self,
+        task: &TaskRecord,
+        attempt: &AttemptRecord,
+        reconciliation: SubmissionCancellationReconciliation,
+        occurred_at: DateTime<Utc>,
+    ) -> Result<CommittedCommand, LifecycleError> {
+        if task.status != TaskStatus::Submitting || task.cancel_requested_at.is_none() {
+            return Err(LifecycleError::IllegalCommand);
+        }
+        let (next_status, action, submission) = match reconciliation {
+            SubmissionCancellationReconciliation::Accepted(evidence) => (
+                TaskStatus::Processing,
+                CancelAction::CancelRemoteAndClean,
+                Some(evidence),
+            ),
+            SubmissionCancellationReconciliation::NotAccepted => {
+                (TaskStatus::Staged, CancelAction::CleanStaged, None)
+            }
+        };
+        let write = PairedTransition {
+            task_id: task.id,
+            task_version: task.version,
+            from: task.status,
+            to: next_status,
+            attempt: attempt_cas(task, attempt)?,
+            occurred_at,
+            submission,
+        };
+        let version = applied(self.store().apply_lifecycle_transition(&write).await?)?;
+        Ok(CommittedCommand::new(
+            next_status,
+            version,
+            DurableAction::Cancel(action),
+        ))
+    }
+
     /// Commits terminal cancellation after the state-specific cleanup action converges.
     ///
     /// # Errors
@@ -92,6 +133,9 @@ impl LifecycleService {
     ) -> Result<CommittedCommand, LifecycleError> {
         if task.cancel_requested_at.is_none() {
             return Err(LifecycleError::CancellationIntentRequired);
+        }
+        if task.status == TaskStatus::Submitting {
+            return Err(LifecycleError::SubmissionReconciliationRequired);
         }
         let target = Lifecycle::destination(task.status, CommandKind::FinishCancellation)?;
         let TransitionTarget::Status(next_status) = target else {

@@ -16,6 +16,12 @@ pub struct SubmissionEvidence {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SubmissionCancellationReconciliation {
+    Accepted(SubmissionEvidence),
+    NotAccepted,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AdvanceCommand {
     StartUpload,
     FinishUpload,

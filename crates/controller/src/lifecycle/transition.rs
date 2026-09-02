@@ -82,13 +82,13 @@ const fn finish_cancellation_target(status: TaskStatus) -> Option<TransitionTarg
     match status {
         TaskStatus::Uploading
         | TaskStatus::Staged
-        | TaskStatus::Submitting
         | TaskStatus::Processing
         | TaskStatus::RemoteCompleted
         | TaskStatus::Downloading
         | TaskStatus::Verifying => Some(TransitionTarget::Status(TaskStatus::Cancelled)),
         TaskStatus::Queued
         | TaskStatus::Reserved
+        | TaskStatus::Submitting
         | TaskStatus::Publishing
         | TaskStatus::RemoteCleanup
         | TaskStatus::Completed

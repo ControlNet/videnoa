@@ -69,7 +69,6 @@ impl Lifecycle {
             TaskStatus::Submitting => &[
                 CommandKind::PersistSubmission,
                 CommandKind::RequestCancellation,
-                CommandKind::FinishCancellation,
                 CommandKind::Fail,
             ],
             TaskStatus::Processing => &[

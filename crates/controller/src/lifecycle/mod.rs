@@ -13,7 +13,8 @@ pub use cancellation::CancelAction;
 pub use classification::{ResumeStage, RetryMode};
 pub use command::{
     AdvanceCommand, CommittedCommand, DurableAction, ProcessingRetryCommand, ReserveCommand,
-    SubmissionEvidence, TerminalRemoteEvidence, WorkspaceCleaned,
+    SubmissionCancellationReconciliation, SubmissionEvidence, TerminalRemoteEvidence,
+    WorkspaceCleaned,
 };
 pub use error::{LifecycleError, LifecycleErrorCode};
 pub use failure::{
