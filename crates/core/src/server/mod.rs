@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, delete, get, post};
 use axum::{Json, Router};
@@ -23,11 +23,16 @@ use tracing::{error, info, warn};
 use uuid::Uuid;
 
 mod files;
+mod idempotency;
 mod persistence;
 
 #[cfg(test)]
 #[path = "tests/files/mod.rs"]
 mod files_tests;
+
+#[cfg(test)]
+#[path = "tests/idempotency/mod.rs"]
+mod idempotency_tests;
 
 use crate::config::AppConfig;
 use crate::debug_event::NodeDebugValueEvent;
@@ -40,7 +45,8 @@ use crate::model_registry::{ModelEntry, ModelRegistry};
 use crate::nodes::compile_context::VideoCompileContext;
 use crate::registry::{register_all_nodes, NodeRegistry};
 use crate::streaming_executor::ProgressCallback;
-use persistence::JobsPersistence;
+use idempotency::{IdempotencyKey, RequestFingerprint};
+use persistence::{IdempotentJobClaim, JobsPersistence};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Preset {
@@ -469,6 +475,8 @@ pub struct HealthResponse {
 #[derive(Serialize)]
 pub struct ErrorResponse {
     pub error: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<&'static str>,
 }
 
 #[derive(Deserialize)]
@@ -1239,11 +1247,13 @@ async fn create_job(
     let workflow = parse_and_validate_workflow(&state, payload.workflow)?;
     let created = create_and_spawn_job(
         &state,
-        workflow,
-        params,
-        workflow_name,
-        WORKFLOW_SOURCE_API_JOBS.to_string(),
-        None,
+        JobSubmission {
+            workflow,
+            params,
+            workflow_name,
+            workflow_source: WORKFLOW_SOURCE_API_JOBS.to_string(),
+            rerun_of_job_id: None,
+        },
     )?;
 
     Ok((StatusCode::CREATED, Json(created)))
@@ -1251,9 +1261,14 @@ async fn create_job(
 
 async fn run_workflow_by_name(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(payload): Json<RunWorkflowRequest>,
 ) -> Result<(StatusCode, Json<CreateJobResponse>), AppError> {
+    let idempotency_key =
+        IdempotencyKey::from_headers(&headers).map_err(|_| AppError::InvalidIdempotencyKey)?;
     let workflow_name = validate_run_workflow_name(payload.workflow_name.as_deref())?;
+    let fingerprint = RequestFingerprint::for_run(&workflow_name, payload.params.as_ref())
+        .map_err(|_| AppError::Internal("failed to fingerprint run request".to_string()))?;
     let resolved = resolve_run_workflow_file(&state, &workflow_name).await?;
 
     let workflow_document = std::fs::read_to_string(&resolved.path)
@@ -1266,16 +1281,18 @@ async fn run_workflow_by_name(
         .unwrap_or(parsed_document);
 
     let workflow = parse_and_validate_workflow(&state, workflow_value)?;
-    let created = create_and_spawn_job(
-        &state,
+    let submission = JobSubmission {
         workflow,
-        payload.params,
+        params: payload.params,
         workflow_name,
-        resolved.workflow_source.to_string(),
-        None,
-    )?;
-
-    Ok((StatusCode::CREATED, Json(created)))
+        workflow_source: resolved.workflow_source.to_string(),
+        rerun_of_job_id: None,
+    };
+    match idempotency_key {
+        Some(key) => create_idempotent_job(&state, submission, &key, &fingerprint),
+        None => create_and_spawn_job(&state, submission)
+            .map(|created| (StatusCode::CREATED, Json(created))),
+    }
 }
 
 fn parse_and_validate_workflow(
@@ -1292,56 +1309,90 @@ fn parse_and_validate_workflow(
     Ok(workflow)
 }
 
-fn create_and_spawn_job(
-    state: &AppState,
+struct JobSubmission {
     workflow: PipelineGraph,
     params: Option<HashMap<String, serde_json::Value>>,
     workflow_name: String,
     workflow_source: String,
     rerun_of_job_id: Option<String>,
+}
+
+fn create_and_spawn_job(
+    state: &AppState,
+    submission: JobSubmission,
 ) -> Result<CreateJobResponse, AppError> {
+    let (job, response) = prepare_job(submission);
+    state
+        .persist_job_snapshot(&job)
+        .map_err(|error| AppError::Internal(format!("failed to persist new job: {error:#}")))?;
+    spawn_job(state, job);
+    Ok(response)
+}
+
+fn create_idempotent_job(
+    state: &AppState,
+    submission: JobSubmission,
+    key: &IdempotencyKey,
+    fingerprint: &RequestFingerprint,
+) -> Result<(StatusCode, Json<CreateJobResponse>), AppError> {
+    let persistence =
+        state.inner.jobs_persistence.as_ref().ok_or_else(|| {
+            AppError::Internal("durable jobs persistence is unavailable".to_string())
+        })?;
+    let (job, response) = prepare_job(submission);
+    match persistence
+        .claim_idempotent_job(key.as_str(), fingerprint.as_str(), &job)
+        .map_err(|error| {
+            AppError::Internal(format!("failed to persist idempotent job: {error:#}"))
+        })? {
+        IdempotentJobClaim::Created => {
+            spawn_job(state, job);
+            Ok((StatusCode::CREATED, Json(response)))
+        }
+        IdempotentJobClaim::Replayed(existing) => Ok((StatusCode::OK, Json(existing))),
+        IdempotentJobClaim::Conflict => Err(AppError::IdempotencyConflict),
+    }
+}
+
+fn prepare_job(submission: JobSubmission) -> (Job, CreateJobResponse) {
     let id = Uuid::new_v4().to_string();
     let now = Utc::now();
     let cancel_token = CancellationToken::new();
-
-    let (tx, _rx) = broadcast::channel::<JobWsEvent>(64);
-    state.inner.progress_senders.insert(id.clone(), tx);
-
     let job = Job {
         id: id.clone(),
         status: JobStatus::Queued,
-        workflow,
+        workflow: submission.workflow,
         created_at: now,
         started_at: None,
         completed_at: None,
         progress: None,
         error: None,
-        cancel_token: cancel_token.clone(),
-        params,
-        workflow_name,
-        workflow_source: workflow_source.clone(),
-        rerun_of_job_id,
+        cancel_token,
+        params: submission.params,
+        workflow_name: submission.workflow_name,
+        workflow_source: submission.workflow_source,
+        rerun_of_job_id: submission.rerun_of_job_id,
     };
+    let response = CreateJobResponse {
+        id,
+        status: JobStatus::Queued,
+        created_at: now,
+    };
+    (job, response)
+}
 
-    state
-        .persist_job_snapshot(&job)
-        .map_err(|e| AppError::Internal(format!("failed to persist new job: {e:#}")))?;
-
+fn spawn_job(state: &AppState, job: Job) {
+    let id = job.id.clone();
+    let workflow_source = job.workflow_source.clone();
+    let (sender, _receiver) = broadcast::channel::<JobWsEvent>(64);
+    state.inner.progress_senders.insert(id.clone(), sender);
     state.inner.jobs.insert(id.clone(), job);
-
     let state_clone = state.clone();
     let job_id = id.clone();
     tokio::spawn(async move {
         run_job(state_clone, job_id).await;
     });
-
     info!(job_id = %id, workflow_source, "Job created");
-
-    Ok(CreateJobResponse {
-        id,
-        status: JobStatus::Queued,
-        created_at: now,
-    })
 }
 
 struct ResolvedWorkflowFile {
@@ -1479,11 +1530,13 @@ async fn create_batch(
 
         let created = create_and_spawn_job(
             &state,
-            workflow,
-            None,
-            workflow_name.clone(),
-            WORKFLOW_SOURCE_API_BATCH.to_string(),
-            None,
+            JobSubmission {
+                workflow,
+                params: None,
+                workflow_name: workflow_name.clone(),
+                workflow_source: WORKFLOW_SOURCE_API_BATCH.to_string(),
+                rerun_of_job_id: None,
+            },
         )?;
         let id = created.id;
 
@@ -1545,11 +1598,13 @@ async fn rerun_job(
 
     let created = create_and_spawn_job(
         &state,
-        workflow,
-        params,
-        workflow_name,
-        workflow_source,
-        Some(id),
+        JobSubmission {
+            workflow,
+            params,
+            workflow_name,
+            workflow_source,
+            rerun_of_job_id: Some(id),
+        },
     )?;
 
     Ok((StatusCode::CREATED, Json(created)))
@@ -2543,18 +2598,33 @@ pub enum AppError {
     Forbidden(String),
     NotFound(String),
     Internal(String),
+    InvalidIdempotencyKey,
+    IdempotencyConflict,
 }
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        let (status, message) = match self {
-            AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
-            AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg),
-            AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
-            AppError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
+        let (status, message, code) = match self {
+            AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg, None),
+            AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg, None),
+            AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg, None),
+            AppError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg, None),
+            AppError::InvalidIdempotencyKey => (
+                StatusCode::BAD_REQUEST,
+                "invalid idempotency key".to_string(),
+                Some("invalid_idempotency_key"),
+            ),
+            AppError::IdempotencyConflict => (
+                StatusCode::CONFLICT,
+                "idempotency key conflicts with an existing submission".to_string(),
+                Some("idempotency_conflict"),
+            ),
         };
 
-        let body = Json(ErrorResponse { error: message });
+        let body = Json(ErrorResponse {
+            error: message,
+            code,
+        });
         (status, body).into_response()
     }
 }

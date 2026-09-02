@@ -9,6 +9,9 @@ use tracing::warn;
 
 use super::{Job, JobStatus, PipelineGraph, ProgressUpdate};
 
+mod idempotency;
+pub(crate) use idempotency::IdempotentJobClaim;
+
 const STATUS_QUEUED: &str = "queued";
 const STATUS_RUNNING: &str = "running";
 const STATUS_COMPLETED: &str = "completed";
@@ -242,7 +245,9 @@ impl JobsPersistence {
                     workflow_name TEXT NOT NULL,
                     workflow_source TEXT NOT NULL,
                     rerun_of_job_id TEXT,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    idempotency_key TEXT,
+                    request_fingerprint TEXT
                  );
                  CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at DESC);
                  CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);",
@@ -253,16 +258,22 @@ impl JobsPersistence {
                     self.db_path.display()
                 )
             })?;
+            Self::migrate_idempotency_schema(conn).map_err(|error| {
+                anyhow::anyhow!(
+                    "failed to migrate jobs idempotency schema at {}: {error:#}",
+                    self.db_path.display()
+                )
+            })?;
             Ok(())
         })
     }
 
-    fn with_connection<T>(&self, op: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
-        let conn = Connection::open(&self.db_path)
+    fn with_connection<T>(&self, op: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
+        let mut conn = Connection::open(&self.db_path)
             .with_context(|| format!("failed to open jobs db: {}", self.db_path.display()))?;
         conn.busy_timeout(std::time::Duration::from_secs(5))
             .context("failed to set jobs db busy timeout")?;
-        op(&conn)
+        op(&mut conn)
     }
 
     fn upsert_row(&self, conn: &Connection, row: &PersistedJobRow) -> Result<()> {
