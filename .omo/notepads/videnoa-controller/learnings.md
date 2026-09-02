@@ -144,3 +144,9 @@
 - Existing lifecycle/recovery fixtures that insert an online worker must also persist compatible capability evidence; `online` alone is no longer schedulable evidence.
 - Recovery matrix fixtures need an explicit high prefetch setting when constructing many simultaneous durable states for one worker.
 - A per-worker upload set layered over independent upload/download counters provides deterministic transfer admission and RAII release without coupling the two pools.
+
+## 2026-09-03 Task 11 Review Fix
+
+- Worker capacity reduction and task reservation are competing SQLite writes; the capacity predicate must be part of the worker update statement, not a service-level usage preflight.
+- A failed conditional update can classify stale version versus capacity rejection inside the same write transaction because the SQLite writer lock prevents the observed version and assignment count from changing before commit.
+- Tokio oneshot checkpoints can deterministically expose persistence TOCTOU windows by pausing one operation after its read and releasing it only after the competing durable write commits.

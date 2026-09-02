@@ -10,6 +10,7 @@ Task 11 adds a durable worker registry and deterministic scheduler while keeping
 - `LifecycleService::reserve` remains the only assignment seam, with all eligibility predicates repeated in the atomic SQLite claim to close selection-to-write races.
 - Upload candidates prioritize an idle feed before optional prefetch. Upload/download concurrency pools are independent, with one active upload permit per worker.
 - Pause is persisted in controller settings and blocks reservation, upload, and submission while allowing poll, download, verify, publish, cleanup, and cancellation convergence.
+- Worker policy updates atomically compare the requested compute slots with current nonterminal assignments in SQLite; stale versions and capacity rejection remain distinct typed outcomes.
 
 Verification:
 
