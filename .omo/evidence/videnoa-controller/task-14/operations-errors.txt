@@ -1,0 +1,24 @@
+Task 14 operational API failure evidence
+Date: 2026-09-03
+
+Focused command:
+- cargo test -p videnoa-controller --test task14
+Result: 13 passed; 0 failed.
+
+Verified failure contracts:
+- Worker, settings, status-count, and SSE routes reject anonymous requests.
+- Cookie-authenticated mutations without same-origin CSRF proof return 403.
+- Reusing worker version 0 after a successful update returns typed 409 conflict.
+- Reusing settings version 0 after pause returns typed 409 conflict.
+- Invalid zero timeout bounds return 400 with a typed field error.
+- Timeout or retry durations above seven days and retry attempts above 100 return 400 with typed field errors.
+- Retained-root replacement makes readiness return 503 and marks `root_handles` unavailable.
+- Retrying a cancelled task returns typed 409 conflict.
+- A subscriber lagging beyond the bounded 64-event channel receives `refetch` rather than replayed history.
+- Passive SSE session checks do not extend idle expiry, and the recheck interval is retained across event traffic.
+- Live stale worker update returned 409 with error code `conflict`.
+- Invalid runtime settings are rejected before the durable settings row changes.
+
+Processing retry failures:
+- Nonterminal remote processing returns typed 409 without cleanup or retry.
+- Remote transport/server failures map to typed unavailable responses; contradictory or missing durable identity remains ambiguous and cannot create a new attempt.

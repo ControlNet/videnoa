@@ -193,3 +193,11 @@
 - Verifying a staging handle before rename is not enough when finalization later resolves the leaf by name; rehash the final artifact before lifecycle CAS to bind advancement to the bytes actually published.
 - Capability-backed directory handles may be opened as path-only descriptors on Unix. Open `.` relative to the retained directory with read/directory flags before `fsync` to preserve identity and obtain a sync-capable descriptor.
 - Deterministic checkpoints around irreversible effects make real race and crash tests possible without sleeps or test-only production branches.
+
+## 2026-09-03 Task 14
+
+- A single bounded broadcast channel can satisfy active-state SSE without history replay when every connection starts with `refetch` and lagged receivers are converted to the same signal.
+- Route-level processing retry can preserve lifecycle proof requirements by querying terminal remote state and converging deletion before constructing typed evidence; it must never infer those proofs from the local failed state alone.
+- Readiness is more useful when it verifies durable migrations, current credentials, and retained filesystem capabilities while intentionally excluding worker liveness.
+- Publishing durable change identifiers at the service boundary lets SSE resolve the latest active snapshot after commit and naturally covers scheduler, recovery, transfer, and worker-health paths.
+- Long-lived authentication checks need both a persistent timer and a non-touching session validation path; otherwise traffic can defer checks or keep idle sessions alive.

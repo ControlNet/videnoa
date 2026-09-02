@@ -108,3 +108,9 @@
 
 - No confirmed Task 13 product blocker remains after real EXDEV placement, destination and staging races, permission failures, FIFO classification, publication and cleanup crash windows, retry exhaustion, cancellation interactions, descriptor-bound durability, and module-size verification.
 - Direct native Windows syscall execution remains the only host-tooling gap; Linux and Rust 1.83 Controller gates pass.
+
+## 2026-09-03 Task 14
+
+- No confirmed Task 14 product blocker remains for worker/settings controls, cancellation, downstream retry, readiness, counts, authentication, optimistic concurrency, or bounded SSE.
+- Processing retry now provides genuine remote-terminal and workspace-cleanup evidence before the Task 9 lifecycle transition; nonterminal, unavailable, and ambiguous remote state remain safely blocked.
+- Private and loopback worker URLs remain intentionally supported because Controller-managed Videnoa workers commonly run on trusted private networks; outbound redirects are disabled, and worker administration remains authenticated and CSRF-protected.
