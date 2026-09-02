@@ -1,8 +1,14 @@
+mod cleanup;
+mod cleanup_remote;
 mod download;
 mod download_artifact;
 mod error;
 mod hashing_writer;
 mod model;
+mod publication;
+mod publication_artifact;
+mod publication_failure;
+mod publication_finalize;
 mod recovery_dispatch;
 mod service;
 mod transfer;
@@ -17,6 +23,6 @@ pub use service::Scheduler;
 pub use transfer::{DownloadPermit, TransferCoordinator, UploadPermit};
 use transfer_executor::RetryResult;
 pub use transfer_executor::{
-    DownloadOutcome, TransferConfig, TransferExecutor, TransferResources, UploadOutcome,
-    VerifiedArtifact,
+    DownloadOutcome, PublicationOutcome, TransferConfig, TransferExecutor, TransferResources,
+    UploadOutcome, VerifiedArtifact,
 };

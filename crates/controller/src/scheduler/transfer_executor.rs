@@ -61,6 +61,16 @@ pub enum DownloadOutcome {
     Failed,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PublicationOutcome {
+    Completed,
+    RetryScheduled {
+        retry_count: u32,
+        next_retry_at: DateTime<Utc>,
+    },
+    Failed,
+}
+
 impl TransferExecutor {
     #[must_use]
     pub const fn new(resources: TransferResources, config: TransferConfig) -> Self {
