@@ -10,6 +10,8 @@ mod mock_videnoa;
 mod concurrency;
 #[path = "task12/download.rs"]
 mod download;
+#[path = "task12/recovery_dispatch.rs"]
+mod recovery_dispatch;
 #[path = "task12/support.rs"]
 mod support;
 #[path = "task12/upload.rs"]

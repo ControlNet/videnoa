@@ -3,48 +3,14 @@ use chrono::{DateTime, Utc};
 use crate::domain::TaskStatus;
 use crate::lifecycle::{
     AdvanceCommand, LifecycleService, SubmissionCancellationReconciliation, SubmissionEvidence,
-    UploadEvidence,
 };
 use crate::persistence::{AttemptRecord, TaskRecord};
-use crate::remote::{sibling_output_path, VidenoaClient, VidenoaClientError};
+use crate::remote::{VidenoaClient, VidenoaClientError};
 
-use super::paths::{input_path, submission_params};
+use super::paths::submission_params;
 use super::{Reconciler, RecoveryCommandKind, RecoveryError, RecoveryReport, StagePermit};
 
 impl Reconciler {
-    pub(super) async fn reconcile_upload(
-        &self,
-        task: &TaskRecord,
-        attempt: &AttemptRecord,
-        client: &VidenoaClient,
-        now: DateTime<Utc>,
-        stage: &StagePermit,
-    ) -> Result<(), RecoveryError> {
-        let path = input_path(task)?;
-        if let Ok(stat) = client.stat(&path).await {
-            if !stat.is_file || stat.size != task.input_size {
-                return Ok(());
-            }
-            let _write = stage.begin_write();
-            let output = sibling_output_path(
-                &stat.path,
-                &format!("output.{}", task.output_extension.as_str()),
-            )?;
-            LifecycleService::new(self.store.clone())
-                .advance(
-                    task,
-                    attempt,
-                    AdvanceCommand::FinishUpload(UploadEvidence {
-                        remote_input_path: stat.path,
-                        remote_output_path: output,
-                    }),
-                    now,
-                )
-                .await?;
-        }
-        Ok(())
-    }
-
     pub(super) async fn reconcile_submission(
         &self,
         mut task: TaskRecord,
