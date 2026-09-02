@@ -263,3 +263,29 @@ async fn expired_session_is_rejected_without_waiting_for_wall_clock() -> TestRes
     assert!(result.is_err());
     Ok(())
 }
+
+#[tokio::test]
+async fn passive_session_validation_does_not_extend_idle_expiry() -> TestResult {
+    let fixture = Fixture::new().await?;
+    let (cookie, _) = login(&fixture, PASSWORD).await?;
+    let token = cookie
+        .strip_prefix(&format!("{SESSION_COOKIE}="))
+        .ok_or_else(|| std::io::Error::other("unexpected cookie name"))?;
+    let touched = fixture
+        .auth
+        .authenticate_session_at(token, Utc::now())
+        .await?;
+    let baseline = fixture
+        .auth
+        .validate_session_at(token, touched.last_used_at)
+        .await?;
+
+    let validated = fixture
+        .auth
+        .validate_session_at(token, baseline.last_used_at + ChronoDuration::minutes(10))
+        .await?;
+
+    assert_eq!(validated.last_used_at, baseline.last_used_at);
+    assert_eq!(validated.idle_expires_at, baseline.idle_expires_at);
+    Ok(())
+}

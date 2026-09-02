@@ -29,6 +29,25 @@ pub(crate) async fn authenticate(
         .map(RequestAuth::Session)
 }
 
+pub(crate) async fn authenticate_passive(
+    auth: &AuthService,
+    headers: &HeaderMap,
+    now: DateTime<Utc>,
+) -> Result<RequestAuth, AuthError> {
+    if let Some(password) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+    {
+        auth.authenticate_bearer(password)?;
+        return Ok(RequestAuth::Bearer);
+    }
+    let token = cookie(headers, super::SESSION_COOKIE).ok_or(AuthError::Unauthorized)?;
+    auth.validate_session_at(token, now)
+        .await
+        .map(RequestAuth::Session)
+}
+
 pub(crate) async fn authorize_mutation(
     auth: &AuthService,
     headers: &HeaderMap,

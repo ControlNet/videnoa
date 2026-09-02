@@ -84,6 +84,17 @@ impl AuthService {
         self.inner.config.session_absolute.as_secs()
     }
 
+    #[must_use]
+    pub fn session_idle_seconds(&self) -> u64 {
+        self.inner.config.session_idle.as_secs()
+    }
+
+    /// # Errors
+    /// Returns an authentication error when the credential file cannot be loaded.
+    pub fn check_ready(&self) -> Result<(), AuthError> {
+        self.inner.password.load().map(|_| ())
+    }
+
     /// Verifies a login attempt and creates a digest-only durable session.
     ///
     /// # Errors
@@ -145,7 +156,39 @@ impl AuthService {
         token: &str,
         now: DateTime<Utc>,
     ) -> Result<SessionRecord, AuthError> {
-        let Some(mut session) = self
+        let mut session = self.valid_session(token, now).await?;
+        let idle = duration(self.inner.config.session_idle)?;
+        session.last_used_at = now;
+        session.idle_expires_at = std::cmp::min(now + idle, session.absolute_expires_at);
+        if !self
+            .inner
+            .store
+            .touch_session(session.id, now, session.idle_expires_at)
+            .await?
+        {
+            return Err(AuthError::Unauthorized);
+        }
+        Ok(session)
+    }
+
+    /// Validates a durable cookie session without extending its idle lifetime.
+    ///
+    /// # Errors
+    /// Returns [`AuthError::Unauthorized`] for absent, expired, revoked, or rotated sessions.
+    pub async fn validate_session_at(
+        &self,
+        token: &str,
+        now: DateTime<Utc>,
+    ) -> Result<SessionRecord, AuthError> {
+        self.valid_session(token, now).await
+    }
+
+    async fn valid_session(
+        &self,
+        token: &str,
+        now: DateTime<Utc>,
+    ) -> Result<SessionRecord, AuthError> {
+        let Some(session) = self
             .inner
             .store
             .session_by_token_digest(digest(token.as_bytes()))
@@ -166,17 +209,6 @@ impl AuthService {
             || !fingerprint_matches
         {
             let _ = self.inner.store.revoke_session(session.id, now).await?;
-            return Err(AuthError::Unauthorized);
-        }
-        let idle = duration(self.inner.config.session_idle)?;
-        session.last_used_at = now;
-        session.idle_expires_at = std::cmp::min(now + idle, session.absolute_expires_at);
-        if !self
-            .inner
-            .store
-            .touch_session(session.id, now, session.idle_expires_at)
-            .await?
-        {
             return Err(AuthError::Unauthorized);
         }
         Ok(session)

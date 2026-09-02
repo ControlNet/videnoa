@@ -11,4 +11,4 @@ pub use http::{
 pub use password::hash_password;
 pub use service::{AuthError, AuthService};
 
-pub(crate) use boundary::{authenticate, authorize_mutation, RequestAuth};
+pub(crate) use boundary::{authenticate, authenticate_passive, authorize_mutation, RequestAuth};
