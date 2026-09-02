@@ -55,3 +55,17 @@ pub struct WorkerHealthUpdate {
     pub last_error: Option<String>,
     pub updated_at: DateTime<Utc>,
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkerIdentityConflict {
+    Name,
+    ApiUrl,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkerDeleteOutcome {
+    Deleted,
+    NotFound,
+    Conflict,
+    Referenced,
+}

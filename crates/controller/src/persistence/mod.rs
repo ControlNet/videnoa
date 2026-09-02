@@ -7,6 +7,7 @@ mod lifecycle_retry;
 mod lifecycle_transition;
 mod models;
 mod reservation;
+mod scheduler;
 mod session;
 mod settings;
 mod task;
@@ -14,15 +15,17 @@ mod task_mutation;
 mod task_query;
 mod task_row;
 mod worker;
+mod worker_registry;
 
 pub use database::{Database, DatabaseOptions};
 pub use error::PersistenceError;
 pub use models::{
     AttemptFailureUpdate, AttemptProgressUpdate, AttemptRecord, AttemptRemoteUpdate, AuthDigest,
     CasOutcome, IdempotencyRecord, InputIdentity, NewSession, NewTask, NewWorker, PageResult,
-    PublicationUpdate, Reservation, ReservationOutcome, SessionRecord, SettingsRecord,
-    SettingsUpdate, Sha256Digest, TaskFailureUpdate, TaskIngressOutcome, TaskProgressUpdate,
-    TaskRecord, TaskRetryUpdate, WorkerHealthUpdate, WorkerRecord, WorkerUpdate,
+    PublicationUpdate, Reservation, ReservationOutcome, SchedulerCandidate, SessionRecord,
+    SettingsRecord, SettingsUpdate, Sha256Digest, TaskFailureUpdate, TaskIngressOutcome,
+    TaskProgressUpdate, TaskRecord, TaskRetryUpdate, UploadCandidateRecord, WorkerDeleteOutcome,
+    WorkerHealthUpdate, WorkerIdentityConflict, WorkerRecord, WorkerUpdate,
 };
 
 #[derive(Clone, Debug)]
