@@ -5883,6 +5883,7 @@ dependencies = [
  "reqwest 0.12.27",
  "rpassword",
  "rust-embed",
+ "rustix 0.38.44",
  "serde",
  "serde_json",
  "sha2",
