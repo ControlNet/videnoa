@@ -294,7 +294,7 @@ Expected: the image starts without GPU flags/libraries; archives have the locked
 
   **Commit:** `feat(controller): schedule bounded multi-worker pipelines`
 
-- [ ] 12. Implement restart-safe upload and download stages with independent limits
+- [x] 12. Implement restart-safe upload and download stages with independent limits
 
   **Depends on:** 6, 8, 9, 10, 11
 
