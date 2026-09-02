@@ -180,3 +180,10 @@
 - Persisting a destination staging name in the same CAS that enters `Publishing` makes every later filesystem artifact attributable after a crash.
 - Always copying into destination-owned staging removes EXDEV from finalization and gives same-filesystem and cross-filesystem inputs one recovery algorithm.
 - Local publication and temp cleanup must not wait for worker health; an offline worker belongs to the durable remote-cleanup retry stage after the final output is safe.
+
+## 2026-09-03 Task 13 Review Fix
+
+- A no-replace syscall is insufficient when its path lookup is ambient; Linux finalization must use the same capability-opened parent descriptor for both rename operands.
+- Publication recovery must classify filesystem node type before opening. Directories, FIFOs, devices, and other non-regular nodes are ownership ambiguity, not retryable I/O.
+- Directory identities created during staging must be retained through finalization; validating only the nearest pre-existing parent does not detect replacement of newly created descendants.
+- Startup transfer dispatch needs the same task-local corruption isolation as startup reconciliation so one malformed cleanup trace cannot prevent unrelated recovery work.
