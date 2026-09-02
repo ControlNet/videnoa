@@ -3,6 +3,8 @@ mod codec;
 mod database;
 mod error;
 mod idempotency;
+mod lifecycle_retry;
+mod lifecycle_transition;
 mod models;
 mod reservation;
 mod session;
@@ -16,12 +18,11 @@ mod worker;
 pub use database::{Database, DatabaseOptions};
 pub use error::PersistenceError;
 pub use models::{
-    AttemptFailureUpdate, AttemptProgressUpdate, AttemptRecord, AttemptRemoteUpdate,
-    AttemptTransition, AuthDigest, CasOutcome, IdempotencyRecord, InputIdentity, NewSession,
-    NewTask, NewWorker, PageResult, PublicationUpdate, Reservation, ReservationOutcome,
-    SessionRecord, SettingsRecord, SettingsUpdate, Sha256Digest, TaskFailureUpdate,
-    TaskIngressOutcome, TaskProgressUpdate, TaskRecord, TaskRetryUpdate, TaskTransition,
-    WorkerHealthUpdate, WorkerRecord, WorkerUpdate,
+    AttemptFailureUpdate, AttemptProgressUpdate, AttemptRecord, AttemptRemoteUpdate, AuthDigest,
+    CasOutcome, IdempotencyRecord, InputIdentity, NewSession, NewTask, NewWorker, PageResult,
+    PublicationUpdate, Reservation, ReservationOutcome, SessionRecord, SettingsRecord,
+    SettingsUpdate, Sha256Digest, TaskFailureUpdate, TaskIngressOutcome, TaskProgressUpdate,
+    TaskRecord, TaskRetryUpdate, WorkerHealthUpdate, WorkerRecord, WorkerUpdate,
 };
 
 #[derive(Clone, Debug)]
