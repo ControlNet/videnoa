@@ -141,3 +141,9 @@
 
 - Preserve Unix parent-directory `sync_all`; use an explicit Windows no-op only after the existing file `sync_all` and same-directory rename sequence; keep all other platforms typed unsupported.
 - Test the platform selection as pure policy on Linux rather than mocking or claiming Windows filesystem syscall coverage.
+
+## 2026-09-03 Task 13
+
+- Use `renamore = 0.3.2` as the safe Rust 1.83-compatible no-replace wrapper instead of handwritten platform unsafe.
+- Treat exact final bytes as completed publication, exact hidden staging as resumable publication, and every ownership contradiction as preserving nonretryable ambiguity.
+- Remove Controller temp before remote DELETE; classify 404 as success, network/timeout/stall/5xx as bounded retry, and other 4xx as terminal cleanup configuration failure.
