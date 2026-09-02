@@ -10,6 +10,8 @@ mod mock_videnoa;
 mod cleanup;
 #[path = "task13/publication.rs"]
 mod publication;
+#[path = "task13/recovery.rs"]
+mod recovery;
 #[path = "task13/support.rs"]
 mod support;
 #[path = "task12/support.rs"]

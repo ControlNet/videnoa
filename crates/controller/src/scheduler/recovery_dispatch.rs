@@ -4,7 +4,7 @@ use crate::domain::{TaskId, TaskStatus};
 use crate::lifecycle::{JitterSample, LifecycleErrorCode};
 use crate::recovery::{RecoveryCommandKind, RecoveryReport};
 
-use super::{DownloadOutcome, TransferError, TransferExecutor, UploadOutcome};
+use super::{DownloadOutcome, PublicationOutcome, TransferError, TransferExecutor, UploadOutcome};
 
 impl TransferExecutor {
     /// Executes transfer commands emitted from durable startup reconciliation.
@@ -46,12 +46,29 @@ impl TransferExecutor {
                         Err(error) => return Err(error),
                     }
                 }
+                RecoveryCommandKind::Verify | RecoveryCommandKind::Publish => {
+                    match Box::pin(self.publish(trace.task_id, now, jitter)).await {
+                        Ok(PublicationOutcome::Completed) => advanced.push(trace.task_id),
+                        Ok(
+                            PublicationOutcome::RetryScheduled { .. } | PublicationOutcome::Failed,
+                        )
+                        | Err(TransferError::RetryNotDue) => {}
+                        Err(error) => return Err(error),
+                    }
+                }
+                RecoveryCommandKind::Cleanup => {
+                    match self.cleanup(trace.task_id, now, jitter).await {
+                        Ok(PublicationOutcome::Completed) => advanced.push(trace.task_id),
+                        Ok(
+                            PublicationOutcome::RetryScheduled { .. } | PublicationOutcome::Failed,
+                        )
+                        | Err(TransferError::RetryNotDue) => {}
+                        Err(error) => return Err(error),
+                    }
+                }
                 RecoveryCommandKind::AwaitReservation
                 | RecoveryCommandKind::Submit
                 | RecoveryCommandKind::Poll
-                | RecoveryCommandKind::Verify
-                | RecoveryCommandKind::Publish
-                | RecoveryCommandKind::Cleanup
                 | RecoveryCommandKind::Terminal => {}
             }
         }

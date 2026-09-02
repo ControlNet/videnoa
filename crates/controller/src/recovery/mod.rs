@@ -1,5 +1,6 @@
 mod command;
 mod error;
+mod local_first;
 mod model;
 mod paths;
 mod processing;
@@ -13,3 +14,5 @@ pub use error::RecoveryError;
 pub use model::{DeferredRecovery, RecoveryConfig, RecoveryReport, RecoveryTrace};
 pub use reconciler::Reconciler;
 pub use shutdown::{DrainOutcome, ShutdownCoordinator, ShutdownError, StagePermit, WritePermit};
+
+use local_first::local_first_command;
