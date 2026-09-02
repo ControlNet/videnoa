@@ -1,7 +1,9 @@
 use std::time::Duration;
 
-use videnoa_controller::domain::TaskStatus;
-use videnoa_controller::lifecycle::JitterSample;
+use videnoa_controller::domain::{FailureCode, TaskStatus};
+use videnoa_controller::lifecycle::{
+    AdvanceCommand, JitterSample, LifecycleService, PublicationIntent,
+};
 use videnoa_controller::recovery::{
     Reconciler, RecoveryCommandKind, RecoveryConfig, ShutdownCoordinator,
 };
@@ -77,6 +79,72 @@ async fn startup_publishes_locally_while_remote_cleanup_is_offline() -> TestResu
         .temp_root
         .join(prepared.task_id.to_string())
         .exists());
+    Ok(())
+}
+
+#[tokio::test]
+async fn malformed_cleanup_does_not_abort_other_startup_work() -> TestResult {
+    // Given: one cleanup task has incomplete worker evidence and another task is verified.
+    let server = MockVidenoa::start().await?;
+    let (fixture, malformed) = verified_task(&server, b"malformed cleanup").await?;
+    let task = fixture.task(malformed.task_id).await?;
+    let attempt = fixture.attempt(malformed.attempt_id).await?;
+    LifecycleService::new(fixture.store.clone())
+        .advance(
+            &task,
+            &attempt,
+            AdvanceCommand::FinishVerification(PublicationIntent::new(
+                ".videnoa-malformed-cleanup.staging",
+            )),
+            fixture.now,
+        )
+        .await?;
+    let task = fixture.task(malformed.task_id).await?;
+    let attempt = fixture.attempt(malformed.attempt_id).await?;
+    LifecycleService::new(fixture.store.clone())
+        .advance(
+            &task,
+            &attempt,
+            AdvanceCommand::FinishPublication,
+            fixture.now,
+        )
+        .await?;
+    sqlx::query("UPDATE task_attempts SET worker_id = NULL WHERE id = ?")
+        .bind(malformed.attempt_id.to_string())
+        .execute(fixture.store.database().pool())
+        .await?;
+    let valid = fixture
+        .remote_completed(&server, b"valid startup publication")
+        .await?;
+    let outcome = fixture
+        .executor()?
+        .download(valid.task_id, fixture.now, JitterSample::default())
+        .await?;
+    assert!(matches!(
+        outcome,
+        videnoa_controller::scheduler::DownloadOutcome::Verified(_)
+    ));
+    let reconciler = reconciler(&fixture)?;
+    let report = reconciler.reconcile_startup(fixture.now).await?;
+
+    // When: production startup dispatch consumes the whole report.
+    let advanced = fixture
+        .executor()?
+        .dispatch_recovery(&report, fixture.now, JitterSample::default())
+        .await?;
+
+    // Then: valid work completes and malformed cleanup is durably terminalized.
+    assert!(advanced.contains(&valid.task_id));
+    assert_eq!(
+        fixture.task(valid.task_id).await?.status,
+        TaskStatus::Completed
+    );
+    let malformed_task = fixture.task(malformed.task_id).await?;
+    assert_eq!(malformed_task.status, TaskStatus::Failed);
+    assert_eq!(
+        malformed_task.failure.map(|failure| failure.failure_code),
+        Some(FailureCode::RemoteStateAmbiguous)
+    );
     Ok(())
 }
 
