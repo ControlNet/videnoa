@@ -67,7 +67,6 @@ fn legal_command_table_is_exhaustive_for_every_state() {
         &[
             CommandKind::PersistSubmission,
             CommandKind::RequestCancellation,
-            CommandKind::FinishCancellation,
             CommandKind::Fail,
         ],
         &[
