@@ -93,3 +93,4 @@
 ## 2026-09-02 Task 9
 
 - Rust 1.83 builds and all controller tests pass. An extra strict Clippy run on that older toolchain enables lint-version diagnostics across pre-existing modules; the required active-toolchain strict Clippy command passes cleanly.
+- Follow-up review found that direct cancellation completion could close a submitting attempt without reconciling whether its keyed remote request was accepted. Typed accepted/not-accepted reconciliation now durably selects remote cancellation or staged cleanup before completion is allowed.

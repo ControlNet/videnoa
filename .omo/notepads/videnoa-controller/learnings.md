@@ -112,6 +112,12 @@
 - Generation-bearing `watch` checkpoints preserve reach/release events even when waiter polling is delayed.
 - Redacting volatile transport headers produced identical evidence SHA-256 values across consecutive full harness runs.
 
+## 2026-09-02 Task 9 Submitting Cancellation Follow-up
+
+- Cancellation intent cannot resolve a keyed submission's acceptance ambiguity. The durable lifecycle needs an explicit reconciliation result before it can authorize the correct cleanup action.
+- Accepted evidence must be bound in the same paired task/attempt CAS that exposes remote cancellation; confirmed non-acceptance must durably return the attempt to staged before local cleanup is exposed.
+- Reconciliation is a privileged lifecycle seam: keeping ordinary advancement blocked after cancellation intent prevents accidental polling or submission continuation.
+
 ## 2026-09-02 Task 9
 
 - Task and current-attempt lifecycle transitions must be one atomic persistence operation; separate public status mutation APIs make legal policy bypassable and permit split-brain rows.

@@ -25,3 +25,10 @@ rustup run 1.83.0 cargo build -p videnoa-controller --all-features --locked
 ```
 
 Rust 1.83 compiles and runs the full controller suite. The optional strict Clippy run under 1.83 reports lint-version differences in pre-existing modules; the repository's required active-toolchain strict Clippy gate passes without warnings.
+
+## Submitting cancellation reconciliation follow-up
+
+- A submitting attempt with durable cancellation intent is ambiguous until the keyed remote submission is reconciled. It must not be closed merely because local cleanup can run.
+- Use `LifecycleService::reconcile_submission_cancellation` with `SubmissionCancellationReconciliation::Accepted(SubmissionEvidence)` or `NotAccepted`; do not route either outcome through ordinary `advance`.
+- `Accepted` durably binds exact remote evidence and moves to processing before returning `CancelRemoteAndClean`. `NotAccepted` durably moves back to staged before returning `CleanStaged`. Both retain cancellation intent and expose no polling action.
+- Direct `finish_cancellation` from submitting returns `SubmissionReconciliationRequired`. This keeps remote acceptance proof and cleanup completion as distinct durable boundaries.
