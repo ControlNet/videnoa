@@ -163,3 +163,9 @@
 - A filesystem rename is not the end of the durability boundary: sync the containing directory, then make restart reconciliation hash and accept an already matching verified artifact before retrying network transfer.
 - Retry authorization must compare both task and attempt durable deadlines; checking only one row can admit work early after a partially inconsistent historical write.
 - Recovery commands are not production behavior until the startup composition root dispatches them and follows up tasks whose transfer transition exposed the next recovery stage.
+
+## 2026-09-03 Task 12 Convergence Fix
+
+- Remote `NotFound` while resuming `Uploading` is positive reconciliation evidence that permits a fresh PUT now; treating it like an outage creates an endless stat/retry loop.
+- A generic lifecycle conflict can be safely deferred only after re-reading the exact durable predicate that explains it. Persisted pause plus `Reserved` identifies the admission race without hiding stale snapshots or attempt mismatches.
+- Offline rename-before-CAS recovery requires local provenance, not merely local bytes. A synced fixed-size length/hash record lets restart accept matching bytes without stat/GET and deterministically reject corruption.
