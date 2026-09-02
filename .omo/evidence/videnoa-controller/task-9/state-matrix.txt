@@ -65,3 +65,17 @@ Result: 16 passed, 0 failed.
 Manual public-API happy path
 cargo test -p videnoa-controller --test lifecycle repository_transition::durable_transition_precedes_each_exposed_side_effect -- --exact --nocapture
 Result: 1 passed, 0 failed; every returned action followed its durable state transition.
+
+2026-09-02 submitting cancellation reconciliation follow-up
+- Accepted remote submission evidence atomically moves submitting to processing, binds the exact remote job ID and paths, retains cancellation intent, and authorizes remote cancellation plus cleanup.
+- Confirmed non-acceptance atomically moves submitting to staged, retains cancellation intent, and authorizes staged cleanup.
+- Neither path exposes polling; ordinary submission continuation remains blocked after cancellation intent.
+- Cleanup completion remains the only operation that closes the task and attempt after reconciliation.
+
+Verification
+cargo test -p videnoa-controller --test lifecycle
+Result: 21 passed, 0 failed.
+rustup run 1.83.0 cargo test -p videnoa-controller --all-targets --locked
+Result: full Controller suite passed, including all 21 lifecycle tests.
+rustup run 1.83.0 cargo build -p videnoa-controller --all-features --locked
+Result: build succeeded.
