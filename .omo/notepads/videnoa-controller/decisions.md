@@ -147,3 +147,10 @@
 - Use `renamore = 0.3.2` as the safe Rust 1.83-compatible no-replace wrapper instead of handwritten platform unsafe.
 - Treat exact final bytes as completed publication, exact hidden staging as resumable publication, and every ownership contradiction as preserving nonretryable ambiguity.
 - Remove Controller temp before remote DELETE; classify 404 as success, network/timeout/stall/5xx as bounded retry, and other 4xx as terminal cleanup configuration failure.
+
+## 2026-09-03 Task 13 Review Fix
+
+- Use safe `rustix::fs::renameat_with` with `RenameFlags::NOREPLACE` relative to the capability-opened destination parent on Linux; retain `renamore` only for the Windows no-replace syscall path after immediate capability revalidation.
+- Treat a matching final as proof only when the durable staging name is absent. Any remaining regular or non-regular staging node preserves all evidence and closes as `PublicationAmbiguous`.
+- Convert `TransferError::MissingEvidence` from startup verify/publish/cleanup commands into durable task-local `RemoteStateAmbiguous`, then continue dispatching later traces.
+- Extract paired status SQL into `lifecycle_status.rs` while leaving transaction ownership and commit/rollback behavior in `lifecycle_transition.rs`.
