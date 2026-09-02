@@ -308,7 +308,7 @@ Expected: the image starts without GPU flags/libraries; archives have the locked
 
   **Commit:** `feat(controller): stream durable upload and download stages`
 
-- [ ] 13. Implement verified no-clobber publication and mandatory cleanup convergence
+- [x] 13. Implement verified no-clobber publication and mandatory cleanup convergence
 
   **Depends on:** 3, 4, 9, 10, 12
 
