@@ -4,6 +4,7 @@ mod model;
 mod service;
 mod transfer;
 mod transfer_executor;
+mod upload;
 
 pub use error::{SchedulerError, SchedulerErrorCode, TransferError, TransferLimitError};
 use hashing_writer::HashingWriter;
