@@ -73,10 +73,14 @@ impl MockClient {
             .await?;
         let names = workflows
             .into_iter()
-            .map(|workflow| workflow.filename)
-            .chain(presets.into_iter().map(|preset| preset.id));
+            .map(|workflow| (workflow.filename, workflow.has_interface))
+            .chain(presets.into_iter().map(|preset| (preset.id, true)));
         let mut eligibility = BTreeMap::new();
-        for name in names {
+        for (name, has_interface) in names {
+            if !has_interface {
+                eligibility.insert(name, false);
+                continue;
+            }
             let interface: WorkflowInterface = self
                 .http
                 .get(format!("{}/api/workflows/{name}/interface", self.base_url))

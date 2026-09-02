@@ -98,6 +98,17 @@ pub(crate) fn json_response<T: Serialize>(status: StatusCode, value: &T) -> Resp
     }
 }
 
+pub(crate) fn raw_json_response(status: StatusCode, bytes: Vec<u8>) -> Response {
+    Response::builder()
+        .status(status)
+        .header(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )
+        .body(Body::from(bytes))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
 pub(crate) fn error_response(status: StatusCode, code: &str) -> Response {
     json_response(status, &json!({"error": code}))
 }

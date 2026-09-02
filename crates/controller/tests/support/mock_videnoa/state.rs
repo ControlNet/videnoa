@@ -6,7 +6,7 @@ use tokio::sync::Mutex;
 
 use super::checkpoints::{Checkpoint, CheckpointHub};
 use super::domain::{JobProgress, JobStatus};
-use super::faults::{Fault, FaultState};
+use super::faults::{Fault, FaultState, ResponseFault};
 use super::journal::{JournalEntry, LogicalTimestamp, Route, RouteCounters};
 use super::persistence::{self, PersistentState};
 
@@ -110,6 +110,16 @@ impl SharedState {
 
     pub async fn service_unavailable(&self) -> bool {
         self.inner.lock().await.faults.service_unavailable
+    }
+
+    pub async fn take_response_fault(&self, route: Route) -> Option<ResponseFault> {
+        self.inner
+            .lock()
+            .await
+            .faults
+            .response_scripts
+            .get_mut(&route)
+            .and_then(std::collections::VecDeque::pop_front)
     }
 
     pub async fn set_service_unavailable(&self, enabled: bool) {

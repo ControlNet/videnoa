@@ -5,7 +5,7 @@ use serde_json::json;
 
 use crate::mock_videnoa::checkpoints::Checkpoint;
 use crate::mock_videnoa::client::MockClient;
-use crate::mock_videnoa::faults::{DeleteOutcome, Fault, OfflineMode};
+use crate::mock_videnoa::faults::{DeleteOutcome, Fault, OfflineMode, ResponseFault};
 use crate::mock_videnoa::journal::Route;
 use crate::mock_videnoa::server::MockVidenoa;
 
@@ -136,5 +136,34 @@ async fn delete_script_converges_after_already_gone_and_repeatable_failures() ->
     // Then: exact attempts are counted and fault evidence can be emitted.
     assert_eq!(server.counters().await.get(Route::DeleteFile), 4);
     server.write_fault_evidence_if_requested().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn task_eight_response_and_stall_extensions_remain_wire_level_faults() -> TestResult {
+    // Given: the shared harness with a scripted JSON response and stored download.
+    let server = MockVidenoa::start().await?;
+    let client = MockClient::new(server.base_url())?;
+    server
+        .set_fault(Fault::Response(ResponseFault {
+            route: Route::Health,
+            status: 429,
+            body: br#"{"error":"limited"}"#.to_vec(),
+        }))
+        .await;
+
+    // When/Then: the response is a real 429 and the body stall reaches the TCP client.
+    assert_eq!(
+        client.health_raw().await?.status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    server.store_file("fault/stall.bin", b"bytes").await?;
+    server.set_fault(Fault::StallDownload).await;
+    assert!(tokio::time::timeout(
+        std::time::Duration::from_millis(50),
+        client.download("fault/stall.bin")
+    )
+    .await
+    .is_err());
     Ok(())
 }

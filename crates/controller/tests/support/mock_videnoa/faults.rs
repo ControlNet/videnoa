@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use super::journal::Route;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Fault {
     DisconnectBeforeAccept,
@@ -7,6 +9,15 @@ pub enum Fault {
     TruncateDownload { delivered_bytes: usize },
     CorruptOutput { bytes: Vec<u8> },
     DeleteScript(Vec<DeleteOutcome>),
+    Response(ResponseFault),
+    StallDownload,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ResponseFault {
+    pub route: Route,
+    pub status: u16,
+    pub body: Vec<u8>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -51,6 +62,9 @@ pub(crate) struct FaultState {
     pub truncate_download: Option<usize>,
     pub corrupt_output: Option<Vec<u8>>,
     pub delete_script: std::collections::VecDeque<DeleteOutcome>,
+    pub response_scripts:
+        std::collections::BTreeMap<Route, std::collections::VecDeque<ResponseFault>>,
+    pub stall_download: Option<()>,
     pub service_unavailable: bool,
 }
 
@@ -64,6 +78,12 @@ impl FaultState {
             }
             Fault::CorruptOutput { bytes } => self.corrupt_output = Some(bytes),
             Fault::DeleteScript(outcomes) => self.delete_script = outcomes.into(),
+            Fault::Response(response) => self
+                .response_scripts
+                .entry(response.route)
+                .or_default()
+                .push_back(response),
+            Fault::StallDownload => self.stall_download = Some(()),
         }
     }
 }

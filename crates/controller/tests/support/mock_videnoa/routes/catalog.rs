@@ -6,7 +6,10 @@ use axum::http::StatusCode;
 use axum::response::Response;
 use serde_json::{json, Value};
 
-use super::{body_bytes, error_response, journal_request, json_response, record, MAX_JSON_BYTES};
+use super::{
+    body_bytes, error_response, journal_request, json_response, raw_json_response, record,
+    MAX_JSON_BYTES,
+};
 use crate::mock_videnoa::domain::{PresetResponse, WorkflowEntry, WorkflowInterface, WorkflowPort};
 use crate::mock_videnoa::journal::{JournalOutcome, Route};
 use crate::mock_videnoa::state::SharedState;
@@ -64,12 +67,33 @@ async fn simple<T: serde::Serialize>(
     };
     let sequence = state.inner.lock().await.begin(route);
     let journal = journal_request(&parts, &body, route, sequence, BTreeMap::new());
-    let response = json_response(StatusCode::OK, &value);
-    record(&state, journal, StatusCode::OK, JournalOutcome::Delivered).await;
+    let response = match state.take_response_fault(route).await {
+        Some(fault) => match StatusCode::from_u16(fault.status) {
+            Ok(status) => raw_json_response(status, fault.body),
+            Err(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "invalid_fault_status"),
+        },
+        None => json_response(StatusCode::OK, &value),
+    };
+    let status = response.status();
+    let outcome = if status.is_success() {
+        JournalOutcome::Delivered
+    } else {
+        JournalOutcome::FaultStatus
+    };
+    record(&state, journal, status, outcome).await;
     response
 }
 
 pub(crate) fn saved_workflows() -> Vec<WorkflowEntry> {
+    let mut no_interface = workflow_entry(
+        "no-interface.json",
+        "No Interface",
+        &WorkflowInterface {
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+        },
+    );
+    no_interface.has_interface = false;
     vec![
         workflow_entry(
             "eligible-workflow.json",
@@ -86,6 +110,7 @@ pub(crate) fn saved_workflows() -> Vec<WorkflowEntry> {
             "Wrong Path Type",
             &wrong_path_interface(),
         ),
+        no_interface,
     ]
 }
 

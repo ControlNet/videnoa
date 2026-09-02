@@ -5,7 +5,7 @@ use axum::body::{Body, Bytes};
 use axum::extract::{Path, Request, State};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use futures_util::stream;
+use futures_util::{stream, StreamExt};
 
 use super::{
     body_bytes, error_response, invalid_remote_path_response, journal_request, json_response,
@@ -126,13 +126,14 @@ async fn download(
     path: String,
 ) -> Response {
     let mut checkpoints = BTreeMap::new();
-    let (sequence, stored, truncate, corrupt) = {
+    let (sequence, stored, truncate, corrupt, stall) = {
         let mut inner = state.inner.lock().await;
         let sequence = inner.begin(Route::Download);
         let stored = inner.persistent.files.get(&path).cloned();
         let truncate = inner.faults.truncate_download.take();
         let corrupt = inner.faults.corrupt_output.take();
-        (sequence, stored, truncate, corrupt)
+        let stall = inner.faults.stall_download.take().is_some();
+        (sequence, stored, truncate, corrupt, stall)
     };
     state
         .checkpoint(Checkpoint::BeforeDownloadBody, &mut checkpoints)
@@ -148,8 +149,8 @@ async fn download(
         .await;
         return error_response(StatusCode::NOT_FOUND, "not_found");
     };
-    let (response_body, advertised, outcome) = match (truncate, corrupt) {
-        (Some(delivered), _) => {
+    let (response_body, advertised, outcome) = match (truncate, corrupt, stall) {
+        (Some(delivered), _, _) => {
             let delivered = delivered.min(stored.len());
             let chunks = [
                 Ok(Bytes::copy_from_slice(&stored[..delivered])),
@@ -167,13 +168,32 @@ async fn download(
                 },
             )
         }
-        (None, Some(bytes)) => {
+        (None, Some(bytes), _) => {
             let len = bytes.len();
             (Body::from(bytes), len, JournalOutcome::CorruptOutput)
         }
-        (None, None) => {
+        (None, None, true) => {
+            let advertised = stored.len();
+            let first = stored.into_iter().take(1).collect::<Vec<_>>();
+            let chunks = stream::once(async move { Ok::<_, std::io::Error>(Bytes::from(first)) })
+                .chain(stream::pending());
+            (
+                Body::from_stream(chunks),
+                advertised,
+                JournalOutcome::Delivered,
+            )
+        }
+        (None, None, false) => {
             let len = stored.len();
-            (Body::from(stored), len, JournalOutcome::Delivered)
+            let chunks = stream::unfold((stored, 0_usize), |(bytes, offset)| async move {
+                if offset >= bytes.len() {
+                    return None;
+                }
+                let end = (offset + 8 * 1024).min(bytes.len());
+                let chunk = Bytes::copy_from_slice(&bytes[offset..end]);
+                Some((Ok::<_, std::io::Error>(chunk), (bytes, end)))
+            });
+            (Body::from_stream(chunks), len, JournalOutcome::Delivered)
         }
     };
     let response = Response::builder()
