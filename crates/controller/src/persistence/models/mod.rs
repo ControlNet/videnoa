@@ -21,5 +21,5 @@ pub use scheduler::{SchedulerCandidate, UploadCandidateRecord};
 pub use settings::{SettingsRecord, SettingsUpdate};
 pub(crate) use task::empty_progress;
 pub use task::{NewTask, PublicationEvidence, Reservation, TaskLifecycle, TaskRecord};
-pub use worker::{NewWorker, WorkerHealthUpdate, WorkerRecord, WorkerUpdate};
+pub use worker::{NewWorker, WorkerHealthUpdate, WorkerRecord, WorkerUpdate, WorkerUpdateOutcome};
 pub use worker::{WorkerDeleteOutcome, WorkerIdentityConflict};

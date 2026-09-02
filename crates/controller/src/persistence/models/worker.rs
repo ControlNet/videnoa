@@ -43,6 +43,13 @@ pub struct WorkerUpdate {
     pub updated_at: DateTime<Utc>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkerUpdateOutcome {
+    Applied { new_version: u64 },
+    Conflict,
+    CapacityBelowUsage,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorkerHealthUpdate {
     pub id: WorkerId,

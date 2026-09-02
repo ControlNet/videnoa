@@ -25,7 +25,7 @@ pub use models::{
     PublicationUpdate, Reservation, ReservationOutcome, SchedulerCandidate, SessionRecord,
     SettingsRecord, SettingsUpdate, Sha256Digest, TaskFailureUpdate, TaskIngressOutcome,
     TaskProgressUpdate, TaskRecord, TaskRetryUpdate, UploadCandidateRecord, WorkerDeleteOutcome,
-    WorkerHealthUpdate, WorkerIdentityConflict, WorkerRecord, WorkerUpdate,
+    WorkerHealthUpdate, WorkerIdentityConflict, WorkerRecord, WorkerUpdate, WorkerUpdateOutcome,
 };
 
 #[derive(Clone, Debug)]
