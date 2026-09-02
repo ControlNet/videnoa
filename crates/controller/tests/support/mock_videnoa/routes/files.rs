@@ -241,6 +241,7 @@ pub(crate) async fn delete(
             DeleteOutcome::NotFound
         });
         let (status, outcome) = match result {
+            DeleteOutcome::ClientError => (StatusCode::BAD_REQUEST, JournalOutcome::FaultStatus),
             DeleteOutcome::NotFound => (StatusCode::NOT_FOUND, JournalOutcome::FaultStatus),
             DeleteOutcome::ServerError => (
                 StatusCode::INTERNAL_SERVER_ERROR,
