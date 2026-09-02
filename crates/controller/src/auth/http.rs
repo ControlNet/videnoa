@@ -26,21 +26,33 @@ struct ErrorBody {
 }
 
 pub fn authenticated_app_router(assets: &FrontendAssets, auth: AuthService) -> Router {
+    app_router(assets).merge(auth_routes(auth, true))
+}
+
+fn auth_routes(auth: AuthService, include_readiness: bool) -> Router {
     let routes = Router::new()
         .route("/api/auth/login", post(login))
         .route("/api/auth/session", get(session))
-        .route("/api/auth/logout", post(logout))
-        .route("/api/readiness", get(readiness))
-        .with_state(auth);
-    app_router(assets).merge(routes)
+        .route("/api/auth/logout", post(logout));
+    let routes = if include_readiness {
+        routes.route("/api/readiness", get(readiness))
+    } else {
+        routes
+    };
+    routes.with_state(auth)
 }
 
 pub fn controller_app_router(
     assets: &FrontendAssets,
     auth: AuthService,
     tasks: crate::tasks::TaskService,
+    operations: crate::operations::OperationsState,
 ) -> Router {
-    authenticated_app_router(assets, auth.clone()).merge(crate::tasks::router(auth, tasks))
+    let tasks = tasks.with_event_hub(operations.event_hub());
+    app_router(assets)
+        .merge(auth_routes(auth.clone(), false))
+        .merge(crate::tasks::router(auth, tasks))
+        .merge(crate::operations::router(operations))
 }
 
 /// Serves the authenticated Controller API and frontend until the HTTP server exits.
@@ -72,13 +84,14 @@ pub async fn serve_controller(
     assets: &FrontendAssets,
     auth: AuthService,
     tasks: crate::tasks::TaskService,
+    operations: crate::operations::OperationsState,
 ) -> Result<(), StartupError> {
     let listener = tokio::net::TcpListener::bind(address)
         .await
         .map_err(|source| StartupError::Bind { address, source })?;
     axum::serve(
         listener,
-        controller_app_router(assets, auth, tasks)
+        controller_app_router(assets, auth, tasks, operations)
             .into_make_service_with_connect_info::<SocketAddr>(),
     )
     .await
