@@ -103,3 +103,8 @@
 ## 2026-09-02 Task 10 Contract Repair
 
 - Review found startup-wide propagation for malformed rows, cancellation paths exposing ordinary continuation, unchecked remote identity, unbounded health retry counts, synthetic-only drain coverage, and a 358-line reconciler. All were reproduced and corrected without lint suppression.
+
+## 2026-09-03 Task 11 Review Fix
+
+- Independent review found that worker slot reduction checked durable usage before the optimistic worker update, allowing a reservation to commit between those operations and leave more assignments than compute slots. A checkpoint-controlled regression reproduced the invalid durable state, and the worker update now rejects it atomically with a typed capacity outcome.
+- The originally generated evidence used generic filenames. Exact scheduler timeline and failure artifacts are now present under the Task 11 evidence directory.
