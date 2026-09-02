@@ -6,12 +6,13 @@ use videnoa_controller::domain::{
     AttemptId, ComputeSlots, ConcurrencyLimit, IdempotencyKey, InputExtension, InputPath,
     OutputExtension, OutputPath, RemoteJobId, RemotePath, RetrySettingsDto, SchedulerStatus,
     SessionId, SourceReference, SubmissionKey, TaskCreateRequest, TaskId, TaskSource,
-    TimeoutSettingsDto, WorkerApiUrl, WorkerId, WorkerName, WorkflowName,
+    TimeoutSettingsDto, WorkerApiUrl, WorkerCapabilities, WorkerId, WorkerName, WorkflowKind,
+    WorkflowName, WorkflowSummary,
 };
 use videnoa_controller::persistence::{
     AttemptRemoteUpdate, AuthDigest, CasOutcome, Database, DatabaseOptions, IdempotencyRecord,
     InputIdentity, NewSession, NewTask, NewWorker, PersistenceError, Reservation,
-    ReservationOutcome, SettingsUpdate, Store, WorkerUpdate,
+    ReservationOutcome, SettingsUpdate, Store, WorkerHealthUpdate, WorkerUpdate,
 };
 
 type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -72,6 +73,25 @@ async fn task_and_attempt_repositories_round_trip_remote_evidence() -> TestResul
     let task_id = TaskId::random();
     let worker_id = WorkerId::random();
     store.insert_worker(&worker(worker_id, now)?).await?;
+    store
+        .update_worker_health(&WorkerHealthUpdate {
+            id: worker_id,
+            expected_version: 0,
+            online: true,
+            capabilities: WorkerCapabilities {
+                workflows: vec![WorkflowSummary {
+                    name: WorkflowName::new("anime upscale ../v2"),
+                    kind: WorkflowKind::Workflow,
+                }],
+                refreshed_at: Some(now),
+            },
+            last_seen_at: Some(now),
+            health_retry_count: 0,
+            next_health_check_at: None,
+            last_error: None,
+            updated_at: now,
+        })
+        .await?;
     store.insert_task(&task(task_id, now)).await?;
     let attempt_id = AttemptId::random();
     let reservation = Reservation {

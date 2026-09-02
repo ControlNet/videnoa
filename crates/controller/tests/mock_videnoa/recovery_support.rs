@@ -7,13 +7,15 @@ use tempfile::TempDir;
 use videnoa_controller::domain::{
     AttemptId, ComputeSlots, InputExtension, InputPath, OutputExtension, OutputPath,
     SourceReference, SubmissionKey, TaskCreateRequest, TaskId, TaskSource, TaskStatus,
-    WorkerApiUrl, WorkerId, WorkerName, WorkflowName,
+    WorkerApiUrl, WorkerCapabilities, WorkerId, WorkerName, WorkflowKind, WorkflowName,
+    WorkflowSummary,
 };
 use videnoa_controller::lifecycle::{
     AdvanceCommand, LifecycleService, ReserveCommand, SubmissionEvidence,
 };
 use videnoa_controller::persistence::{
-    Database, DatabaseOptions, InputIdentity, NewTask, NewWorker, Store, TaskRecord,
+    Database, DatabaseOptions, InputIdentity, NewTask, NewWorker, SettingsUpdate, Store,
+    TaskRecord, WorkerHealthUpdate,
 };
 use videnoa_controller::remote::{PayloadLimits, RemoteTimeouts, UploadReceipt, VidenoaClient};
 
@@ -57,6 +59,37 @@ impl Fixture {
                 online: true,
                 compute_slots: ComputeSlots::try_from(slots)?,
                 created_at: now,
+            })
+            .await?;
+        store
+            .update_worker_health(&WorkerHealthUpdate {
+                id: worker_id,
+                expected_version: 0,
+                online: true,
+                capabilities: WorkerCapabilities {
+                    workflows: vec![WorkflowSummary {
+                        name: WorkflowName::new("eligible-workflow.json"),
+                        kind: WorkflowKind::Workflow,
+                    }],
+                    refreshed_at: Some(now),
+                },
+                last_seen_at: Some(now),
+                health_retry_count: 0,
+                next_health_check_at: None,
+                last_error: None,
+                updated_at: now,
+            })
+            .await?;
+        let settings = store.settings().await?;
+        let mut scheduler = settings.scheduler;
+        scheduler.prefetch_per_worker = u16::try_from(slots)?;
+        store
+            .update_settings(&SettingsUpdate {
+                expected_version: settings.version,
+                scheduler,
+                timeouts: settings.timeouts,
+                retry: settings.retry,
+                updated_at: now,
             })
             .await?;
         Ok(Self {
