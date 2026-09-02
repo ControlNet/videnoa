@@ -10,8 +10,8 @@ use videnoa_controller::domain::{
 };
 use videnoa_controller::persistence::{
     AttemptRemoteUpdate, AuthDigest, CasOutcome, Database, DatabaseOptions, IdempotencyRecord,
-    NewSession, NewTask, NewWorker, PersistenceError, Reservation, ReservationOutcome,
-    SettingsUpdate, Store, WorkerUpdate,
+    InputIdentity, NewSession, NewTask, NewWorker, PersistenceError, Reservation,
+    ReservationOutcome, SettingsUpdate, Store, WorkerUpdate,
 };
 
 type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -47,6 +47,7 @@ fn task(id: TaskId, now: chrono::DateTime<Utc>) -> NewTask {
         output_extension: OutputExtension::new("mp4"),
         input_size: 9_999,
         input_mtime: now,
+        input_identity: InputIdentity::new([2; 16]),
         created_at: now,
     }
 }

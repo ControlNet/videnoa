@@ -20,8 +20,11 @@ pub mod config;
 pub mod domain;
 pub mod paths;
 pub mod persistence;
+pub mod tasks;
 use asset_path::ExactAssetPath;
-pub use auth::{authenticated_app_router, serve_authenticated};
+pub use auth::{
+    authenticated_app_router, controller_app_router, serve_authenticated, serve_controller,
+};
 
 #[cfg(not(debug_assertions))]
 use rust_embed::RustEmbed;

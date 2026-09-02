@@ -5,7 +5,7 @@ use crate::domain::{
     TaskCreateRequest, TaskId, TaskProgress, TaskStatus, WorkerId,
 };
 
-use super::Sha256Digest;
+use super::{InputIdentity, Sha256Digest};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NewTask {
@@ -15,6 +15,7 @@ pub struct NewTask {
     pub output_extension: OutputExtension,
     pub input_size: u64,
     pub input_mtime: DateTime<Utc>,
+    pub input_identity: InputIdentity,
     pub created_at: DateTime<Utc>,
 }
 
@@ -52,6 +53,7 @@ pub struct TaskRecord {
     pub output_extension: OutputExtension,
     pub input_size: u64,
     pub input_mtime: DateTime<Utc>,
+    pub input_identity: Option<InputIdentity>,
     pub worker_id: Option<WorkerId>,
     pub progress: TaskProgress,
     pub attempt_count: u32,

@@ -125,8 +125,8 @@ pub(crate) async fn insert_task_on(
         "INSERT INTO tasks (
                 id, status, input_path, output_path, input_extension, output_extension,
                 workflow, priority, source, source_reference, input_size, input_mtime_ms,
-                progress_json, created_at_ms, updated_at_ms
-             ) VALUES (?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                input_identity, progress_json, created_at_ms, updated_at_ms
+             ) VALUES (?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(task.id.to_string())
     .bind(task.request.input_path.as_str())
@@ -144,6 +144,7 @@ pub(crate) async fn insert_task_on(
     )
     .bind(sqlite_u64("input_size", task.input_size)?)
     .bind(timestamp(task.input_mtime))
+    .bind(task.input_identity.as_bytes().as_slice())
     .bind(progress)
     .bind(timestamp(task.created_at))
     .bind(timestamp(task.created_at))

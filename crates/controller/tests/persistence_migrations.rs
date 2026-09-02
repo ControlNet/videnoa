@@ -67,7 +67,7 @@ async fn existing_database_migrates_idempotently() -> TestResult {
     // When: the same database is opened again.
     let database = Database::open(DatabaseOptions::new(&path)).await?;
 
-    // Then: SQLx records one production migration and the singleton settings row remains unique.
+    // Then: SQLx records both production migrations and the singleton settings row remains unique.
     let migration_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations WHERE success = 1")
             .fetch_one(database.pool())
@@ -75,7 +75,7 @@ async fn existing_database_migrates_idempotently() -> TestResult {
     let settings_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM controller_settings")
         .fetch_one(database.pool())
         .await?;
-    assert_eq!(migration_count, 1);
+    assert_eq!(migration_count, 2);
     assert_eq!(settings_count, 1);
     Ok(())
 }

@@ -15,7 +15,7 @@ use crate::domain::{
 use crate::{app_router, FrontendAssets, StartupError};
 
 use super::service::{session_response, IssuedSession};
-use super::{AuthError, AuthService};
+use super::{authenticate, authorize_mutation, AuthError, AuthService, RequestAuth};
 
 pub const SESSION_COOKIE: &str = "videnoa_session";
 pub const CSRF_HEADER: &str = "x-csrf-token";
@@ -23,11 +23,6 @@ pub const CSRF_HEADER: &str = "x-csrf-token";
 #[derive(Serialize)]
 struct ErrorBody {
     error: &'static str,
-}
-
-enum RequestAuth {
-    Bearer,
-    Session(crate::persistence::SessionRecord),
 }
 
 pub fn authenticated_app_router(assets: &FrontendAssets, auth: AuthService) -> Router {
@@ -38,6 +33,14 @@ pub fn authenticated_app_router(assets: &FrontendAssets, auth: AuthService) -> R
         .route("/api/readiness", get(readiness))
         .with_state(auth);
     app_router(assets).merge(routes)
+}
+
+pub fn controller_app_router(
+    assets: &FrontendAssets,
+    auth: AuthService,
+    tasks: crate::tasks::TaskService,
+) -> Router {
+    authenticated_app_router(assets, auth.clone()).merge(crate::tasks::router(auth, tasks))
 }
 
 /// Serves the authenticated Controller API and frontend until the HTTP server exits.
@@ -55,6 +58,28 @@ pub async fn serve_authenticated(
     axum::serve(
         listener,
         authenticated_app_router(assets, auth).into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .map_err(StartupError::Serve)
+}
+
+/// Serves the complete authenticated Controller API and frontend.
+///
+/// # Errors
+/// Returns a typed startup error when the listener cannot bind or the server fails.
+pub async fn serve_controller(
+    address: SocketAddr,
+    assets: &FrontendAssets,
+    auth: AuthService,
+    tasks: crate::tasks::TaskService,
+) -> Result<(), StartupError> {
+    let listener = tokio::net::TcpListener::bind(address)
+        .await
+        .map_err(|source| StartupError::Bind { address, source })?;
+    axum::serve(
+        listener,
+        controller_app_router(assets, auth, tasks)
+            .into_make_service_with_connect_info::<SocketAddr>(),
     )
     .await
     .map_err(StartupError::Serve)
@@ -101,22 +126,12 @@ async fn session(State(auth): State<AuthService>, headers: HeaderMap) -> Respons
 }
 
 async fn logout(State(auth): State<AuthService>, headers: HeaderMap) -> Response {
-    match authenticate(&auth, &headers, Utc::now()).await {
+    match authorize_mutation(&auth, &headers, Utc::now()).await {
         Ok(RequestAuth::Bearer) => logout_response(&auth),
-        Ok(RequestAuth::Session(record)) => {
-            if !same_origin(&auth, &headers)
-                || headers
-                    .get(CSRF_HEADER)
-                    .and_then(|value| value.to_str().ok())
-                    .is_none_or(|csrf| !AuthService::csrf_matches(&record, csrf))
-            {
-                return error_response(&AuthError::Forbidden);
-            }
-            match auth.logout(record.id, Utc::now()).await {
-                Ok(()) => logout_response(&auth),
-                Err(error) => error_response(&error),
-            }
-        }
+        Ok(RequestAuth::Session(record)) => match auth.logout(record.id, Utc::now()).await {
+            Ok(()) => logout_response(&auth),
+            Err(error) => error_response(&error),
+        },
         Err(error) => error_response(&error),
     }
 }
@@ -134,25 +149,6 @@ async fn readiness(State(auth): State<AuthService>, headers: HeaderMap) -> Respo
         .into_response(),
         Err(error) => error_response(&error),
     }
-}
-
-async fn authenticate(
-    auth: &AuthService,
-    headers: &HeaderMap,
-    now: chrono::DateTime<Utc>,
-) -> Result<RequestAuth, AuthError> {
-    if let Some(password) = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-    {
-        auth.authenticate_bearer(password)?;
-        return Ok(RequestAuth::Bearer);
-    }
-    let token = cookie(headers, SESSION_COOKIE).ok_or(AuthError::Unauthorized)?;
-    auth.authenticate_session_at(token, now)
-        .await
-        .map(RequestAuth::Session)
 }
 
 fn login_response(auth: &AuthService, issued: IssuedSession) -> Response {
@@ -190,37 +186,6 @@ fn session_cookie(auth: &AuthService, token: &str, expired: bool) -> String {
     format!(
         "{SESSION_COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={max_age}{secure}"
     )
-}
-
-fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
-    headers
-        .get(header::COOKIE)?
-        .to_str()
-        .ok()?
-        .split(';')
-        .map(str::trim)
-        .find_map(|part| part.strip_prefix(name)?.strip_prefix('='))
-}
-
-fn same_origin(auth: &AuthService, headers: &HeaderMap) -> bool {
-    let Some(host) = headers
-        .get(header::HOST)
-        .and_then(|value| value.to_str().ok())
-    else {
-        return false;
-    };
-    let Some(origin) = headers
-        .get(header::ORIGIN)
-        .and_then(|value| value.to_str().ok())
-    else {
-        return false;
-    };
-    let scheme = if auth.secure_cookie() {
-        "https"
-    } else {
-        "http"
-    };
-    origin == format!("{scheme}://{host}")
 }
 
 fn error_response(error: &AuthError) -> Response {

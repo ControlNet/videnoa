@@ -11,7 +11,8 @@ use videnoa_controller::auth::{hash_password, AuthService};
 use videnoa_controller::config::ControllerConfig;
 use videnoa_controller::paths::PathCapabilities;
 use videnoa_controller::persistence::{Database, DatabaseOptions, Store};
-use videnoa_controller::{serve_authenticated, FrontendAssets, StartupError};
+use videnoa_controller::tasks::TaskService;
+use videnoa_controller::{serve_controller, FrontendAssets, StartupError};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -72,16 +73,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
         config.server.port = port;
     }
     let address = SocketAddr::new(config.server.host, config.server.port);
-    let _paths = PathCapabilities::open(&config.paths)?;
+    let paths = PathCapabilities::open(&config.paths)?;
     let database = Database::open(DatabaseOptions::new(
         config.paths.data_root.join("controller.sqlite3"),
     ))
     .await?;
-    let auth = AuthService::new(config.auth.clone(), Store::new(database))?;
+    let store = Store::new(database);
+    let auth = AuthService::new(config.auth.clone(), store.clone())?;
+    let tasks = TaskService::new(store, paths);
     if !config.auth.secure_cookie {
         eprintln!("warning: session cookies are running without Secure; use only on trusted HTTP networks");
     }
     let assets = frontend_assets()?;
-    serve_authenticated(address, &assets, auth).await?;
+    serve_controller(address, &assets, auth, tasks).await?;
     Ok(())
 }

@@ -9,7 +9,8 @@ mod worker;
 pub use attempt::{AttemptRecord, AttemptRemoteUpdate};
 pub use auth::{IdempotencyRecord, NewSession, SessionRecord};
 pub use common::{
-    AuthDigest, CasOutcome, PageResult, ReservationOutcome, Sha256Digest, TaskIngressOutcome,
+    AuthDigest, CasOutcome, InputIdentity, PageResult, ReservationOutcome, Sha256Digest,
+    TaskIngressOutcome,
 };
 pub use mutation::{
     AttemptFailureUpdate, AttemptProgressUpdate, AttemptTransition, PublicationUpdate,

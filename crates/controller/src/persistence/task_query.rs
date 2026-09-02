@@ -166,14 +166,12 @@ fn push_order(
             builder.push(", created_at_ms ASC, id ASC");
         }
         TaskSortField::CreatedAt => order(builder, "created_at_ms", direction),
-        TaskSortField::CompletedAt => order(builder, "completed_at_ms", direction),
+        TaskSortField::CompletedAt => nullable_order(builder, "completed_at_ms", direction),
         TaskSortField::Status => order(builder, "status", direction),
-        TaskSortField::Worker => order(builder, "worker_id", direction),
-        TaskSortField::Duration => order(
-            builder,
-            "(COALESCE(completed_at_ms, updated_at_ms) - created_at_ms)",
-            direction,
-        ),
+        TaskSortField::Worker => nullable_order(builder, "worker_id", direction),
+        TaskSortField::Duration => {
+            nullable_order(builder, "(completed_at_ms - created_at_ms)", direction);
+        }
     }
 }
 
@@ -183,6 +181,18 @@ fn order(builder: &mut QueryBuilder<'static, Sqlite>, field: &'static str, direc
         .push(field)
         .push(direction)
         .push(", id ASC");
+}
+
+fn nullable_order(
+    builder: &mut QueryBuilder<'static, Sqlite>,
+    field: &'static str,
+    direction: &str,
+) {
+    builder
+        .push(" ORDER BY ")
+        .push(field)
+        .push(direction)
+        .push(" NULLS LAST, id ASC");
 }
 
 fn escape_like(value: &str) -> String {
