@@ -39,6 +39,8 @@ pub enum TransferError {
     Conflict,
     #[error("transfer concurrency is saturated")]
     Busy,
+    #[error("transfer retry deadline has not elapsed")]
+    RetryNotDue,
     #[error("durable transfer state is incomplete")]
     MissingEvidence,
     #[error("transfer retry time is outside the supported range")]

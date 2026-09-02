@@ -92,6 +92,24 @@ impl TransferExecutor {
         Ok((task, attempt))
     }
 
+    pub(super) fn require_retry_due(
+        task: &crate::persistence::TaskRecord,
+        attempt: &crate::persistence::AttemptRecord,
+        now: DateTime<Utc>,
+    ) -> Result<(), TransferError> {
+        if task.retry != attempt.attempt.retry {
+            return Err(TransferError::MissingEvidence);
+        }
+        if task
+            .retry
+            .next_retry_at
+            .is_some_and(|deadline| deadline > now)
+        {
+            return Err(TransferError::RetryNotDue);
+        }
+        Ok(())
+    }
+
     pub(super) async fn retry(
         &self,
         task: &crate::persistence::TaskRecord,
