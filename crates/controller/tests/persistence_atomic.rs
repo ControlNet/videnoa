@@ -7,12 +7,13 @@ use tokio::task::JoinSet;
 use videnoa_controller::domain::{
     AttemptId, ComputeSlots, IdempotencyKey, InputExtension, InputPath, OutputExtension,
     OutputPath, SourceReference, SubmissionKey, TaskCreateRequest, TaskId, TaskSource,
-    WorkerApiUrl, WorkerId, WorkerName, WorkflowName,
+    WorkerApiUrl, WorkerCapabilities, WorkerId, WorkerName, WorkflowKind, WorkflowName,
+    WorkflowSummary,
 };
 use videnoa_controller::lifecycle::{LifecycleErrorCode, LifecycleService};
 use videnoa_controller::persistence::{
     Database, DatabaseOptions, IdempotencyRecord, InputIdentity, NewTask, NewWorker, Reservation,
-    ReservationOutcome, Store, TaskIngressOutcome,
+    ReservationOutcome, Store, TaskIngressOutcome, WorkerHealthUpdate,
 };
 
 type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -69,6 +70,25 @@ async fn concurrent_reservations_claim_once_and_respect_capacity() -> TestResult
             online: true,
             compute_slots: ComputeSlots::try_from(1_u64)?,
             created_at: now,
+        })
+        .await?;
+    store
+        .update_worker_health(&WorkerHealthUpdate {
+            id: worker_id,
+            expected_version: 0,
+            online: true,
+            capabilities: WorkerCapabilities {
+                workflows: vec![WorkflowSummary {
+                    name: WorkflowName::new("anime-upscale"),
+                    kind: WorkflowKind::Workflow,
+                }],
+                refreshed_at: Some(now),
+            },
+            last_seen_at: Some(now),
+            health_retry_count: 0,
+            next_health_check_at: None,
+            last_error: None,
+            updated_at: now,
         })
         .await?;
     let task_ids = [TaskId::random(), TaskId::random()];

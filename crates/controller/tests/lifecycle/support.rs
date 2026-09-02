@@ -4,14 +4,15 @@ use chrono::{DateTime, TimeZone, Utc};
 use tempfile::TempDir;
 use videnoa_controller::domain::{
     AttemptId, ComputeSlots, InputExtension, InputPath, OutputExtension, OutputPath,
-    SourceReference, SubmissionKey, TaskCreateRequest, TaskId, TaskSource, WorkerApiUrl, WorkerId,
-    WorkerName, WorkflowName,
+    SourceReference, SubmissionKey, TaskCreateRequest, TaskId, TaskSource, WorkerApiUrl,
+    WorkerCapabilities, WorkerId, WorkerName, WorkflowKind, WorkflowName, WorkflowSummary,
 };
 use videnoa_controller::lifecycle::{
     AdvanceCommand, CancelAction, DurableAction, LifecycleService, ReserveCommand,
 };
 use videnoa_controller::persistence::{
     AttemptRecord, Database, DatabaseOptions, InputIdentity, NewTask, NewWorker, Store, TaskRecord,
+    WorkerHealthUpdate,
 };
 
 pub type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -50,6 +51,25 @@ pub async fn fixture() -> TestResult<Fixture> {
             online: true,
             compute_slots: ComputeSlots::try_from(2_u64)?,
             created_at: now,
+        })
+        .await?;
+    store
+        .update_worker_health(&WorkerHealthUpdate {
+            id: worker_id,
+            expected_version: 0,
+            online: true,
+            capabilities: WorkerCapabilities {
+                workflows: vec![WorkflowSummary {
+                    name: WorkflowName::new("anime-upscale"),
+                    kind: WorkflowKind::Workflow,
+                }],
+                refreshed_at: Some(now),
+            },
+            last_seen_at: Some(now),
+            health_retry_count: 0,
+            next_health_check_at: None,
+            last_error: None,
+            updated_at: now,
         })
         .await?;
     store
