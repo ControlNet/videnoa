@@ -114,3 +114,8 @@
 - The first lifecycle SQL edit bound download evidence before the existing lifecycle timestamp placeholders, causing text values in integer timestamp columns. Reordering binds to match the statement fixed the corruption and all lifecycle/recovery regressions pass.
 - The initial mismatch fixture used a 503 response fault that occurred after the mock accepted and stored the full upload, so exact stat correctly staged it. The failure scenario now uses the pre-accept disconnect fault and proves mismatched-partial deletion plus retry.
 - The Task 12 integration target imports the complete shared real-TCP mock; a target-scoped `dead_code` expectation documents that intentional cross-target harness surface while strict Clippy remains clean.
+
+## 2026-09-03 Task 12 Review Fix
+
+- Independent review found seven gaps: retry SQL binding order, missing startup dispatch, non-atomic pause admission, upload restart PUT ordering, non-durable failure exits, rename-before-CAS recovery, and incomplete download evidence admission. Deterministic regressions now cover each gap.
+- Strict Clippy exposed three 20 KB test arrays allocated on the stack; moving those fixtures to `Vec<u8>` kept the test intent while satisfying the all-targets gate.
