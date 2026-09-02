@@ -87,6 +87,12 @@
 - Rust 1.83 lockfile verification requires pinning the inactive QUIC dependency resolution used by reqwest rustls: `quinn 0.11.9` and `quinn-proto 0.11.13` avoid the Edition 2024-only `cpufeatures 0.3.1` manifest.
 - Canonical JSON numbers must normalize equivalent integral and floating spellings such as `1` and `1.0`; array order and non-number scalar types remain distinct.
 
+## 2026-09-02 Task 8 Preset Contract Follow-up
+
+- `/api/presets` is the authoritative preset compatibility boundary: bundled IDs may be extensionless slugs, API-created IDs may be UUIDs, and each response already contains the complete workflow interface.
+- `/api/workflows/{filename}/interface` remains the correct discovery path for saved workflows, but preset IDs must not be projected into that filename endpoint.
+- Inserting workflows before presets through `CompatibilityCatalog::insert` preserves deterministic workflow precedence when both sources expose the same ID.
+
 ## 2026-09-02 Task 3 MSRV Scope Correction
 
 - Cargo workspace package fields are opt-in defaults, not workspace-wide guarantees; only members declaring `rust-version.workspace = true` advertise that MSRV.
