@@ -21,6 +21,7 @@ pub mod domain;
 pub mod lifecycle;
 pub mod paths;
 pub mod persistence;
+pub mod recovery;
 pub mod remote;
 pub mod tasks;
 use asset_path::ExactAssetPath;
