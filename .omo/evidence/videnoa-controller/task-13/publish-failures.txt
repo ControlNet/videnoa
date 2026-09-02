@@ -1,0 +1,26 @@
+Task 13 verified publication and cleanup failure evidence
+Date: 2026-09-03
+
+Commands:
+- cargo test -p videnoa-controller --test task13 -- --test-threads=1
+- cargo test -p videnoa-controller --lib paths::publication_tests::created_publication_parent_replacement_is_rejected -- --exact --test-threads=1
+Result: 14 integration tests passed; 1 focused capability unit test passed
+
+Observed failure scenarios:
+- Destination exists before admission: bytes remain unchanged; verified temp remains; task closes Failed with OutputExists.
+- Destination wins the finalization race: unrelated final and matching owned staging are both preserved; task closes Failed with PublicationAmbiguous.
+- Hidden staging length/hash mismatch: staging, final boundary, and verified temp are preserved; task closes Failed with PublicationAmbiguous.
+- Matching final plus remaining owned staging: both are preserved and task closes Failed with PublicationAmbiguous.
+- Directory at final or staging leaf: node is never opened as file and task closes Failed with PublicationAmbiguous.
+- Replacement of a parent created during staging: descriptor-bound finalization rejects OutputParentChanged and preserves verified and unrelated staging bytes.
+- Malformed RemoteCleanup worker evidence: malformed task closes with RemoteStateAmbiguous while unrelated verified startup work completes.
+- Remote DELETE 500: published output remains, local temp stays removed, paired retry_count=1 and next_retry_at are durable, and the due retry completes.
+- Remote DELETE 400: published output remains and task closes terminally with stage RemoteCleanup, code CleanupFailed, retryable=false.
+- Worker service unavailable during startup: local publication still converges and remote cleanup remains RemoteCleanup with durable retry metadata.
+
+Representative preserved evidence:
+- race_safe_publication bytes=21504 sha256=f25605314ba496d701284e3555eb2a2e2e2ed3307c0ed2cb726e69a28cae1a45
+- corrupt_staging bytes=21 sha256=5d17807b77961e58bcfc0fccad4f6fb21b8c4432d54dbfb9709240f303e49ec4
+
+No production unsafe, replacing rename, whole-file buffering, sleeps, or test-only production branch was introduced.
+Not executed by this evidence: forced EXDEV, permission denial, FIFO, cancellation integration, and every requested crash window.
