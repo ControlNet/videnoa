@@ -18,11 +18,30 @@ pub struct DownloadEvidence {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PublicationIntent {
+    destination_staging_name: String,
+}
+
+impl PublicationIntent {
+    #[must_use]
+    pub fn new(destination_staging_name: impl Into<String>) -> Self {
+        Self {
+            destination_staging_name: destination_staging_name.into(),
+        }
+    }
+
+    pub(crate) fn destination_staging_name(&self) -> &str {
+        &self.destination_staging_name
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum TransitionEvidence {
     None,
     Upload(UploadEvidence),
     Submission(SubmissionEvidence),
     Download(DownloadEvidence),
+    Publication(PublicationIntent),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

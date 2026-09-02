@@ -5,8 +5,8 @@ use crate::domain::{
 };
 
 use super::{
-    CancelAction, CommandKind, DownloadEvidence, RemoteTerminalStatus, TransitionEvidence,
-    UploadEvidence,
+    CancelAction, CommandKind, DownloadEvidence, PublicationIntent, RemoteTerminalStatus,
+    TransitionEvidence, UploadEvidence,
 };
 
 pub type ReserveCommand = crate::persistence::Reservation;
@@ -33,7 +33,7 @@ pub enum AdvanceCommand {
     FinishProcessing,
     StartDownload,
     FinishDownload(DownloadEvidence),
-    FinishVerification,
+    FinishVerification(PublicationIntent),
     FinishPublication,
     FinishCleanup,
 }
@@ -48,7 +48,7 @@ impl AdvanceCommand {
             Self::FinishProcessing => CommandKind::FinishProcessing,
             Self::StartDownload => CommandKind::StartDownload,
             Self::FinishDownload(_) => CommandKind::FinishDownload,
-            Self::FinishVerification => CommandKind::FinishVerification,
+            Self::FinishVerification(_) => CommandKind::FinishVerification,
             Self::FinishPublication => CommandKind::FinishPublication,
             Self::FinishCleanup => CommandKind::FinishCleanup,
         }
@@ -64,7 +64,7 @@ impl AdvanceCommand {
             Self::PersistSubmission(_) => DurableAction::Poll,
             Self::StartDownload => DurableAction::Download,
             Self::FinishDownload(_) => DurableAction::Verify,
-            Self::FinishVerification => DurableAction::Publish,
+            Self::FinishVerification(_) => DurableAction::Publish,
             Self::FinishPublication => DurableAction::Cleanup,
         }
     }
@@ -74,11 +74,11 @@ impl AdvanceCommand {
             Self::FinishUpload(evidence) => TransitionEvidence::Upload(evidence.clone()),
             Self::PersistSubmission(evidence) => TransitionEvidence::Submission(evidence.clone()),
             Self::FinishDownload(evidence) => TransitionEvidence::Download(*evidence),
+            Self::FinishVerification(intent) => TransitionEvidence::Publication(intent.clone()),
             Self::StartUpload
             | Self::StartSubmission
             | Self::FinishProcessing
             | Self::StartDownload
-            | Self::FinishVerification
             | Self::FinishPublication
             | Self::FinishCleanup => TransitionEvidence::None,
         }

@@ -24,7 +24,7 @@ pub use failure::{
 pub use retry::{AutomaticRetry, JitterRangeError, JitterSample, RetryDecision, RetryPolicy};
 pub use service::LifecycleService;
 pub use state::{CommandKind, Lifecycle, RecoveryAction};
-pub use transfer::{DownloadEvidence, UploadEvidence};
+pub use transfer::{DownloadEvidence, PublicationIntent, UploadEvidence};
 pub use transition::TransitionTarget;
 
 pub(crate) use command::{
