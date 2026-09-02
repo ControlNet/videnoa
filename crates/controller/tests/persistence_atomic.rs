@@ -6,12 +6,13 @@ use tempfile::TempDir;
 use tokio::task::JoinSet;
 use videnoa_controller::domain::{
     AttemptId, ComputeSlots, IdempotencyKey, InputExtension, InputPath, OutputExtension,
-    OutputPath, SourceReference, SubmissionKey, TaskCreateRequest, TaskId, TaskSource, TaskStatus,
+    OutputPath, SourceReference, SubmissionKey, TaskCreateRequest, TaskId, TaskSource,
     WorkerApiUrl, WorkerId, WorkerName, WorkflowName,
 };
+use videnoa_controller::lifecycle::{LifecycleErrorCode, LifecycleService};
 use videnoa_controller::persistence::{
-    CasOutcome, Database, DatabaseOptions, IdempotencyRecord, InputIdentity, NewTask, NewWorker,
-    Reservation, ReservationOutcome, Store, TaskIngressOutcome, TaskTransition,
+    Database, DatabaseOptions, IdempotencyRecord, InputIdentity, NewTask, NewWorker, Reservation,
+    ReservationOutcome, Store, TaskIngressOutcome,
 };
 
 type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -115,19 +116,20 @@ async fn stale_transition_cannot_overwrite_newer_state() -> TestResult {
     store.insert_task(&task(task_id, now)).await?;
 
     // When: the same compare-and-swap transition is applied twice.
-    let transition = TaskTransition {
-        task_id,
-        expected_status: TaskStatus::Queued,
-        next_status: TaskStatus::Cancelled,
-        expected_version: 0,
-        occurred_at: now,
-    };
-    let first = store.transition_task(&transition).await?;
-    let second = store.transition_task(&transition).await?;
+    let task = store
+        .task(task_id)
+        .await?
+        .ok_or_else(|| std::io::Error::other("task missing"))?;
+    let service = LifecycleService::new(store.clone());
+    let first = service.request_cancellation(&task, None, now).await;
+    let second = service.request_cancellation(&task, None, now).await;
 
     // Then: only the first transition commits.
-    assert_eq!(first, CasOutcome::Applied { new_version: 1 });
-    assert_eq!(second, CasOutcome::Conflict);
+    assert_eq!(first?.version(), 1);
+    assert_eq!(
+        second.expect_err("stale command must fail").code(),
+        LifecycleErrorCode::Conflict
+    );
     Ok(())
 }
 
