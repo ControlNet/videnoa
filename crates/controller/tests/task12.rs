@@ -6,6 +6,8 @@
 #[path = "support/mock_videnoa/mod.rs"]
 mod mock_videnoa;
 
+#[path = "task12/download.rs"]
+mod download;
 #[path = "task12/support.rs"]
 mod support;
 #[path = "task12/upload.rs"]

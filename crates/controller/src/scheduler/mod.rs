@@ -1,3 +1,4 @@
+mod download;
 mod error;
 mod hashing_writer;
 mod model;
