@@ -52,18 +52,15 @@ async fn upload_mismatch_deletes_only_owned_partial_and_retries_from_zero() -> T
         .store_file(&format!("{}/input.mkv", prepared.task_id), &[9_u8; 7])
         .await?;
     // When: restart reconciliation proves the prior PUT left a mismatch.
-    let outcome = fixture
+    let first = fixture
         .executor()?
         .upload(prepared.task_id, fixture.now, JitterSample::try_from(0)?)
         .await?;
 
-    // Then: the attempt remains uploading with durable bounded retry metadata and owned cleanup.
+    // Then: the first invocation persists cleanup and a bounded retry.
     assert!(
-        matches!(
-            &outcome,
-            UploadOutcome::RetryScheduled { retry_count: 1, .. }
-        ),
-        "unexpected outcome: {outcome:?}"
+        matches!(&first, UploadOutcome::RetryScheduled { retry_count: 1, .. }),
+        "unexpected outcome: {first:?}"
     );
     let task = fixture.task(prepared.task_id).await?;
     let attempt = fixture.attempt(prepared.attempt_id).await?;
@@ -72,6 +69,25 @@ async fn upload_mismatch_deletes_only_owned_partial_and_retries_from_zero() -> T
     assert_eq!(attempt.attempt.retry.retry_count, 1);
     assert_eq!(server.counters().await.get(Route::DeleteFile), 1);
     assert_eq!(server.counters().await.get(Route::Run), 0);
+
+    // When: the durable deadline elapses and restart reconciliation runs again.
+    let second = fixture
+        .executor()?
+        .upload(
+            prepared.task_id,
+            fixture.now + chrono::Duration::seconds(1),
+            zero_jitter()?,
+        )
+        .await?;
+
+    // Then: one fresh root-confined PUT starts at byte zero and reaches staged.
+    assert!(matches!(second, UploadOutcome::Staged(_)));
+    assert_eq!(
+        fixture.task(prepared.task_id).await?.status,
+        TaskStatus::Staged
+    );
+    assert_eq!(server.counters().await.get(Route::Upload), 1);
+    assert_eq!(server.counters().await.get(Route::DeleteFile), 1);
     Ok(())
 }
 
