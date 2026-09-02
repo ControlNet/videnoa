@@ -67,8 +67,11 @@ impl VidenoaClient {
             );
         }
         for preset in presets {
-            let interface = self.optional_interface(&preset.id).await?;
-            catalog.insert(preset.id, WorkflowKind::Preset, interface.as_ref());
+            catalog.insert(
+                preset.id,
+                WorkflowKind::Preset,
+                preset.workflow.interface.as_ref(),
+            );
         }
         Ok(catalog)
     }

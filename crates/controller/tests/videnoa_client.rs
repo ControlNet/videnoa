@@ -74,7 +74,17 @@ async fn capabilities_merge_workflows_and_presets_when_interfaces_are_compatible
         Some(Compatibility::Eligible)
     );
     assert_eq!(
+        capabilities
+            .entry(&WorkflowName::new("eligible-workflow.json"))
+            .map(|entry| entry.kind),
+        Some(WorkflowKind::Workflow)
+    );
+    assert_eq!(
         capabilities.compatibility(&WorkflowName::new("eligible-preset")),
+        Some(Compatibility::Eligible)
+    );
+    assert_eq!(
+        capabilities.compatibility(&WorkflowName::new("00000000-0000-4000-8000-000000000042")),
         Some(Compatibility::Eligible)
     );
     assert_eq!(
@@ -89,6 +99,23 @@ async fn capabilities_merge_workflows_and_presets_when_interfaces_are_compatible
         capabilities.compatibility(&WorkflowName::new("no-interface.json")),
         Some(Compatibility::Incompatible)
     );
+    let interface_requests: Vec<_> = server
+        .journal()
+        .await
+        .into_iter()
+        .filter(|entry| entry.route == Route::Interface)
+        .map(|entry| entry.path)
+        .collect();
+    assert_eq!(interface_requests.len(), 3);
+    assert!(interface_requests
+        .iter()
+        .any(|path| path.ends_with("/eligible-workflow.json/interface")));
+    assert!(interface_requests
+        .iter()
+        .all(|path| !path.ends_with("/eligible-preset/interface")));
+    assert!(interface_requests
+        .iter()
+        .all(|path| !path.ends_with("/00000000-0000-4000-8000-000000000042/interface")));
     Ok(())
 }
 

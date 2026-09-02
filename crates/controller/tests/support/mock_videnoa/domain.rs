@@ -118,7 +118,14 @@ pub struct PresetResponse {
     pub id: String,
     pub name: String,
     pub description: String,
-    pub workflow: Value,
+    pub workflow: PresetWorkflow,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct PresetWorkflow {
+    pub nodes: Vec<Value>,
+    pub connections: Vec<Value>,
+    pub interface: Option<WorkflowInterface>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
