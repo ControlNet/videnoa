@@ -4,6 +4,7 @@ resolver = "2"
 
 [workspace.package]
 version = "0.1.2"
+rust-version = "1.83"
 
 [workspace.dependencies]
 ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "cuda", "tensorrt", "ndarray", "load-dynamic", "half", "api-23"] }
@@ -31,7 +32,7 @@ tokio-util = "0.7"
 reqwest = { version = "0.12", features = ["json", "blocking"] }
 rayon = "1"
 url = { version = "2", features = ["serde"] }
-rust-embed = "8"
+rust-embed = "=8.11.0"
 mime_guess = "2"
 percent-encoding = "2"
 figment = { version = "0.10", features = ["env", "toml"] }
