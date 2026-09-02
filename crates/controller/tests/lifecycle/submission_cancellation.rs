@@ -27,8 +27,8 @@ async fn accepted_submission_after_cancellation_requires_reconciliation_path() -
             &attempt,
             SubmissionCancellationReconciliation::Accepted(SubmissionEvidence {
                 remote_job_id,
-                remote_input_path: RemotePath::new("task/input/../cancel-opaque.mkv"),
-                remote_output_path: RemotePath::new("task/output/../cancel-opaque.mp4"),
+                remote_input_path: RemotePath::new("task/input.mkv"),
+                remote_output_path: RemotePath::new("task/output.mp4"),
             }),
             fixture.now,
         )
@@ -53,7 +53,7 @@ async fn accepted_submission_after_cancellation_requires_reconciliation_path() -
             .remote_input_path
             .as_ref()
             .map(RemotePath::as_str),
-        Some("task/input/../cancel-opaque.mkv")
+        Some("task/input.mkv")
     );
     assert_eq!(
         reconciled_attempt
@@ -61,7 +61,7 @@ async fn accepted_submission_after_cancellation_requires_reconciliation_path() -
             .remote_output_path
             .as_ref()
             .map(RemotePath::as_str),
-        Some("task/output/../cancel-opaque.mp4")
+        Some("task/output.mp4")
     );
     let continuation = fixture
         .service

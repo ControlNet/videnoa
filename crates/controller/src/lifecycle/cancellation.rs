@@ -94,15 +94,17 @@ impl LifecycleService {
         if task.status != TaskStatus::Submitting || task.cancel_requested_at.is_none() {
             return Err(LifecycleError::IllegalCommand);
         }
-        let (next_status, action, submission) = match reconciliation {
+        let (next_status, action, evidence) = match reconciliation {
             SubmissionCancellationReconciliation::Accepted(evidence) => (
                 TaskStatus::Processing,
                 CancelAction::CancelRemoteAndClean,
-                Some(evidence),
+                super::TransitionEvidence::Submission(evidence),
             ),
-            SubmissionCancellationReconciliation::NotAccepted => {
-                (TaskStatus::Staged, CancelAction::CleanStaged, None)
-            }
+            SubmissionCancellationReconciliation::NotAccepted => (
+                TaskStatus::Staged,
+                CancelAction::CleanStaged,
+                super::TransitionEvidence::None,
+            ),
         };
         let write = PairedTransition {
             task_id: task.id,
@@ -111,7 +113,7 @@ impl LifecycleService {
             to: next_status,
             attempt: attempt_cas(task, attempt)?,
             occurred_at,
-            submission,
+            evidence,
         };
         let version = applied(self.store().apply_lifecycle_transition(&write).await?)?;
         Ok(CommittedCommand::new(
@@ -148,7 +150,7 @@ impl LifecycleService {
             to: next_status,
             attempt: attempt_cas(task, attempt)?,
             occurred_at,
-            submission: None,
+            evidence: super::TransitionEvidence::None,
         };
         let version = applied(self.store().apply_lifecycle_transition(&write).await?)?;
         Ok(CommittedCommand::new(
