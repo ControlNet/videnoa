@@ -1,13 +1,13 @@
 use chrono::{DateTime, Utc};
 
-use crate::domain::{TaskId, TaskStatus};
+use crate::domain::{FailureCode, FailureStage, TaskId, TaskStatus};
 use crate::lifecycle::{
-    AdvanceCommand, AutomaticRetry, DownstreamFailure, JitterSample, LifecycleService,
-    UploadEvidence,
+    AdvanceCommand, AutomaticRetry, DownstreamFailure, JitterSample, LifecycleFailure,
+    LifecycleService, UploadEvidence,
 };
-use crate::persistence::InputIdentity;
 use crate::remote::{sibling_output_path, FileApiPath, VidenoaClient, VidenoaClientError};
 
+use super::upload_fresh::UploadContext;
 use super::{RetryResult, TransferError, TransferExecutor, UploadOutcome};
 
 impl TransferExecutor {
@@ -22,6 +22,8 @@ impl TransferExecutor {
         jitter: JitterSample,
     ) -> Result<UploadOutcome, TransferError> {
         let (mut task, mut attempt) = self.snapshots(task_id).await?;
+        Self::require_retry_due(&task, &attempt, now)?;
+        let restarting = task.status == TaskStatus::Uploading;
         let worker_id = attempt
             .attempt
             .worker_id
@@ -68,53 +70,93 @@ impl TransferExecutor {
             task.id,
             task.input_extension.as_str()
         ))?;
-        let rooted = self
-            .resources
-            .paths
-            .open_input(task.request.input_path.as_str())?;
-        let identity = InputIdentity::new(rooted.snapshot().platform_identity());
-        if rooted.snapshot().length != task.input_size
-            || task.input_identity != Some(identity)
-            || DateTime::<Utc>::from(rooted.snapshot().modified).timestamp_millis()
-                != task.input_mtime.timestamp_millis()
-        {
-            return Err(TransferError::Conflict);
+        if restarting {
+            return match client.stat(&api_path).await {
+                Ok(stat) if stat.is_file && stat.size == task.input_size => {
+                    self.finish_upload(&task, &attempt, stat.path, now).await
+                }
+                Ok(_) => {
+                    self.cleanup_and_retry(&client, &api_path, &task, &attempt, now, jitter)
+                        .await
+                }
+                Err(VidenoaClientError::NotFound) => {
+                    self.upload_retry(&task, &attempt, now, jitter).await
+                }
+                Err(_) => self.upload_retry(&task, &attempt, now, jitter).await,
+            };
         }
-        let file = tokio::fs::File::from_std(rooted.reopen_checked()?.into_std());
-        let uploaded = client.upload(&api_path, task.input_size, file).await;
-        let stat = client.stat(&api_path).await;
-        match stat {
-            Ok(stat) if stat.is_file && stat.size == task.input_size => {
-                let remote_input_path = match uploaded {
-                    Ok(receipt) if receipt.size == task.input_size => receipt.path,
-                    Ok(_) | Err(_) => stat.path,
-                };
-                let evidence = UploadEvidence {
-                    remote_output_path: sibling_output_path(
-                        &remote_input_path,
-                        &format!("output.{}", task.output_extension.as_str()),
-                    )?,
-                    remote_input_path,
-                };
-                LifecycleService::new(self.resources.store.clone())
-                    .advance(
-                        &task,
-                        &attempt,
-                        AdvanceCommand::FinishUpload(evidence.clone()),
-                        now,
-                    )
-                    .await?;
-                Ok(UploadOutcome::Staged(evidence))
-            }
-            Ok(_) => {
-                self.delete_owned_partial(&client, &api_path).await?;
-                self.upload_retry(&task, &attempt, now, jitter).await
-            }
-            Err(VidenoaClientError::NotFound) => {
-                self.upload_retry(&task, &attempt, now, jitter).await
-            }
-            Err(_) => self.upload_retry(&task, &attempt, now, jitter).await,
-        }
+        self.upload_fresh(UploadContext {
+            task: &task,
+            attempt: &attempt,
+            client: &client,
+            api_path: &api_path,
+            now,
+            jitter,
+        })
+        .await
+    }
+
+    pub(super) async fn cleanup_and_retry(
+        &self,
+        client: &VidenoaClient,
+        path: &FileApiPath,
+        task: &crate::persistence::TaskRecord,
+        attempt: &crate::persistence::AttemptRecord,
+        now: DateTime<Utc>,
+        jitter: JitterSample,
+    ) -> Result<UploadOutcome, TransferError> {
+        let cleanup = self.delete_owned_partial(client, path).await;
+        let outcome = self.upload_retry(task, attempt, now, jitter).await?;
+        cleanup?;
+        Ok(outcome)
+    }
+
+    pub(super) async fn finish_upload(
+        &self,
+        task: &crate::persistence::TaskRecord,
+        attempt: &crate::persistence::AttemptRecord,
+        remote_input_path: crate::domain::RemotePath,
+        now: DateTime<Utc>,
+    ) -> Result<UploadOutcome, TransferError> {
+        let evidence = UploadEvidence {
+            remote_output_path: sibling_output_path(
+                &remote_input_path,
+                &format!("output.{}", task.output_extension.as_str()),
+            )?,
+            remote_input_path,
+        };
+        LifecycleService::new(self.resources.store.clone())
+            .advance(
+                task,
+                attempt,
+                AdvanceCommand::FinishUpload(evidence.clone()),
+                now,
+            )
+            .await?;
+        Ok(UploadOutcome::Staged(evidence))
+    }
+
+    pub(super) async fn upload_input_failure(
+        &self,
+        task: &crate::persistence::TaskRecord,
+        attempt: &crate::persistence::AttemptRecord,
+        code: FailureCode,
+        now: DateTime<Utc>,
+    ) -> Result<UploadOutcome, TransferError> {
+        LifecycleService::new(self.resources.store.clone())
+            .fail(
+                task,
+                Some(attempt),
+                LifecycleFailure::terminal(
+                    TaskStatus::Uploading,
+                    FailureStage::Upload,
+                    code,
+                    "local input changed after task admission",
+                ),
+                now,
+            )
+            .await?;
+        Ok(UploadOutcome::Failed)
     }
 
     async fn delete_owned_partial(
@@ -128,7 +170,7 @@ impl TransferExecutor {
         }
     }
 
-    async fn upload_retry(
+    pub(super) async fn upload_retry(
         &self,
         task: &crate::persistence::TaskRecord,
         attempt: &crate::persistence::AttemptRecord,
