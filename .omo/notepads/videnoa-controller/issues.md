@@ -129,3 +129,8 @@
 
 - Independent review found the remaining non-Unix branch returned `Unsupported` unconditionally, so every otherwise successful Windows download retried instead of advancing to `Verifying`. The policy regression reproduced that result before the cfg split.
 - The installed MSVC Rust target is insufficient for a Linux-hosted dependency build: conda supplies GNU Linux `CC`/`AR`, while `clang-cl` and `llvm-lib` are absent. Native policy, lint, and full Controller tests pass; direct MSVC cross-check remains a host-tooling gap.
+
+## 2026-09-03 Task 13
+
+- Initial strict Clippy found an oversized cleanup function, manual let-else patterns, and an over-parameterized finalizer. The executor was split by publication, finalization, failure, and remote-cleanup responsibility with no lint suppression.
+- Native Linux tests prove `RENAME_NOREPLACE`; direct Windows compilation remains unavailable on this host for the previously documented missing MSVC-compatible C compiler and archiver.
