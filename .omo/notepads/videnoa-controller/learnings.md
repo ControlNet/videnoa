@@ -169,3 +169,8 @@
 - Remote `NotFound` while resuming `Uploading` is positive reconciliation evidence that permits a fresh PUT now; treating it like an outage creates an endless stat/retry loop.
 - A generic lifecycle conflict can be safely deferred only after re-reading the exact durable predicate that explains it. Persisted pause plus `Reserved` identifies the admission race without hiding stale snapshots or attempt mismatches.
 - Offline rename-before-CAS recovery requires local provenance, not merely local bytes. A synced fixed-size length/hash record lets restart accept matching bytes without stat/GET and deterministically reject corruption.
+
+## 2026-09-03 Task 12 Windows Durability Review
+
+- Cross-platform durability contracts should distinguish an actual Unix parent-directory fsync from Windows reliance on individually synced files plus same-directory rename; grouping both behind `not(unix)` incorrectly rejected successful Windows downloads.
+- A host-independent policy function can lock cfg intent on Linux while platform-specific implementations remain responsible for real syscalls.
