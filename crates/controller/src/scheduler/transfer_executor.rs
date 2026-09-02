@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 
@@ -11,7 +12,10 @@ use crate::paths::PathCapabilities;
 use crate::persistence::{Sha256Digest, Store};
 use crate::remote::{PayloadLimits, RemoteTimeouts};
 
-use super::{TransferCoordinator, TransferError};
+use super::transfer_checkpoint::noop_observer;
+use super::{
+    TransferCheckpointObserver, TransferCheckpointPoint, TransferCoordinator, TransferError,
+};
 
 #[derive(Clone)]
 pub struct TransferResources {
@@ -32,6 +36,7 @@ pub struct TransferConfig {
 pub struct TransferExecutor {
     pub(super) resources: TransferResources,
     pub(super) config: TransferConfig,
+    checkpoint_observer: Arc<dyn TransferCheckpointObserver>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -73,8 +78,25 @@ pub enum PublicationOutcome {
 
 impl TransferExecutor {
     #[must_use]
-    pub const fn new(resources: TransferResources, config: TransferConfig) -> Self {
-        Self { resources, config }
+    pub fn new(resources: TransferResources, config: TransferConfig) -> Self {
+        Self {
+            resources,
+            config,
+            checkpoint_observer: noop_observer(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_checkpoint_observer(
+        mut self,
+        observer: Arc<dyn TransferCheckpointObserver>,
+    ) -> Self {
+        self.checkpoint_observer = observer;
+        self
+    }
+
+    pub(super) async fn checkpoint(&self, point: TransferCheckpointPoint) {
+        self.checkpoint_observer.checkpoint(point).await;
     }
 
     pub(super) async fn snapshots(
