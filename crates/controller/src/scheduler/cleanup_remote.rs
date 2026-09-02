@@ -7,7 +7,7 @@ use crate::lifecycle::{
 use crate::persistence::{AttemptRecord, TaskRecord};
 use crate::remote::{FileApiPath, VidenoaClient, VidenoaClientError};
 
-use super::{PublicationOutcome, TransferError, TransferExecutor};
+use super::{PublicationOutcome, TransferCheckpointPoint, TransferError, TransferExecutor};
 
 impl TransferExecutor {
     pub(super) async fn delete_remote_workspace(
@@ -35,6 +35,8 @@ impl TransferExecutor {
         let workspace = FileApiPath::parse(&task.id.to_string())?;
         match client.delete_file(&workspace).await {
             Ok(()) | Err(VidenoaClientError::NotFound) => {
+                self.checkpoint(TransferCheckpointPoint::RemoteDeleteSucceeded)
+                    .await;
                 LifecycleService::new(self.resources.store.clone())
                     .advance(task, attempt, AdvanceCommand::FinishCleanup, now)
                     .await?;

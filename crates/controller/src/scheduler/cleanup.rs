@@ -4,7 +4,9 @@ use crate::domain::{TaskId, TaskStatus};
 use crate::lifecycle::{AutomaticRetry, DownstreamFailure, JitterSample};
 
 use super::publication_artifact::sync_directory;
-use super::{PublicationOutcome, RetryResult, TransferError, TransferExecutor};
+use super::{
+    PublicationOutcome, RetryResult, TransferCheckpointPoint, TransferError, TransferExecutor,
+};
 
 impl TransferExecutor {
     /// Removes Controller temporary artifacts before deleting the remote task workspace.
@@ -26,6 +28,8 @@ impl TransferExecutor {
         }
         Self::require_retry_due(&task, &attempt, now)?;
         let temporary = self.config.temp_root.join(task.id.to_string());
+        self.checkpoint(TransferCheckpointPoint::BeforeLocalCleanup)
+            .await;
         match tokio::fs::remove_dir_all(&temporary).await {
             Ok(()) => {
                 if sync_directory(&self.config.temp_root).await.is_err() {
@@ -53,6 +57,8 @@ impl TransferExecutor {
                     .await;
             }
         }
+        self.checkpoint(TransferCheckpointPoint::BeforeRemoteDelete)
+            .await;
         self.delete_remote_workspace(&task, &attempt, now, jitter)
             .await
     }

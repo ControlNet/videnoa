@@ -6,6 +6,8 @@
 #[path = "support/mock_videnoa/mod.rs"]
 mod mock_videnoa;
 
+#[path = "task13/cancellation.rs"]
+mod cancellation;
 #[path = "task13/checkpoints.rs"]
 mod checkpoints;
 #[path = "task13/cleanup.rs"]
