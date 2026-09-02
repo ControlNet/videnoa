@@ -6,5 +6,7 @@ mod repository_retry;
 mod repository_transition;
 #[path = "lifecycle/retry.rs"]
 mod retry;
+#[path = "lifecycle/submission_cancellation.rs"]
+mod submission_cancellation;
 #[path = "lifecycle/support.rs"]
 mod support;

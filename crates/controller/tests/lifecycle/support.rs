@@ -7,9 +7,11 @@ use videnoa_controller::domain::{
     SourceReference, SubmissionKey, TaskCreateRequest, TaskId, TaskSource, WorkerApiUrl, WorkerId,
     WorkerName, WorkflowName,
 };
-use videnoa_controller::lifecycle::{LifecycleService, ReserveCommand};
+use videnoa_controller::lifecycle::{
+    AdvanceCommand, CancelAction, DurableAction, LifecycleService, ReserveCommand,
+};
 use videnoa_controller::persistence::{
-    Database, DatabaseOptions, InputIdentity, NewTask, NewWorker, Store,
+    AttemptRecord, Database, DatabaseOptions, InputIdentity, NewTask, NewWorker, Store, TaskRecord,
 };
 
 pub type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -94,4 +96,54 @@ pub async fn reserve(fixture: &Fixture) -> TestResult<AttemptId> {
         })
         .await?;
     Ok(attempt_id)
+}
+
+pub async fn submitting_attempt(fixture: &Fixture) -> TestResult<AttemptId> {
+    let attempt_id = reserve(fixture).await?;
+    for command in [
+        AdvanceCommand::StartUpload,
+        AdvanceCommand::FinishUpload,
+        AdvanceCommand::StartSubmission,
+    ] {
+        let task = load_task(fixture).await?;
+        let attempt = load_attempt(fixture, attempt_id).await?;
+        fixture
+            .service
+            .advance(&task, &attempt, command, fixture.now)
+            .await?;
+    }
+    Ok(attempt_id)
+}
+
+pub async fn request_submitting_cancellation(
+    fixture: &Fixture,
+    attempt_id: AttemptId,
+) -> TestResult {
+    let task = load_task(fixture).await?;
+    let attempt = load_attempt(fixture, attempt_id).await?;
+    let requested = fixture
+        .service
+        .request_cancellation(&task, Some(&attempt), fixture.now)
+        .await?;
+    assert_eq!(
+        requested.action(),
+        DurableAction::Cancel(CancelAction::ReconcileSubmission)
+    );
+    Ok(())
+}
+
+pub async fn load_task(fixture: &Fixture) -> TestResult<TaskRecord> {
+    fixture
+        .store
+        .task(fixture.task_id)
+        .await?
+        .ok_or_else(|| std::io::Error::other("task missing").into())
+}
+
+pub async fn load_attempt(fixture: &Fixture, attempt_id: AttemptId) -> TestResult<AttemptRecord> {
+    fixture
+        .store
+        .attempt(attempt_id)
+        .await?
+        .ok_or_else(|| std::io::Error::other("attempt missing").into())
 }
