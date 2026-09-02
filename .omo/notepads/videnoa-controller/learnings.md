@@ -174,3 +174,9 @@
 
 - Cross-platform durability contracts should distinguish an actual Unix parent-directory fsync from Windows reliance on individually synced files plus same-directory rename; grouping both behind `not(unix)` incorrectly rejected successful Windows downloads.
 - A host-independent policy function can lock cfg intent on Linux while platform-specific implementations remain responsible for real syscalls.
+
+## 2026-09-03 Task 13
+
+- Persisting a destination staging name in the same CAS that enters `Publishing` makes every later filesystem artifact attributable after a crash.
+- Always copying into destination-owned staging removes EXDEV from finalization and gives same-filesystem and cross-filesystem inputs one recovery algorithm.
+- Local publication and temp cleanup must not wait for worker health; an offline worker belongs to the durable remote-cleanup retry stage after the final output is safe.
