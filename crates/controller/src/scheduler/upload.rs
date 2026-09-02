@@ -80,7 +80,15 @@ impl TransferExecutor {
                         .await
                 }
                 Err(VidenoaClientError::NotFound) => {
-                    self.upload_retry(&task, &attempt, now, jitter).await
+                    self.upload_fresh(UploadContext {
+                        task: &task,
+                        attempt: &attempt,
+                        client: &client,
+                        api_path: &api_path,
+                        now,
+                        jitter,
+                    })
+                    .await
                 }
                 Err(_) => self.upload_retry(&task, &attempt, now, jitter).await,
             };
