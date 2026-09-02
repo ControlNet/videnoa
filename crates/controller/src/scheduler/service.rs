@@ -2,11 +2,11 @@ use chrono::{DateTime, Utc};
 
 use crate::domain::{AttemptId, SubmissionKey};
 use crate::lifecycle::{DurableAction, LifecycleErrorCode, LifecycleService, ReserveCommand};
-use crate::persistence::{CasOutcome, SettingsUpdate, Store};
+use crate::persistence::{CasOutcome, DurableChange, SettingsRecord, SettingsUpdate, Store};
 
 use super::{
-    AssignmentClass, ScheduledAssignment, SchedulerError, TransferCoordinator, UploadCandidate,
-    UploadPriority,
+    AssignmentClass, RuntimeSettings, ScheduledAssignment, SchedulerError, TransferCoordinator,
+    UploadCandidate, UploadPriority,
 };
 
 #[derive(Clone, Debug)]
@@ -14,6 +14,7 @@ pub struct Scheduler {
     store: Store,
     lifecycle: LifecycleService,
     transfers: TransferCoordinator,
+    runtime_settings: RuntimeSettings,
 }
 
 impl Scheduler {
@@ -26,6 +27,7 @@ impl Scheduler {
         Ok(Self {
             lifecycle: LifecycleService::new(store.clone()),
             transfers: TransferCoordinator::from_status(&settings.scheduler),
+            runtime_settings: RuntimeSettings::new(&settings.timeouts, &settings.retry)?,
             store,
         })
     }
@@ -127,17 +129,30 @@ impl Scheduler {
     /// # Errors
     /// Returns a typed conflict when the settings snapshot is stale.
     pub async fn update_settings(&self, update: SettingsUpdate) -> Result<(), SchedulerError> {
+        RuntimeSettings::new(&update.timeouts, &update.retry)?;
         match self.store.update_settings(&update).await? {
             CasOutcome::Applied { .. } => {
                 self.transfers.reconfigure(&update.scheduler);
+                self.runtime_settings
+                    .reconfigure(&update.timeouts, &update.retry)?;
+                self.store.notify_change(DurableChange::Settings);
                 Ok(())
             }
             CasOutcome::Conflict => Err(SchedulerError::Conflict),
         }
     }
 
+    pub(crate) async fn settings(&self) -> Result<SettingsRecord, SchedulerError> {
+        self.store.settings().await.map_err(Into::into)
+    }
+
     #[must_use]
     pub const fn transfers(&self) -> &TransferCoordinator {
         &self.transfers
+    }
+
+    #[must_use]
+    pub const fn runtime_settings(&self) -> &RuntimeSettings {
+        &self.runtime_settings
     }
 }

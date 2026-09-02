@@ -73,11 +73,7 @@ impl LifecycleService {
             immediate: next_status == TaskStatus::Cancelled,
         };
         let version = applied(self.store().request_lifecycle_cancellation(&write).await?)?;
-        Ok(CommittedCommand::new(
-            next_status,
-            version,
-            DurableAction::Cancel(action),
-        ))
+        Ok(self.committed(task.id, next_status, version, DurableAction::Cancel(action)))
     }
 
     /// Commits the keyed submission reconciliation result before authorizing cleanup.
@@ -116,11 +112,7 @@ impl LifecycleService {
             evidence,
         };
         let version = applied(self.store().apply_lifecycle_transition(&write).await?)?;
-        Ok(CommittedCommand::new(
-            next_status,
-            version,
-            DurableAction::Cancel(action),
-        ))
+        Ok(self.committed(task.id, next_status, version, DurableAction::Cancel(action)))
     }
 
     /// Commits terminal cancellation after the state-specific cleanup action converges.
@@ -153,10 +145,6 @@ impl LifecycleService {
             evidence: super::TransitionEvidence::None,
         };
         let version = applied(self.store().apply_lifecycle_transition(&write).await?)?;
-        Ok(CommittedCommand::new(
-            next_status,
-            version,
-            DurableAction::None,
-        ))
+        Ok(self.committed(task.id, next_status, version, DurableAction::None))
     }
 }

@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use crate::config::RetryConfig;
+use crate::domain::RetrySettingsDto;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AutomaticRetry {
@@ -53,6 +54,15 @@ impl RetryPolicy {
             initial_seconds: config.initial.as_secs(),
             maximum_seconds: config.maximum.as_secs(),
             max_attempts: config.max_attempts.get(),
+        }
+    }
+
+    #[must_use]
+    pub const fn from_settings(settings: &RetrySettingsDto) -> Self {
+        Self {
+            initial_seconds: settings.initial_seconds,
+            maximum_seconds: settings.maximum_seconds,
+            max_attempts: settings.max_attempts,
         }
     }
 

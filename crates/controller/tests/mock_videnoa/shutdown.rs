@@ -6,6 +6,7 @@ use tempfile::TempDir;
 use videnoa_controller::persistence::{Database, DatabaseOptions, Store};
 use videnoa_controller::recovery::{DrainOutcome, Reconciler, RecoveryConfig, ShutdownCoordinator};
 use videnoa_controller::remote::{PayloadLimits, RemoteTimeouts};
+use videnoa_controller::scheduler::Scheduler;
 
 use super::mock_videnoa::domain::JobStatus;
 use super::mock_videnoa::server::MockVidenoa;
@@ -68,6 +69,7 @@ async fn graceful_shutdown_persists_pause_before_bounded_drain() -> TestResult {
     ))
     .await?;
     let store = Store::new(database);
+    let scheduler = Scheduler::load(store.clone()).await?;
     let coordinator = ShutdownCoordinator::new();
     let now = Utc
         .timestamp_opt(1_788_307_200, 0)
@@ -76,7 +78,7 @@ async fn graceful_shutdown_persists_pause_before_bounded_drain() -> TestResult {
 
     // When: graceful shutdown stops intake and drains durable writes.
     let outcome = coordinator
-        .shutdown(&store, now, Duration::from_secs(5))
+        .shutdown(&scheduler, now, Duration::from_secs(5))
         .await?;
 
     // Then: the durable pause is committed and no new stage work is admitted.

@@ -17,6 +17,8 @@ pub enum SchedulerError {
     Persistence(#[from] PersistenceError),
     #[error("durable reservation failed")]
     Lifecycle(#[from] LifecycleError),
+    #[error("runtime settings are invalid")]
+    ClientConfig(#[from] ClientConfigError),
 }
 
 impl SchedulerError {
@@ -24,7 +26,9 @@ impl SchedulerError {
     pub const fn code(&self) -> SchedulerErrorCode {
         match self {
             Self::Conflict => SchedulerErrorCode::Conflict,
-            Self::Persistence(_) | Self::Lifecycle(_) => SchedulerErrorCode::Internal,
+            Self::Persistence(_) | Self::Lifecycle(_) | Self::ClientConfig(_) => {
+                SchedulerErrorCode::Internal
+            }
         }
     }
 }

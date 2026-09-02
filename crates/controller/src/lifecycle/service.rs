@@ -1,7 +1,9 @@
 use chrono::{DateTime, Utc};
 
-use crate::domain::TaskStatus;
-use crate::persistence::{AttemptRecord, CasOutcome, ReservationOutcome, Store, TaskRecord};
+use crate::domain::{TaskId, TaskStatus};
+use crate::persistence::{
+    AttemptRecord, CasOutcome, DurableChange, ReservationOutcome, Store, TaskRecord,
+};
 
 use super::{
     AdvanceCommand, AttemptCas, CommandKind, CommittedCommand, DurableAction, FailureWrite,
@@ -34,7 +36,8 @@ impl LifecycleService {
     ) -> Result<CommittedCommand, LifecycleError> {
         Lifecycle::destination(TaskStatus::Queued, CommandKind::Reserve)?;
         match self.store.reserve_task(command).await? {
-            ReservationOutcome::Reserved(_) => Ok(CommittedCommand::new(
+            ReservationOutcome::Reserved(_) => Ok(self.committed(
+                command.task_id,
                 TaskStatus::Reserved,
                 command.expected_task_version + 1,
                 DurableAction::None,
@@ -72,7 +75,7 @@ impl LifecycleService {
         };
         let action = command.action();
         let version = applied(self.store.apply_lifecycle_transition(&write).await?)?;
-        Ok(CommittedCommand::new(next_status, version, action))
+        Ok(self.committed(task.id, next_status, version, action))
     }
 
     /// Closes the current lifecycle state and attempt with a typed failure.
@@ -104,11 +107,7 @@ impl LifecycleService {
             occurred_at,
         };
         let version = applied(self.store.fail_lifecycle(&write).await?)?;
-        Ok(CommittedCommand::new(
-            TaskStatus::Failed,
-            version,
-            DurableAction::None,
-        ))
+        Ok(self.committed(task.id, TaskStatus::Failed, version, DurableAction::None))
     }
 
     /// Closes malformed durable recovery state without requiring a usable attempt snapshot.
@@ -135,11 +134,18 @@ impl LifecycleService {
             occurred_at,
         };
         let version = applied(self.store.fail_lifecycle(&write).await?)?;
-        Ok(CommittedCommand::new(
-            TaskStatus::Failed,
-            version,
-            DurableAction::None,
-        ))
+        Ok(self.committed(task.id, TaskStatus::Failed, version, DurableAction::None))
+    }
+
+    pub(super) fn committed(
+        &self,
+        task_id: TaskId,
+        status: TaskStatus,
+        version: u64,
+        action: DurableAction,
+    ) -> CommittedCommand {
+        self.store.notify_change(DurableChange::Task(task_id));
+        CommittedCommand::new(status, version, action)
     }
 }
 

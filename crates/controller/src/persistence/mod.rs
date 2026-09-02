@@ -8,6 +8,7 @@ mod lifecycle_retry;
 mod lifecycle_status;
 mod lifecycle_transition;
 mod models;
+mod readiness;
 mod reservation;
 mod scheduler;
 mod session;
@@ -18,6 +19,7 @@ mod task_query;
 mod task_row;
 mod transfer_retry;
 mod worker;
+mod worker_query;
 mod worker_registry;
 
 pub use database::{Database, DatabaseOptions};
@@ -31,19 +33,64 @@ pub use models::{
     WorkerHealthUpdate, WorkerIdentityConflict, WorkerRecord, WorkerUpdate, WorkerUpdateOutcome,
 };
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum DurableChange {
+    Task(TaskId),
+    Worker(WorkerId),
+    WorkerDeleted,
+    Settings,
+}
+
+#[derive(Clone)]
+pub(crate) struct ChangeObserver(Arc<dyn Fn(DurableChange) + Send + Sync>);
+
+impl ChangeObserver {
+    pub(crate) fn new(observer: impl Fn(DurableChange) + Send + Sync + 'static) -> Self {
+        Self(Arc::new(observer))
+    }
+
+    fn notify(&self, change: DurableChange) {
+        (self.0)(change);
+    }
+}
+
+impl fmt::Debug for ChangeObserver {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ChangeObserver")
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Store {
     database: Database,
+    changes: Arc<OnceLock<ChangeObserver>>,
 }
 
 impl Store {
     #[must_use]
-    pub const fn new(database: Database) -> Self {
-        Self { database }
+    pub fn new(database: Database) -> Self {
+        Self {
+            database,
+            changes: Arc::new(OnceLock::new()),
+        }
     }
 
     #[must_use]
     pub fn database(&self) -> &Database {
         &self.database
     }
+
+    pub(crate) fn observe_changes(&self, observer: ChangeObserver) {
+        let _ = self.changes.set(observer);
+    }
+
+    pub(crate) fn notify_change(&self, change: DurableChange) {
+        if let Some(observer) = self.changes.get() {
+            observer.notify(change);
+        }
+    }
 }
+use std::fmt;
+use std::sync::{Arc, OnceLock};
+
+use crate::domain::{TaskId, WorkerId};

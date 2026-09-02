@@ -42,7 +42,8 @@ impl Store {
     /// # Errors
     /// Returns an error when `SQLite` access or persisted decoding fails.
     pub async fn worker(&self, id: WorkerId) -> Result<Option<WorkerRecord>, PersistenceError> {
-        sqlx::query(WORKER_SELECT)
+        let sql = format!("{WORKER_COLUMNS} WHERE id = ?");
+        sqlx::query(&sql)
             .bind(id.to_string())
             .fetch_optional(self.database.pool())
             .await?
@@ -149,12 +150,13 @@ impl Store {
     }
 }
 
-const WORKER_SELECT: &str = "SELECT id, version, name, api_url, enabled, online, compute_slots,
+pub(super) const WORKER_COLUMNS: &str =
+    "SELECT id, version, name, api_url, enabled, online, compute_slots,
     capabilities_json, last_seen_at_ms, last_assigned_at_ms, health_retry_count,
     next_health_check_at_ms, created_at_ms, updated_at_ms, last_error
-    FROM workers WHERE id = ?";
+    FROM workers";
 
-fn map_worker(row: &sqlx::sqlite::SqliteRow) -> Result<WorkerRecord, PersistenceError> {
+pub(super) fn map_worker(row: &sqlx::sqlite::SqliteRow) -> Result<WorkerRecord, PersistenceError> {
     let api_url_value: String = row.try_get("api_url")?;
     let api_url = WorkerApiUrl::parse(&api_url_value)
         .map_err(|_| super::codec::corrupt("api_url", api_url_value))?;
