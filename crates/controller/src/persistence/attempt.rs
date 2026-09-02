@@ -11,8 +11,7 @@ use super::codec::{
     timestamp,
 };
 use super::models::{
-    AttemptFailureUpdate, AttemptProgressUpdate, AttemptRecord, AttemptRemoteUpdate,
-    AttemptTransition, CasOutcome,
+    AttemptFailureUpdate, AttemptProgressUpdate, AttemptRecord, AttemptRemoteUpdate, CasOutcome,
 };
 use super::{PersistenceError, Store};
 
@@ -73,35 +72,6 @@ impl Store {
         } else {
             Ok(CasOutcome::Conflict)
         }
-    }
-
-    /// # Errors
-    /// Returns an error when `SQLite` access or value encoding fails.
-    pub async fn transition_attempt(
-        &self,
-        transition: &AttemptTransition,
-    ) -> Result<CasOutcome, PersistenceError> {
-        let status = super::codec::task_status(transition.next_status);
-        let occurred_at = timestamp(transition.occurred_at);
-        let result = sqlx::query(
-            "UPDATE task_attempts SET status = ?, version = version + 1, updated_at_ms = ?,
-                started_at_ms = CASE WHEN ? = 'processing' THEN ? ELSE started_at_ms END,
-                completed_at_ms = CASE WHEN ? IN ('completed', 'failed', 'cancelled')
-                    THEN ? ELSE completed_at_ms END
-             WHERE id = ? AND status = ? AND version = ?",
-        )
-        .bind(status)
-        .bind(occurred_at)
-        .bind(status)
-        .bind(occurred_at)
-        .bind(status)
-        .bind(occurred_at)
-        .bind(transition.attempt_id.to_string())
-        .bind(super::codec::task_status(transition.expected_status))
-        .bind(sqlite_u64("expected_version", transition.expected_version)?)
-        .execute(self.database.pool())
-        .await?;
-        Ok(cas(result.rows_affected(), transition.expected_version))
     }
 
     /// # Errors

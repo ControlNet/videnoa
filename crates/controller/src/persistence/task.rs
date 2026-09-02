@@ -1,7 +1,7 @@
 use sqlx::Row;
 
-use super::codec::{encode_json, sqlite_u64, task_source, task_status, timestamp};
-use super::models::{empty_progress, CasOutcome, NewTask, TaskRecord, TaskTransition};
+use super::codec::{encode_json, sqlite_u64, task_source, timestamp};
+use super::models::{empty_progress, NewTask, TaskRecord};
 use super::task_row::{map_task, TASK_COLUMNS};
 use super::{PersistenceError, Store};
 
@@ -27,56 +27,6 @@ impl Store {
             .as_ref()
             .map(map_task)
             .transpose()
-    }
-
-    /// # Errors
-    /// Returns an error when `SQLite` access or value encoding fails.
-    pub async fn transition_task(
-        &self,
-        transition: &TaskTransition,
-    ) -> Result<CasOutcome, PersistenceError> {
-        let occurred_at = timestamp(transition.occurred_at);
-        let result = sqlx::query(
-            "UPDATE tasks SET
-                status = ?, version = version + 1, updated_at_ms = ?,
-                reserved_at_ms = CASE WHEN ? = 'reserved' THEN ? ELSE reserved_at_ms END,
-                upload_started_at_ms = CASE WHEN ? = 'uploading' THEN ? ELSE upload_started_at_ms END,
-                staged_at_ms = CASE WHEN ? = 'staged' THEN ? ELSE staged_at_ms END,
-                submission_started_at_ms = CASE WHEN ? = 'submitting' THEN ? ELSE submission_started_at_ms END,
-                processing_started_at_ms = CASE WHEN ? = 'processing' THEN ? ELSE processing_started_at_ms END,
-                remote_completed_at_ms = CASE WHEN ? = 'remote_completed' THEN ? ELSE remote_completed_at_ms END,
-                download_started_at_ms = CASE WHEN ? = 'downloading' THEN ? ELSE download_started_at_ms END,
-                verified_at_ms = CASE WHEN ? = 'verifying' THEN ? ELSE verified_at_ms END,
-                publishing_started_at_ms = CASE WHEN ? = 'publishing' THEN ? ELSE publishing_started_at_ms END,
-                remote_cleanup_started_at_ms = CASE WHEN ? = 'remote_cleanup' THEN ? ELSE remote_cleanup_started_at_ms END,
-                completed_at_ms = CASE WHEN ? = 'completed' THEN ? ELSE completed_at_ms END
-             WHERE id = ? AND status = ? AND version = ?",
-        )
-        .bind(task_status(transition.next_status))
-        .bind(occurred_at)
-        .bind(task_status(transition.next_status)).bind(occurred_at)
-        .bind(task_status(transition.next_status)).bind(occurred_at)
-        .bind(task_status(transition.next_status)).bind(occurred_at)
-        .bind(task_status(transition.next_status)).bind(occurred_at)
-        .bind(task_status(transition.next_status)).bind(occurred_at)
-        .bind(task_status(transition.next_status)).bind(occurred_at)
-        .bind(task_status(transition.next_status)).bind(occurred_at)
-        .bind(task_status(transition.next_status)).bind(occurred_at)
-        .bind(task_status(transition.next_status)).bind(occurred_at)
-        .bind(task_status(transition.next_status)).bind(occurred_at)
-        .bind(task_status(transition.next_status)).bind(occurred_at)
-        .bind(transition.task_id.to_string())
-        .bind(task_status(transition.expected_status))
-        .bind(sqlite_u64("expected_version", transition.expected_version)?)
-        .execute(self.database.pool())
-        .await?;
-        if result.rows_affected() == 1 {
-            Ok(CasOutcome::Applied {
-                new_version: transition.expected_version + 1,
-            })
-        } else {
-            Ok(CasOutcome::Conflict)
-        }
     }
 
     /// # Errors

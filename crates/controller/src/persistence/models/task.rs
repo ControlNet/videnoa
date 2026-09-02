@@ -67,15 +67,6 @@ pub struct TaskRecord {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct TaskTransition {
-    pub task_id: TaskId,
-    pub expected_status: TaskStatus,
-    pub next_status: TaskStatus,
-    pub expected_version: u64,
-    pub occurred_at: DateTime<Utc>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Reservation {
     pub task_id: TaskId,
     pub expected_task_version: u64,
