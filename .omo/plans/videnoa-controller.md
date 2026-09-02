@@ -280,7 +280,7 @@ Expected: the image starts without GPU flags/libraries; archives have the locked
 
   **Commit:** `feat(controller): reconcile durable work after restart`
 
-- [ ] 11. Implement worker registry, capacity accounting, scheduler priority, prefetch, and pause
+- [x] 11. Implement worker registry, capacity accounting, scheduler priority, prefetch, and pause
 
   **Depends on:** 3, 7, 8, 9, 10
 
