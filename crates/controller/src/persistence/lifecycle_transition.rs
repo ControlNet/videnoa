@@ -179,7 +179,8 @@ async fn update_task_status(
             expected_output_sha256 = CASE WHEN ? = 'verifying' THEN ? ELSE expected_output_sha256 END,
             retry_count = CASE WHEN ? IN ('staged', 'verifying') THEN 0 ELSE retry_count END,
             next_retry_at_ms = CASE WHEN ? IN ('staged', 'verifying') THEN NULL ELSE next_retry_at_ms END
-         WHERE id = ? AND status = ? AND version = ?",
+         WHERE (? != 'uploading' OR (SELECT paused FROM controller_settings WHERE id = 1) = 0)
+           AND id = ? AND status = ? AND version = ?",
     )
     .bind(status)
     .bind(occurred_at)
@@ -209,6 +210,7 @@ async fn update_task_status(
     .bind(expected_sha)
     .bind(status)
     .bind(status)
+    .bind(status)
     .bind(write.task_id.to_string())
     .bind(task_status(write.from))
     .bind(sqlite_u64("task_version", write.task_version)?)
@@ -235,11 +237,11 @@ async fn update_attempt_status(
     .bind(status)
     .bind(occurred_at)
     .bind(status)
-    .bind(status)
-    .bind(status)
     .bind(occurred_at)
     .bind(status)
     .bind(occurred_at)
+    .bind(status)
+    .bind(status)
     .bind(write.attempt.id.to_string())
     .bind(task_status(write.attempt.status))
     .bind(sqlite_u64("attempt_version", write.attempt.version)?)
