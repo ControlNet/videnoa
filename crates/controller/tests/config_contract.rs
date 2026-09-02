@@ -20,7 +20,10 @@ fn complete_config(directory: &TempDir) -> TestResult<String> {
     for path in [&input, &output, &data, &temp] {
         fs::create_dir(path)?;
     }
-    fs::write(&hash, "$argon2id$contract-test-hash")?;
+    fs::write(
+        &hash,
+        "$argon2id$v=19$m=65536,t=2,p=1$c29tZXNhbHQ$CTFhFdXPJO1aFaMaO6Mm5c8y7cJHAph8ArZWb2GRPPc",
+    )?;
     Ok(format!(
         r#"
 [server]
@@ -165,11 +168,29 @@ fn environment_values_override_toml_before_validation() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn malformed_password_hash_is_rejected_during_configuration_load() -> TestResult {
+    // Given: an otherwise valid configuration whose hash file contains plaintext.
+    let directory = TempDir::new()?;
+    let source = complete_config(&directory)?;
+    fs::write(directory.path().join("admin-password.phc"), "plaintext")?;
+
+    // When: configuration validation reads the credential boundary.
+    let error = ControllerConfig::from_toml(&source)
+        .err()
+        .ok_or_else(|| std::io::Error::other("plaintext hash unexpectedly passed validation"))?;
+
+    // Then: startup rejects it as a typed invalid hash rather than deferring failure to login.
+    assert!(matches!(error, ConfigError::InvalidPasswordHash { .. }));
+    Ok(())
+}
+
 fn config_error_code(error: &ConfigError) -> &'static str {
     match error {
         ConfigError::Schema { .. } => "schema",
         ConfigError::InvalidRoot { .. } => "invalid_root",
         ConfigError::MissingPasswordHashFile { .. } => "missing_password_hash_file",
+        ConfigError::InvalidPasswordHash { .. } => "invalid_password_hash",
         ConfigError::ZeroValue { .. } => "zero_value",
         ConfigError::NumericOverflow { .. } => "numeric_overflow",
         ConfigError::InvalidSessionBounds => "invalid_session_bounds",

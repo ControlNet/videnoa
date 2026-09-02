@@ -88,6 +88,8 @@ pub enum ConfigError {
     },
     #[error("password hash file is missing or invalid: {path}")]
     MissingPasswordHashFile { path: PathBuf },
+    #[error("password hash file does not contain an Argon2id PHC string: {path}")]
+    InvalidPasswordHash { path: PathBuf },
     #[error("configuration value `{field}` must be greater than zero")]
     ZeroValue { field: &'static str },
     #[error("configuration value `{field}` ({value}) exceeds maximum {maximum}")]

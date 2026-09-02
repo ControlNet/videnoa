@@ -3,6 +3,8 @@ use std::num::{NonZeroU16, NonZeroU32};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use argon2::password_hash::PasswordHash;
+
 use super::raw::RawControllerConfig;
 use super::{
     AuthConfig, ConfigError, ControllerConfig, PathConfig, RetryConfig, SchedulerConfig,
@@ -116,6 +118,17 @@ fn validate_hash_file(path: &Path) -> Result<(), ConfigError> {
         .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink());
     if !valid {
         return Err(ConfigError::MissingPasswordHashFile {
+            path: path.to_path_buf(),
+        });
+    }
+    let encoded = fs::read_to_string(path).map_err(|_| ConfigError::MissingPasswordHashFile {
+        path: path.to_path_buf(),
+    })?;
+    let hash = PasswordHash::new(encoded.trim()).map_err(|_| ConfigError::InvalidPasswordHash {
+        path: path.to_path_buf(),
+    })?;
+    if hash.algorithm.as_str() != "argon2id" {
+        return Err(ConfigError::InvalidPasswordHash {
             path: path.to_path_buf(),
         });
     }

@@ -15,10 +15,13 @@ use axum::Router;
 use percent_encoding::percent_decode_str;
 
 mod asset_path;
+pub mod auth;
 pub mod config;
 pub mod domain;
+pub mod paths;
 pub mod persistence;
 use asset_path::ExactAssetPath;
+pub use auth::{authenticated_app_router, serve_authenticated};
 
 #[cfg(not(debug_assertions))]
 use rust_embed::RustEmbed;

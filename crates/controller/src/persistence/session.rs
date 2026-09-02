@@ -83,6 +83,23 @@ impl Store {
     }
 
     /// # Errors
+    /// Returns an error when `SQLite` cannot rotate the session CSRF digest.
+    pub async fn update_session_csrf(
+        &self,
+        id: SessionId,
+        csrf_digest: AuthDigest,
+    ) -> Result<bool, PersistenceError> {
+        let result = sqlx::query(
+            "UPDATE auth_sessions SET csrf_digest = ? WHERE id = ? AND revoked_at_ms IS NULL",
+        )
+        .bind(csrf_digest.as_bytes().as_slice())
+        .bind(id.to_string())
+        .execute(self.database.pool())
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    /// # Errors
     /// Returns an error when `SQLite` cannot purge expired sessions.
     pub async fn purge_expired_sessions(
         &self,

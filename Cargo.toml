@@ -16,6 +16,10 @@ serde_json = "1"
 toml = "0.8"
 petgraph = { version = "0.8", features = ["serde-1"] }
 anyhow = "1"
+argon2 = "0.5.3"
+base64 = "0.22.1"
+cap-fs-ext = "=3.4.2"
+cap-std = "=3.4.2"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 tracing-appender = "0.2"
@@ -30,10 +34,13 @@ tower = { version = "0.5", features = ["util"] }
 chrono = { version = "0.4", features = ["serde"] }
 tokio-util = "0.7"
 reqwest = { version = "0.12", features = ["json", "blocking"] }
+rand_core = { version = "0.6.4", features = ["getrandom"] }
 rayon = "1"
+rpassword = "=7.3.1"
 url = { version = "2", features = ["serde"] }
 rust-embed = "=8.11.0"
 mime_guess = "2"
 percent-encoding = "2"
 figment = { version = "0.10", features = ["env", "toml"] }
 sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
+subtle = "2.6.1"
