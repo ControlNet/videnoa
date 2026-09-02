@@ -46,6 +46,21 @@ impl InputIdentity {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InputContentIdentity([u8; 16]);
+
+impl InputContentIdentity {
+    #[must_use]
+    pub const fn new(bytes: [u8; 16]) -> Self {
+        Self(bytes)
+    }
+
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 16] {
+        &self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CasOutcome {
     Applied { new_version: u64 },
     Conflict,

@@ -9,6 +9,7 @@ use std::time::Duration;
 use axum::body::{to_bytes, Body};
 use axum::extract::connect_info::ConnectInfo;
 use axum::http::{header, Request, StatusCode};
+use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
 use futures_util::StreamExt;
@@ -54,6 +55,19 @@ struct RetryRemote {
     job_deletes: Arc<AtomicUsize>,
     workspace_deletes: Arc<AtomicUsize>,
     server: tokio::task::JoinHandle<Result<(), std::io::Error>>,
+}
+
+#[derive(Clone, Copy)]
+enum RetryEvidenceFault {
+    WrongJobId,
+    WrongWorkflow,
+    WrongInput,
+    WrongOutput,
+    MissingParams,
+    NullParams,
+    Nonterminal,
+    NotFound,
+    Unavailable,
 }
 
 impl Fixture {
@@ -169,6 +183,91 @@ async fn operational_routes_require_authentication() -> TestResult {
             .await?;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{uri}");
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn status_counts_materialize_every_status_for_empty_database() -> TestResult {
+    // Given: a fresh Controller database with no tasks.
+    let fixture = Fixture::new().await?;
+
+    // When: the aggregate status endpoint is requested.
+    let response = fixture
+        .router
+        .clone()
+        .oneshot(Fixture::request("GET", "/api/status-counts", None)?)
+        .await?;
+
+    // Then: every status is present in lifecycle order with a zero count.
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        json_body(response).await?,
+        json!({
+            "items": [
+                {"status": "queued", "count": 0},
+                {"status": "reserved", "count": 0},
+                {"status": "uploading", "count": 0},
+                {"status": "staged", "count": 0},
+                {"status": "submitting", "count": 0},
+                {"status": "processing", "count": 0},
+                {"status": "remote_completed", "count": 0},
+                {"status": "downloading", "count": 0},
+                {"status": "verifying", "count": 0},
+                {"status": "publishing", "count": 0},
+                {"status": "remote_cleanup", "count": 0},
+                {"status": "completed", "count": 0},
+                {"status": "failed", "count": 0},
+                {"status": "cancelled", "count": 0}
+            ],
+            "total": 0
+        })
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn status_counts_zero_fill_partially_populated_database() -> TestResult {
+    // Given: one queued task and one task represented as processing.
+    let fixture = Fixture::new().await?;
+    for key in ["task-14-count-queued", "task-14-count-processing"] {
+        let task = json!({
+            "input_path": fixture.input, "output_path": fixture.output,
+            "workflow": "anime-upscale", "priority": 0, "source": "api", "source_reference": null
+        });
+        let mut request = Fixture::request("POST", "/api/tasks", Some(&task))?;
+        request
+            .headers_mut()
+            .insert("idempotency-key", key.parse()?);
+        assert_eq!(
+            fixture.router.clone().oneshot(request).await?.status(),
+            StatusCode::CREATED
+        );
+    }
+    sqlx::query("UPDATE tasks SET status = 'processing' WHERE id = (SELECT id FROM tasks ORDER BY id LIMIT 1)")
+        .execute(fixture.store.database().pool())
+        .await?;
+
+    // When: the aggregate status endpoint is requested.
+    let response = fixture
+        .router
+        .clone()
+        .oneshot(Fixture::request("GET", "/api/status-counts", None)?)
+        .await?;
+
+    // Then: sparse persisted rows are projected onto every deterministic category.
+    assert_eq!(response.status(), StatusCode::OK);
+    let counts = json_body(response).await?;
+    assert_eq!(counts["items"].as_array().map(Vec::len), Some(14));
+    assert_eq!(counts["total"], 2);
+    assert_eq!(counts["items"][0], json!({"status": "queued", "count": 1}));
+    assert_eq!(
+        counts["items"][5],
+        json!({"status": "processing", "count": 1})
+    );
+    assert!(counts["items"].as_array().is_some_and(|items| items
+        .iter()
+        .enumerate()
+        .all(|(index, item)| index == 0 || index == 5 || item["count"] == 0)));
     Ok(())
 }
 
@@ -696,7 +795,7 @@ async fn readiness_reports_invalid_authentication_material() -> TestResult {
 async fn processing_retry_verifies_terminal_remote_cleanup() -> TestResult {
     let fixture = Fixture::new().await?;
     let remote_job_id = RemoteJobId::random();
-    let remote = retry_remote(remote_job_id).await?;
+    let remote = retry_remote(Ok(retry_job(remote_job_id))).await?;
     let worker_id = create_online_retry_worker(&fixture, remote.address).await?;
     let task_id = create_processing_failure(&fixture, worker_id, remote_job_id).await?;
     let failed = fixture.store.task(task_id).await?.ok_or("task missing")?;
@@ -732,32 +831,286 @@ async fn processing_retry_verifies_terminal_remote_cleanup() -> TestResult {
     Ok(())
 }
 
-async fn retry_remote(remote_job_id: RemoteJobId) -> TestResult<RetryRemote> {
+#[tokio::test]
+async fn cancellation_publishes_exactly_one_task_delta() -> TestResult {
+    // Given: a queued task and an SSE subscriber caught up to current state.
+    let fixture = Fixture::new().await?;
+    let task_id = create_api_task(&fixture, "task-14-cancel-event").await?;
+    let events = fixture
+        .router
+        .clone()
+        .oneshot(Fixture::request("GET", "/api/events", None)?)
+        .await?;
+    let mut stream = events.into_body().into_data_stream();
+    let _initial = stream.next().await.ok_or("missing initial refetch")??;
+
+    // When: cancellation is committed through the HTTP API.
+    let cancelled = fixture
+        .router
+        .clone()
+        .oneshot(Fixture::request(
+            "POST",
+            &format!("/api/tasks/{task_id}/cancel"),
+            Some(&json!({"version": 0})),
+        )?)
+        .await?;
+
+    // Then: the subscriber receives one task delta and no duplicate publication.
+    assert_eq!(cancelled.status(), StatusCode::OK);
+    let event = stream.next().await.ok_or("missing cancellation delta")??;
+    assert!(String::from_utf8_lossy(&event).contains("event: task_updated"));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), stream.next())
+            .await
+            .is_err()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn processing_retry_publishes_exactly_one_task_delta() -> TestResult {
+    // Given: a retryable processing failure and an SSE subscriber caught up to current state.
+    let fixture = Fixture::new().await?;
+    let remote_job_id = RemoteJobId::random();
+    let remote = retry_remote(Ok(retry_job(remote_job_id))).await?;
+    let worker_id = create_online_retry_worker(&fixture, remote.address).await?;
+    let task_id = create_processing_failure(&fixture, worker_id, remote_job_id).await?;
+    let failed = fixture.store.task(task_id).await?.ok_or("task missing")?;
+    let events = fixture
+        .router
+        .clone()
+        .oneshot(Fixture::request("GET", "/api/events", None)?)
+        .await?;
+    let mut stream = events.into_body().into_data_stream();
+    let _initial = stream.next().await.ok_or("missing initial refetch")??;
+
+    // When: a replacement processing attempt is committed through the HTTP API.
+    let retried = fixture
+        .router
+        .clone()
+        .oneshot(Fixture::request(
+            "POST",
+            &format!("/api/tasks/{task_id}/retry"),
+            Some(&json!({"version": failed.version})),
+        )?)
+        .await?;
+
+    // Then: the subscriber receives one task delta and no duplicate publication.
+    assert_eq!(retried.status(), StatusCode::OK);
+    let event = stream.next().await.ok_or("missing retry delta")??;
+    assert!(String::from_utf8_lossy(&event).contains("event: task_updated"));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), stream.next())
+            .await
+            .is_err()
+    );
+    remote.server.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancellation_response_does_not_depend_on_post_commit_reload() -> TestResult {
+    // Given: a queued task whose row becomes unreadable only after an update commits.
+    let fixture = Fixture::new().await?;
+    let task_id = create_api_task(&fixture, "task-14-cancel-post-commit").await?;
+    install_post_update_corruption(&fixture).await?;
+
+    // When: cancellation commits successfully.
+    let cancelled = fixture
+        .router
+        .clone()
+        .oneshot(Fixture::request(
+            "POST",
+            &format!("/api/tasks/{task_id}/cancel"),
+            Some(&json!({"version": 0})),
+        )?)
+        .await?;
+
+    // Then: the response reports committed success without a fallible reload.
+    assert_eq!(cancelled.status(), StatusCode::OK);
+    assert_eq!(json_body(cancelled).await?["status"], "cancelled");
+    Ok(())
+}
+
+#[tokio::test]
+async fn processing_retry_response_does_not_depend_on_post_commit_reload() -> TestResult {
+    // Given: a retryable processing failure whose row becomes unreadable after retry commits.
+    let fixture = Fixture::new().await?;
+    let remote_job_id = RemoteJobId::random();
+    let remote = retry_remote(Ok(retry_job(remote_job_id))).await?;
+    let worker_id = create_online_retry_worker(&fixture, remote.address).await?;
+    let task_id = create_processing_failure(&fixture, worker_id, remote_job_id).await?;
+    let failed = fixture.store.task(task_id).await?.ok_or("task missing")?;
+    install_post_update_corruption(&fixture).await?;
+
+    // When: the replacement attempt commits successfully.
+    let retried = fixture
+        .router
+        .clone()
+        .oneshot(Fixture::request(
+            "POST",
+            &format!("/api/tasks/{task_id}/retry"),
+            Some(&json!({"version": failed.version})),
+        )?)
+        .await?;
+
+    // Then: the response reports committed success without a fallible reload.
+    assert_eq!(retried.status(), StatusCode::OK);
+    assert_eq!(json_body(retried).await?["status"], "reserved");
+    remote.server.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn processing_retry_rejects_wrong_remote_job_id() -> TestResult {
+    assert_processing_retry_rejected(RetryEvidenceFault::WrongJobId).await
+}
+
+#[tokio::test]
+async fn processing_retry_rejects_wrong_remote_workflow() -> TestResult {
+    assert_processing_retry_rejected(RetryEvidenceFault::WrongWorkflow).await
+}
+
+#[tokio::test]
+async fn processing_retry_rejects_wrong_remote_input() -> TestResult {
+    assert_processing_retry_rejected(RetryEvidenceFault::WrongInput).await
+}
+
+#[tokio::test]
+async fn processing_retry_rejects_wrong_remote_output() -> TestResult {
+    assert_processing_retry_rejected(RetryEvidenceFault::WrongOutput).await
+}
+
+#[tokio::test]
+async fn processing_retry_rejects_missing_remote_params() -> TestResult {
+    assert_processing_retry_rejected(RetryEvidenceFault::MissingParams).await
+}
+
+#[tokio::test]
+async fn processing_retry_rejects_null_remote_params() -> TestResult {
+    assert_processing_retry_rejected(RetryEvidenceFault::NullParams).await
+}
+
+#[tokio::test]
+async fn processing_retry_rejects_nonterminal_remote_job() -> TestResult {
+    assert_processing_retry_rejected(RetryEvidenceFault::Nonterminal).await
+}
+
+#[tokio::test]
+async fn processing_retry_rejects_missing_remote_job() -> TestResult {
+    assert_processing_retry_rejected(RetryEvidenceFault::NotFound).await
+}
+
+#[tokio::test]
+async fn processing_retry_reports_unavailable_remote_worker() -> TestResult {
+    assert_processing_retry_rejected(RetryEvidenceFault::Unavailable).await
+}
+
+fn retry_job(remote_job_id: RemoteJobId) -> Value {
+    json!({
+        "id": remote_job_id,
+        "status": "cancelled",
+        "created_at": "2026-09-03T00:00:00Z",
+        "started_at": "2026-09-03T00:00:01Z",
+        "completed_at": "2026-09-03T00:00:02Z",
+        "progress": null,
+        "error": null,
+        "workflow_name": "anime-upscale",
+        "workflow_source": "test",
+        "params": {"input": "task/input.mkv", "output": "task/output.mp4"},
+        "rerun_of_job_id": null,
+        "duration_ms": 1000
+    })
+}
+
+async fn assert_processing_retry_rejected(fault: RetryEvidenceFault) -> TestResult {
+    // Given: durable processing evidence and a contradictory, incomplete, or unavailable remote.
+    let fixture = Fixture::new().await?;
+    let remote_job_id = RemoteJobId::random();
+    let mut job = retry_job(remote_job_id);
+    let (response, expected_status, expected_code) = match fault {
+        RetryEvidenceFault::WrongJobId => {
+            job["id"] = json!(RemoteJobId::random());
+            (Ok(job), StatusCode::CONFLICT, "remote_state_ambiguous")
+        }
+        RetryEvidenceFault::WrongWorkflow => {
+            job["workflow_name"] = json!("other-workflow");
+            (Ok(job), StatusCode::CONFLICT, "remote_state_ambiguous")
+        }
+        RetryEvidenceFault::WrongInput => {
+            job["params"]["input"] = json!("other/input.mkv");
+            (Ok(job), StatusCode::CONFLICT, "remote_state_ambiguous")
+        }
+        RetryEvidenceFault::WrongOutput => {
+            job["params"]["output"] = json!("other/output.mp4");
+            (Ok(job), StatusCode::CONFLICT, "remote_state_ambiguous")
+        }
+        RetryEvidenceFault::MissingParams => {
+            job.as_object_mut()
+                .ok_or("job object missing")?
+                .remove("params");
+            (Ok(job), StatusCode::CONFLICT, "remote_state_ambiguous")
+        }
+        RetryEvidenceFault::NullParams => {
+            job["params"] = Value::Null;
+            (Ok(job), StatusCode::CONFLICT, "remote_state_ambiguous")
+        }
+        RetryEvidenceFault::Nonterminal => {
+            job["status"] = json!("running");
+            (Ok(job), StatusCode::CONFLICT, "conflict")
+        }
+        RetryEvidenceFault::NotFound => (
+            Err(StatusCode::NOT_FOUND),
+            StatusCode::CONFLICT,
+            "remote_state_ambiguous",
+        ),
+        RetryEvidenceFault::Unavailable => (
+            Err(StatusCode::SERVICE_UNAVAILABLE),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+        ),
+    };
+    let remote = retry_remote(response).await?;
+    let worker_id = create_online_retry_worker(&fixture, remote.address).await?;
+    let task_id = create_processing_failure(&fixture, worker_id, remote_job_id).await?;
+    let failed = fixture.store.task(task_id).await?.ok_or("task missing")?;
+
+    // When: retry is requested for the failed processing attempt.
+    let retry = fixture
+        .router
+        .clone()
+        .oneshot(Fixture::request(
+            "POST",
+            &format!("/api/tasks/{task_id}/retry"),
+            Some(&json!({"version": failed.version})),
+        )?)
+        .await?;
+
+    // Then: cleanup and replacement attempt creation do not occur.
+    assert_eq!(retry.status(), expected_status);
+    assert_eq!(json_body(retry).await?["error"]["code"], expected_code);
+    assert_eq!(remote.workspace_deletes.load(Ordering::SeqCst), 0);
+    assert_eq!(remote.job_deletes.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.store.task_attempts(task_id, 10).await?.len(), 1);
+    remote.server.abort();
+    Ok(())
+}
+
+async fn retry_remote(response: Result<Value, StatusCode>) -> TestResult<RetryRemote> {
     let job_deletes = Arc::new(AtomicUsize::new(0));
     let job_delete_count = Arc::clone(&job_deletes);
     let workspace_deletes = Arc::new(AtomicUsize::new(0));
     let workspace_delete_count = Arc::clone(&workspace_deletes);
-    let remote_job = remote_job_id.to_string();
     let app = Router::new()
         .route(
             "/api/jobs/{id}",
             get(move || {
-                let remote_job = remote_job.clone();
+                let response = response.clone();
                 async move {
-                    Json(json!({
-                        "id": remote_job,
-                        "status": "cancelled",
-                        "created_at": "2026-09-03T00:00:00Z",
-                        "started_at": "2026-09-03T00:00:01Z",
-                        "completed_at": "2026-09-03T00:00:02Z",
-                        "progress": null,
-                        "error": null,
-                        "workflow_name": "anime-upscale",
-                        "workflow_source": "test",
-                        "params": null,
-                        "rerun_of_job_id": null,
-                        "duration_ms": 1000
-                    }))
+                    match response {
+                        Ok(job) => Json(job).into_response(),
+                        Err(status) => status.into_response(),
+                    }
                 }
             })
             .delete(move || async move {
@@ -781,6 +1134,34 @@ async fn retry_remote(remote_job_id: RemoteJobId) -> TestResult<RetryRemote> {
         workspace_deletes,
         server,
     })
+}
+
+async fn create_api_task(fixture: &Fixture, idempotency_key: &str) -> TestResult<TaskId> {
+    let task = json!({
+        "input_path": fixture.input, "output_path": fixture.output,
+        "workflow": "anime-upscale", "priority": 0, "source": "api", "source_reference": null
+    });
+    let mut request = Fixture::request("POST", "/api/tasks", Some(&task))?;
+    request
+        .headers_mut()
+        .insert("idempotency-key", idempotency_key.parse()?);
+    let created = fixture.router.clone().oneshot(request).await?;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    Ok(json_body(created).await?["id"]
+        .as_str()
+        .ok_or("task id missing")?
+        .parse()?)
+}
+
+async fn install_post_update_corruption(fixture: &Fixture) -> TestResult {
+    sqlx::query(
+        "CREATE TRIGGER task14_corrupt_progress AFTER UPDATE ON tasks
+         WHEN NEW.progress_json != '{\"percent\":0,\"unexpected\":true}'
+         BEGIN UPDATE tasks SET progress_json = '{\"percent\":0,\"unexpected\":true}' WHERE id = NEW.id; END",
+    )
+    .execute(fixture.store.database().pool())
+    .await?;
+    Ok(())
 }
 
 async fn create_online_retry_worker(

@@ -324,7 +324,7 @@ Expected: the image starts without GPU flags/libraries; archives have the locked
 
 ### Wave 3 — Operations API and dense GUI
 
-- [ ] 14. Expose worker, settings, lifecycle-control, readiness, and SSE APIs
+- [x] 14. Expose worker, settings, lifecycle-control, readiness, and SSE APIs
 
   **Depends on:** 4, 7, 9, 10, 11, 13
 

@@ -3,7 +3,8 @@ Date: 2026-09-03
 
 Focused command:
 - cargo test -p videnoa-controller --test task14
-Result: 13 passed; 0 failed.
+Failing-first result: 12 intended failures; 16 passing controls.
+Green result: 28 passed; 0 failed.
 
 Verified failure contracts:
 - Worker, settings, status-count, and SSE routes reject anonymous requests.
@@ -21,4 +22,13 @@ Verified failure contracts:
 
 Processing retry failures:
 - Nonterminal remote processing returns typed 409 without cleanup or retry.
-- Remote transport/server failures map to typed unavailable responses; contradictory or missing durable identity remains ambiguous and cannot create a new attempt.
+- Missing remote jobs return typed remote-state ambiguity without cleanup or retry.
+- Remote transport/server failures map to typed unavailable responses without cleanup or retry.
+- Wrong job ID, workflow, input path, or output path returns typed remote-state ambiguity without cleanup or retry.
+- Missing or null remote params returns typed remote-state ambiguity without cleanup or retry.
+- Every rejected processing retry preserves the single durable attempt and performs no workspace or job deletion.
+
+Publication and response failures:
+- Before the fix, cancel and processing retry each emitted two `task_updated` deltas because the handler duplicated the lifecycle notification.
+- Before the fix, a post-commit task decode failure converted committed cancel/retry mutations into HTTP 500.
+- Toggle proof restored the post-commit read and reproduced both HTTP 500 responses; removing it restored HTTP 200.

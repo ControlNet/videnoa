@@ -152,3 +152,14 @@
 - Initial SSE publication covered HTTP mutations only and reset authentication timing after every event. A store-scoped durable-change observer plus passive interval revalidation closes both gaps.
 - Final review found processing retry deleted job history instead of the remote task workspace and returned the old attempt ID. The route now deletes `/api/files/{task_id}` before creating cleanup evidence and returns the newly committed attempt identity.
 - Recovery worker-health and shutdown settings writes bypassed notifying service boundaries. Both now use `WorkerRegistry` or `Scheduler`, and scheduler runtime settings are validated before the durable CAS.
+
+## 2026-09-03 Task 12 Input Identity Regression
+
+- Same-size remove-and-recreate could reuse the exact device, inode, length, and nanosecond mtime, so metadata-only upload admission staged changed bytes and issued one PUT. New tasks now persist a separate truncated SHA-256 content identity while rooted reopen still checks platform metadata before and after hashing; migrated legacy rows retain nullable metadata-only admission.
+- Rust 1.83 tests pass, but strict Clippy on that older toolchain remains blocked by 140+ pre-existing pedantic diagnostics in untouched modules. Current-toolchain strict Clippy passes.
+
+## 2026-09-03 Task 14 Oracle Blockers
+
+- Processing retry accepted terminal jobs with contradictory or absent identity fields, then deleted the workspace and created a replacement attempt. It now reuses the recovery identity predicate before any cleanup.
+- Status counts exposed sparse SQL groups directly. The API now returns all fourteen statuses in deterministic lifecycle order, including zero counts.
+- Cancel/retry handlers duplicated lifecycle SSE publication and reloaded the task after commit, allowing publication/read failure to turn durable success into HTTP 500. The redundant handler path was removed.

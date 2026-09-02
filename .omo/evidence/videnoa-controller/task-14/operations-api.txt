@@ -13,18 +13,21 @@ Commands:
 Results:
 - Controller build passed.
 - Strict formatting and Clippy passed.
-- All 13 Task 14 tests passed.
+- All 28 Task 14 tests passed.
 - The full Controller test suite passed.
+- The full Controller test suite passed on Rust 1.83.
 - Changed production files have no LSP diagnostics.
 
 Observed live production surface:
 - Anonymous `GET /api/readiness` returned 401.
 - Authenticated `GET /api/readiness` returned 200 with status `ready` and three checks.
-- Authenticated `GET /api/status-counts` returned an empty durable snapshot with total 0 on a fresh database.
+- Authenticated `GET /api/status-counts` returned all fourteen lifecycle statuses in deterministic order with zero counts and total 0 on a fresh database.
 - Authenticated `GET /api/events` immediately emitted `event: refetch`.
 - Authenticated `POST /api/workers` returned 201 with version 0.
 - The connected SSE client received `event: worker_updated` after the durable worker create.
 - Authenticated `PUT /api/workers/{id}` returned version 1.
 - Scheduler reservation, direct scheduler settings, and worker-health service mutations emitted background deltas in integration tests.
 - A terminal processing retry queried remote status, deleted `/api/files/{task_id}`, created a fresh reserved attempt, and returned that new attempt ID.
+- Cancel and processing retry each publish exactly one durable `task_updated` SSE delta.
+- Cancel and processing retry return committed success without a fallible post-commit task reload.
 - All touched production Rust modules are below 250 nonblank, non-comment lines.

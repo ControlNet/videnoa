@@ -9,8 +9,8 @@ use videnoa_controller::domain::{
     WorkerId, WorkerName, WorkflowKind, WorkflowName, WorkflowSummary,
 };
 use videnoa_controller::persistence::{
-    Database, DatabaseOptions, InputIdentity, NewTask, NewWorker, Store, WorkerHealthUpdate,
-    WorkerRecord,
+    Database, DatabaseOptions, InputContentIdentity, InputIdentity, NewTask, NewWorker, Store,
+    WorkerHealthUpdate, WorkerRecord,
 };
 use videnoa_controller::workers::WorkerRegistry;
 
@@ -138,6 +138,7 @@ pub fn task(id: TaskId, workflow: &str, priority: i32, created_at: DateTime<Utc>
         input_size: 4_096,
         input_mtime: created_at,
         input_identity: InputIdentity::new([1; 16]),
+        input_content_identity: InputContentIdentity::new([2; 16]),
         created_at,
     }
 }

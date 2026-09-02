@@ -4,8 +4,7 @@ use axum::Json;
 use chrono::Utc;
 
 use crate::domain::{
-    AttemptId, CancelTaskResponse, RetryTaskResponse, SseEvent, SseEventId, SubmissionKey,
-    TaskActionRequest, TaskId,
+    AttemptId, CancelTaskResponse, RetryTaskResponse, SubmissionKey, TaskActionRequest, TaskId,
 };
 use crate::lifecycle::{
     Lifecycle, ProcessingRetryCommand, RemoteTerminalStatus, RetryMode, TerminalRemoteEvidence,
@@ -36,7 +35,6 @@ pub(super) async fn cancel(
         .request_cancellation(&task, attempt.as_ref(), requested_at)
         .await
         .map_err(|error| OperationsError::from_lifecycle(&error))?;
-    publish_task(&state, id).await?;
     Ok(Json(CancelTaskResponse {
         task_id: id,
         status: committed.status(),
@@ -74,7 +72,6 @@ pub(super) async fn retry(
         ),
         RetryMode::NewProcessingAttempt => processing_retry(&state, &task, &attempt).await?,
     };
-    publish_task(&state, id).await?;
     Ok(Json(RetryTaskResponse {
         task_id: id,
         attempt_id,
@@ -111,6 +108,9 @@ async fn processing_retry(
         .job(remote_job_id)
         .await
         .map_err(|error| OperationsError::from_remote(&error))?;
+    if !crate::recovery::remote_job_identity_matches(task, attempt, &job) {
+        return Err(OperationsError::RemoteStateAmbiguous);
+    }
     let terminal = match job.status {
         JobStatus::Completed => RemoteTerminalStatus::Completed,
         JobStatus::Failed => RemoteTerminalStatus::Failed,
@@ -165,13 +165,4 @@ fn require_version(actual: u64, expected: u64) -> Result<(), OperationsError> {
     } else {
         Err(OperationsError::Conflict("task changed since it was read"))
     }
-}
-
-async fn publish_task(state: &OperationsState, id: TaskId) -> Result<(), OperationsError> {
-    let task = task(state, id).await?;
-    state.events.publish(SseEvent::TaskUpdated {
-        event_id: SseEventId::random(),
-        task: crate::tasks::mapping::task(task),
-    });
-    Ok(())
 }

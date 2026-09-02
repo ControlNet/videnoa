@@ -42,6 +42,29 @@ async fn upload_persists_exact_opaque_paths_after_exact_stat() -> TestResult {
 }
 
 #[tokio::test]
+async fn legacy_input_without_content_identity_preserves_metadata_admission() -> TestResult {
+    // Given: a pre-migration reserved task whose content identity is absent.
+    let server = MockVidenoa::start().await?;
+    let fixture = Fixture::new(&server, 1, 1).await?;
+    let prepared = fixture.reserved_task(vec![4_u8; 12_000]).await?;
+    sqlx::query("UPDATE tasks SET input_content_identity = NULL WHERE id = ?")
+        .bind(prepared.task_id.to_string())
+        .execute(fixture.store.database().pool())
+        .await?;
+
+    // When: upload admission evaluates the legacy durable snapshot.
+    let outcome = fixture
+        .executor()?
+        .upload(prepared.task_id, fixture.now, zero_jitter()?)
+        .await?;
+
+    // Then: unchanged legacy work retains its metadata-based upload behavior.
+    assert!(matches!(outcome, UploadOutcome::Staged(_)));
+    assert_eq!(server.counters().await.get(Route::Upload), 1);
+    Ok(())
+}
+
+#[tokio::test]
 async fn upload_mismatch_deletes_only_owned_partial_and_retries_from_zero() -> TestResult {
     // Given: an uploading task whose owned remote target contains the wrong length.
     let server = MockVidenoa::start().await?;

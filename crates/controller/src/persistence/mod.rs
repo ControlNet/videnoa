@@ -26,11 +26,12 @@ pub use database::{Database, DatabaseOptions};
 pub use error::PersistenceError;
 pub use models::{
     AttemptFailureUpdate, AttemptProgressUpdate, AttemptRecord, AttemptRemoteUpdate, AuthDigest,
-    CasOutcome, IdempotencyRecord, InputIdentity, NewSession, NewTask, NewWorker, PageResult,
-    PublicationUpdate, Reservation, ReservationOutcome, SchedulerCandidate, SessionRecord,
-    SettingsRecord, SettingsUpdate, Sha256Digest, TaskFailureUpdate, TaskIngressOutcome,
-    TaskProgressUpdate, TaskRecord, TaskRetryUpdate, UploadCandidateRecord, WorkerDeleteOutcome,
-    WorkerHealthUpdate, WorkerIdentityConflict, WorkerRecord, WorkerUpdate, WorkerUpdateOutcome,
+    CasOutcome, IdempotencyRecord, InputContentIdentity, InputIdentity, NewSession, NewTask,
+    NewWorker, PageResult, PublicationUpdate, Reservation, ReservationOutcome, SchedulerCandidate,
+    SessionRecord, SettingsRecord, SettingsUpdate, Sha256Digest, TaskFailureUpdate,
+    TaskIngressOutcome, TaskProgressUpdate, TaskRecord, TaskRetryUpdate, UploadCandidateRecord,
+    WorkerDeleteOutcome, WorkerHealthUpdate, WorkerIdentityConflict, WorkerRecord, WorkerUpdate,
+    WorkerUpdateOutcome,
 };
 
 #[derive(Clone, Copy, Debug)]
