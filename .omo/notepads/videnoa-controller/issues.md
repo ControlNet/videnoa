@@ -89,3 +89,7 @@
 
 - The original mock incorrectly allowed extensionless preset IDs to resolve through the saved-workflow interface endpoint, masking a production contract mismatch. Production-shaped slug and UUID fixtures reproduced both presets as incompatible before the fix.
 - The mock and production clients now consume typed embedded preset interfaces, while real-TCP journal assertions prevent future synthetic preset interface requests.
+
+## 2026-09-02 Task 9
+
+- Rust 1.83 builds and all controller tests pass. An extra strict Clippy run on that older toolchain enables lint-version diagnostics across pre-existing modules; the required active-toolchain strict Clippy command passes cleanly.
