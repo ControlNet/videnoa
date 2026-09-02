@@ -175,8 +175,16 @@ impl Fixture {
         if status == TaskStatus::Verifying {
             return Ok(StateFixture { task_id });
         }
-        self.advance(task_id, attempt_id, AdvanceCommand::FinishVerification)
-            .await?;
+        self.advance(
+            task_id,
+            attempt_id,
+            AdvanceCommand::FinishVerification(
+                videnoa_controller::lifecycle::PublicationIntent::new(
+                    ".videnoa-recovery-support.staging",
+                ),
+            ),
+        )
+        .await?;
         if status == TaskStatus::Publishing {
             return Ok(StateFixture { task_id });
         }
