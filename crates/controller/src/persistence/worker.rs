@@ -6,7 +6,9 @@ use super::codec::{
     boolean, decode_json, encode_json, parse_brand, parse_optional_timestamp, parse_timestamp,
     rust_u32, rust_u64, sqlite_u64, timestamp,
 };
-use super::models::{CasOutcome, NewWorker, WorkerHealthUpdate, WorkerRecord, WorkerUpdate};
+use super::models::{
+    CasOutcome, NewWorker, WorkerHealthUpdate, WorkerRecord, WorkerUpdate, WorkerUpdateOutcome,
+};
 use super::{PersistenceError, Store};
 
 impl Store {
@@ -54,11 +56,16 @@ impl Store {
     pub async fn update_worker(
         &self,
         update: &WorkerUpdate,
-    ) -> Result<CasOutcome, PersistenceError> {
-        let result = sqlx::query(
+    ) -> Result<WorkerUpdateOutcome, PersistenceError> {
+        let mut transaction = self.database.pool().begin().await?;
+        let updated_version: Option<i64> = sqlx::query_scalar(
             "UPDATE workers SET name = ?, api_url = ?, enabled = ?, compute_slots = ?,
                 version = version + 1, updated_at_ms = ?
-             WHERE id = ? AND version = ?",
+             WHERE id = ? AND version = ?
+               AND (SELECT COUNT(*) FROM tasks assigned
+                    WHERE assigned.worker_id = workers.id
+                      AND assigned.status NOT IN ('completed', 'failed', 'cancelled')) <= ?
+             RETURNING version",
         )
         .bind(update.name.as_str())
         .bind(update.api_url.as_url().as_str())
@@ -67,9 +74,37 @@ impl Store {
         .bind(timestamp(update.updated_at))
         .bind(update.id.to_string())
         .bind(sqlite_u64("expected_version", update.expected_version)?)
-        .execute(self.database.pool())
+        .bind(i64::from(update.compute_slots.get()))
+        .fetch_optional(&mut *transaction)
         .await?;
-        Ok(cas(result.rows_affected(), update.expected_version))
+        let outcome = if let Some(version) = updated_version {
+            WorkerUpdateOutcome::Applied {
+                new_version: rust_u64("version", version)?,
+            }
+        } else {
+            let state: Option<(i64, i64)> = sqlx::query_as(
+                "SELECT worker.version,
+                    (SELECT COUNT(*) FROM tasks assigned
+                     WHERE assigned.worker_id = worker.id
+                       AND assigned.status NOT IN ('completed', 'failed', 'cancelled'))
+                 FROM workers worker WHERE worker.id = ?",
+            )
+            .bind(update.id.to_string())
+            .fetch_optional(&mut *transaction)
+            .await?;
+            match state {
+                Some((version, used_slots))
+                    if rust_u64("version", version)? == update.expected_version
+                        && rust_u64("used_slots", used_slots)?
+                            > u64::from(update.compute_slots.get()) =>
+                {
+                    WorkerUpdateOutcome::CapacityBelowUsage
+                }
+                Some(_) | None => WorkerUpdateOutcome::Conflict,
+            }
+        };
+        transaction.commit().await?;
+        Ok(outcome)
     }
 
     /// # Errors
