@@ -16,6 +16,7 @@ struct CargoMetadata {
 struct CargoPackage {
     id: String,
     name: String,
+    rust_version: Option<String>,
     targets: Vec<CargoTarget>,
 }
 
@@ -86,6 +87,32 @@ fn workspace_keeps_existing_products_and_adds_controller() -> TestResult {
 }
 
 #[test]
+fn workspace_packages_declare_rust_1_83_support() -> TestResult {
+    // Given: Cargo metadata for every workspace package.
+    let output = Command::new(env!("CARGO"))
+        .args(["metadata", "--no-deps", "--format-version", "1"])
+        .current_dir(workspace_root())
+        .output()?;
+    assert!(output.status.success(), "cargo metadata failed");
+    let metadata: CargoMetadata = serde_json::from_slice(&output.stdout)?;
+
+    // When/Then: each product inherits the workspace's documented minimum Rust version.
+    for package in metadata
+        .packages
+        .iter()
+        .filter(|package| metadata.workspace_members.contains(&package.id))
+    {
+        assert_eq!(
+            package.rust_version.as_deref(),
+            Some("1.83"),
+            "{}",
+            package.name
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn dependency_tree_excludes_gpu_and_model_runtime_crates() -> TestResult {
     // Given: the complete normal and build dependency tree for Controller.
     let output = Command::new(env!("CARGO"))
@@ -107,6 +134,37 @@ fn dependency_tree_excludes_gpu_and_model_runtime_crates() -> TestResult {
         assert!(
             !tree.contains(forbidden),
             "forbidden dependency found: {forbidden}\n{tree}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn dependency_tree_activates_only_sqlite_sqlx_driver() -> TestResult {
+    // Given: Controller's locked feature-expanded dependency tree.
+    let output = Command::new(env!("CARGO"))
+        .args([
+            "tree",
+            "-p",
+            "videnoa-controller",
+            "--locked",
+            "--edges",
+            "normal,build,dev,features",
+        ])
+        .current_dir(workspace_root())
+        .output()?;
+    assert!(output.status.success(), "cargo tree failed");
+    let tree = String::from_utf8(output.stdout)?.to_ascii_lowercase();
+
+    // When/Then: SQLite is active without SQLx's network database or RSA chains.
+    assert!(
+        tree.contains("sqlx-sqlite"),
+        "SQLite driver missing\n{tree}"
+    );
+    for forbidden in ["sqlx-mysql", "sqlx-postgres", "pem-rfc7468", "rsa v"] {
+        assert!(
+            !tree.contains(forbidden),
+            "forbidden SQLx dependency found: {forbidden}\n{tree}"
         );
     }
     Ok(())
