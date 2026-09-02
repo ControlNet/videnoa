@@ -94,3 +94,12 @@
 
 - Rust 1.83 builds and all controller tests pass. An extra strict Clippy run on that older toolchain enables lint-version diagnostics across pre-existing modules; the required active-toolchain strict Clippy command passes cleanly.
 - Follow-up review found that direct cancellation completion could close a submitting attempt without reconciling whether its keyed remote request was accepted. Typed accepted/not-accepted reconciliation now durably selects remote cancellation or staged cleanup before completion is allowed.
+
+## 2026-09-02 Task 10
+
+- Strict Clippy initially found an unnecessary test `Result` and an oversized fixture method. Both were corrected structurally without lint suppression.
+- The first manual signal probe reached an unrelated process on an occupied port; rerunning on a unique port verified the intended controller process and durable pause behavior.
+
+## 2026-09-02 Task 10 Contract Repair
+
+- Review found startup-wide propagation for malformed rows, cancellation paths exposing ordinary continuation, unchecked remote identity, unbounded health retry counts, synthetic-only drain coverage, and a 358-line reconciler. All were reproduced and corrected without lint suppression.

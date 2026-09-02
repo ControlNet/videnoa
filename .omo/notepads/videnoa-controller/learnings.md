@@ -124,3 +124,16 @@
 - Persist-before-side-effect is clearest when the service returns a typed `DurableAction` only after CAS commit, with submission evidence bound in the same transaction that authorizes polling.
 - Explicit processing retry needs terminal remote and workspace-cleanup evidence plus a new attempt/key, while downstream retry must preserve the existing attempt to avoid repeating successful compute.
 - Ambiguity codes must outrank persisted retryability metadata, otherwise contradictory evidence can accidentally become retryable after restart.
+
+## 2026-09-02 Task 10
+
+- Startup reconciliation can remain scheduler-independent by scanning durable nonterminal rows and returning stage-typed commands only after any required lifecycle commit.
+- Worker outage recovery must update worker health metadata without releasing task assignment; existing nonterminal capacity queries then preserve slot accounting automatically.
+- Process-level shutdown verification needs both an unreachable listener after signal and the durable settings pause bit; either observation alone is incomplete.
+
+## 2026-09-02 Task 10 Contract Repair
+
+- Task-local durable corruption must be converted to nonretryable ambiguity inside the scan loop; only persistence/infrastructure failures may abort startup recovery.
+- A cancellation marker is a recovery routing boundary, not a field ordinary stage dispatch may ignore.
+- Remote job existence alone is insufficient evidence; workflow and exact input/output parameters must agree with the durable attempt.
+- Tracking synthetic shutdown permits does not prove production safety; block an actual SQLite transition and observe the reconciler-held permit during drain.
