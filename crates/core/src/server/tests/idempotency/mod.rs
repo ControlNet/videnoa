@@ -2,6 +2,7 @@ mod api_basic;
 mod api_concurrency;
 mod persistence;
 mod restart;
+mod workflow_independence;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

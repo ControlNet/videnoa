@@ -46,7 +46,7 @@ use crate::nodes::compile_context::VideoCompileContext;
 use crate::registry::{register_all_nodes, NodeRegistry};
 use crate::streaming_executor::ProgressCallback;
 use idempotency::{IdempotencyKey, RequestFingerprint};
-use persistence::{IdempotentJobClaim, JobsPersistence};
+use persistence::{IdempotentJobClaim, IdempotentJobLookup, JobsPersistence};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Preset {
@@ -1269,6 +1269,20 @@ async fn run_workflow_by_name(
     let workflow_name = validate_run_workflow_name(payload.workflow_name.as_deref())?;
     let fingerprint = RequestFingerprint::for_run(&workflow_name, payload.params.as_ref())
         .map_err(|_| AppError::Internal("failed to fingerprint run request".to_string()))?;
+    if let Some(key) = idempotency_key.as_ref() {
+        let persistence = jobs_persistence(&state)?;
+        match persistence
+            .lookup_idempotent_job(key.as_str(), fingerprint.as_str())
+            .map_err(|error| {
+                AppError::Internal(format!("failed to inspect idempotent job: {error:#}"))
+            })? {
+            IdempotentJobLookup::Missing => {}
+            IdempotentJobLookup::Replayed(existing) => {
+                return Ok((StatusCode::OK, Json(existing)));
+            }
+            IdempotentJobLookup::Conflict => return Err(AppError::IdempotencyConflict),
+        }
+    }
     let resolved = resolve_run_workflow_file(&state, &workflow_name).await?;
 
     let workflow_document = std::fs::read_to_string(&resolved.path)
@@ -1335,10 +1349,7 @@ fn create_idempotent_job(
     key: &IdempotencyKey,
     fingerprint: &RequestFingerprint,
 ) -> Result<(StatusCode, Json<CreateJobResponse>), AppError> {
-    let persistence =
-        state.inner.jobs_persistence.as_ref().ok_or_else(|| {
-            AppError::Internal("durable jobs persistence is unavailable".to_string())
-        })?;
+    let persistence = jobs_persistence(state)?;
     let (job, response) = prepare_job(submission);
     match persistence
         .claim_idempotent_job(key.as_str(), fingerprint.as_str(), &job)
@@ -1352,6 +1363,14 @@ fn create_idempotent_job(
         IdempotentJobClaim::Replayed(existing) => Ok((StatusCode::OK, Json(existing))),
         IdempotentJobClaim::Conflict => Err(AppError::IdempotencyConflict),
     }
+}
+
+fn jobs_persistence(state: &AppState) -> Result<&JobsPersistence, AppError> {
+    state
+        .inner
+        .jobs_persistence
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("durable jobs persistence is unavailable".to_string()))
 }
 
 fn prepare_job(submission: JobSubmission) -> (Job, CreateJobResponse) {

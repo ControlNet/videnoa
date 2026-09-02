@@ -1,8 +1,10 @@
+use std::collections::HashMap;
+
 use anyhow::{anyhow, Context, Result};
 use rusqlite::{params, OptionalExtension, TransactionBehavior};
 
 use super::{parse_status, parse_timestamp, status_to_str, JobsPersistence};
-use crate::server::{CreateJobResponse, Job};
+use crate::server::{idempotency::RequestFingerprint, CreateJobResponse, Job};
 
 pub(crate) enum IdempotentJobClaim {
     Created,
@@ -10,7 +12,34 @@ pub(crate) enum IdempotentJobClaim {
     Conflict,
 }
 
+pub(crate) enum IdempotentJobLookup {
+    Missing,
+    Replayed(CreateJobResponse),
+    Conflict,
+}
+
+struct PersistedIdempotencyMapping {
+    id: String,
+    status: String,
+    created_at: String,
+    fingerprint: Option<String>,
+    workflow_name: String,
+    params_json: Option<String>,
+}
+
 impl JobsPersistence {
+    pub(crate) fn lookup_idempotent_job(
+        &self,
+        key: &str,
+        fingerprint: &str,
+    ) -> Result<IdempotentJobLookup> {
+        self.with_connection(|connection| {
+            let existing = Self::load_idempotency_mapping(connection, key)?;
+            Self::classify_idempotency_mapping(existing, fingerprint)
+        })
+        .with_context(|| "failed to inspect durable idempotent job submission")
+    }
+
     pub(crate) fn claim_idempotent_job(
         &self,
         key: &str,
@@ -21,41 +50,10 @@ impl JobsPersistence {
         self.with_connection(|connection| {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let existing = transaction
-                .query_row(
-                    "SELECT id, status, created_at, request_fingerprint
-                     FROM jobs WHERE idempotency_key = ?1",
-                    params![key],
-                    |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, String>(2)?,
-                            row.get::<_, Option<String>>(3)?,
-                        ))
-                    },
-                )
-                .optional()?;
+            let existing = Self::load_idempotency_mapping(&transaction, key)?;
 
-            let outcome = match existing {
-                Some((id, status, created_at, stored_fingerprint)) => {
-                    let stored_fingerprint = stored_fingerprint.ok_or_else(|| {
-                        anyhow!("persisted idempotency mapping is missing its fingerprint")
-                    })?;
-                    if stored_fingerprint != fingerprint {
-                        IdempotentJobClaim::Conflict
-                    } else {
-                        let status = parse_status(&status).ok_or_else(|| {
-                            anyhow!("persisted idempotency job has invalid status")
-                        })?;
-                        IdempotentJobClaim::Replayed(CreateJobResponse {
-                            id,
-                            status,
-                            created_at: parse_timestamp(&created_at)?,
-                        })
-                    }
-                }
-                None => {
+            let outcome = match Self::classify_idempotency_mapping(existing, fingerprint)? {
+                IdempotentJobLookup::Missing => {
                     transaction.execute(
                         "INSERT INTO jobs (
                             id, status, workflow_json, created_at, started_at, completed_at,
@@ -84,11 +82,71 @@ impl JobsPersistence {
                     )?;
                     IdempotentJobClaim::Created
                 }
+                IdempotentJobLookup::Replayed(existing) => IdempotentJobClaim::Replayed(existing),
+                IdempotentJobLookup::Conflict => IdempotentJobClaim::Conflict,
             };
             transaction.commit()?;
             Ok(outcome)
         })
         .with_context(|| "failed to claim durable idempotent job submission")
+    }
+
+    fn load_idempotency_mapping(
+        connection: &rusqlite::Connection,
+        key: &str,
+    ) -> rusqlite::Result<Option<PersistedIdempotencyMapping>> {
+        connection
+            .query_row(
+                "SELECT id, status, created_at, request_fingerprint, workflow_name, params_json
+                 FROM jobs WHERE idempotency_key = ?1",
+                params![key],
+                |row| {
+                    Ok(PersistedIdempotencyMapping {
+                        id: row.get(0)?,
+                        status: row.get(1)?,
+                        created_at: row.get(2)?,
+                        fingerprint: row.get(3)?,
+                        workflow_name: row.get(4)?,
+                        params_json: row.get(5)?,
+                    })
+                },
+            )
+            .optional()
+    }
+
+    fn classify_idempotency_mapping(
+        existing: Option<PersistedIdempotencyMapping>,
+        fingerprint: &str,
+    ) -> Result<IdempotentJobLookup> {
+        let Some(existing) = existing else {
+            return Ok(IdempotentJobLookup::Missing);
+        };
+        let stored_fingerprint = existing
+            .fingerprint
+            .ok_or_else(|| anyhow!("persisted idempotency mapping is missing its fingerprint"))?;
+        let fingerprint_matches = if stored_fingerprint == fingerprint {
+            true
+        } else {
+            let persisted_params = existing
+                .params_json
+                .as_deref()
+                .map(serde_json::from_str::<HashMap<String, serde_json::Value>>)
+                .transpose()
+                .with_context(|| "persisted idempotency job has invalid params")?;
+            RequestFingerprint::for_run(&existing.workflow_name, persisted_params.as_ref())?
+                .as_str()
+                == fingerprint
+        };
+        if !fingerprint_matches {
+            return Ok(IdempotentJobLookup::Conflict);
+        }
+        let status = parse_status(&existing.status)
+            .ok_or_else(|| anyhow!("persisted idempotency job has invalid status"))?;
+        Ok(IdempotentJobLookup::Replayed(CreateJobResponse {
+            id: existing.id,
+            status,
+            created_at: parse_timestamp(&existing.created_at)?,
+        }))
     }
 
     pub(super) fn migrate_idempotency_schema(connection: &mut rusqlite::Connection) -> Result<()> {

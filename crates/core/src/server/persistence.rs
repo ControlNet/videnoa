@@ -10,7 +10,7 @@ use tracing::warn;
 use super::{Job, JobStatus, PipelineGraph, ProgressUpdate};
 
 mod idempotency;
-pub(crate) use idempotency::IdempotentJobClaim;
+pub(crate) use idempotency::{IdempotentJobClaim, IdempotentJobLookup};
 
 const STATUS_QUEUED: &str = "queued";
 const STATUS_RUNNING: &str = "running";

@@ -66,7 +66,7 @@ fn write_value(value: &Value, output: &mut String) -> serde_json::Result<()> {
     match value {
         Value::Null => output.push_str("null"),
         Value::Bool(value) => output.push_str(if *value { "true" } else { "false" }),
-        Value::Number(value) => output.push_str(&value.to_string()),
+        Value::Number(value) => write_number(value, output)?,
         Value::String(value) => output.push_str(&serde_json::to_string(value)?),
         Value::Array(values) => {
             output.push('[');
@@ -79,6 +79,26 @@ fn write_value(value: &Value, output: &mut String) -> serde_json::Result<()> {
             output.push(']');
         }
         Value::Object(values) => write_object(values.iter(), output)?,
+    }
+    Ok(())
+}
+
+fn write_number(value: &serde_json::Number, output: &mut String) -> serde_json::Result<()> {
+    if let Some(value) = value.as_i64() {
+        output.push_str(&value.to_string());
+    } else if let Some(value) = value.as_u64() {
+        output.push_str(&value.to_string());
+    } else if let Some(value) = value.as_f64() {
+        if value == 0.0 {
+            output.push('0');
+        } else {
+            output.push_str(&value.to_string());
+        }
+    } else {
+        return Err(serde_json::Error::io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "JSON number has no canonical representation",
+        )));
     }
     Ok(())
 }
