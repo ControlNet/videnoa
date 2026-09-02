@@ -1,0 +1,43 @@
+Videnoa Controller Task 9: lifecycle failure matrix
+Verified: 2026-09-02
+
+Stable lifecycle error projection
+illegal command                 lifecycle=illegal_command          api=conflict (409) retryable=false
+stale CAS                       lifecycle=conflict                 api=conflict (409) retryable=false
+cancellation intent absent      lifecycle=illegal_command          api=conflict (409) retryable=false
+task/attempt mismatch           lifecycle=conflict                 api=conflict (409) retryable=false
+attempt absent                  lifecycle=conflict                 api=conflict (409) retryable=false
+remote evidence mismatch        lifecycle=conflict                 api=conflict (409) retryable=false
+workspace evidence mismatch     lifecycle=conflict                 api=conflict (409) retryable=false
+remote state ambiguity          lifecycle=remote_state_ambiguous   api=remote_state_ambiguous retryable=false
+publication ambiguity           lifecycle=publication_ambiguous    api=publication_ambiguous retryable=false
+persistence failure             lifecycle=internal                api=internal_error retryable=false
+
+Late cancellation conflict states
+publishing
+remote_cleanup
+completed
+failed
+cancelled
+
+Retry-blocked classes
+- retryable=false metadata
+- remote_state_ambiguous regardless of persisted retryable flag
+- publication_ambiguous regardless of persisted retryable flag
+- failure code/stage combinations outside the explicit processing or resumable downstream matrix
+
+Failure behavior exercised
+- Every state/command pair outside the legal table is rejected.
+- An illegal jump is rejected before persistence.
+- Reusing a stale snapshot cannot overwrite the committed state.
+- Out-of-range deterministic jitter input is rejected.
+- Ambiguous remote and publication evidence cannot be made retryable.
+- Late cancellation returns the stable conflict code.
+
+Verification
+cargo test -p videnoa-controller --test lifecycle
+Result: 16 passed, 0 failed.
+
+Manual public-API failure path
+cargo test -p videnoa-controller --test lifecycle repository_transition::illegal_and_stale_commands_cannot_commit -- --exact --nocapture
+Result: 1 passed, 0 failed; illegal command and stale CAS both remained uncommitted with stable typed errors.
