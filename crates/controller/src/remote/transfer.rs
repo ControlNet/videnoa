@@ -98,7 +98,9 @@ impl VidenoaClient {
     where
         W: AsyncWrite + Unpin,
     {
-        let expected = response.content_length();
+        let expected = response
+            .content_length()
+            .ok_or(VidenoaClientError::MalformedPayload)?;
         let mut bytes = 0_u64;
         loop {
             let chunk = stalled(self.timeouts.stall, response.chunk())
@@ -119,7 +121,7 @@ impl VidenoaClient {
                 )
                 .ok_or(VidenoaClientError::MalformedPayload)?;
         }
-        if expected.is_some_and(|expected| expected != bytes) {
+        if expected != bytes {
             return Err(VidenoaClientError::MalformedPayload);
         }
         Ok(DownloadReceipt { bytes })
