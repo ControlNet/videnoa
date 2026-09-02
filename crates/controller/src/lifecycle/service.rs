@@ -68,7 +68,7 @@ impl LifecycleService {
             to: next_status,
             attempt: attempt_cas(task, attempt)?,
             occurred_at,
-            submission: command.submission().cloned(),
+            evidence: command.evidence(),
         };
         let action = command.action();
         let version = applied(self.store.apply_lifecycle_transition(&write).await?)?;

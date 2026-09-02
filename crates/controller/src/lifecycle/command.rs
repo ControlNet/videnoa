@@ -4,7 +4,10 @@ use crate::domain::{
     AttemptId, FailureInfo, RemoteJobId, RemotePath, SubmissionKey, TaskId, TaskStatus, WorkerId,
 };
 
-use super::{CancelAction, CommandKind, RemoteTerminalStatus};
+use super::{
+    CancelAction, CommandKind, DownloadEvidence, RemoteTerminalStatus, TransitionEvidence,
+    UploadEvidence,
+};
 
 pub type ReserveCommand = crate::persistence::Reservation;
 
@@ -24,12 +27,12 @@ pub enum SubmissionCancellationReconciliation {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AdvanceCommand {
     StartUpload,
-    FinishUpload,
+    FinishUpload(UploadEvidence),
     StartSubmission,
     PersistSubmission(SubmissionEvidence),
     FinishProcessing,
     StartDownload,
-    FinishDownload,
+    FinishDownload(DownloadEvidence),
     FinishVerification,
     FinishPublication,
     FinishCleanup,
@@ -39,12 +42,12 @@ impl AdvanceCommand {
     pub(crate) const fn kind(&self) -> CommandKind {
         match self {
             Self::StartUpload => CommandKind::StartUpload,
-            Self::FinishUpload => CommandKind::FinishUpload,
+            Self::FinishUpload(_) => CommandKind::FinishUpload,
             Self::StartSubmission => CommandKind::StartSubmission,
             Self::PersistSubmission(_) => CommandKind::PersistSubmission,
             Self::FinishProcessing => CommandKind::FinishProcessing,
             Self::StartDownload => CommandKind::StartDownload,
-            Self::FinishDownload => CommandKind::FinishDownload,
+            Self::FinishDownload(_) => CommandKind::FinishDownload,
             Self::FinishVerification => CommandKind::FinishVerification,
             Self::FinishPublication => CommandKind::FinishPublication,
             Self::FinishCleanup => CommandKind::FinishCleanup,
@@ -54,30 +57,30 @@ impl AdvanceCommand {
     pub(crate) const fn action(&self) -> DurableAction {
         match self {
             Self::StartUpload => DurableAction::Upload,
-            Self::FinishUpload | Self::FinishProcessing | Self::FinishCleanup => {
+            Self::FinishUpload(_) | Self::FinishProcessing | Self::FinishCleanup => {
                 DurableAction::None
             }
             Self::StartSubmission => DurableAction::Submit,
             Self::PersistSubmission(_) => DurableAction::Poll,
             Self::StartDownload => DurableAction::Download,
-            Self::FinishDownload => DurableAction::Verify,
+            Self::FinishDownload(_) => DurableAction::Verify,
             Self::FinishVerification => DurableAction::Publish,
             Self::FinishPublication => DurableAction::Cleanup,
         }
     }
 
-    pub(crate) fn submission(&self) -> Option<&SubmissionEvidence> {
+    pub(crate) fn evidence(&self) -> TransitionEvidence {
         match self {
-            Self::PersistSubmission(evidence) => Some(evidence),
+            Self::FinishUpload(evidence) => TransitionEvidence::Upload(evidence.clone()),
+            Self::PersistSubmission(evidence) => TransitionEvidence::Submission(evidence.clone()),
+            Self::FinishDownload(evidence) => TransitionEvidence::Download(*evidence),
             Self::StartUpload
-            | Self::FinishUpload
             | Self::StartSubmission
             | Self::FinishProcessing
             | Self::StartDownload
-            | Self::FinishDownload
             | Self::FinishVerification
             | Self::FinishPublication
-            | Self::FinishCleanup => None,
+            | Self::FinishCleanup => TransitionEvidence::None,
         }
     }
 }
@@ -196,7 +199,7 @@ pub(crate) struct PairedTransition {
     pub to: TaskStatus,
     pub attempt: AttemptCas,
     pub occurred_at: DateTime<Utc>,
-    pub submission: Option<SubmissionEvidence>,
+    pub evidence: TransitionEvidence,
 }
 
 #[derive(Clone, Debug)]
