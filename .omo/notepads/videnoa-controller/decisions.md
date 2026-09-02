@@ -160,3 +160,12 @@
 - Retain one `PublicationFinalizer` from capability revalidation through descriptor-relative rename and parent sync; never reopen the ambient parent pathname for durability.
 - Rehash the final artifact after rename and before `FinishPublication`; classify any byte disagreement as preserving `PublicationAmbiguous`.
 - Keep deterministic effect checkpoints as a public observer seam with a production no-op default so tests interrupt the actual executor path without branching production behavior.
+
+## 2026-09-03 Task 14
+
+- Compose operations into the complete Controller router and reuse the existing authentication and mutation authorization functions rather than introducing a second auth policy.
+- Keep worker and settings versions zero-based and return typed 409 responses for every stale mutable-record operation.
+- Use a 64-entry Tokio broadcast channel, initial/lagged `refetch`, post-commit active-state deltas, and deletion refetch instead of adding replay storage or a speculative deletion event.
+- Coordinate processing retry by verifying terminal remote state and converging workspace deletion before supplying genuine evidence to the existing lifecycle policy.
+- Register one shared durable-change observer on the cloned persistence store so lifecycle, recovery, transfer, scheduler, and worker-health mutations reach the bounded SSE hub without coupling those services to HTTP types.
+- Revalidate SSE sessions on a persistent interval with a passive cookie-session check so event traffic neither postpones checks nor extends idle expiry.

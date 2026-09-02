@@ -144,3 +144,11 @@
 
 - Oracle's second review retained staging identity, ambient parent sync, metadata-before-open, production QA, and `paths/mod.rs` size blockers. Final rehash, retained-descriptor sync, opened-handle classification, 24 production-path scenarios, and a focused output-module extraction resolve them.
 - Rust 1.83 tests and build pass with two pre-existing dead-code warnings in `scheduler/download_artifact.rs`; current strict Clippy is clean.
+
+## 2026-09-03 Task 14
+
+- The complete router previously exposed only authentication and task routes, so Task 14 required changing every full-router fixture and the production composition root to supply operational dependencies.
+- Processing retry initially lacked a coordinator for the lifecycle contract's remote-terminal and workspace-cleanup evidence. The endpoint now obtains both from the assigned Videnoa worker before creating a fresh attempt.
+- Initial SSE publication covered HTTP mutations only and reset authentication timing after every event. A store-scoped durable-change observer plus passive interval revalidation closes both gaps.
+- Final review found processing retry deleted job history instead of the remote task workspace and returned the old attempt ID. The route now deletes `/api/files/{task_id}` before creating cleanup evidence and returns the newly committed attempt identity.
+- Recovery worker-health and shutdown settings writes bypassed notifying service boundaries. Both now use `WorkerRegistry` or `Scheduler`, and scheduler runtime settings are validated before the durable CAS.
