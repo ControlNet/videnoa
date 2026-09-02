@@ -139,3 +139,8 @@
 
 - Independent review rejected the original Task 13 evidence because ambient finalization escaped the capability boundary, non-regular artifacts could be opened, matching final plus staging was accepted, malformed cleanup aborted startup dispatch, tests overstated race/crash coverage, and `lifecycle_transition.rs` exceeded 250 pure LOC.
 - The corrected focused suite has 14 Task 13 integration cases plus a direct created-parent replacement unit regression. The evidence no longer claims forced EXDEV, permission denial, FIFO, cancellation, or every crash window as executed scenarios.
+
+## 2026-09-03 Task 13 Final Convergence
+
+- Oracle's second review retained staging identity, ambient parent sync, metadata-before-open, production QA, and `paths/mod.rs` size blockers. Final rehash, retained-descriptor sync, opened-handle classification, 24 production-path scenarios, and a focused output-module extraction resolve them.
+- Rust 1.83 tests and build pass with two pre-existing dead-code warnings in `scheduler/download_artifact.rs`; current strict Clippy is clean.
