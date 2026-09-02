@@ -7,7 +7,7 @@ use crate::remote::{sibling_output_path, FileApiPath, VidenoaClient};
 use chrono::{DateTime, Utc};
 
 use super::{
-    download_artifact::{download_artifact, DownloadArtifact},
+    download_artifact::{download_artifact, recover_verified, DownloadArtifact},
     DownloadOutcome, RetryResult, TransferError, TransferExecutor,
 };
 
@@ -63,41 +63,50 @@ impl TransferExecutor {
             | TaskStatus::Failed
             | TaskStatus::Cancelled => return Err(TransferError::Conflict),
         }
-        let worker_id = attempt
-            .attempt
-            .worker_id
-            .ok_or(TransferError::MissingEvidence)?;
-        let worker = self
-            .resources
-            .store
-            .worker(worker_id)
-            .await?
-            .ok_or(TransferError::MissingEvidence)?;
-        let client = VidenoaClient::new(
-            worker.api_url,
-            self.config.remote_timeouts,
-            self.config.payload_limits,
-        )?;
-        let remote_path = FileApiPath::parse(&format!(
-            "{}/output.{}",
-            task.id,
-            task.output_extension.as_str()
-        ))?;
-        let stat = match client.stat(&remote_path).await {
-            Ok(stat) if stat.is_file && stat.size > 0 => stat,
-            Ok(_) | Err(_) => return self.download_retry(&task, &attempt, now, jitter).await,
-        };
         let directory = self.config.temp_root.join(task.id.to_string());
-        let Ok(artifact) = Box::pin(download_artifact(DownloadArtifact {
-            client: &client,
-            remote_path: &remote_path,
-            directory,
-            extension: task.output_extension.as_str(),
-            expected_size: stat.size,
-        }))
-        .await
-        else {
-            return self.download_retry(&task, &attempt, now, jitter).await;
+        let artifact = if let Some(artifact) =
+            recover_verified(&directory, task.output_extension.as_str()).await?
+        {
+            artifact
+        } else {
+            let worker_id = attempt
+                .attempt
+                .worker_id
+                .ok_or(TransferError::MissingEvidence)?;
+            let worker = self
+                .resources
+                .store
+                .worker(worker_id)
+                .await?
+                .ok_or(TransferError::MissingEvidence)?;
+            let client = VidenoaClient::new(
+                worker.api_url,
+                self.config.remote_timeouts,
+                self.config.payload_limits,
+            )?;
+            let remote_path = FileApiPath::parse(&format!(
+                "{}/output.{}",
+                task.id,
+                task.output_extension.as_str()
+            ))?;
+            let stat = match client.stat(&remote_path).await {
+                Ok(stat) if stat.is_file && stat.size > 0 => stat,
+                Ok(_) | Err(_) => {
+                    return self.download_retry(&task, &attempt, now, jitter).await;
+                }
+            };
+            let Ok(artifact) = Box::pin(download_artifact(DownloadArtifact {
+                client: &client,
+                remote_path: &remote_path,
+                directory,
+                extension: task.output_extension.as_str(),
+                expected_size: stat.size,
+            }))
+            .await
+            else {
+                return self.download_retry(&task, &attempt, now, jitter).await;
+            };
+            artifact
         };
         LifecycleService::new(self.resources.store.clone())
             .advance(
