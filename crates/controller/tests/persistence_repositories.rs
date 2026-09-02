@@ -13,6 +13,7 @@ use videnoa_controller::persistence::{
     AttemptRemoteUpdate, AuthDigest, CasOutcome, Database, DatabaseOptions, IdempotencyRecord,
     InputIdentity, NewSession, NewTask, NewWorker, PersistenceError, Reservation,
     ReservationOutcome, SettingsUpdate, Store, WorkerHealthUpdate, WorkerUpdate,
+    WorkerUpdateOutcome,
 };
 
 type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -190,11 +191,11 @@ async fn worker_and_settings_updates_reject_stale_versions() -> TestResult {
     // When: each optimistic update is replayed with its stale version.
     assert_eq!(
         store.update_worker(&worker_update).await?,
-        CasOutcome::Applied { new_version: 1 }
+        WorkerUpdateOutcome::Applied { new_version: 1 }
     );
     assert_eq!(
         store.update_worker(&worker_update).await?,
-        CasOutcome::Conflict
+        WorkerUpdateOutcome::Conflict
     );
     assert_eq!(
         store.update_settings(&settings_update).await?,

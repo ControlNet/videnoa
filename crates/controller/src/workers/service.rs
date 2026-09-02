@@ -5,7 +5,7 @@ use crate::domain::{
 };
 use crate::persistence::{
     CasOutcome, NewWorker, PersistenceError, Store, WorkerDeleteOutcome, WorkerHealthUpdate,
-    WorkerIdentityConflict, WorkerRecord, WorkerUpdate,
+    WorkerIdentityConflict, WorkerRecord, WorkerUpdate, WorkerUpdateOutcome,
 };
 
 use super::WorkerRegistryError;
@@ -74,10 +74,6 @@ impl WorkerRegistry {
         if request.version != current.version {
             return Err(WorkerRegistryError::Conflict);
         }
-        let used = self.store.worker_used_slots(id).await?;
-        if u64::from(request.compute_slots.get()) < used {
-            return Err(WorkerRegistryError::CapacityBelowUsage);
-        }
         let update = WorkerUpdate {
             id,
             expected_version: request.version,
@@ -88,8 +84,11 @@ impl WorkerRegistry {
             updated_at: now,
         };
         match self.store.update_worker(&update).await {
-            Ok(CasOutcome::Applied { .. }) => self.load(id).await,
-            Ok(CasOutcome::Conflict) => Err(WorkerRegistryError::Conflict),
+            Ok(WorkerUpdateOutcome::Applied { .. }) => self.load(id).await,
+            Ok(WorkerUpdateOutcome::Conflict) => Err(WorkerRegistryError::Conflict),
+            Ok(WorkerUpdateOutcome::CapacityBelowUsage) => {
+                Err(WorkerRegistryError::CapacityBelowUsage)
+            }
             Err(error) if unique_violation(&error) => Err(self
                 .identity_error(Some(id), &update.name, &update.api_url)
                 .await?),
