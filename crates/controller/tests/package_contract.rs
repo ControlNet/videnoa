@@ -87,8 +87,8 @@ fn workspace_keeps_existing_products_and_adds_controller() -> TestResult {
 }
 
 #[test]
-fn workspace_packages_declare_rust_1_83_support() -> TestResult {
-    // Given: Cargo metadata for every workspace package.
+fn controller_alone_declares_rust_1_83_support() -> TestResult {
+    // Given: Cargo metadata for the workspace packages.
     let output = Command::new(env!("CARGO"))
         .args(["metadata", "--no-deps", "--format-version", "1"])
         .current_dir(workspace_root())
@@ -96,17 +96,27 @@ fn workspace_packages_declare_rust_1_83_support() -> TestResult {
     assert!(output.status.success(), "cargo metadata failed");
     let metadata: CargoMetadata = serde_json::from_slice(&output.stdout)?;
 
-    // When/Then: each product inherits the workspace's documented minimum Rust version.
-    for package in metadata
+    // When: Controller and the pre-existing products are inspected independently.
+    let controller = metadata
         .packages
         .iter()
-        .filter(|package| metadata.workspace_members.contains(&package.id))
-    {
+        .find(|package| package.name == "videnoa-controller")
+        .ok_or_else(|| std::io::Error::other("Controller package missing from metadata"))?;
+
+    // Then: only the independently verified Controller advertises Rust 1.83 support.
+    assert_eq!(controller.rust_version.as_deref(), Some("1.83"));
+    for package_name in ["videnoa-core", "videnoa-app", "videnoa-desktop"] {
+        let package = metadata
+            .packages
+            .iter()
+            .find(|package| package.name == package_name)
+            .ok_or_else(|| {
+                std::io::Error::other(format!("{package_name} missing from metadata"))
+            })?;
         assert_eq!(
             package.rust_version.as_deref(),
-            Some("1.83"),
-            "{}",
-            package.name
+            None,
+            "{package_name} must not advertise the Controller-only MSRV"
         );
     }
     Ok(())

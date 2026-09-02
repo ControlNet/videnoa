@@ -1,7 +1,6 @@
 [package]
 name = "videnoa-core"
 version.workspace = true
-rust-version.workspace = true
 edition = "2021"
 
 [dependencies]
