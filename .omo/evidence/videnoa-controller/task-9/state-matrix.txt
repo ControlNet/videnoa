@@ -1,0 +1,67 @@
+Videnoa Controller Task 9: lifecycle state matrix
+Verified: 2026-09-02
+
+Normal durable transitions
+queued             reserve               -> reserved
+reserved           start_upload          -> uploading
+uploading          finish_upload         -> staged
+staged             start_submission      -> submitting
+submitting         persist_submission    -> processing
+processing         finish_processing     -> remote_completed
+remote_completed   start_download        -> downloading
+downloading        finish_download       -> verifying
+verifying          finish_verification   -> publishing
+publishing         finish_publication    -> remote_cleanup
+remote_cleanup     finish_cleanup        -> completed
+failed             retry                 -> classified by persisted failure
+
+Recovery classification
+queued             await_reservation
+reserved           begin_upload
+uploading          reconcile_upload
+staged             begin_submission
+submitting         reconcile_submission
+processing         poll_processing
+remote_completed   begin_download
+downloading        restart_download
+verifying          reverify
+publishing         reconcile_publication
+remote_cleanup     retry_cleanup
+completed          completed
+failed             failed
+cancelled          cancelled
+
+Cancellation classification
+queued/reserved                         cancel_local
+uploading                               abort_upload_and_clean
+staged                                  clean_staged
+submitting                              reconcile_submission
+processing                              cancel_remote_and_clean
+remote_completed/downloading/verifying abort_downstream_and_clean
+publishing/remote_cleanup/terminal      conflict
+
+Retry classification
+upload transfer failure       resume uploading
+processing failure            create new attempt and submission key
+download transfer failure     resume downloading
+verification failure          resume verifying
+publication failure           resume publishing
+cleanup failure               resume remote cleanup
+remote/publication ambiguity  blocked
+
+Repository guarantees exercised
+- Task and attempt status/version transitions commit in one SQLite transaction.
+- A side-effect action is returned only after the matching CAS commits.
+- Submission evidence is bound in the same transaction that exposes polling.
+- Processing retry requires matching terminal remote evidence and workspace cleanup evidence.
+- Processing retry preserves the failed attempt and inserts a new attempt/key.
+- Downstream retry preserves and resumes the existing attempt without repeating compute.
+- Cancellation intent commits before cleanup authorization; completion closes both rows.
+
+Verification
+cargo test -p videnoa-controller --test lifecycle
+Result: 16 passed, 0 failed.
+
+Manual public-API happy path
+cargo test -p videnoa-controller --test lifecycle repository_transition::durable_transition_precedes_each_exposed_side_effect -- --exact --nocapture
+Result: 1 passed, 0 failed; every returned action followed its durable state transition.
