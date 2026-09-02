@@ -265,6 +265,15 @@ impl Fixture {
         .await
     }
 
+    pub async fn mark_downloading(&self, prepared: &PreparedTask) -> TestResult {
+        self.advance(
+            prepared.task_id,
+            prepared.attempt_id,
+            AdvanceCommand::StartDownload,
+        )
+        .await
+    }
+
     pub async fn task(&self, task_id: TaskId) -> TestResult<TaskRecord> {
         self.store
             .task(task_id)
