@@ -150,3 +150,10 @@
 - Worker capacity reduction and task reservation are competing SQLite writes; the capacity predicate must be part of the worker update statement, not a service-level usage preflight.
 - A failed conditional update can classify stale version versus capacity rejection inside the same write transaction because the SQLite writer lock prevents the observed version and assignment count from changing before commit.
 - Tokio oneshot checkpoints can deterministically expose persistence TOCTOU windows by pausing one operation after its read and releasing it only after the competing durable write commits.
+
+## 2026-09-03 Task 12
+
+- Workflow paths and file API paths are separate namespaces: the Controller owns deterministic API targets, while the worker-returned opaque paths must be persisted unchanged for submission and recovery.
+- SQLite timestamp persistence is millisecond precision, so descriptor-backed input mtime checks must compare at that boundary rather than treating sub-millisecond filesystem precision as drift.
+- Requiring response `Content-Length` and hashing through an `AsyncWrite` wrapper provides bounded-memory length and SHA-256 evidence in the same streaming pass.
+- A freshly truncated `.part` plus same-directory verified rename gives one restart model without Range support; failed bodies remove the partial and retry the existing attempt without replaying compute.

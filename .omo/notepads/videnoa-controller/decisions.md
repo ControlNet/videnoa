@@ -116,3 +116,10 @@
 - Mirror the complete scheduler eligibility policy inside the atomic SQLite reservation statement so stale candidates fail as typed conflicts.
 - Treat worker deletion as forbidden for both active and historical task references; disabling is the non-destructive operational alternative.
 - Keep transfer permits ephemeral and settings durable: restart reloads limits and pause from SQLite but never reconstructs in-flight process-local permits.
+
+## 2026-09-03 Task 12
+
+- Bind upload paths and download hash/length through evidence-bearing lifecycle commands so successful stage transitions and their proof cannot commit separately.
+- Keep file API targets task-owned and derived from task ID plus independent input/output extensions; persist only worker-returned workflow paths for workflow parameters.
+- Use paired atomic task/attempt retry writes for transfer backoff, preserving the existing attempt and remote compute identity.
+- Require a non-zero stat and exact `Content-Length`, sync the local file, and rename to the verified temp name before exposing `verifying`.

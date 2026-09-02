@@ -108,3 +108,9 @@
 
 - Independent review found that worker slot reduction checked durable usage before the optimistic worker update, allowing a reservation to commit between those operations and leave more assignments than compute slots. A checkpoint-controlled regression reproduced the invalid durable state, and the worker update now rejects it atomically with a typed capacity outcome.
 - The originally generated evidence used generic filenames. Exact scheduler timeline and failure artifacts are now present under the Task 11 evidence directory.
+
+## 2026-09-03 Task 12
+
+- The first lifecycle SQL edit bound download evidence before the existing lifecycle timestamp placeholders, causing text values in integer timestamp columns. Reordering binds to match the statement fixed the corruption and all lifecycle/recovery regressions pass.
+- The initial mismatch fixture used a 503 response fault that occurred after the mock accepted and stored the full upload, so exact stat correctly staged it. The failure scenario now uses the pre-accept disconnect fault and proves mismatched-partial deletion plus retry.
+- The Task 12 integration target imports the complete shared real-TCP mock; a target-scoped `dead_code` expectation documents that intentional cross-target harness surface while strict Clippy remains clean.
