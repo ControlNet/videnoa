@@ -1,0 +1,29 @@
+Task 13 verified publication and cleanup happy evidence
+Date: 2026-09-03
+
+Commands:
+- cargo test -p videnoa-controller --test task13 -- --test-threads=1
+- cargo test -p videnoa-controller --lib paths::publication_tests::created_publication_parent_replacement_is_rejected -- --exact --test-threads=1
+Result: 14 integration tests passed; 1 focused capability unit test passed
+
+Observed production-surface scenarios:
+- Verifying -> Publishing persists expected length, SHA-256, and a unique .videnoa-*.staging leaf before filesystem effects.
+- Destination-owned create_new staging receives a bounded 64 KiB copy, recomputes SHA-256 and length, flushes, and syncs before finalization.
+- Linux finalization uses rustix descriptor-relative renameat2 RENAME_NOREPLACE; Windows retains MoveFileExW without REPLACE_EXISTING after immediate capability revalidation.
+- A matching final left after finalization-before-CAS advances Publishing -> RemoteCleanup without requiring the verified temp source.
+- A matching hidden staging file resumes finalization without requiring the verified temp source.
+- Local task temp removal precedes remote workspace DELETE.
+- Remote DELETE 404 is idempotent success; FinishCleanup commits RemoteCleanup -> Completed.
+- Startup recovery dispatch executes Verify, Publish, and Cleanup through the production executor and continues after task-local malformed cleanup evidence is terminalized.
+- Worker HTTP 503 does not block local publication: output is finalized, local temp is removed, and remote cleanup retry metadata is persisted on task and attempt.
+
+Representative exact output evidence:
+- offline_cleanup_publication bytes=27648 sha256=6657bc9bc597aeb458338dea0f9bef5491b74db67f6303a01151f4d54d28c309
+- crash_recovered_publication bytes=27648 sha256=6be30f8204563e077a3738109e471d230aa1209e5b8c7992659aeb66d3664c1a
+
+Quality gates:
+- cargo fmt --all -- --check: pass
+- cargo clippy -p videnoa-controller --all-targets -- -D warnings: pass
+- cargo test -p videnoa-controller: pass
+- cargo build -p videnoa-controller: pass
+- Evidence scope: no claim is made here for forced EXDEV, permission denial, FIFO, cancellation integration, or every crash window.
