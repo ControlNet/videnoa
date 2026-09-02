@@ -17,7 +17,6 @@ rust-embed.workspace = true
 serde.workspace = true
 thiserror = "2"
 tokio.workspace = true
-tower-http.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
@@ -30,4 +29,3 @@ unsafe_code = "forbid"
 [lints.clippy]
 all = { level = "deny", priority = -1 }
 pedantic = { level = "deny", priority = -1 }
-module_name_repetitions = "allow"
