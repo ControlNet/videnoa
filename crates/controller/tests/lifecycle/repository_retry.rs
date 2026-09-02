@@ -4,7 +4,7 @@ use videnoa_controller::lifecycle::{
     RemoteTerminalStatus, TerminalRemoteEvidence, WorkspaceCleaned,
 };
 
-use super::support::{fixture, reserve, TestResult};
+use super::support::{fixture, reserve, upload_evidence, TestResult};
 
 #[tokio::test]
 async fn downstream_retry_resumes_same_attempt_without_repeating_compute() -> TestResult {
@@ -163,7 +163,7 @@ async fn advance_to_processing(
 ) -> TestResult<RemoteJobId> {
     let commands = [
         AdvanceCommand::StartUpload,
-        AdvanceCommand::FinishUpload,
+        AdvanceCommand::FinishUpload(upload_evidence()),
         AdvanceCommand::StartSubmission,
     ];
     for command in commands {

@@ -15,6 +15,7 @@ mod task;
 mod task_mutation;
 mod task_query;
 mod task_row;
+mod transfer_retry;
 mod worker;
 mod worker_registry;
 
