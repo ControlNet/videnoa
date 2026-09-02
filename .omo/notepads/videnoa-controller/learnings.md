@@ -137,3 +137,10 @@
 - A cancellation marker is a recovery routing boundary, not a field ordinary stage dispatch may ignore.
 - Remote job existence alone is insufficient evidence; workflow and exact input/output parameters must agree with the durable attempt.
 - Tracking synthetic shutdown permits does not prove production safety; block an actual SQLite transition and observe the reconciler-held permit during drain.
+
+## 2026-09-02 Task 11
+
+- Scheduler selection and reservation are separate race windows, so pause, compatibility, capacity, and prefetch predicates must be repeated in the atomic task claim.
+- Existing lifecycle/recovery fixtures that insert an online worker must also persist compatible capability evidence; `online` alone is no longer schedulable evidence.
+- Recovery matrix fixtures need an explicit high prefetch setting when constructing many simultaneous durable states for one worker.
+- A per-worker upload set layered over independent upload/download counters provides deterministic transfer admission and RAII release without coupling the two pools.

@@ -1,0 +1,19 @@
+Task 11 verification completed 2026-09-02.
+
+Focused behavior:
+- cargo test -p videnoa-controller --test task11 -- --test-threads=1
+- Result: 12 passed, 0 failed.
+
+Quality and regression gates:
+- cargo fmt --all -- --check
+- cargo clippy -p videnoa-controller --all-targets --all-features -- -D warnings
+- cargo test -p videnoa-controller -- --test-threads=1
+- Result: all commands exited 0; complete controller unit, integration, and doc-test suite passed.
+
+Observed contracts:
+- Worker identity conflicts, stale writes, disable/delete policy, health CAS, and capacity accounting are durable and typed.
+- Scheduler selection uses task priority/age/ID and worker usage/assignment-time/ID ordering with workflow compatibility.
+- Concurrent claims do not exceed durable capacity or duplicate attempts.
+- Atomic reservation rechecks pause, compatibility, capacity, and bounded prefetch.
+- Persisted pause blocks reservation/upload/submission while recovery-safe stages remain allowed.
+- Upload/download limits are independent and permit at most one upload per worker.
