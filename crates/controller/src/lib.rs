@@ -18,6 +18,7 @@ mod asset_path;
 pub mod auth;
 pub mod config;
 pub mod domain;
+pub mod lifecycle;
 pub mod paths;
 pub mod persistence;
 pub mod remote;
