@@ -187,3 +187,9 @@
 - Publication recovery must classify filesystem node type before opening. Directories, FIFOs, devices, and other non-regular nodes are ownership ambiguity, not retryable I/O.
 - Directory identities created during staging must be retained through finalization; validating only the nearest pre-existing parent does not detect replacement of newly created descendants.
 - Startup transfer dispatch needs the same task-local corruption isolation as startup reconciliation so one malformed cleanup trace cannot prevent unrelated recovery work.
+
+## 2026-09-03 Task 13 Final Convergence
+
+- Verifying a staging handle before rename is not enough when finalization later resolves the leaf by name; rehash the final artifact before lifecycle CAS to bind advancement to the bytes actually published.
+- Capability-backed directory handles may be opened as path-only descriptors on Unix. Open `.` relative to the retained directory with read/directory flags before `fsync` to preserve identity and obtain a sync-capable descriptor.
+- Deterministic checkpoints around irreversible effects make real race and crash tests possible without sleeps or test-only production branches.
