@@ -1,5 +1,6 @@
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::SystemTime;
 
 use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
@@ -8,7 +9,10 @@ use cap_std::fs::{File, OpenOptions};
 use crate::config::PathConfig;
 
 mod publication;
+#[cfg(test)]
+mod publication_tests;
 mod root;
+pub(crate) use publication::PublicationArtifact;
 use root::{identity, select_root, Root};
 
 #[derive(Debug, thiserror::Error)]
@@ -70,6 +74,7 @@ pub struct RootedOutput {
     leaf: PathBuf,
     display_path: PathBuf,
     parent_identity: Identity,
+    created_parent_identities: Mutex<Option<Vec<Identity>>>,
 }
 
 impl InputSnapshot {
@@ -170,6 +175,7 @@ impl PathCapabilities {
             leaf,
             display_path: path.to_path_buf(),
             parent_identity: identity(&metadata),
+            created_parent_identities: Mutex::new(None),
         })
     }
 }

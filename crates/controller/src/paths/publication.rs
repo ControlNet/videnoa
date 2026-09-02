@@ -6,6 +6,12 @@ use cap_std::fs::{Dir, File, OpenOptions};
 
 use super::{identity, select_root, PathCapabilities, PathError, RootedOutput};
 
+pub(crate) enum PublicationArtifact {
+    Missing,
+    Regular(File),
+    NonRegular,
+}
+
 impl PathCapabilities {
     /// Reopens an output boundary that may contain durable publication artifacts.
     ///
@@ -34,6 +40,7 @@ impl PathCapabilities {
             leaf,
             display_path: path.to_path_buf(),
             parent_identity: identity(&metadata),
+            created_parent_identities: std::sync::Mutex::new(None),
         })
     }
 }
@@ -48,7 +55,7 @@ impl RootedOutput {
     ///
     /// # Errors
     /// Returns a typed path error when the boundary changed or inspection fails.
-    pub fn open_final(&self) -> Result<Option<File>, PathError> {
+    pub(crate) fn open_final(&self) -> Result<PublicationArtifact, PathError> {
         self.open_existing(&self.leaf)
     }
 
@@ -56,7 +63,7 @@ impl RootedOutput {
     ///
     /// # Errors
     /// Returns a typed path error when the name is unsafe or inspection fails.
-    pub fn open_staging(&self, name: &str) -> Result<Option<File>, PathError> {
+    pub(crate) fn open_staging(&self, name: &str) -> Result<PublicationArtifact, PathError> {
         let leaf = staging_leaf(name, &self.display_path)?;
         self.open_existing(&leaf)
     }
@@ -79,33 +86,33 @@ impl RootedOutput {
             .map_err(|source| io_error(&staging_path, source))
     }
 
-    /// Resolves a validated hidden sibling for same-directory finalization.
-    ///
-    /// # Errors
-    /// Returns a typed path error when the durable staging name is unsafe.
-    pub fn staging_path(&self, name: &str) -> Result<PathBuf, PathError> {
+    pub(crate) fn finalize_staging(&self, name: &str) -> Result<(), PathError> {
         let leaf = staging_leaf(name, &self.display_path)?;
-        Ok(self.root.display_path().join(&self.parent).join(leaf))
+        let directory = self.open_parent(false)?;
+        finalize_relative(
+            &directory,
+            &leaf,
+            &self.leaf,
+            &self.root.display_path().join(&self.parent),
+        )
     }
 
-    fn open_existing(&self, leaf: &Path) -> Result<Option<File>, PathError> {
+    fn open_existing(&self, leaf: &Path) -> Result<PublicationArtifact, PathError> {
         let directory = match self.open_parent(false) {
             Ok(directory) => directory,
             Err(PathError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
-                return Ok(None);
+                return Ok(PublicationArtifact::Missing);
             }
             Err(error) => return Err(error),
         };
         match directory.symlink_metadata(leaf) {
-            Ok(metadata) if metadata.file_type().is_symlink() => Err(PathError::SymlinkComponent {
-                path: self.root.display_path().join(&self.parent).join(leaf),
-            }),
+            Ok(metadata) if !metadata.is_file() => Ok(PublicationArtifact::NonRegular),
             Ok(_) => {
                 let mut options = OpenOptions::new();
                 options.read(true).follow(FollowSymlinks::No);
                 directory
                     .open_with(leaf, &options)
-                    .map(Some)
+                    .map(PublicationArtifact::Regular)
                     .map_err(|source| {
                         io_error(
                             &self.root.display_path().join(&self.parent).join(leaf),
@@ -113,7 +120,9 @@ impl RootedOutput {
                         )
                     })
             }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                Ok(PublicationArtifact::Missing)
+            }
             Err(source) => Err(io_error(
                 &self.root.display_path().join(&self.parent).join(leaf),
                 source,
@@ -132,8 +141,19 @@ impl RootedOutput {
                 path: self.display_path.clone(),
             });
         }
+        let expected_identities = self
+            .created_parent_identities
+            .lock()
+            .map_err(|_| {
+                io_error(
+                    &self.display_path,
+                    io::Error::other("output identity lock failed"),
+                )
+            })?
+            .clone();
+        let mut observed_identities = Vec::with_capacity(self.missing_directories.len());
         let mut traversed = self.root.display_path().join(&self.parent);
-        for component in &self.missing_directories {
+        for (index, component) in self.missing_directories.iter().enumerate() {
             traversed.push(component);
             match directory.symlink_metadata(component) {
                 Ok(metadata) if metadata.file_type().is_symlink() => {
@@ -154,9 +174,79 @@ impl RootedOutput {
             directory = directory
                 .open_dir_nofollow(component)
                 .map_err(|source| io_error(&traversed, source))?;
+            let current_identity = identity(
+                &directory
+                    .dir_metadata()
+                    .map_err(|source| io_error(&traversed, source))?,
+            );
+            if expected_identities
+                .as_ref()
+                .and_then(|identities| identities.get(index))
+                .is_some_and(|expected| *expected != current_identity)
+            {
+                return Err(PathError::OutputParentChanged {
+                    path: self.display_path.clone(),
+                });
+            }
+            observed_identities.push(current_identity);
+        }
+        if create_missing && expected_identities.is_none() {
+            *self.created_parent_identities.lock().map_err(|_| {
+                io_error(
+                    &self.display_path,
+                    io::Error::other("output identity lock failed"),
+                )
+            })? = Some(observed_identities);
         }
         Ok(directory)
     }
+}
+
+#[cfg(target_os = "linux")]
+fn finalize_relative(
+    directory: &Dir,
+    staging: &Path,
+    destination: &Path,
+    display_parent: &Path,
+) -> Result<(), PathError> {
+    rustix::fs::renameat_with(
+        directory,
+        staging,
+        directory,
+        destination,
+        rustix::fs::RenameFlags::NOREPLACE,
+    )
+    .map_err(|source| io_error(display_parent, std::io::Error::from(source)))
+}
+
+#[cfg(windows)]
+fn finalize_relative(
+    _directory: &Dir,
+    staging: &Path,
+    destination: &Path,
+    display_parent: &Path,
+) -> Result<(), PathError> {
+    renamore::rename_exclusive(
+        display_parent.join(staging),
+        display_parent.join(destination),
+    )
+    .map_err(|source| io_error(display_parent, source))
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+fn finalize_relative(
+    _directory: &Dir,
+    _staging: &Path,
+    _destination: &Path,
+    display_parent: &Path,
+) -> Result<(), PathError> {
+    Err(io_error(
+        display_parent,
+        io::Error::new(
+            io::ErrorKind::Unsupported,
+            "atomic no-replace publication is unsupported on this platform",
+        ),
+    ))
 }
 
 fn staging_leaf(name: &str, output: &Path) -> Result<PathBuf, PathError> {
