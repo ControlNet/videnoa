@@ -12,6 +12,7 @@ mod publication_finalize;
 mod recovery_dispatch;
 mod service;
 mod transfer;
+mod transfer_checkpoint;
 mod transfer_executor;
 mod upload;
 mod upload_fresh;
@@ -21,6 +22,7 @@ use hashing_writer::HashingWriter;
 pub use model::{AssignmentClass, ScheduledAssignment, UploadCandidate, UploadPriority};
 pub use service::Scheduler;
 pub use transfer::{DownloadPermit, TransferCoordinator, UploadPermit};
+pub use transfer_checkpoint::{TransferCheckpointObserver, TransferCheckpointPoint};
 use transfer_executor::RetryResult;
 pub use transfer_executor::{
     DownloadOutcome, PublicationOutcome, TransferConfig, TransferExecutor, TransferResources,
