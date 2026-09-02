@@ -157,3 +157,9 @@
 - SQLite timestamp persistence is millisecond precision, so descriptor-backed input mtime checks must compare at that boundary rather than treating sub-millisecond filesystem precision as drift.
 - Requiring response `Content-Length` and hashing through an `AsyncWrite` wrapper provides bounded-memory length and SHA-256 evidence in the same streaming pass.
 - A freshly truncated `.part` plus same-directory verified rename gives one restart model without Range support; failed bodies remove the partial and retry the existing attempt without replaying compute.
+
+## 2026-09-03 Task 12 Review Fix
+
+- A filesystem rename is not the end of the durability boundary: sync the containing directory, then make restart reconciliation hash and accept an already matching verified artifact before retrying network transfer.
+- Retry authorization must compare both task and attempt durable deadlines; checking only one row can admit work early after a partially inconsistent historical write.
+- Recovery commands are not production behavior until the startup composition root dispatches them and follows up tasks whose transfer transition exposed the next recovery stage.
