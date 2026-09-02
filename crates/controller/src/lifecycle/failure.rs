@@ -73,6 +73,17 @@ impl LifecycleFailure {
     }
 
     #[must_use]
+    pub fn publication_admission(message: impl Into<String>) -> Self {
+        Self::new(
+            TaskStatus::Verifying,
+            FailureStage::Publication,
+            FailureCode::PublicationFailed,
+            message,
+            true,
+        )
+    }
+
+    #[must_use]
     pub fn downstream(stage: DownstreamFailure, message: impl Into<String>) -> Self {
         let (expected_status, failure_stage, failure_code) = match stage {
             DownstreamFailure::Upload => (
