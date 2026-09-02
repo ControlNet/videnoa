@@ -5,6 +5,7 @@ mod error;
 mod idempotency;
 mod lifecycle_evidence;
 mod lifecycle_retry;
+mod lifecycle_status;
 mod lifecycle_transition;
 mod models;
 mod reservation;
