@@ -1,0 +1,22 @@
+Task 11 scheduler review-fix evidence, 2026-09-03.
+
+Deterministic regression command:
+  cargo test -p videnoa-controller --test task11 atomic::worker_capacity_reduction_rechecks_usage_after_concurrent_reservation -- --exact --nocapture
+
+Red result on the pre-fix implementation:
+  assertion failed: used <= u64::from(worker.compute_slots.get())
+  durable state: used_slots = 2, compute_slots = 1
+
+The reducer and reservation were ordered with two tokio oneshot checkpoints. No sleep, timeout, polling loop, or scheduler timing assumption was used.
+
+Green result after the atomic SQLite fix:
+  1 passed, 0 failed, 12 filtered out
+  worker update outcome: CapacityBelowUsage
+  durable state: used_slots = 2, compute_slots = 2
+
+Focused regression suites:
+  cargo test -p videnoa-controller --test task11
+  Result: 13 passed, 0 failed.
+
+  cargo test -p videnoa-controller --test persistence_repositories
+  Result: 4 passed, 0 failed.

@@ -1,0 +1,41 @@
+{
+  "task": 11,
+  "scenario": "worker capacity reduction racing a reservation",
+  "coordination": "tokio oneshot checkpoints; no sleeps or wall-clock polling",
+  "events": [
+    {
+      "sequence": 1,
+      "actor": "setup",
+      "event": "persist worker with two compute slots and reserve first task",
+      "durable_used_slots": 1,
+      "durable_compute_slots": 2
+    },
+    {
+      "sequence": 2,
+      "actor": "capacity_reducer",
+      "event": "snapshot durable usage before requesting one compute slot",
+      "observed_used_slots": 1
+    },
+    {
+      "sequence": 3,
+      "actor": "scheduler_reservation",
+      "event": "reserve second task while the reducer waits at its checkpoint",
+      "durable_used_slots": 2,
+      "durable_compute_slots": 2
+    },
+    {
+      "sequence": 4,
+      "actor": "capacity_reducer",
+      "event": "attempt atomic worker update after reservation commit",
+      "outcome": "capacity_below_usage"
+    },
+    {
+      "sequence": 5,
+      "actor": "verification",
+      "event": "reload durable worker and assignment count",
+      "durable_used_slots": 2,
+      "durable_compute_slots": 2,
+      "invariant": "durable_used_slots <= durable_compute_slots"
+    }
+  ]
+}
