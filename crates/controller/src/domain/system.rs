@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    HealthStatus, ReadinessStatus, SchedulerStatus, SseEventId, SseEventKind, TaskSummary,
-    WorkerSummary,
+    HealthStatus, ReadinessStatus, SchedulerStatus, SseEventId, SseEventKind, TaskStatus,
+    TaskSummary, WorkerSummary,
 };
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -24,6 +24,20 @@ pub struct ReadinessCheck {
 pub struct ReadinessResponse {
     pub status: ReadinessStatus,
     pub checks: Vec<ReadinessCheck>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskStatusCount {
+    pub status: TaskStatus,
+    pub count: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskStatusCountsResponse {
+    pub items: Vec<TaskStatusCount>,
+    pub total: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
