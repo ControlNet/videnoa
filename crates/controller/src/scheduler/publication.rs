@@ -4,7 +4,7 @@ use crate::domain::{FailureCode, FailureStage, TaskId, TaskStatus};
 use crate::lifecycle::{
     AdvanceCommand, JitterSample, LifecycleFailure, LifecycleService, PublicationIntent,
 };
-use crate::paths::PathError;
+use crate::paths::{PathError, PublicationArtifact};
 use crate::persistence::{AttemptRecord, TaskRecord};
 
 use super::download_artifact::recover_verified;
@@ -150,26 +150,33 @@ impl TransferExecutor {
             Err(error) => return self.fail_publication_path(task, attempt, error, now).await,
         };
         match output.open_final() {
-            Ok(Some(final_file)) => {
+            Ok(PublicationArtifact::Regular(final_file)) => {
                 return match matches_file(final_file, expected.size, expected.sha256).await {
-                    Ok(true) => Ok(true),
+                    Ok(true) => match output.open_staging(staging_name) {
+                        Ok(PublicationArtifact::Missing) => Ok(true),
+                        Ok(PublicationArtifact::Regular(_) | PublicationArtifact::NonRegular)
+                        | Err(_) => self.fail_ambiguous(task, attempt, now).await,
+                    },
                     Ok(false) => self.fail_ambiguous(task, attempt, now).await,
                     Err(_) => self.fail_publication(task, attempt, now).await,
                 };
             }
-            Ok(None) => {}
+            Ok(PublicationArtifact::Missing) => {}
+            Ok(PublicationArtifact::NonRegular) => {
+                return self.fail_ambiguous(task, attempt, now).await;
+            }
             Err(PathError::Io { .. }) => return self.fail_publication(task, attempt, now).await,
             Err(_) => return self.fail_ambiguous(task, attempt, now).await,
         }
         match output.open_staging(staging_name) {
-            Ok(Some(staging)) => {
+            Ok(PublicationArtifact::Regular(staging)) => {
                 match matches_file(staging, expected.size, expected.sha256).await {
                     Ok(true) => {}
                     Ok(false) => return self.fail_ambiguous(task, attempt, now).await,
                     Err(_) => return self.fail_publication(task, attempt, now).await,
                 }
             }
-            Ok(None) => {
+            Ok(PublicationArtifact::Missing) => {
                 let artifact = match recover_verified(
                     &self.config.temp_root.join(task.id.to_string()),
                     task.output_extension.as_str(),
@@ -198,6 +205,9 @@ impl TransferExecutor {
                 {
                     return self.fail_publication(task, attempt, now).await;
                 }
+            }
+            Ok(PublicationArtifact::NonRegular) => {
+                return self.fail_ambiguous(task, attempt, now).await;
             }
             Err(PathError::Io { .. }) => return self.fail_publication(task, attempt, now).await,
             Err(_) => return self.fail_ambiguous(task, attempt, now).await,

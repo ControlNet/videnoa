@@ -64,15 +64,6 @@ pub(super) async fn copy_verified(
     Ok(())
 }
 
-pub(super) async fn rename_exclusive(
-    staging: PathBuf,
-    destination: PathBuf,
-) -> Result<(), std::io::Error> {
-    tokio::task::spawn_blocking(move || renamore::rename_exclusive(staging, destination))
-        .await
-        .map_err(std::io::Error::other)?
-}
-
 #[cfg(unix)]
 pub(super) async fn sync_directory(path: &Path) -> Result<(), std::io::Error> {
     let path = path.to_owned();

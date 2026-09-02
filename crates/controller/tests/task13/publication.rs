@@ -185,3 +185,125 @@ async fn racing_destination_preserves_final_and_owned_staging() -> TestResult {
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn matching_final_with_owned_staging_is_ambiguous() -> TestResult {
+    // Given: durable publication evidence names both a matching final and a remaining staging file.
+    let server = MockVidenoa::start().await?;
+    let output = b"contradictory publication".repeat(1024);
+    let (fixture, prepared) = verified_task(&server, &output).await?;
+    let task = fixture.task(prepared.task_id).await?;
+    let attempt = fixture.attempt(prepared.attempt_id).await?;
+    let staging_name = ".videnoa-contradiction.staging";
+    LifecycleService::new(fixture.store.clone())
+        .advance(
+            &task,
+            &attempt,
+            AdvanceCommand::FinishVerification(PublicationIntent::new(staging_name)),
+            fixture.now,
+        )
+        .await?;
+    let destination = output_path(&fixture, &prepared).await?;
+    let staging = destination
+        .parent()
+        .ok_or_else(|| std::io::Error::other("destination parent missing"))?
+        .join(staging_name);
+    tokio::fs::write(&destination, &output).await?;
+    tokio::fs::write(&staging, &output).await?;
+
+    // When: publication recovery inspects both durable names.
+    let outcome = publish(&fixture, &prepared).await?;
+
+    // Then: contradictory ownership is terminal and both artifacts are preserved.
+    assert_eq!(outcome, PublicationOutcome::Failed);
+    assert_eq!(tokio::fs::read(&destination).await?, output);
+    assert_eq!(tokio::fs::read(&staging).await?, output);
+    assert_eq!(
+        fixture
+            .task(prepared.task_id)
+            .await?
+            .failure
+            .map(|failure| failure.failure_code),
+        Some(FailureCode::PublicationAmbiguous)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn non_regular_final_is_ambiguous_without_opening_it() -> TestResult {
+    // Given: a directory occupies the final publication leaf.
+    let server = MockVidenoa::start().await?;
+    let output = b"regular bytes".repeat(1024);
+    let (fixture, prepared) = verified_task(&server, &output).await?;
+    let task = fixture.task(prepared.task_id).await?;
+    let attempt = fixture.attempt(prepared.attempt_id).await?;
+    LifecycleService::new(fixture.store.clone())
+        .advance(
+            &task,
+            &attempt,
+            AdvanceCommand::FinishVerification(PublicationIntent::new(
+                ".videnoa-directory-final.staging",
+            )),
+            fixture.now,
+        )
+        .await?;
+    let destination = output_path(&fixture, &prepared).await?;
+    tokio::fs::create_dir(&destination).await?;
+
+    // When: publication recovery inspects the final leaf.
+    let outcome = publish(&fixture, &prepared).await?;
+
+    // Then: it terminates as ambiguity and preserves the directory.
+    assert_eq!(outcome, PublicationOutcome::Failed);
+    assert!(destination.is_dir());
+    assert_eq!(
+        fixture
+            .task(prepared.task_id)
+            .await?
+            .failure
+            .map(|failure| failure.failure_code),
+        Some(FailureCode::PublicationAmbiguous)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn non_regular_staging_is_ambiguous_without_opening_it() -> TestResult {
+    // Given: a directory occupies the durable hidden staging leaf.
+    let server = MockVidenoa::start().await?;
+    let output = b"regular bytes".repeat(1024);
+    let (fixture, prepared) = verified_task(&server, &output).await?;
+    let task = fixture.task(prepared.task_id).await?;
+    let attempt = fixture.attempt(prepared.attempt_id).await?;
+    let staging_name = ".videnoa-directory-staging.staging";
+    LifecycleService::new(fixture.store.clone())
+        .advance(
+            &task,
+            &attempt,
+            AdvanceCommand::FinishVerification(PublicationIntent::new(staging_name)),
+            fixture.now,
+        )
+        .await?;
+    let destination = output_path(&fixture, &prepared).await?;
+    let staging = destination
+        .parent()
+        .ok_or_else(|| std::io::Error::other("destination parent missing"))?
+        .join(staging_name);
+    tokio::fs::create_dir(&staging).await?;
+
+    // When: publication recovery inspects the staging leaf.
+    let outcome = publish(&fixture, &prepared).await?;
+
+    // Then: it terminates as ambiguity and preserves the directory.
+    assert_eq!(outcome, PublicationOutcome::Failed);
+    assert!(staging.is_dir());
+    assert_eq!(
+        fixture
+            .task(prepared.task_id)
+            .await?
+            .failure
+            .map(|failure| failure.failure_code),
+        Some(FailureCode::PublicationAmbiguous)
+    );
+    Ok(())
+}
