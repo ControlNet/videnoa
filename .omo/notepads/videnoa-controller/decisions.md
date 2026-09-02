@@ -123,3 +123,10 @@
 - Keep file API targets task-owned and derived from task ID plus independent input/output extensions; persist only worker-returned workflow paths for workflow parameters.
 - Use paired atomic task/attempt retry writes for transfer backoff, preserving the existing attempt and remote compute identity.
 - Require a non-zero stat and exact `Content-Length`, sync the local file, and rename to the verified temp name before exposing `verifying`.
+
+## 2026-09-03 Task 12 Review Fix
+
+- Treat paired task/attempt retry deadlines as one admission contract and keep retry persistence ahead of remote cleanup error propagation.
+- Dispatch startup upload/download commands through the same production executor used by normal scheduling, then reconcile only task IDs advanced by that dispatch.
+- Require `remote_job_id`, `remote_input_path`, and the exact sibling `remote_output_path` before download stat; contradictory durable evidence is nonretryable ambiguity.
+- Reconcile an existing verified artifact by bounded hashing rather than deleting it unconditionally, preserving progress across rename-before-CAS crashes.
