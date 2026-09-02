@@ -134,3 +134,8 @@
 
 - Initial strict Clippy found an oversized cleanup function, manual let-else patterns, and an over-parameterized finalizer. The executor was split by publication, finalization, failure, and remote-cleanup responsibility with no lint suppression.
 - Native Linux tests prove `RENAME_NOREPLACE`; direct Windows compilation remains unavailable on this host for the previously documented missing MSVC-compatible C compiler and archiver.
+
+## 2026-09-03 Task 13 Review Fix
+
+- Independent review rejected the original Task 13 evidence because ambient finalization escaped the capability boundary, non-regular artifacts could be opened, matching final plus staging was accepted, malformed cleanup aborted startup dispatch, tests overstated race/crash coverage, and `lifecycle_transition.rs` exceeded 250 pure LOC.
+- The corrected focused suite has 14 Task 13 integration cases plus a direct created-parent replacement unit regression. The evidence no longer claims forced EXDEV, permission denial, FIFO, cancellation, or every crash window as executed scenarios.
