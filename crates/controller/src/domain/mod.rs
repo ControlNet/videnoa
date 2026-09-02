@@ -26,7 +26,10 @@ pub use settings::{
     RetrySettingsDto, SchedulerStatus, SettingsPaths, SettingsResponse, SettingsUpdateRequest,
     TimeoutSettingsDto,
 };
-pub use system::{HealthResponse, ReadinessCheck, ReadinessResponse, SseEvent};
+pub use system::{
+    HealthResponse, ReadinessCheck, ReadinessResponse, SseEvent, TaskStatusCount,
+    TaskStatusCountsResponse,
+};
 pub use task::{
     FailureInfo, RetryMetadata, Task, TaskAttempt, TaskCreateRequest, TaskDetailResponse,
     TaskListQuery, TaskListResponse, TaskSummary,

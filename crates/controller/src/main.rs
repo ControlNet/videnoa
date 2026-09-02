@@ -10,7 +10,8 @@ use std::path::Path;
 use clap::{Parser, Subcommand};
 use videnoa_controller::auth::{hash_password, AuthService};
 use videnoa_controller::config::ControllerConfig;
-use videnoa_controller::lifecycle::{JitterSample, RetryPolicy};
+use videnoa_controller::lifecycle::JitterSample;
+use videnoa_controller::operations::{EventHub, OperationsDependencies, OperationsState};
 use videnoa_controller::paths::PathCapabilities;
 use videnoa_controller::persistence::{Database, DatabaseOptions, Store};
 use videnoa_controller::recovery::{Reconciler, RecoveryConfig, ShutdownCoordinator};
@@ -106,9 +107,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         },
         TransferConfig {
             temp_root: config.paths.temp_root.clone(),
-            remote_timeouts,
             payload_limits,
-            retry_policy: RetryPolicy::from_config(&config.retry),
+            runtime_settings: scheduler.runtime_settings().clone(),
         },
     );
     let startup_at = chrono::Utc::now();
@@ -133,19 +133,29 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .await?;
     }
     let auth = AuthService::new(config.auth.clone(), store.clone())?;
-    let tasks = TaskService::new(store.clone(), paths);
+    let events = EventHub::new();
+    let operations = OperationsState::new(OperationsDependencies {
+        auth: auth.clone(),
+        store: store.clone(),
+        scheduler: scheduler.clone(),
+        paths: paths.clone(),
+        config: config.clone(),
+        events: events.clone(),
+        payload_limits,
+    });
+    let tasks = TaskService::with_events(store.clone(), paths, events);
     if !config.auth.secure_cookie {
         eprintln!("warning: session cookies are running without Secure; use only on trusted HTTP networks");
     }
     let assets = frontend_assets()?;
-    let server = serve_controller(address, &assets, auth, tasks);
+    let server = serve_controller(address, &assets, auth, tasks, operations);
     tokio::pin!(server);
     tokio::select! {
         result = &mut server => result?,
         signal = shutdown_signal() => {
             signal?;
             shutdown
-                .shutdown(&store, chrono::Utc::now(), SHUTDOWN_DRAIN_BOUND)
+                .shutdown(&scheduler, chrono::Utc::now(), SHUTDOWN_DRAIN_BOUND)
                 .await?;
         }
     }

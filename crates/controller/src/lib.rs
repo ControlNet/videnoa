@@ -19,6 +19,7 @@ pub mod auth;
 pub mod config;
 pub mod domain;
 pub mod lifecycle;
+pub mod operations;
 pub mod paths;
 pub mod persistence;
 pub mod recovery;
