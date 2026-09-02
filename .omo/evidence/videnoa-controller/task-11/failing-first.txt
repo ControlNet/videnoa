@@ -1,0 +1,12 @@
+Task 11 failing-first evidence, 2026-09-02.
+
+Initial focused command:
+  cargo test -p videnoa-controller --test task11 -- --test-threads=1
+
+Initial expected failure:
+- unresolved videnoa_controller::workers
+- unresolved videnoa_controller::scheduler
+
+After public modules were introduced, compilation exposed missing deterministic worker fixture support and an invalid attempt-less cancellation setup. These were corrected without weakening production lifecycle invariants.
+
+Broader regression runs then exposed legacy fixtures that marked workers online without compatible capability evidence and a migration count pinned to two. Fixtures were updated to satisfy the new atomic reservation contract, and the migration assertion now expects three production migrations.
