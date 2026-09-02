@@ -2,7 +2,7 @@ use sqlx::{QueryBuilder, Row, Sqlite};
 
 use crate::domain::{SortDirection, TaskListQuery, TaskSortField, TaskStatus};
 
-use super::codec::{failure_stage, task_source, task_status};
+use super::codec::{failure_stage, parse_task_status, task_source, task_status};
 use super::models::{PageResult, TaskRecord};
 use super::task_row::{map_task, TASK_COLUMNS};
 use super::{PersistenceError, Store};
@@ -79,6 +79,26 @@ impl Store {
             .fetch_one(self.database.pool())
             .await?;
         super::codec::rust_u64("task_status_count", count)
+    }
+
+    /// # Errors
+    /// Returns a persistence error when grouped status counts cannot be loaded or decoded.
+    pub async fn task_status_counts(&self) -> Result<Vec<(TaskStatus, u64)>, PersistenceError> {
+        let rows = sqlx::query(
+            "SELECT status, COUNT(*) AS count FROM tasks GROUP BY status ORDER BY status",
+        )
+        .fetch_all(self.database.pool())
+        .await?;
+        rows.iter()
+            .map(|row| {
+                let status: String = row.try_get("status")?;
+                let count: i64 = row.try_get("count")?;
+                Ok((
+                    parse_task_status(&status)?,
+                    super::codec::rust_u64("count", count)?,
+                ))
+            })
+            .collect()
     }
 }
 

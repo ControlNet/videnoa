@@ -1,7 +1,7 @@
 mod error;
 mod fingerprint;
 mod intake;
-mod mapping;
+pub(crate) mod mapping;
 mod routes;
 
 pub use intake::TaskService;

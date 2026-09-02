@@ -10,9 +10,12 @@ use serde_json::{json, Value};
 use tempfile::TempDir;
 use tower::ServiceExt;
 use videnoa_controller::auth::{hash_password, AuthService};
-use videnoa_controller::config::{AuthConfig, PathConfig};
+use videnoa_controller::config::{AuthConfig, ControllerConfig, PathConfig};
+use videnoa_controller::operations::{EventHub, OperationsDependencies, OperationsState};
 use videnoa_controller::paths::PathCapabilities;
 use videnoa_controller::persistence::{Database, DatabaseOptions, Store};
+use videnoa_controller::remote::PayloadLimits;
+use videnoa_controller::scheduler::Scheduler;
 use videnoa_controller::tasks::TaskService;
 use videnoa_controller::{controller_app_router, FrontendAssets};
 
@@ -56,23 +59,37 @@ async fn fixture() -> TestResult<Fixture> {
     ))
     .await?;
     let store = Store::new(database);
-    let auth = AuthService::new(
-        AuthConfig {
-            password_hash_file: hash_file,
-            secure_cookie: false,
-            session_absolute: Duration::from_secs(86_400),
-            session_idle: Duration::from_secs(3_600),
-        },
-        store.clone(),
-    )?;
-    let paths = PathCapabilities::open(&PathConfig {
+    let auth_config = AuthConfig {
+        password_hash_file: hash_file,
+        secure_cookie: false,
+        session_absolute: Duration::from_secs(86_400),
+        session_idle: Duration::from_secs(3_600),
+    };
+    let path_config = PathConfig {
         input_roots: vec![input_root],
         output_roots: vec![output_root],
         data_root: directory.path().join("data"),
         temp_root: directory.path().join("temp"),
-    })?;
+    };
+    let auth = AuthService::new(auth_config.clone(), store.clone())?;
+    let paths = PathCapabilities::open(&path_config)?;
+    let scheduler = Scheduler::load(store.clone()).await?;
+    let config = ControllerConfig {
+        auth: auth_config,
+        paths: path_config,
+        ..ControllerConfig::default()
+    };
+    let operations = OperationsState::new(OperationsDependencies {
+        auth: auth.clone(),
+        store: store.clone(),
+        scheduler,
+        paths: paths.clone(),
+        config,
+        events: EventHub::new(),
+        payload_limits: PayloadLimits::new(1024 * 1024, 4096)?,
+    });
     let tasks = TaskService::new(store, paths);
-    let router = controller_app_router(&assets(directory.path())?, auth, tasks);
+    let router = controller_app_router(&assets(directory.path())?, auth, tasks, operations);
     Ok(Fixture {
         _directory: directory,
         router,
