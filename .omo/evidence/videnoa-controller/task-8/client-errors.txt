@@ -58,3 +58,35 @@ Observed typed boundaries:
 - TLS construction uses rustls without native-tls in the Controller normal dependency tree
 
 Result: 17 passed, 0 failed
+
+Preset compatibility contract regression, failing-first proof
+Date: 2026-09-02
+
+Command:
+cargo test -p videnoa-controller --test videnoa_client capabilities_merge_workflows_and_presets_when_interfaces_are_compatible --locked
+
+Production-shaped fixture:
+- `/api/presets` returned extensionless `eligible-preset` and opaque `00000000-0000-4000-8000-000000000042` IDs.
+- Both records contained complete workflow JSON with exact `input` and `output` Path interfaces.
+- `/api/workflows/{preset-id}/interface` returned 404 for both IDs.
+
+Observed before fix:
+assertion failed at crates/controller/tests/videnoa_client.rs:76
+left: Some(Incompatible)
+right: Some(Eligible)
+test result: FAILED. 0 passed; 1 failed; 16 filtered out
+
+Preset compatibility contract regression, green closure
+Date: 2026-09-02
+
+Command:
+cargo test -p videnoa-controller --test videnoa_client --test mock_videnoa --locked
+
+Observed after fix:
+- Extensionless bundled preset `eligible-preset` is Eligible from its embedded workflow interface.
+- Opaque API-created preset `00000000-0000-4000-8000-000000000042` is Eligible from its embedded workflow interface.
+- No workflow-interface request is issued for either preset ID.
+- Saved workflow interface requests remain unchanged.
+- A saved workflow outranks an incompatible preset with the same ID.
+
+Result: mock_videnoa 11 passed; videnoa_client 17 passed; 0 failed

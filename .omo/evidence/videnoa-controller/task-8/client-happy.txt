@@ -17,3 +17,14 @@ Broader verification:
 - rustup run 1.83.0 cargo test -p videnoa-controller --all-targets --locked: passed
 - cargo test -p videnoa-core --lib --tests: 609 passed, 10 ignored, 0 failed; crash-hook tests 3 passed
 - cargo test --workspace: passed
+
+Preset wire-contract follow-up verification:
+- cargo fmt --all -- --check: passed
+- cargo clippy -p videnoa-controller --all-targets --all-features --locked -- -D warnings: passed
+- cargo test -p videnoa-controller --test videnoa_client --test mock_videnoa --locked: 28 passed, 0 failed
+- cargo test -p videnoa-controller --all-targets --locked: passed
+- cargo test -p videnoa-core --lib --tests --locked: 609 passed, 10 ignored, 0 failed; crash-hook tests 3 passed
+- cargo test --workspace --locked: passed
+- rustup run 1.83.0 cargo test -p videnoa-controller --all-targets --locked: passed
+- LSP diagnostics: no issues in all seven changed Rust files
+- Real-TCP journal confirmed preset capability discovery consumed `/api/presets` embedded interfaces without synthetic `/api/workflows/{preset-id}/interface` requests.
