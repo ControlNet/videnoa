@@ -31,12 +31,14 @@ pub type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 
 pub struct Fixture {
     pub directory: TempDir,
+    _output_directory: Option<TempDir>,
     pub store: Store,
     pub paths: PathCapabilities,
     pub coordinator: TransferCoordinator,
     pub worker_id: WorkerId,
     pub now: DateTime<Utc>,
     pub input_root: PathBuf,
+    pub output_root: PathBuf,
     pub temp_root: PathBuf,
     server_url: WorkerApiUrl,
 }
@@ -49,8 +51,38 @@ pub struct PreparedTask {
 impl Fixture {
     pub async fn new(server: &MockVidenoa, uploads: u16, downloads: u16) -> TestResult<Self> {
         let directory = TempDir::new()?;
+        Self::open(server, uploads, downloads, directory, None).await
+    }
+
+    pub async fn new_with_output_directory(
+        server: &MockVidenoa,
+        uploads: u16,
+        downloads: u16,
+        output_directory: TempDir,
+    ) -> TestResult<Self> {
+        let directory = TempDir::new()?;
+        Self::open(
+            server,
+            uploads,
+            downloads,
+            directory,
+            Some(output_directory),
+        )
+        .await
+    }
+
+    async fn open(
+        server: &MockVidenoa,
+        uploads: u16,
+        downloads: u16,
+        directory: TempDir,
+        output_directory: Option<TempDir>,
+    ) -> TestResult<Self> {
         let input_root = directory.path().join("input");
-        let output_root = directory.path().join("output");
+        let output_root = output_directory.as_ref().map_or_else(
+            || directory.path().join("output"),
+            |root| root.path().to_path_buf(),
+        );
         let data_root = directory.path().join("data");
         let temp_root = data_root.join("temp");
         for path in [&input_root, &output_root, &data_root, &temp_root] {
@@ -58,7 +90,7 @@ impl Fixture {
         }
         let path_config = PathConfig {
             input_roots: vec![input_root.clone()],
-            output_roots: vec![output_root],
+            output_roots: vec![output_root.clone()],
             data_root,
             temp_root: temp_root.clone(),
         };
@@ -106,12 +138,14 @@ impl Fixture {
             .await?;
         Ok(Self {
             directory,
+            _output_directory: output_directory,
             store,
             paths,
             coordinator: TransferCoordinator::new(uploads, downloads)?,
             worker_id,
             now,
             input_root,
+            output_root,
             temp_root,
             server_url,
         })
@@ -154,11 +188,7 @@ impl Fixture {
                 request: TaskCreateRequest {
                     input_path: InputPath::new(path_string(&input_path)?),
                     output_path: OutputPath::new(path_string(
-                        &self
-                            .directory
-                            .path()
-                            .join("output")
-                            .join(format!("{task_id}.mp4")),
+                        &self.output_root.join(format!("{task_id}.mp4")),
                     )?),
                     workflow: WorkflowName::new("eligible-workflow.json"),
                     priority: 10,
