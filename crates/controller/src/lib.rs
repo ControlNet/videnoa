@@ -23,7 +23,9 @@ pub mod paths;
 pub mod persistence;
 pub mod recovery;
 pub mod remote;
+pub mod scheduler;
 pub mod tasks;
+pub mod workers;
 use asset_path::ExactAssetPath;
 pub use auth::{
     authenticated_app_router, controller_app_router, serve_authenticated, serve_controller,

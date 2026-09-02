@@ -17,15 +17,34 @@ impl Store {
                 attempt_count = attempt_count + 1, updated_at_ms = ?, reserved_at_ms = ?
              WHERE id = ? AND status = 'queued' AND version = ?
                AND EXISTS (
-                   SELECT 1 FROM workers
-                   WHERE id = ? AND enabled = 1 AND online = 1
-               )
-               AND (
-                   SELECT COUNT(*) FROM tasks assigned
-                   WHERE assigned.worker_id = ?
-                     AND assigned.status NOT IN ('completed', 'failed', 'cancelled')
-               ) < (
-                   SELECT compute_slots FROM workers WHERE id = ?
+                   SELECT 1 FROM workers worker
+                   JOIN controller_settings settings ON settings.id = 1
+                   WHERE worker.id = ? AND worker.enabled = 1 AND worker.online = 1
+                     AND settings.paused = 0
+                     AND EXISTS (
+                         SELECT 1 FROM json_each(worker.capabilities_json, '$.workflows') capability
+                         WHERE json_extract(capability.value, '$.name') = tasks.workflow
+                     )
+                     AND (
+                         SELECT COUNT(*) FROM tasks assigned
+                         WHERE assigned.worker_id = worker.id
+                           AND assigned.status NOT IN ('completed', 'failed', 'cancelled')
+                     ) < worker.compute_slots
+                     AND (
+                         NOT EXISTS (
+                             SELECT 1 FROM tasks assigned
+                             WHERE assigned.worker_id = worker.id
+                               AND assigned.status NOT IN ('completed', 'failed', 'cancelled')
+                         ) OR (
+                             SELECT COUNT(*) FROM tasks pending
+                             WHERE pending.worker_id = worker.id
+                               AND pending.status IN ('reserved', 'uploading', 'staged')
+                         ) < settings.prefetch_per_worker + CASE WHEN NOT EXISTS (
+                             SELECT 1 FROM tasks active
+                             WHERE active.worker_id = worker.id
+                               AND active.status IN ('submitting', 'processing')
+                         ) THEN 1 ELSE 0 END
+                     )
                )
              RETURNING attempt_count",
         )
@@ -37,8 +56,6 @@ impl Store {
             "expected_task_version",
             reservation.expected_task_version,
         )?)
-        .bind(reservation.worker_id.to_string())
-        .bind(reservation.worker_id.to_string())
         .bind(reservation.worker_id.to_string())
         .fetch_optional(&mut *transaction)
         .await?;
