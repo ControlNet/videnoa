@@ -43,7 +43,12 @@ pub struct Preset {
     pub id: WorkflowName,
     pub name: String,
     pub description: String,
-    pub workflow: Value,
+    pub workflow: PresetWorkflow,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub struct PresetWorkflow {
+    pub interface: Option<WorkflowInterface>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
