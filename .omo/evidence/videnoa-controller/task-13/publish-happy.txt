@@ -3,17 +3,22 @@ Date: 2026-09-03
 
 Commands:
 - cargo test -p videnoa-controller --test task13 -- --test-threads=1
-- cargo test -p videnoa-controller --lib paths::publication_tests::created_publication_parent_replacement_is_rejected -- --exact --test-threads=1
-Result: 14 integration tests passed; 1 focused capability unit test passed
+- cargo test -p videnoa-controller --lib paths:: -- --test-threads=1
+- cargo test -p videnoa-controller -- --test-threads=1
+- cargo +1.83.0 test -p videnoa-controller --test task13 -- --test-threads=1
+Result: 24 Task 13 integration tests, 3 focused path unit tests, and the full Controller suite passed; all 24 Task 13 tests also passed on Rust 1.83.0
 
 Observed production-surface scenarios:
 - Verifying -> Publishing persists expected length, SHA-256, and a unique .videnoa-*.staging leaf before filesystem effects.
 - Destination-owned create_new staging receives a bounded 64 KiB copy, recomputes SHA-256 and length, flushes, and syncs before finalization.
 - Linux finalization uses rustix descriptor-relative renameat2 RENAME_NOREPLACE; Windows retains MoveFileExW without REPLACE_EXISTING after immediate capability revalidation.
+- Parent-directory durability sync remains attached to the retained capability descriptor even if the ambient parent pathname is replaced after rename.
+- A real `/tmp` to `/dev/shm` placement proves destination-owned staging avoids EXDEV during finalization.
 - A matching final left after finalization-before-CAS advances Publishing -> RemoteCleanup without requiring the verified temp source.
 - A matching hidden staging file resumes finalization without requiring the verified temp source.
 - Local task temp removal precedes remote workspace DELETE.
 - Remote DELETE 404 is idempotent success; FinishCleanup commits RemoteCleanup -> Completed.
+- A real interruption after DELETE success but before completion CAS retries through 404 and converges to Completed.
 - Startup recovery dispatch executes Verify, Publish, and Cleanup through the production executor and continues after task-local malformed cleanup evidence is terminalized.
 - Worker HTTP 503 does not block local publication: output is finalized, local temp is removed, and remote cleanup retry metadata is persisted on task and attempt.
 
@@ -26,4 +31,6 @@ Quality gates:
 - cargo clippy -p videnoa-controller --all-targets -- -D warnings: pass
 - cargo test -p videnoa-controller: pass
 - cargo build -p videnoa-controller: pass
-- Evidence scope: no claim is made here for forced EXDEV, permission denial, FIFO, cancellation integration, or every crash window.
+- cargo +1.83.0 build -p videnoa-controller: pass
+- All touched Controller production Rust modules are at most 250 nonblank, non-comment lines.
+- Direct native Windows syscall execution remains unavailable on this Linux host.

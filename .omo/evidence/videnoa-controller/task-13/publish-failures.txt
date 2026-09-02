@@ -3,19 +3,26 @@ Date: 2026-09-03
 
 Commands:
 - cargo test -p videnoa-controller --test task13 -- --test-threads=1
-- cargo test -p videnoa-controller --lib paths::publication_tests::created_publication_parent_replacement_is_rejected -- --exact --test-threads=1
-Result: 14 integration tests passed; 1 focused capability unit test passed
+- cargo test -p videnoa-controller --lib paths:: -- --test-threads=1
+Result: 24 integration tests passed; 3 focused capability unit tests passed
 
 Observed failure scenarios:
 - Destination exists before admission: bytes remain unchanged; verified temp remains; task closes Failed with OutputExists.
 - Destination wins the finalization race: unrelated final and matching owned staging are both preserved; task closes Failed with PublicationAmbiguous.
+- Staging leaf replacement after verified hashing: replacement is never accepted; final rehash detects the changed bytes and preserves both artifacts as PublicationAmbiguous.
 - Hidden staging length/hash mismatch: staging, final boundary, and verified temp are preserved; task closes Failed with PublicationAmbiguous.
 - Matching final plus remaining owned staging: both are preserved and task closes Failed with PublicationAmbiguous.
 - Directory at final or staging leaf: node is never opened as file and task closes Failed with PublicationAmbiguous.
+- Real FIFO at staging and checkpointed regular-to-FIFO replacement: opened-handle metadata classifies ambiguity promptly without blocking.
 - Replacement of a parent created during staging: descriptor-bound finalization rejects OutputParentChanged and preserves verified and unrelated staging bytes.
+- Ambient parent replacement after rename: parent sync remains bound to the original retained directory descriptor.
+- Destination permission denial: no final appears, verified temp remains, and retryable PublicationFailed is durable.
+- Local temp cleanup permission denial: no remote DELETE occurs and paired cleanup retry metadata is durable.
 - Malformed RemoteCleanup worker evidence: malformed task closes with RemoteStateAmbiguous while unrelated verified startup work completes.
 - Remote DELETE 500: published output remains, local temp stays removed, paired retry_count=1 and next_retry_at are durable, and the due retry completes.
 - Remote DELETE 400: published output remains and task closes terminally with stage RemoteCleanup, code CleanupFailed, retryable=false.
+- Connection-refused DELETE retries through the configured bound, then closes CleanupFailed without replaying upload, run, or download.
+- Cancellation at Verifying blocks publication effects; cancellation at Publishing and RemoteCleanup conflicts while mandatory convergence completes.
 - Worker service unavailable during startup: local publication still converges and remote cleanup remains RemoteCleanup with durable retry metadata.
 
 Representative preserved evidence:
@@ -23,4 +30,4 @@ Representative preserved evidence:
 - corrupt_staging bytes=21 sha256=5d17807b77961e58bcfc0fccad4f6fb21b8c4432d54dbfb9709240f303e49ec4
 
 No production unsafe, replacing rename, whole-file buffering, sleeps, or test-only production branch was introduced.
-Not executed by this evidence: forced EXDEV, permission denial, FIFO, cancellation integration, and every requested crash window.
+The production checkpoint observer defaults to a no-op and is used only to deterministically interrupt real effect boundaries in tests.
