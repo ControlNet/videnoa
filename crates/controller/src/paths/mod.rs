@@ -7,6 +7,7 @@ use cap_std::fs::{File, OpenOptions};
 
 use crate::config::PathConfig;
 
+mod publication;
 mod root;
 use root::{identity, select_root, Root};
 
