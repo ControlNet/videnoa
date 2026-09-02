@@ -10,13 +10,17 @@ path = "src/main.rs"
 
 [dependencies]
 axum.workspace = true
+chrono.workspace = true
 clap.workspace = true
+figment.workspace = true
 mime_guess.workspace = true
 percent-encoding.workspace = true
 rust-embed.workspace = true
 serde.workspace = true
 thiserror = "2"
 tokio.workspace = true
+url.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

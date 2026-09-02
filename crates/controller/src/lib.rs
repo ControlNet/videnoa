@@ -13,9 +13,10 @@ use axum::routing::{any, get};
 use axum::Json;
 use axum::Router;
 use percent_encoding::percent_decode_str;
-use serde::Serialize;
 
 mod asset_path;
+pub mod config;
+pub mod domain;
 use asset_path::ExactAssetPath;
 
 #[cfg(not(debug_assertions))]
@@ -92,18 +93,15 @@ impl FrontendAssets {
     }
 }
 
-#[derive(Serialize)]
-struct HealthResponse {
-    status: &'static str,
-}
-
-#[derive(Serialize)]
+#[derive(serde::Serialize)]
 struct ApiErrorResponse {
     error: &'static str,
 }
 
-async fn health() -> Json<HealthResponse> {
-    Json(HealthResponse { status: "ok" })
+async fn health() -> Json<domain::HealthResponse> {
+    Json(domain::HealthResponse {
+        status: domain::HealthStatus::Ok,
+    })
 }
 
 async fn api_route_not_found() -> (StatusCode, Json<ApiErrorResponse>) {
