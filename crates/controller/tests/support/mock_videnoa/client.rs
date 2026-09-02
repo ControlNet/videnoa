@@ -71,25 +71,29 @@ impl MockClient {
             .error_for_status()?
             .json()
             .await?;
-        let names = workflows
-            .into_iter()
-            .map(|workflow| (workflow.filename, workflow.has_interface))
-            .chain(presets.into_iter().map(|preset| (preset.id, true)));
         let mut eligibility = BTreeMap::new();
-        for (name, has_interface) in names {
-            if !has_interface {
-                eligibility.insert(name, false);
+        for workflow in workflows {
+            if !workflow.has_interface {
+                eligibility.insert(workflow.filename, false);
                 continue;
             }
             let interface: WorkflowInterface = self
                 .http
-                .get(format!("{}/api/workflows/{name}/interface", self.base_url))
+                .get(format!(
+                    "{}/api/workflows/{}/interface",
+                    self.base_url, workflow.filename
+                ))
                 .send()
                 .await?
                 .error_for_status()?
                 .json()
                 .await?;
-            eligibility.insert(name, is_eligible(&interface));
+            eligibility.insert(workflow.filename, is_eligible(&interface));
+        }
+        for preset in presets {
+            eligibility
+                .entry(preset.id)
+                .or_insert_with(|| preset.workflow.interface.as_ref().is_some_and(is_eligible));
         }
         Ok(Catalog { eligibility })
     }

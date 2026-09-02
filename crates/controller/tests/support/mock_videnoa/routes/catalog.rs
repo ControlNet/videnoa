@@ -10,7 +10,9 @@ use super::{
     body_bytes, error_response, journal_request, json_response, raw_json_response, record,
     MAX_JSON_BYTES,
 };
-use crate::mock_videnoa::domain::{PresetResponse, WorkflowEntry, WorkflowInterface, WorkflowPort};
+use crate::mock_videnoa::domain::{
+    PresetResponse, PresetWorkflow, WorkflowEntry, WorkflowInterface, WorkflowPort,
+};
 use crate::mock_videnoa::journal::{JournalOutcome, Route};
 use crate::mock_videnoa::state::SharedState;
 
@@ -37,7 +39,7 @@ pub(crate) async fn workflow_interface(
     let sequence = state.inner.lock().await.begin(Route::Interface);
     let journal = journal_request(&parts, &body, Route::Interface, sequence, BTreeMap::new());
     let interface = match filename.as_str() {
-        "eligible-workflow.json" | "eligible-preset" => Some(eligible_interface()),
+        "eligible-workflow.json" => Some(eligible_interface()),
         "missing-path.json" => Some(missing_path_interface()),
         "wrong-path-type.json" => Some(wrong_path_interface()),
         _ => None,
@@ -115,12 +117,26 @@ pub(crate) fn saved_workflows() -> Vec<WorkflowEntry> {
 }
 
 pub(crate) fn preset_entries() -> Vec<PresetResponse> {
-    vec![PresetResponse {
-        id: "eligible-preset".to_owned(),
-        name: "Eligible Preset".to_owned(),
-        description: "Test-only compatible preset".to_owned(),
-        workflow: workflow_document(&eligible_interface()),
-    }]
+    vec![
+        PresetResponse {
+            id: "eligible-preset".to_owned(),
+            name: "Eligible Bundled Preset".to_owned(),
+            description: "Test-only bundled preset".to_owned(),
+            workflow: preset_workflow(&eligible_interface()),
+        },
+        PresetResponse {
+            id: "00000000-0000-4000-8000-000000000042".to_owned(),
+            name: "Eligible API Preset".to_owned(),
+            description: "Test-only API-created preset".to_owned(),
+            workflow: preset_workflow(&eligible_interface()),
+        },
+        PresetResponse {
+            id: "eligible-workflow.json".to_owned(),
+            name: "Duplicate Incompatible Preset".to_owned(),
+            description: "Test-only duplicate precedence preset".to_owned(),
+            workflow: preset_workflow(&missing_path_interface()),
+        },
+    ]
 }
 
 fn workflow_entry(filename: &str, name: &str, interface: &WorkflowInterface) -> WorkflowEntry {
@@ -135,6 +151,14 @@ fn workflow_entry(filename: &str, name: &str, interface: &WorkflowInterface) -> 
 
 fn workflow_document(interface: &WorkflowInterface) -> Value {
     json!({"nodes": [], "connections": [], "interface": interface})
+}
+
+fn preset_workflow(interface: &WorkflowInterface) -> PresetWorkflow {
+    PresetWorkflow {
+        nodes: Vec::new(),
+        connections: Vec::new(),
+        interface: Some(interface.clone()),
+    }
 }
 
 fn port(name: &str, port_type: &str) -> WorkflowPort {
