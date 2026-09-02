@@ -7,12 +7,14 @@ use cap_std::fs::File;
 
 use crate::config::PathConfig;
 
+mod input_identity;
 mod output;
 mod publication;
 mod publication_finalizer;
 #[cfg(test)]
 mod publication_tests;
 mod root;
+use input_identity::content_identity;
 pub(crate) use publication::PublicationArtifact;
 pub(crate) use publication_finalizer::PublicationFinalizer;
 use root::{identity, select_root, Root};
@@ -58,6 +60,7 @@ pub(super) struct Identity {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct InputSnapshot {
     identity: Identity,
+    content_identity: [u8; 16],
     pub length: u64,
     pub modified: SystemTime,
 }
@@ -86,6 +89,11 @@ impl InputSnapshot {
         bytes[..8].copy_from_slice(&self.identity.device.to_le_bytes());
         bytes[8..].copy_from_slice(&self.identity.inode.to_le_bytes());
         bytes
+    }
+
+    #[must_use]
+    pub const fn content_identity(&self) -> [u8; 16] {
+        self.content_identity
     }
 }
 
@@ -125,20 +133,38 @@ impl PathCapabilities {
     pub fn open_input(&self, path: impl AsRef<Path>) -> Result<RootedInput, PathError> {
         let path = path.as_ref();
         let (root, relative) = select_root(&self.inputs, path)?;
-        let file = root.open_file(&relative, false)?;
+        let mut file = root.open_file(&relative, false)?;
         let metadata = file.metadata().map_err(|source| io_error(path, source))?;
         if !metadata.is_file() {
             return Err(PathError::InputNotRegular {
                 path: path.to_path_buf(),
             });
         }
+        let accepted_identity = identity(&metadata);
+        let accepted_length = metadata.len();
+        let accepted_modified = metadata
+            .modified()
+            .map_err(|source| io_error(path, source))?
+            .into_std();
+        let content_identity = content_identity(&mut file, path)?;
+        let current = file.metadata().map_err(|source| io_error(path, source))?;
+        let current_modified = current
+            .modified()
+            .map_err(|source| io_error(path, source))?
+            .into_std();
+        if identity(&current) != accepted_identity
+            || current.len() != accepted_length
+            || current_modified != accepted_modified
+        {
+            return Err(PathError::InputChanged {
+                path: path.to_path_buf(),
+            });
+        }
         let snapshot = InputSnapshot {
-            identity: identity(&metadata),
-            length: metadata.len(),
-            modified: metadata
-                .modified()
-                .map_err(|source| io_error(path, source))?
-                .into_std(),
+            identity: accepted_identity,
+            content_identity,
+            length: accepted_length,
+            modified: accepted_modified,
         };
         Ok(RootedInput {
             root: root.clone(),
@@ -197,13 +223,13 @@ impl RootedInput {
         &self.snapshot
     }
 
-    /// Reopens the input and requires identity, size, and modification time to match.
+    /// Reopens the input and requires metadata and content identity to match.
     ///
     /// # Errors
     /// Returns [`PathError::InputChanged`] when the accepted input was replaced or modified.
     pub fn reopen_checked(&self) -> Result<File, PathError> {
         self.root.ensure_current()?;
-        let file = self.root.open_file(&self.relative, true)?;
+        let mut file = self.root.open_file(&self.relative, true)?;
         let metadata = file
             .metadata()
             .map_err(|source| io_error(&self.display_path, source))?;
@@ -215,6 +241,23 @@ impl RootedInput {
             || identity(&metadata) != self.snapshot.identity
             || metadata.len() != self.snapshot.length
             || modified != self.snapshot.modified
+        {
+            return Err(PathError::InputChanged {
+                path: self.display_path.clone(),
+            });
+        }
+        let current_content_identity = content_identity(&mut file, &self.display_path)?;
+        let current = file
+            .metadata()
+            .map_err(|source| io_error(&self.display_path, source))?;
+        let current_modified = current
+            .modified()
+            .map_err(|source| io_error(&self.display_path, source))?
+            .into_std();
+        if identity(&current) != self.snapshot.identity
+            || current.len() != self.snapshot.length
+            || current_modified != self.snapshot.modified
+            || current_content_identity != self.snapshot.content_identity
         {
             return Err(PathError::InputChanged {
                 path: self.display_path.clone(),

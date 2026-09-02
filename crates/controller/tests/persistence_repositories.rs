@@ -11,8 +11,8 @@ use videnoa_controller::domain::{
 };
 use videnoa_controller::persistence::{
     AttemptRemoteUpdate, AuthDigest, CasOutcome, Database, DatabaseOptions, IdempotencyRecord,
-    InputIdentity, NewSession, NewTask, NewWorker, PersistenceError, Reservation,
-    ReservationOutcome, SettingsUpdate, Store, WorkerHealthUpdate, WorkerUpdate,
+    InputContentIdentity, InputIdentity, NewSession, NewTask, NewWorker, PersistenceError,
+    Reservation, ReservationOutcome, SettingsUpdate, Store, WorkerHealthUpdate, WorkerUpdate,
     WorkerUpdateOutcome,
 };
 
@@ -50,6 +50,7 @@ fn task(id: TaskId, now: chrono::DateTime<Utc>) -> NewTask {
         input_size: 9_999,
         input_mtime: now,
         input_identity: InputIdentity::new([2; 16]),
+        input_content_identity: InputContentIdentity::new([3; 16]),
         created_at: now,
     }
 }
@@ -135,6 +136,10 @@ async fn task_and_attempt_repositories_round_trip_remote_evidence() -> TestResul
         .ok_or_else(|| std::io::Error::other("attempt missing"))?;
     assert_eq!(stored_task.request, task(task_id, now).request);
     assert_eq!(stored_task.input_size, 9_999);
+    assert_eq!(
+        stored_task.input_content_identity,
+        Some(InputContentIdentity::new([3; 16]))
+    );
     assert_eq!(stored_task.worker_id, Some(worker_id));
     assert_eq!(stored_attempt.attempt.attempt_number, 1);
     assert_eq!(stored_attempt.attempt.remote_job_id, Some(remote_job_id));

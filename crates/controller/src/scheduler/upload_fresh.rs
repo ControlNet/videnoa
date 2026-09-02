@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 
 use crate::domain::FailureCode;
 use crate::lifecycle::JitterSample;
-use crate::persistence::{AttemptRecord, InputIdentity, TaskRecord};
+use crate::persistence::{AttemptRecord, InputContentIdentity, InputIdentity, TaskRecord};
 use crate::remote::{FileApiPath, VidenoaClient};
 
 use super::{TransferError, TransferExecutor, UploadOutcome};
@@ -36,8 +36,13 @@ impl TransferExecutor {
                 .await;
         };
         let identity = InputIdentity::new(rooted.snapshot().platform_identity());
+        let content_identity = InputContentIdentity::new(rooted.snapshot().content_identity());
         if rooted.snapshot().length != context.task.input_size
             || context.task.input_identity != Some(identity)
+            || context
+                .task
+                .input_content_identity
+                .is_some_and(|expected| expected != content_identity)
             || DateTime::<Utc>::from(rooted.snapshot().modified).timestamp_millis()
                 != context.task.input_mtime.timestamp_millis()
         {

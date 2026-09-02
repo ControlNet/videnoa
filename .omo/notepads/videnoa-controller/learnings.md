@@ -201,3 +201,21 @@
 - Readiness is more useful when it verifies durable migrations, current credentials, and retained filesystem capabilities while intentionally excluding worker liveness.
 - Publishing durable change identifiers at the service boundary lets SSE resolve the latest active snapshot after commit and naturally covers scheduler, recovery, transfer, and worker-health paths.
 - Long-lived authentication checks need both a persistent timer and a non-touching session validation path; otherwise traffic can defer checks or keep idle sessions alive.
+
+## 2026-09-03 Task 12 Input Identity Regression
+
+- Device, inode, byte length, and modification time are not a content identity: fast remove-and-recreate can reproduce all four values. Admission that must issue zero remote writes for changed bytes needs a durable content digest.
+- Hashing a capability-opened input must rewind the same handle before transfer and re-read descriptor metadata after hashing so the accepted digest remains bound to the checked file state.
+
+## 2026-09-03 Task 14 Live QA
+
+- Interactive SSE verification should start the stream and trigger the durable mutation within one bounded shell transaction; otherwise tool latency can expire an otherwise healthy short-lived curl capture before the mutation occurs.
+- A no-replay reconnect proof is strongest when the client first observes `refetch`, waits a bounded interval with zero historical delta events, and only then triggers a new mutation whose typed delta must arrive.
+- Put generated Bearer authentication in a mode-0600 transient curl header file and reference it with `--header @file`; this keeps the value out of command output and process arguments while still exercising the raw HTTP boundary.
+
+## 2026-09-03 Task 14 Oracle Blockers
+
+- Retry cleanup proof is identity proof, not merely terminal-status proof: job ID, workflow, and exact durable input/output params must match before deleting remote workspace state.
+- Aggregate enum endpoints should project sparse persistence results onto one explicit ordered variant table so empty categories remain part of the stable HTTP contract.
+- A lifecycle service that publishes a durable change after commit must be the sole mutation notification boundary; handler-level reload-and-publish duplicates events and makes an already committed response fallible.
+- A post-commit decode regression trigger must satisfy SQLite constraints while violating the Rust decoder, such as schema-valid JSON containing a denied unknown field.

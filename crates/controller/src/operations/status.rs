@@ -5,11 +5,29 @@ use axum::Json;
 use chrono::Utc;
 
 use crate::domain::{
-    ReadinessCheck, ReadinessResponse, ReadinessStatus, TaskStatusCount, TaskStatusCountsResponse,
+    ReadinessCheck, ReadinessResponse, ReadinessStatus, TaskStatus, TaskStatusCount,
+    TaskStatusCountsResponse,
 };
 
 use super::error::OperationsError;
 use super::OperationsState;
+
+const TASK_STATUSES: [TaskStatus; 14] = [
+    TaskStatus::Queued,
+    TaskStatus::Reserved,
+    TaskStatus::Uploading,
+    TaskStatus::Staged,
+    TaskStatus::Submitting,
+    TaskStatus::Processing,
+    TaskStatus::RemoteCompleted,
+    TaskStatus::Downloading,
+    TaskStatus::Verifying,
+    TaskStatus::Publishing,
+    TaskStatus::RemoteCleanup,
+    TaskStatus::Completed,
+    TaskStatus::Failed,
+    TaskStatus::Cancelled,
+];
 
 pub(super) async fn counts(
     State(state): State<OperationsState>,
@@ -22,9 +40,15 @@ pub(super) async fn counts(
     let total = counts.iter().try_fold(0_u64, |total, (_, count)| {
         total.checked_add(*count).ok_or(OperationsError::Internal)
     })?;
-    let items = counts
+    let items = TASK_STATUSES
         .into_iter()
-        .map(|(status, count)| TaskStatusCount { status, count })
+        .map(|status| TaskStatusCount {
+            status,
+            count: counts
+                .iter()
+                .find(|(persisted, _)| *persisted == status)
+                .map_or(0, |(_, count)| *count),
+        })
         .collect();
     Ok(Json(TaskStatusCountsResponse { items, total }))
 }

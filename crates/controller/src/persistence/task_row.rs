@@ -11,12 +11,15 @@ use super::codec::{
     parse_optional_timestamp, parse_task_source, parse_task_status, parse_timestamp, rust_u32,
     rust_u64,
 };
-use super::models::{InputIdentity, PublicationEvidence, Sha256Digest, TaskLifecycle, TaskRecord};
+use super::models::{
+    InputContentIdentity, InputIdentity, PublicationEvidence, Sha256Digest, TaskLifecycle,
+    TaskRecord,
+};
 use super::PersistenceError;
 
 pub(super) const TASK_COLUMNS: &str = "id, version, status, input_path, output_path, \
     input_extension, output_extension, workflow, priority, source, source_reference, input_size, \
-    input_mtime_ms, input_identity, worker_id, progress_json, attempt_count, failure_stage, failure_code, \
+    input_mtime_ms, input_identity, input_content_identity, worker_id, progress_json, attempt_count, failure_stage, failure_code, \
     failure_message, failure_retryable, retry_count, next_retry_at_ms, cancel_requested_at_ms, \
     created_at_ms, updated_at_ms, reserved_at_ms, upload_started_at_ms, staged_at_ms, \
     submission_started_at_ms, processing_started_at_ms, remote_completed_at_ms, \
@@ -67,6 +70,14 @@ pub(super) fn map_task(row: &SqliteRow) -> Result<TaskRecord, PersistenceError> 
                 .map_err(|bytes| corrupt("input_identity", bytes.len()))
         })
         .transpose()?;
+    let input_content_identity = row
+        .try_get::<Option<Vec<u8>>, _>("input_content_identity")?
+        .map(|bytes| {
+            <[u8; 16]>::try_from(bytes)
+                .map(InputContentIdentity::new)
+                .map_err(|bytes| corrupt("input_content_identity", bytes.len()))
+        })
+        .transpose()?;
     Ok(TaskRecord {
         id: parse_brand::<TaskId>("id", row.try_get("id")?)?,
         version: rust_u64("version", row.try_get("version")?)?,
@@ -84,6 +95,7 @@ pub(super) fn map_task(row: &SqliteRow) -> Result<TaskRecord, PersistenceError> 
         input_size: rust_u64("input_size", row.try_get("input_size")?)?,
         input_mtime: parse_timestamp("input_mtime_ms", row.try_get("input_mtime_ms")?)?,
         input_identity,
+        input_content_identity,
         worker_id,
         progress: decode_json::<TaskProgress>("progress_json", row.try_get("progress_json")?)?,
         attempt_count: rust_u32("attempt_count", row.try_get("attempt_count")?)?,

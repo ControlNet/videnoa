@@ -15,8 +15,8 @@ use videnoa_controller::lifecycle::{
     UploadEvidence,
 };
 use videnoa_controller::persistence::{
-    Database, DatabaseOptions, InputIdentity, NewTask, NewWorker, SettingsUpdate, Store,
-    TaskRecord, WorkerHealthUpdate,
+    Database, DatabaseOptions, InputContentIdentity, InputIdentity, NewTask, NewWorker,
+    SettingsUpdate, Store, TaskRecord, WorkerHealthUpdate,
 };
 use videnoa_controller::remote::{PayloadLimits, RemoteTimeouts, UploadReceipt, VidenoaClient};
 
@@ -211,6 +211,7 @@ impl Fixture {
                 input_size: 4,
                 input_mtime: self.now,
                 input_identity: InputIdentity::new([1; 16]),
+                input_content_identity: InputContentIdentity::new([2; 16]),
                 created_at: self.now,
             })
             .await?;

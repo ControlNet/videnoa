@@ -96,6 +96,9 @@ impl TaskService {
             input_size: input.snapshot().length,
             input_mtime: DateTime::<Utc>::from(input.snapshot().modified),
             input_identity: InputIdentity::new(input.snapshot().platform_identity()),
+            input_content_identity: crate::persistence::InputContentIdentity::new(
+                input.snapshot().content_identity(),
+            ),
             created_at: now,
         };
         let record = IdempotencyRecord {

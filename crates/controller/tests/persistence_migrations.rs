@@ -75,7 +75,7 @@ async fn existing_database_migrates_idempotently() -> TestResult {
     let settings_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM controller_settings")
         .fetch_one(database.pool())
         .await?;
-    assert_eq!(migration_count, 3);
+    assert_eq!(migration_count, 4);
     assert_eq!(settings_count, 1);
     Ok(())
 }

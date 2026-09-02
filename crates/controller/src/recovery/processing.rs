@@ -31,7 +31,7 @@ impl Reconciler {
         };
         let service = LifecycleService::new(self.store.clone());
         match client.job(remote_job_id).await {
-            Ok(job) if !identity_matches(&task, &attempt, &job) => {
+            Ok(job) if !remote_job_identity_matches(&task, &attempt, &job) => {
                 self.fail_ambiguous(
                     &task,
                     Some(&attempt),
@@ -109,7 +109,11 @@ impl Reconciler {
     }
 }
 
-fn identity_matches(task: &TaskRecord, attempt: &AttemptRecord, job: &Job) -> bool {
+pub(crate) fn remote_job_identity_matches(
+    task: &TaskRecord,
+    attempt: &AttemptRecord,
+    job: &Job,
+) -> bool {
     let Some(remote_job_id) = attempt.attempt.remote_job_id else {
         return false;
     };

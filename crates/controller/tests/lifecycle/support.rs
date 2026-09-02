@@ -11,8 +11,8 @@ use videnoa_controller::lifecycle::{
     AdvanceCommand, CancelAction, DurableAction, LifecycleService, ReserveCommand, UploadEvidence,
 };
 use videnoa_controller::persistence::{
-    AttemptRecord, Database, DatabaseOptions, InputIdentity, NewTask, NewWorker, Store, TaskRecord,
-    WorkerHealthUpdate,
+    AttemptRecord, Database, DatabaseOptions, InputContentIdentity, InputIdentity, NewTask,
+    NewWorker, Store, TaskRecord, WorkerHealthUpdate,
 };
 
 pub type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -88,6 +88,7 @@ pub async fn fixture() -> TestResult<Fixture> {
             input_size: 4_096,
             input_mtime: now,
             input_identity: InputIdentity::new([1; 16]),
+            input_content_identity: InputContentIdentity::new([2; 16]),
             created_at: now,
         })
         .await?;

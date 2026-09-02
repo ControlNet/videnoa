@@ -17,8 +17,8 @@ use videnoa_controller::lifecycle::{
 };
 use videnoa_controller::paths::PathCapabilities;
 use videnoa_controller::persistence::{
-    Database, DatabaseOptions, InputIdentity, NewTask, NewWorker, Store, TaskRecord,
-    WorkerHealthUpdate,
+    Database, DatabaseOptions, InputContentIdentity, InputIdentity, NewTask, NewWorker, Store,
+    TaskRecord, WorkerHealthUpdate,
 };
 use videnoa_controller::remote::{PayloadLimits, RemoteTimeouts, VidenoaClient};
 use videnoa_controller::scheduler::{
@@ -201,6 +201,9 @@ impl Fixture {
                 input_size: rooted.snapshot().length,
                 input_mtime: DateTime::<Utc>::from(rooted.snapshot().modified),
                 input_identity: InputIdentity::new(rooted.snapshot().platform_identity()),
+                input_content_identity: InputContentIdentity::new(
+                    rooted.snapshot().content_identity(),
+                ),
                 created_at: self.now,
             })
             .await?;

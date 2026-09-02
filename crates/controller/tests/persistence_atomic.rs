@@ -12,8 +12,8 @@ use videnoa_controller::domain::{
 };
 use videnoa_controller::lifecycle::{LifecycleErrorCode, LifecycleService};
 use videnoa_controller::persistence::{
-    Database, DatabaseOptions, IdempotencyRecord, InputIdentity, NewTask, NewWorker, Reservation,
-    ReservationOutcome, Store, TaskIngressOutcome, WorkerHealthUpdate,
+    Database, DatabaseOptions, IdempotencyRecord, InputContentIdentity, InputIdentity, NewTask,
+    NewWorker, Reservation, ReservationOutcome, Store, TaskIngressOutcome, WorkerHealthUpdate,
 };
 
 type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -40,6 +40,7 @@ fn task(id: TaskId, created_at: chrono::DateTime<Utc>) -> NewTask {
         input_size: 4_096,
         input_mtime: created_at,
         input_identity: InputIdentity::new([1; 16]),
+        input_content_identity: InputContentIdentity::new([2; 16]),
         created_at,
     }
 }
