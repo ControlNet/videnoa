@@ -130,3 +130,9 @@
 - Dispatch startup upload/download commands through the same production executor used by normal scheduling, then reconcile only task IDs advanced by that dispatch.
 - Require `remote_job_id`, `remote_input_path`, and the exact sibling `remote_output_path` before download stat; contradictory durable evidence is nonretryable ambiguity.
 - Reconcile an existing verified artifact by bounded hashing rather than deleting it unconditionally, preserving progress across rename-before-CAS crashes.
+
+## 2026-09-03 Task 12 Convergence Fix
+
+- Reuse `upload_fresh` directly after a restarting stat returns `NotFound`; do not repeat `StartUpload` because durable status is already `Uploading`.
+- Defer startup upload only for the exact durable paused-and-Reserved predicate, with a pre-check and conflict post-check to close the settings race.
+- Persist local verified evidence as 8-byte big-endian length plus 32-byte SHA-256 before rename, and require the sidecar and artifact to agree before skipping remote stat/GET.
