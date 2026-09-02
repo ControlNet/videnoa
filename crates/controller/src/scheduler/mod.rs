@@ -1,11 +1,14 @@
 mod download;
+mod download_artifact;
 mod error;
 mod hashing_writer;
 mod model;
+mod recovery_dispatch;
 mod service;
 mod transfer;
 mod transfer_executor;
 mod upload;
+mod upload_fresh;
 
 pub use error::{SchedulerError, SchedulerErrorCode, TransferError, TransferLimitError};
 use hashing_writer::HashingWriter;

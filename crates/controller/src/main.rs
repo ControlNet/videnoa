@@ -10,10 +10,14 @@ use std::path::Path;
 use clap::{Parser, Subcommand};
 use videnoa_controller::auth::{hash_password, AuthService};
 use videnoa_controller::config::ControllerConfig;
+use videnoa_controller::lifecycle::{JitterSample, RetryPolicy};
 use videnoa_controller::paths::PathCapabilities;
 use videnoa_controller::persistence::{Database, DatabaseOptions, Store};
 use videnoa_controller::recovery::{Reconciler, RecoveryConfig, ShutdownCoordinator};
 use videnoa_controller::remote::{PayloadLimits, RemoteTimeouts};
+use videnoa_controller::scheduler::{
+    Scheduler, TransferConfig, TransferExecutor, TransferResources,
+};
 use videnoa_controller::tasks::TaskService;
 use videnoa_controller::{serve_controller, FrontendAssets, StartupError};
 
@@ -93,7 +97,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
         config.timeouts.transfer,
     )?;
     let payload_limits = PayloadLimits::new(RECOVERY_JSON_LIMIT, RECOVERY_TRANSFER_CHUNK)?;
-    Reconciler::new(
+    let scheduler = Scheduler::load(store.clone()).await?;
+    let transfers = TransferExecutor::new(
+        TransferResources {
+            store: store.clone(),
+            paths: paths.clone(),
+            coordinator: scheduler.transfers().clone(),
+        },
+        TransferConfig {
+            temp_root: config.paths.temp_root.clone(),
+            remote_timeouts,
+            payload_limits,
+            retry_policy: RetryPolicy::from_config(&config.retry),
+        },
+    );
+    let startup_at = chrono::Utc::now();
+    let reconciler = Reconciler::new(
         store.clone(),
         RecoveryConfig::new(
             remote_timeouts,
@@ -103,9 +122,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
             config.retry.max_attempts.get(),
         ),
         shutdown.clone(),
-    )
-    .reconcile_startup(chrono::Utc::now())
-    .await?;
+    );
+    let recovery = reconciler.reconcile_startup(startup_at).await?;
+    let advanced = transfers
+        .dispatch_recovery(&recovery, startup_at, JitterSample::default())
+        .await?;
+    for task_id in advanced {
+        reconciler
+            .reconcile_task_id(task_id, chrono::Utc::now())
+            .await?;
+    }
     let auth = AuthService::new(config.auth.clone(), store.clone())?;
     let tasks = TaskService::new(store.clone(), paths);
     if !config.auth.secure_cookie {

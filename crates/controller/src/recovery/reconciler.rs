@@ -49,6 +49,29 @@ impl Reconciler {
         Ok(report)
     }
 
+    /// Reconciles one durable task after an in-process stage advances.
+    ///
+    /// # Errors
+    /// Returns a typed error when the task disappears or reconciliation cannot commit.
+    pub async fn reconcile_task_id(
+        &self,
+        task_id: crate::domain::TaskId,
+        now: DateTime<Utc>,
+    ) -> Result<RecoveryReport, RecoveryError> {
+        let task = self
+            .store
+            .task(task_id)
+            .await?
+            .ok_or(RecoveryError::Conflict)?;
+        let mut report = RecoveryReport::default();
+        let Some(stage) = self.shutdown.begin_stage() else {
+            report.defer(task_id);
+            return Ok(report);
+        };
+        self.reconcile_task(task, now, &stage, &mut report).await?;
+        Ok(report)
+    }
+
     async fn reconcile_task(
         &self,
         task: TaskRecord,
@@ -128,12 +151,8 @@ impl Reconciler {
             crate::lifecycle::RecoveryAction::AwaitReservation => {
                 report.push(task.id, RecoveryCommandKind::AwaitReservation);
             }
-            crate::lifecycle::RecoveryAction::BeginUpload => {
-                report.push(task.id, RecoveryCommandKind::Upload);
-            }
-            crate::lifecycle::RecoveryAction::ReconcileUpload => {
-                self.reconcile_upload(&task, &attempt, client, now, stage)
-                    .await?;
+            crate::lifecycle::RecoveryAction::BeginUpload
+            | crate::lifecycle::RecoveryAction::ReconcileUpload => {
                 report.push(task.id, RecoveryCommandKind::Upload);
             }
             crate::lifecycle::RecoveryAction::BeginSubmission
