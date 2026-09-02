@@ -154,3 +154,9 @@
 - Treat a matching final as proof only when the durable staging name is absent. Any remaining regular or non-regular staging node preserves all evidence and closes as `PublicationAmbiguous`.
 - Convert `TransferError::MissingEvidence` from startup verify/publish/cleanup commands into durable task-local `RemoteStateAmbiguous`, then continue dispatching later traces.
 - Extract paired status SQL into `lifecycle_status.rs` while leaving transaction ownership and commit/rollback behavior in `lifecycle_transition.rs`.
+
+## 2026-09-03 Task 13 Final Convergence
+
+- Retain one `PublicationFinalizer` from capability revalidation through descriptor-relative rename and parent sync; never reopen the ambient parent pathname for durability.
+- Rehash the final artifact after rename and before `FinishPublication`; classify any byte disagreement as preserving `PublicationAmbiguous`.
+- Keep deterministic effect checkpoints as a public observer seam with a production no-op default so tests interrupt the actual executor path without branching production behavior.
