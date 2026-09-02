@@ -6,8 +6,8 @@ use crate::persistence::{AttemptRecord, Store, TaskRecord};
 use crate::remote::VidenoaClient;
 
 use super::{
-    RecoveryCommandKind, RecoveryConfig, RecoveryError, RecoveryReport, ShutdownCoordinator,
-    StagePermit,
+    local_first_command, RecoveryCommandKind, RecoveryConfig, RecoveryError, RecoveryReport,
+    ShutdownCoordinator, StagePermit,
 };
 
 const RECOVERY_SCAN_LIMIT: u16 = u16::MAX;
@@ -95,6 +95,12 @@ impl Reconciler {
                 )
                 .await;
         };
+        if task.cancel_requested_at.is_none() {
+            if let Some(command) = local_first_command(Lifecycle::recovery(task.status)) {
+                report.push(task.id, command);
+                return Ok(());
+            }
+        }
         let Some(worker_id) = task.worker_id else {
             return self
                 .fail_ambiguous(
