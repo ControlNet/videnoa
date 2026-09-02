@@ -1,0 +1,60 @@
+   Compiling openssl-sys v0.9.111
+   Compiling openssl v0.10.75
+   Compiling native-tls v0.2.14
+   Compiling tokio-native-tls v0.3.1
+   Compiling hyper-tls v0.6.0
+   Compiling reqwest v0.12.28
+   Compiling videnoa-controller v0.1.2 (/home/zhixi/GitRepos/videnoa/crates/controller)
+error[E0432]: unresolved import `videnoa_controller::remote`
+ --> crates/controller/tests/videnoa_client.rs:9:25
+  |
+9 | use videnoa_controller::remote::{
+  |                         ^^^^^^ could not find `remote` in `videnoa_controller`
+
+error[E0282]: type annotations needed
+  --> crates/controller/tests/videnoa_client.rs:29:9
+   |
+29 |     let health = client.health().await?;
+   |         ^^^^^^
+...
+33 |     assert!(health.is_healthy());
+   |             ------ type must be known at this point
+   |
+help: consider giving `health` an explicit type
+   |
+29 |     let health: /* Type */ = client.health().await?;
+   |               ++++++++++++
+
+error[E0282]: type annotations needed
+  --> crates/controller/tests/videnoa_client.rs:30:9
+   |
+30 |     let capabilities = client.capabilities().await?;
+   |         ^^^^^^^^^^^^
+...
+35 |         capabilities.compatibility(&WorkflowName::new("eligible-workflow.json")),
+   |         ------------ type must be known at this point
+   |
+help: consider giving `capabilities` an explicit type
+   |
+30 |     let capabilities: /* Type */ = client.capabilities().await?;
+   |                     ++++++++++++
+
+Some errors have detailed explanations: E0282, E0432.
+For more information about an error, try `rustc --explain E0282`.
+error: could not compile `videnoa-controller` (test "videnoa_client") due to 3 previous errors
+
+Green error-matrix verification after implementation
+Date: 2026-09-02
+
+Command:
+cargo test -p videnoa-controller --test videnoa_client --locked
+
+Observed typed boundaries:
+- unknown workflow and missing Path interface remain incompatible capability results
+- 404, 409, 429, other 4xx, and 5xx statuses map to distinct typed errors
+- malformed and oversized JSON are bounded before typed deserialization
+- connection, request timeout, stalled body, and truncated body remain distinct
+- error formatting excludes response bodies, credentials, query strings, and secrets
+- TLS construction uses rustls without native-tls in the Controller normal dependency tree
+
+Result: 17 passed, 0 failed

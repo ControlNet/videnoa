@@ -1,0 +1,107 @@
+# Learnings
+
+## 2026-09-02 Task 1
+
+- A release-only Controller build script can remain GPU-free while following the existing frontend convention: resolve `controller-web/` from `CARGO_MANIFEST_DIR`, run `npm ci --no-fund`, run `npm run build`, and let `rust-embed` consume `dist/` only under `not(debug_assertions)`.
+- Modeling frontend assets as a validated public wrapper over a private cfg-specific source keeps debug directory paths and release embedding type-safe without lint suppression.
+- `tower_http::ServeDir` plus `ServeFile(index.html)` provides debug static serving and nested-route SPA fallback after startup validates the directory and index.
+- A package-level `cargo tree --edges normal,build` contract test is a fast guard against accidental `videnoa-core`, ORT, CUDA, cuDNN, TensorRT, or model coupling.
+
+## 2026-09-02 Task 1 Fix Round 1
+
+- Cargo 1.83 rejects a workspace member using edition 2024 during metadata parsing, so the isolated Controller must match the neighboring edition 2021 crates while the repository MSRV remains 1.83.
+- Reserving `/api/{*path}` before the static fallback preserves nested SPA routes while preventing unknown API requests from returning HTML with status 200.
+- Browser-resolved canvas sampling measured dark `oklch(0.61 0.22 292)` at `4.6943:1` against the Controller surface for both 12px and 14px normal text.
+
+## 2026-09-02 Task 1 Fix Round 2
+
+- Axum 0.8 catch-all routes such as `/api/{*path}` require a non-empty wildcard and therefore do not match `/api` or `/api/`; exact routes are required to keep both API roots out of the SPA fallback.
+- A cfg-specific `TestAssets` fixture lets the same health, API-boundary, and SPA contracts run against disk assets in debug builds and embedded assets in release builds.
+
+## 2026-09-02 Task 1 Fix Round 3
+
+- Axum route matching preserves percent-encoded path spellings, so a strict single-decoding middleware boundary is required before SPA fallback selection.
+- `percent_decode_str` decodes valid escapes but leaves malformed escapes unchanged; validating every `%` triplet first and rejecting invalid UTF-8 produces a deterministic 400 boundary.
+- Wrapping both disk and embedded SPA fallbacks in GET routing preserves automatic HEAD support while consistently returning 405 for POST and OPTIONS.
+
+## 2026-09-02 Task 1 Fix Round 4
+
+- Debug `ServeDir` decodes safe percent escapes for filesystem lookup, but release `rust-embed` lookup does not; preserving the one-pass decoded path in a typed request extension removes that profile-specific seam.
+- Decoded paths must reject backslashes and C0 controls after strict percent/UTF-8 validation so unsafe values cannot reach either static fallback.
+- Live debug and release probes confirmed canonical and encoded-hyphen JavaScript paths return identical bytes, status, and `text/javascript` content type.
+
+## 2026-09-02 Task 1 Fix Round 5
+
+- `http::Uri::path()` preserves raw dot and repeated-separator spelling while excluding the query; Controller must therefore parse decoded segments explicitly before routing.
+- Debug `ServeDir` ignores exact `.` and repeated separators during filesystem component parsing, while release `rust-embed` performs literal key lookup. Shared rejection is safer than profile-specific normalization.
+- Browser URL parsing canonicalizes dot segments before transmission, so raw canonical-path policy requires `curl --path-as-is` evidence in addition to browser asset/SPA QA.
+
+## 2026-09-02 Task 1 Fix Round 6
+
+- A filesystem `Path` cannot preserve a meaningful final empty component, so debug exact lookup must branch on the validated `DecodedPath` trailing separator before joining it to the asset directory.
+- Disk and embedded fallbacks now share one policy: an exact file key is attempted only for non-empty decoded paths without a trailing separator; otherwise the actual SPA index is returned.
+
+## 2026-09-02 Task 1 Fix Round 7
+- Host `Path` semantics cannot validate foreign-platform prefixes; validate every URL component before constructing a disk path.
+- Windows drive/ADS punctuation and DOS device basenames must be exact-asset ineligible while remaining valid SPA routes.
+
+## 2026-09-02 Task 1 Fix Round 8
+
+- Windows recognizes `COM¹`-`COM³` and `LPT¹`-`LPT³` as device aliases; UTF-8 byte length is therefore not a valid classifier for numbered device names.
+- `CONIN$` and `CONOUT$` follow the same case-insensitive basename-before-extension rule as other reserved devices.
+- Cross-platform request tests should use safe frontend roots; real special-name mutation fixtures belong in an explicit Unix-only test.
+
+## 2026-09-02 Task 2
+
+- Figment layering is deterministic when providers are ordered as serialized defaults, exact TOML, then `VIDENOA_CONTROLLER_` environment values split on `__`; `deny_unknown_fields` also rejects unknown prefixed environment keys after extraction.
+- Keeping raw configuration numerics as `u64` until one validation boundary produces dedicated zero and overflow errors instead of relying on lossy casts or parser-specific messages.
+- `url::Url` supplies a normalized host/scheme/default-port representation; Controller additionally rejects credentials, query strings, and fragments and normalizes the base path to one trailing slash.
+- Request-only secret DTOs can derive `Deserialize` without `Serialize`, while a redacted secret newtype prevents accidental `Debug` disclosure.
+- Deterministic contract evidence can round-trip fixed UUIDs and timestamps while recording only the login request field name, never a password, cookie, token, or CSRF value.
+- Do not run the Controller release Cargo build concurrently with a standalone `controller-web/npm ci`: both mutate `controller-web/node_modules`, so frontend and release Rust gates must be serialized.
+
+## 2026-09-02 Task 5
+
+- Durable idempotency must elect the creator in SQLite before adding runtime maps or spawning execution; an in-memory check cannot close concurrent or restart windows.
+- A partial unique index on non-null keys preserves existing unkeyed behavior while enforcing one durable keyed mapping.
+- Recursive object-key sorting is sufficient for semantic JSON replay while preserving array order and scalar distinctions.
+- Restart replay should expose the current persisted status, including the existing queued/running-to-cancelled startup reconciliation, rather than reconstructing the original queued response.
+- Persistent worker `jobs.db` is part of the exactly-once evidence boundary; database loss is ambiguous and must never trigger blind resubmission.
+
+## 2026-09-02 Task 3
+
+- SQLite partial indexes need predicates and leading columns that the planner can prove from literal repository queries; queue and recovery indexes were shaped to avoid temporary ordering trees.
+- Atomic idempotent ingress must rollback the candidate task when a key already exists, otherwise retries create durable orphan tasks.
+- Capacity-aware reservation must check enabled and online worker state in the same conditional write that claims the queued task.
+
+## 2026-09-02 Task 5 Follow-up
+
+- Durable replay classification must precede every dependency needed only for first creation; otherwise later filesystem drift can mask the persisted answer.
+- A read preflight and a transactional final claim serve different purposes: preflight preserves the replay contract, while the final `BEGIN IMMEDIATE` claim preserves exactly-one dispatch under races.
+
+## 2026-09-02 Task 8
+
+- Remote workflow names and file API paths are opaque server values; preserving exact spelling, including `..`, is separate from validating URL-safe API path components.
+- Reqwest response-body failures need separate timeout, transport, malformed/truncated, and size-boundary classification because a successful response header does not imply a complete body.
+- Capability discovery is deterministic when workflow interfaces outrank preset evidence, missing Path inputs are incompatible, and cache invalidation is explicit for TTL, health, restart, and remote errors.
+- Rust 1.83 lockfile verification requires pinning the inactive QUIC dependency resolution used by reqwest rustls: `quinn 0.11.9` and `quinn-proto 0.11.13` avoid the Edition 2024-only `cpufeatures 0.3.1` manifest.
+- Canonical JSON numbers must normalize equivalent integral and floating spellings such as `1` and `1.0`; array order and non-number scalar types remain distinct.
+
+## 2026-09-02 Task 3 MSRV Scope Correction
+
+- Cargo workspace package fields are opt-in defaults, not workspace-wide guarantees; only members declaring `rust-version.workspace = true` advertise that MSRV.
+- The tracked lock proves Controller resolution under Cargo 1.83, but it does not make the pre-existing GPU core parseable because exact `ort-sys 2.0.0-rc.12` requires edition-2024 Cargo support.
+
+## 2026-09-02 Task 4
+
+- A capability API is not race-resistant when it checks `symlink_metadata` and then uses a symlink-following directory open; every component descent must use `open_dir_nofollow` so a swap between check and open fails closed.
+- Relative configured roots can preserve the Task 2 configuration contract by resolving once against the process directory, then retaining an absolute display path and descriptor-backed directory.
+- A retained directory descriptor stays safe after its pathname is replaced, but queued work must still fail because the configured root no longer names that descriptor; snapshot and revalidate root identity before filesystem use.
+- Moving the authenticated server entrypoint into the auth HTTP module kept every touched production Rust module below the 250 pure-LOC ceiling without changing the exported API.
+
+## 2026-09-02 Task 6
+
+- Hyper validates a fixed body's exact size against an explicit `Content-Length`; claiming a larger length panics inside the connection task. An unknown-size stream that emits bytes and then errors creates the intended client-visible truncated body cleanly.
+- Joining the accept loop before same-address rebind makes real connection refusal and recovery deterministic without timing sleeps.
+- Generation-bearing `watch` checkpoints preserve reach/release events even when waiter polling is delayed.
+- Redacting volatile transport headers produced identical evidence SHA-256 values across consecutive full harness runs.

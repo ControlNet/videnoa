@@ -1,0 +1,19 @@
+Task 8 typed Videnoa client happy-path evidence
+Date: 2026-09-02
+
+Command:
+cargo test -p videnoa-controller --test videnoa_client --test mock_videnoa --locked
+
+Observed:
+- mock_videnoa: 11 passed, 0 failed
+- videnoa_client: 17 passed, 0 failed
+- Real TCP lifecycle covered health, workflow/preset/interface compatibility, streaming upload, keyed run, poll, streaming download, stat, and cleanup.
+- Workflow and remote file paths containing `..` were preserved as opaque remote API values.
+- Streaming probes confirmed bounded reader and writer chunks.
+- Deterministic cache tests covered TTL expiry, evidence priority, and health/restart/error invalidation.
+
+Broader verification:
+- cargo test -p videnoa-controller --all-targets --locked: passed
+- rustup run 1.83.0 cargo test -p videnoa-controller --all-targets --locked: passed
+- cargo test -p videnoa-core --lib --tests: 609 passed, 10 ignored, 0 failed; crash-hook tests 3 passed
+- cargo test --workspace: passed
