@@ -2,6 +2,7 @@ use std::error::Error;
 use std::io::{BufRead, IsTerminal};
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
+use std::time::Duration;
 
 #[cfg(debug_assertions)]
 use std::path::Path;
@@ -11,8 +12,14 @@ use videnoa_controller::auth::{hash_password, AuthService};
 use videnoa_controller::config::ControllerConfig;
 use videnoa_controller::paths::PathCapabilities;
 use videnoa_controller::persistence::{Database, DatabaseOptions, Store};
+use videnoa_controller::recovery::{Reconciler, RecoveryConfig, ShutdownCoordinator};
+use videnoa_controller::remote::{PayloadLimits, RemoteTimeouts};
 use videnoa_controller::tasks::TaskService;
 use videnoa_controller::{serve_controller, FrontendAssets, StartupError};
+
+const RECOVERY_JSON_LIMIT: usize = 1024 * 1024;
+const RECOVERY_TRANSFER_CHUNK: usize = 64 * 1024;
+const SHUTDOWN_DRAIN_BOUND: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Parser)]
 #[command(
@@ -79,12 +86,56 @@ async fn main() -> Result<(), Box<dyn Error>> {
     ))
     .await?;
     let store = Store::new(database);
+    let shutdown = ShutdownCoordinator::new();
+    let remote_timeouts = RemoteTimeouts::new(
+        config.timeouts.health,
+        config.timeouts.poll,
+        config.timeouts.transfer,
+    )?;
+    let payload_limits = PayloadLimits::new(RECOVERY_JSON_LIMIT, RECOVERY_TRANSFER_CHUNK)?;
+    Reconciler::new(
+        store.clone(),
+        RecoveryConfig::new(
+            remote_timeouts,
+            payload_limits,
+            config.retry.initial,
+            config.retry.maximum,
+            config.retry.max_attempts.get(),
+        ),
+        shutdown.clone(),
+    )
+    .reconcile_startup(chrono::Utc::now())
+    .await?;
     let auth = AuthService::new(config.auth.clone(), store.clone())?;
-    let tasks = TaskService::new(store, paths);
+    let tasks = TaskService::new(store.clone(), paths);
     if !config.auth.secure_cookie {
         eprintln!("warning: session cookies are running without Secure; use only on trusted HTTP networks");
     }
     let assets = frontend_assets()?;
-    serve_controller(address, &assets, auth, tasks).await?;
+    let server = serve_controller(address, &assets, auth, tasks);
+    tokio::pin!(server);
+    tokio::select! {
+        result = &mut server => result?,
+        signal = shutdown_signal() => {
+            signal?;
+            shutdown
+                .shutdown(&store, chrono::Utc::now(), SHUTDOWN_DRAIN_BOUND)
+                .await?;
+        }
+    }
     Ok(())
+}
+
+#[cfg(unix)]
+async fn shutdown_signal() -> Result<(), std::io::Error> {
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => result,
+        _ = terminate.recv() => Ok(()),
+    }
+}
+
+#[cfg(not(unix))]
+async fn shutdown_signal() -> Result<(), std::io::Error> {
+    tokio::signal::ctrl_c().await
 }

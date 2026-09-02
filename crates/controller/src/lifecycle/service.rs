@@ -110,6 +110,37 @@ impl LifecycleService {
             DurableAction::None,
         ))
     }
+
+    /// Closes malformed durable recovery state without requiring a usable attempt snapshot.
+    ///
+    /// # Errors
+    /// Returns an error when the failure does not belong to the current state or CAS conflicts.
+    pub async fn fail_recovery(
+        &self,
+        task: &TaskRecord,
+        attempt: Option<&AttemptRecord>,
+        failure: LifecycleFailure,
+        occurred_at: DateTime<Utc>,
+    ) -> Result<CommittedCommand, LifecycleError> {
+        if task.status != failure.expected_status() {
+            return Err(LifecycleError::IllegalCommand);
+        }
+        let attempt = attempt.map(|value| attempt_cas(task, value)).transpose()?;
+        let write = FailureWrite {
+            task_id: task.id,
+            task_version: task.version,
+            from: task.status,
+            attempt,
+            failure: failure.info(),
+            occurred_at,
+        };
+        let version = applied(self.store.fail_lifecycle(&write).await?)?;
+        Ok(CommittedCommand::new(
+            TaskStatus::Failed,
+            version,
+            DurableAction::None,
+        ))
+    }
 }
 
 pub(super) fn attempt_cas(

@@ -32,7 +32,7 @@ sqlx.workspace = true
 subtle.workspace = true
 thiserror = "2"
 tokio.workspace = true
-tokio-util = { workspace = true, features = ["io"] }
+tokio-util = { workspace = true, features = ["io", "rt"] }
 url.workspace = true
 uuid.workspace = true
 
@@ -40,6 +40,7 @@ uuid.workspace = true
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 tempfile = "3"
+tokio = { workspace = true, features = ["test-util"] }
 tower.workspace = true
 
 [lints.rust]

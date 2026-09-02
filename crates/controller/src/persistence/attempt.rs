@@ -44,6 +44,24 @@ impl Store {
         rows.iter().map(map_attempt).collect()
     }
 
+    /// Loads the newest durable attempt for one task.
+    ///
+    /// # Errors
+    /// Returns an error when `SQLite` access or persisted decoding fails.
+    pub async fn current_attempt(
+        &self,
+        task_id: TaskId,
+    ) -> Result<Option<AttemptRecord>, PersistenceError> {
+        let sql = format!("{ATTEMPT_SELECT_ALL} AND task_id = ? ORDER BY attempt_no DESC LIMIT 1");
+        sqlx::query(&sql)
+            .bind(task_id.to_string())
+            .fetch_optional(self.database.pool())
+            .await?
+            .as_ref()
+            .map(map_attempt)
+            .transpose()
+    }
+
     /// # Errors
     /// Returns an error when `SQLite` access or value encoding fails.
     pub async fn update_attempt_remote(

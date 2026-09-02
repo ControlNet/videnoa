@@ -5,7 +5,10 @@ use axum::extract::{Path, Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
-use super::{body_bytes, error_response, journal_request, json_response, record, MAX_JSON_BYTES};
+use super::{
+    body_bytes, error_response, journal_request, json_response, raw_json_response, record,
+    MAX_JSON_BYTES,
+};
 use crate::mock_videnoa::checkpoints::Checkpoint;
 use crate::mock_videnoa::journal::{JournalOutcome, Route};
 use crate::mock_videnoa::state::SharedState;
@@ -30,12 +33,21 @@ pub(crate) async fn poll(
     state
         .checkpoint(Checkpoint::BeforePollResponse, &mut checkpoints)
         .await;
-    let (status, response) = match job {
-        Some(job) => (StatusCode::OK, json_response(StatusCode::OK, &job.response)),
-        None => (
-            StatusCode::NOT_FOUND,
-            error_response(StatusCode::NOT_FOUND, "not_found"),
-        ),
+    let (status, response) = match state.take_response_fault(Route::JobPoll).await {
+        Some(fault) => match StatusCode::from_u16(fault.status) {
+            Ok(status) => (status, raw_json_response(status, fault.body)),
+            Err(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error_response(StatusCode::INTERNAL_SERVER_ERROR, "invalid_fault_status"),
+            ),
+        },
+        None => match job {
+            Some(job) => (StatusCode::OK, json_response(StatusCode::OK, &job.response)),
+            None => (
+                StatusCode::NOT_FOUND,
+                error_response(StatusCode::NOT_FOUND, "not_found"),
+            ),
+        },
     };
     let journal = journal_request(&parts, &body, Route::JobPoll, sequence, checkpoints);
     record(&state, journal, status, JournalOutcome::Delivered).await;
