@@ -3,7 +3,7 @@ use videnoa_controller::lifecycle::{
     AdvanceCommand, CancelAction, DurableAction, LifecycleErrorCode, SubmissionEvidence,
 };
 
-use super::support::{fixture, reserve, TestResult};
+use super::support::{fixture, reserve, upload_evidence, TestResult};
 
 #[tokio::test]
 async fn durable_transition_precedes_each_exposed_side_effect() -> TestResult {
@@ -100,7 +100,7 @@ async fn submission_evidence_is_bound_before_processing_is_exposed() -> TestResu
     let attempt_id = reserve(&fixture).await?;
     let commands = [
         AdvanceCommand::StartUpload,
-        AdvanceCommand::FinishUpload,
+        AdvanceCommand::FinishUpload(upload_evidence()),
         AdvanceCommand::StartSubmission,
     ];
     for command in commands {
@@ -139,8 +139,8 @@ async fn submission_evidence_is_bound_before_processing_is_exposed() -> TestResu
             &attempt,
             AdvanceCommand::PersistSubmission(SubmissionEvidence {
                 remote_job_id,
-                remote_input_path: RemotePath::new("task/input/../opaque.mkv"),
-                remote_output_path: RemotePath::new("task/output/../opaque.mp4"),
+                remote_input_path: RemotePath::new("task/input.mkv"),
+                remote_output_path: RemotePath::new("task/output.mp4"),
             }),
             fixture.now,
         )
@@ -161,7 +161,7 @@ async fn submission_evidence_is_bound_before_processing_is_exposed() -> TestResu
             .remote_input_path
             .as_ref()
             .map(RemotePath::as_str),
-        Some("task/input/../opaque.mkv")
+        Some("task/input.mkv")
     );
     Ok(())
 }
