@@ -10,6 +10,8 @@ Production rules established by Task 8:
 - Treat remote workflow names as opaque values. Validate file API paths for safe URL construction, but do not normalize meaningful remote spelling such as `..`.
 - Submit runs with `Idempotency-Key`; classify created versus replayed outcomes from the HTTP status and preserve typed conflicts.
 - Determine compatibility from workflow interfaces first, then preset evidence. Required input interfaces must be Path-compatible.
+- Discover saved workflow compatibility through `/api/workflows/{filename}/interface`, but discover preset compatibility from the typed `workflow.interface` embedded in `/api/presets`; preset IDs are not workflow filenames.
+- Preserve workflow precedence for duplicate IDs by inserting saved workflows before presets and retaining the first compatibility entry.
 - Cache compatibility against a monotonic clock with explicit TTL and health/restart/error invalidation.
 
 Verification commands:
@@ -22,3 +24,5 @@ rustup run 1.83.0 cargo test -p videnoa-controller --all-targets --locked
 ```
 
 Reqwest's inactive QUIC lock graph must remain compatible with Cargo 1.83. The verified resolution uses reqwest `0.12.27`, quinn `0.11.9`, and quinn-proto `0.11.13`; newer quinn-proto releases pull `cpufeatures 0.3.1`, whose Edition 2024 manifest Cargo 1.83 cannot parse.
+
+Preset contract regression fixtures should include both an extensionless bundled slug and an opaque API-created UUID. Their interface endpoints must return 404 so tests prove compatibility comes from the preset payload rather than an accidental mock-only filename lookup.
