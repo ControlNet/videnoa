@@ -1,15 +1,14 @@
-use chrono::{DateTime, Utc};
-use tokio::io::AsyncWriteExt;
-
-use crate::domain::{TaskId, TaskStatus};
+use crate::domain::{FailureCode, FailureStage, TaskId, TaskStatus};
 use crate::lifecycle::{
     AdvanceCommand, AutomaticRetry, DownloadEvidence, DownstreamFailure, JitterSample,
-    LifecycleService,
+    LifecycleFailure, LifecycleService,
 };
-use crate::remote::{FileApiPath, VidenoaClient};
+use crate::remote::{sibling_output_path, FileApiPath, VidenoaClient};
+use chrono::{DateTime, Utc};
 
 use super::{
-    DownloadOutcome, HashingWriter, RetryResult, TransferError, TransferExecutor, VerifiedArtifact,
+    download_artifact::{download_artifact, DownloadArtifact},
+    DownloadOutcome, RetryResult, TransferError, TransferExecutor,
 };
 
 impl TransferExecutor {
@@ -24,6 +23,20 @@ impl TransferExecutor {
         jitter: JitterSample,
     ) -> Result<DownloadOutcome, TransferError> {
         let (mut task, mut attempt) = self.snapshots(task_id).await?;
+        Self::require_retry_due(&task, &attempt, now)?;
+        let Some(remote_output_path) = attempt.attempt.remote_output_path.clone() else {
+            return self.download_ambiguity(&task, &attempt, now).await;
+        };
+        let Some(remote_input_path) = attempt.attempt.remote_input_path.as_ref() else {
+            return self.download_ambiguity(&task, &attempt, now).await;
+        };
+        let expected_output_path = sibling_output_path(
+            remote_input_path,
+            &format!("output.{}", task.output_extension.as_str()),
+        )?;
+        if attempt.attempt.remote_job_id.is_none() || remote_output_path != expected_output_path {
+            return self.download_ambiguity(&task, &attempt, now).await;
+        }
         let _permit = self
             .resources
             .coordinator
@@ -75,48 +88,51 @@ impl TransferExecutor {
             Ok(_) | Err(_) => return self.download_retry(&task, &attempt, now, jitter).await,
         };
         let directory = self.config.temp_root.join(task.id.to_string());
-        tokio::fs::create_dir_all(&directory).await?;
-        let part = directory.join(format!("output.{}.part", task.output_extension.as_str()));
-        let verified = directory.join(format!(
-            "output.{}.verified",
-            task.output_extension.as_str()
-        ));
-        let file = tokio::fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(&part)
-            .await?;
-        let mut writer = HashingWriter::new(file);
-        let downloaded = client.download(&remote_path, &mut writer).await;
-        if downloaded.is_err() {
-            drop(writer);
-            remove_part(&part).await?;
+        let Ok(artifact) = Box::pin(download_artifact(DownloadArtifact {
+            client: &client,
+            remote_path: &remote_path,
+            directory,
+            extension: task.output_extension.as_str(),
+            expected_size: stat.size,
+        }))
+        .await
+        else {
             return self.download_retry(&task, &attempt, now, jitter).await;
-        }
-        writer.flush().await?;
-        let (file, size, sha256) = writer.finish();
-        if size != stat.size {
-            drop(file);
-            remove_part(&part).await?;
-            return self.download_retry(&task, &attempt, now, jitter).await;
-        }
-        file.sync_all().await?;
-        tokio::fs::rename(&part, &verified).await?;
-        let artifact = VerifiedArtifact {
-            path: verified,
-            size,
-            sha256,
         };
         LifecycleService::new(self.resources.store.clone())
             .advance(
                 &task,
                 &attempt,
-                AdvanceCommand::FinishDownload(DownloadEvidence { size, sha256 }),
+                AdvanceCommand::FinishDownload(DownloadEvidence {
+                    size: artifact.size,
+                    sha256: artifact.sha256,
+                }),
                 now,
             )
             .await?;
         Ok(DownloadOutcome::Verified(artifact))
+    }
+
+    async fn download_ambiguity(
+        &self,
+        task: &crate::persistence::TaskRecord,
+        attempt: &crate::persistence::AttemptRecord,
+        now: DateTime<Utc>,
+    ) -> Result<DownloadOutcome, TransferError> {
+        LifecycleService::new(self.resources.store.clone())
+            .fail(
+                task,
+                Some(attempt),
+                LifecycleFailure::terminal(
+                    task.status,
+                    FailureStage::Download,
+                    FailureCode::RemoteStateAmbiguous,
+                    "durable download evidence does not identify the remote output",
+                ),
+                now,
+            )
+            .await?;
+        Ok(DownloadOutcome::Failed)
     }
 
     async fn download_retry(
@@ -148,13 +164,5 @@ impl TransferExecutor {
                 RetryResult::Failed => DownloadOutcome::Failed,
             },
         )
-    }
-}
-
-async fn remove_part(path: &std::path::Path) -> Result<(), std::io::Error> {
-    match tokio::fs::remove_file(path).await {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
     }
 }
