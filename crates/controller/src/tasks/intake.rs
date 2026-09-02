@@ -3,9 +3,10 @@ use std::path::Path;
 use chrono::{DateTime, Utc};
 
 use crate::domain::{
-    FieldErrorCode, IdempotencyKey, InputExtension, OutputExtension, Task, TaskCreateRequest,
-    TaskId,
+    FieldErrorCode, IdempotencyKey, InputExtension, OutputExtension, SseEvent, SseEventId, Task,
+    TaskCreateRequest, TaskId,
 };
+use crate::operations::EventHub;
 use crate::paths::{PathCapabilities, PathError};
 use crate::persistence::{IdempotencyRecord, InputIdentity, NewTask, Store, TaskIngressOutcome};
 
@@ -21,6 +22,7 @@ const SOURCE_REFERENCE_MAX_BYTES: usize = 512;
 pub struct TaskService {
     store: Store,
     paths: PathCapabilities,
+    events: EventHub,
 }
 
 pub(crate) enum IntakeOutcome {
@@ -30,8 +32,27 @@ pub(crate) enum IntakeOutcome {
 
 impl TaskService {
     #[must_use]
-    pub const fn new(store: Store, paths: PathCapabilities) -> Self {
-        Self { store, paths }
+    pub fn new(store: Store, paths: PathCapabilities) -> Self {
+        Self {
+            store,
+            paths,
+            events: EventHub::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_events(store: Store, paths: PathCapabilities, events: EventHub) -> Self {
+        Self {
+            store,
+            paths,
+            events,
+        }
+    }
+
+    #[must_use]
+    pub fn with_event_hub(mut self, events: EventHub) -> Self {
+        self.events = events;
+        self
     }
 
     pub(crate) fn store(&self) -> &Store {
@@ -89,7 +110,14 @@ impl TaskService {
             .await
             .map_err(|_| TaskApiError::Internal)?
         {
-            TaskIngressOutcome::Inserted => Ok(IntakeOutcome::Created(self.load(task_id).await?)),
+            TaskIngressOutcome::Inserted => {
+                let task = self.load(task_id).await?;
+                self.events.publish(SseEvent::TaskUpdated {
+                    event_id: SseEventId::random(),
+                    task: task.clone(),
+                });
+                Ok(IntakeOutcome::Created(task))
+            }
             TaskIngressOutcome::Replay(existing) => {
                 Ok(IntakeOutcome::Replayed(self.load(existing).await?))
             }

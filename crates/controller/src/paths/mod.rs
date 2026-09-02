@@ -109,6 +109,15 @@ impl PathCapabilities {
         })
     }
 
+    /// # Errors
+    /// Returns a path error when a retained root capability is no longer current.
+    pub fn check_ready(&self) -> Result<(), PathError> {
+        self.inputs
+            .iter()
+            .chain(&self.outputs)
+            .try_for_each(Root::ensure_current)
+    }
+
     /// Opens a regular input and records its descriptor-derived identity and metadata.
     ///
     /// # Errors
