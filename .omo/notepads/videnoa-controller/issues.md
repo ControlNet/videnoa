@@ -119,3 +119,8 @@
 
 - Independent review found seven gaps: retry SQL binding order, missing startup dispatch, non-atomic pause admission, upload restart PUT ordering, non-durable failure exits, rename-before-CAS recovery, and incomplete download evidence admission. Deterministic regressions now cover each gap.
 - Strict Clippy exposed three 20 KB test arrays allocated on the stack; moving those fixtures to `Vec<u8>` kept the test intent while satisfying the all-targets gate.
+
+## 2026-09-03 Task 12 Convergence Fix
+
+- Second independent review found three remaining convergence defects: absent restart uploads looped through retry, persisted pause aborted startup dispatch, and verified artifacts were inspected only after network access. All three now have failing-first regressions and green production fixes.
+- The documented inverse `cargo tree -p videnoa-controller -i videnoa-core` command reports no matching package because `videnoa-core` is outside the selected Controller dependency graph. Direct Controller tree inspection confirms the intended absence of core and GPU runtime dependencies.
