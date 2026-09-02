@@ -111,3 +111,10 @@
 - Joining the accept loop before same-address rebind makes real connection refusal and recovery deterministic without timing sleeps.
 - Generation-bearing `watch` checkpoints preserve reach/release events even when waiter polling is delayed.
 - Redacting volatile transport headers produced identical evidence SHA-256 values across consecutive full harness runs.
+
+## 2026-09-02 Task 9
+
+- Task and current-attempt lifecycle transitions must be one atomic persistence operation; separate public status mutation APIs make legal policy bypassable and permit split-brain rows.
+- Persist-before-side-effect is clearest when the service returns a typed `DurableAction` only after CAS commit, with submission evidence bound in the same transaction that authorizes polling.
+- Explicit processing retry needs terminal remote and workspace-cleanup evidence plus a new attempt/key, while downstream retry must preserve the existing attempt to avoid repeating successful compute.
+- Ambiguity codes must outrank persisted retryability metadata, otherwise contradictory evidence can accidentally become retryable after restart.
