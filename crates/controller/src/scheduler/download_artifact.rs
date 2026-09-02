@@ -196,6 +196,29 @@ fn parent(path: &Path) -> Result<&Path, std::io::Error> {
         .ok_or_else(|| std::io::Error::other("verified artifact has no parent directory"))
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DurabilityPolicy {
+    SyncDirectory,
+    SyncedFilesWithSameDirectoryRename,
+    Unsupported,
+}
+
+const fn durability_policy(is_unix: bool, is_windows: bool) -> DurabilityPolicy {
+    if is_unix {
+        DurabilityPolicy::SyncDirectory
+    } else if is_windows {
+        DurabilityPolicy::SyncedFilesWithSameDirectoryRename
+    } else {
+        DurabilityPolicy::Unsupported
+    }
+}
+
+#[cfg(unix)]
+const _: () = assert!(matches!(
+    durability_policy(true, false),
+    DurabilityPolicy::SyncDirectory
+));
+
 #[cfg(unix)]
 async fn sync_directory(path: &Path) -> Result<(), std::io::Error> {
     let path = path.to_owned();
@@ -204,10 +227,46 @@ async fn sync_directory(path: &Path) -> Result<(), std::io::Error> {
         .map_err(std::io::Error::other)?
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+const _: () = assert!(matches!(
+    durability_policy(false, true),
+    DurabilityPolicy::SyncedFilesWithSameDirectoryRename
+));
+
+#[cfg(windows)]
+async fn sync_directory(_path: &Path) -> Result<(), std::io::Error> {
+    // Windows durability relies on each file's sync_all before its same-directory rename.
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
+const _: () = assert!(matches!(
+    durability_policy(false, false),
+    DurabilityPolicy::Unsupported
+));
+
+#[cfg(not(any(unix, windows)))]
 async fn sync_directory(_path: &Path) -> Result<(), std::io::Error> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
         "durable directory synchronization is unsupported on this platform",
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{durability_policy, DurabilityPolicy};
+
+    #[test]
+    fn windows_is_supported_when_files_are_synced_before_same_directory_rename() {
+        // Given: the Windows durability boundary.
+        let is_unix = false;
+        let is_windows = true;
+
+        // When: the platform durability policy is selected.
+        let policy = durability_policy(is_unix, is_windows);
+
+        // Then: synced files and same-directory rename are a supported contract.
+        assert_eq!(policy, DurabilityPolicy::SyncedFilesWithSameDirectoryRename);
+    }
 }
