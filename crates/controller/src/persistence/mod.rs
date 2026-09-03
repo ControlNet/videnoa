@@ -65,6 +65,7 @@ impl fmt::Debug for ChangeObserver {
 pub struct Store {
     database: Database,
     changes: Arc<OnceLock<ChangeObserver>>,
+    submission_admission: Arc<tokio::sync::RwLock<()>>,
 }
 
 impl Store {
@@ -73,6 +74,7 @@ impl Store {
         Self {
             database,
             changes: Arc::new(OnceLock::new()),
+            submission_admission: Arc::new(tokio::sync::RwLock::new(())),
         }
     }
 
@@ -89,6 +91,10 @@ impl Store {
         if let Some(observer) = self.changes.get() {
             observer.notify(change);
         }
+    }
+
+    pub(crate) fn submission_admission(&self) -> Arc<tokio::sync::RwLock<()>> {
+        Arc::clone(&self.submission_admission)
     }
 }
 use std::fmt;

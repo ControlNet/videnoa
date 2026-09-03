@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use axum::http::{HeaderMap, Method};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -125,4 +126,41 @@ impl JournalRequest {
             outcome,
         }
     }
+}
+
+pub(crate) fn sanitize_entries(entries: &[JournalEntry]) -> Vec<JournalEntry> {
+    let mut sanitized = entries.to_vec();
+    for entry in &mut sanitized {
+        entry.path = match String::from_utf8(redact_uuids(entry.path.as_bytes())) {
+            Ok(path) => path,
+            Err(_) => entry.path.clone(),
+        };
+        entry.body = redact_uuids(&entry.body);
+        for header in &mut entry.headers {
+            if header.name.eq_ignore_ascii_case("idempotency-key") {
+                header.value = HeaderValueSnapshot::Redacted;
+            }
+        }
+    }
+    sanitized
+}
+
+fn redact_uuids(input: &[u8]) -> Vec<u8> {
+    const UUID_LENGTH: usize = 36;
+    let mut output = Vec::with_capacity(input.len());
+    let mut index = 0;
+    while index < input.len() {
+        let candidate = input.get(index..index.saturating_add(UUID_LENGTH));
+        let is_uuid = candidate
+            .and_then(|bytes| std::str::from_utf8(bytes).ok())
+            .is_some_and(|text| Uuid::parse_str(text).is_ok());
+        if is_uuid {
+            output.extend_from_slice(b"{id}");
+            index += UUID_LENGTH;
+        } else {
+            output.push(input[index]);
+            index += 1;
+        }
+    }
+    output
 }

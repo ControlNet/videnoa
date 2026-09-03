@@ -14,6 +14,7 @@ pub enum Checkpoint {
     AfterRunPersistedBeforeResponse,
     BeforePollResponse,
     BeforeDownloadBody,
+    MidDownloadBody,
     BeforeDelete,
     AfterDelete,
 }
@@ -27,12 +28,13 @@ impl Checkpoint {
             Self::AfterRunPersistedBeforeResponse => "after_run_persisted_before_response",
             Self::BeforePollResponse => "before_poll_response",
             Self::BeforeDownloadBody => "before_download_body",
+            Self::MidDownloadBody => "mid_download_body",
             Self::BeforeDelete => "before_delete",
             Self::AfterDelete => "after_delete",
         }
     }
 
-    const fn all() -> [Self; 8] {
+    const fn all() -> [Self; 9] {
         [
             Self::BeforeAcceptingUpload,
             Self::AfterUploadBytesAccepted,
@@ -40,6 +42,7 @@ impl Checkpoint {
             Self::AfterRunPersistedBeforeResponse,
             Self::BeforePollResponse,
             Self::BeforeDownloadBody,
+            Self::MidDownloadBody,
             Self::BeforeDelete,
             Self::AfterDelete,
         ]

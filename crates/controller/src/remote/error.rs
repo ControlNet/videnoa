@@ -39,3 +39,55 @@ pub enum VidenoaClientError {
     #[error("failed to construct a remote endpoint URL")]
     EndpointUrl,
 }
+
+impl VidenoaClientError {
+    #[must_use]
+    pub const fn is_transient(&self) -> bool {
+        match self {
+            Self::ServerStatus { .. } | Self::Network | Self::Timeout | Self::Stall => true,
+            Self::NotFound
+            | Self::Conflict
+            | Self::RateLimited
+            | Self::ClientStatus { .. }
+            | Self::UnexpectedStatus { .. }
+            | Self::MalformedPayload
+            | Self::OversizedPayload { .. }
+            | Self::LocalIo
+            | Self::InvalidFilePath
+            | Self::EndpointUrl => false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::VidenoaClientError;
+
+    #[test]
+    fn transient_classification_covers_every_remote_error_variant() {
+        // Given: every remote error that can cross a runtime stage boundary.
+        let transient = [
+            VidenoaClientError::ServerStatus { status: 503 },
+            VidenoaClientError::Network,
+            VidenoaClientError::Timeout,
+            VidenoaClientError::Stall,
+        ];
+        let fatal = [
+            VidenoaClientError::NotFound,
+            VidenoaClientError::Conflict,
+            VidenoaClientError::RateLimited,
+            VidenoaClientError::ClientStatus { status: 400 },
+            VidenoaClientError::UnexpectedStatus { status: 300 },
+            VidenoaClientError::MalformedPayload,
+            VidenoaClientError::OversizedPayload { limit: 1 },
+            VidenoaClientError::LocalIo,
+            VidenoaClientError::InvalidFilePath,
+            VidenoaClientError::EndpointUrl,
+        ];
+
+        // When: the runtime classifies each error for automatic retry.
+        // Then: only transport and server availability failures are transient.
+        assert!(transient.iter().all(VidenoaClientError::is_transient));
+        assert!(fatal.iter().all(|error| !error.is_transient()));
+    }
+}

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use chrono::{DateTime, Utc};
 
 use crate::domain::{FailureCode, FailureStage, TaskStatus};
@@ -17,16 +19,31 @@ pub struct Reconciler {
     pub(super) store: Store,
     pub(super) config: RecoveryConfig,
     pub(super) shutdown: ShutdownCoordinator,
+    pub(super) checkpoint_observer: Arc<dyn crate::scheduler::TransferCheckpointObserver>,
 }
 
 impl Reconciler {
     #[must_use]
-    pub const fn new(store: Store, config: RecoveryConfig, shutdown: ShutdownCoordinator) -> Self {
+    pub fn new(store: Store, config: RecoveryConfig, shutdown: ShutdownCoordinator) -> Self {
         Self {
             store,
             config,
             shutdown,
+            checkpoint_observer: crate::scheduler::noop_observer(),
         }
+    }
+
+    #[must_use]
+    pub fn with_checkpoint_observer(
+        mut self,
+        observer: Arc<dyn crate::scheduler::TransferCheckpointObserver>,
+    ) -> Self {
+        self.checkpoint_observer = observer;
+        self
+    }
+
+    pub(super) async fn checkpoint(&self, point: crate::scheduler::TransferCheckpointPoint) {
+        self.checkpoint_observer.checkpoint(point).await;
     }
 
     /// Reconciles every durable nonterminal task independently of future scheduling.
@@ -130,10 +147,14 @@ impl Reconciler {
             self.config.timeouts,
             self.config.limits,
         )?;
-        if client.health().await.is_err() {
-            self.defer_worker(&worker, task.id, now, stage, report)
-                .await?;
-            return Ok(());
+        match client.health().await {
+            Ok(_) => {}
+            Err(error) if error.is_transient() => {
+                self.defer_worker(&worker, task.id, now, stage, report)
+                    .await?;
+                return Ok(());
+            }
+            Err(error) => return Err(error.into()),
         }
         if task.cancel_requested_at.is_some() {
             return self

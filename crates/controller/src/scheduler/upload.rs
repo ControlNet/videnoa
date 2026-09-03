@@ -141,6 +141,8 @@ impl TransferExecutor {
                 now,
             )
             .await?;
+        self.checkpoint(super::TransferCheckpointPoint::UploadCompleted)
+            .await;
         Ok(UploadOutcome::Staged(evidence))
     }
 

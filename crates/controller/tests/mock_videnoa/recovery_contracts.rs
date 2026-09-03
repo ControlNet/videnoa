@@ -238,6 +238,7 @@ fn reconciler(fixture: &Fixture, shutdown: ShutdownCoordinator) -> Reconciler {
     Reconciler::new(
         fixture.store.clone(),
         RecoveryConfig::new(
+            fixture.temp_root.clone(),
             RemoteTimeouts::new(
                 Duration::from_secs(1),
                 Duration::from_secs(2),

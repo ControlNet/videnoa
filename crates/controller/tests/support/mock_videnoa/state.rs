@@ -41,6 +41,7 @@ pub(crate) struct RuntimeState {
     pub counters: RouteCounters,
     pub next_sequence: u64,
     pub next_timestamp: u64,
+    pub accepted_upload_bytes: u64,
 }
 
 impl RuntimeState {
@@ -52,6 +53,7 @@ impl RuntimeState {
             counters: RouteCounters::empty(),
             next_sequence: 0,
             next_timestamp: 0,
+            accepted_upload_bytes: 0,
         }
     }
 
@@ -173,5 +175,9 @@ impl SharedState {
 
     pub async fn job_count(&self) -> usize {
         self.inner.lock().await.persistent.jobs.len()
+    }
+
+    pub async fn file_count(&self) -> usize {
+        self.inner.lock().await.persistent.files.len()
     }
 }

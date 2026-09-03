@@ -177,6 +177,7 @@ fn reconciler(fixture: &Fixture) -> Reconciler {
     Reconciler::new(
         fixture.store.clone(),
         RecoveryConfig::new(
+            fixture.temp_root.clone(),
             timeouts,
             limits,
             Duration::from_secs(2),

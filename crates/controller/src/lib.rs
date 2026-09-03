@@ -20,6 +20,7 @@ pub mod config;
 pub mod domain;
 pub mod lifecycle;
 pub mod operations;
+pub mod orchestration;
 pub mod paths;
 pub mod persistence;
 pub mod recovery;
@@ -30,6 +31,7 @@ pub mod workers;
 use asset_path::ExactAssetPath;
 pub use auth::{
     authenticated_app_router, controller_app_router, serve_authenticated, serve_controller,
+    serve_controller_until,
 };
 
 #[cfg(not(debug_assertions))]

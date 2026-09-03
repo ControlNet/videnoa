@@ -8,6 +8,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::Utc;
 use serde::Serialize;
+use tokio_util::sync::CancellationToken;
 
 use crate::domain::{
     AuthMethod, LoginRequest, LogoutResponse, ReadinessCheck, ReadinessResponse, ReadinessStatus,
@@ -86,6 +87,29 @@ pub async fn serve_controller(
     tasks: crate::tasks::TaskService,
     operations: crate::operations::OperationsState,
 ) -> Result<(), StartupError> {
+    serve_controller_until(
+        address,
+        assets,
+        auth,
+        tasks,
+        operations,
+        CancellationToken::new(),
+    )
+    .await
+}
+
+/// Serves the complete Controller until coordinated shutdown closes HTTP intake.
+///
+/// # Errors
+/// Returns a typed startup error when the listener cannot bind or the server fails.
+pub async fn serve_controller_until(
+    address: SocketAddr,
+    assets: &FrontendAssets,
+    auth: AuthService,
+    tasks: crate::tasks::TaskService,
+    operations: crate::operations::OperationsState,
+    shutdown: CancellationToken,
+) -> Result<(), StartupError> {
     let listener = tokio::net::TcpListener::bind(address)
         .await
         .map_err(|source| StartupError::Bind { address, source })?;
@@ -94,6 +118,7 @@ pub async fn serve_controller(
         controller_app_router(assets, auth, tasks, operations)
             .into_make_service_with_connect_info::<SocketAddr>(),
     )
+    .with_graceful_shutdown(shutdown.cancelled_owned())
     .await
     .map_err(StartupError::Serve)
 }
