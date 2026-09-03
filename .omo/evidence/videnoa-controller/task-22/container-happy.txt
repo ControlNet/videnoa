@@ -1,0 +1,62 @@
+Task 22 Controller container happy-path evidence
+Timestamp: 2026-09-04T03:50:58+10:00
+
+Red-first source contract
+Command:
+  scripts/check_controller_container.sh videnoa-controller:qa --source
+Initial sanitized result before implementation:
+  [controller-container][error] missing Dockerfile.controller
+
+Build
+Command:
+  docker buildx build --load --progress=plain -f Dockerfile.controller -t videnoa-controller:qa .
+Result:
+  PASS; Rust 1.83 release binary and controller-web production assets built successfully.
+  Known Rollup/Zod annotation warnings were non-fatal.
+  A second identical build completed with all frontend, Rust, and runtime steps cached.
+
+Image and runtime contract
+Command:
+  scripts/check_controller_container.sh videnoa-controller:qa --happy
+Result:
+  [controller-container] source contract: PASS
+  [controller-container] image contract: PASS
+  [controller-container] runtime health, embedded SPA, writable mounts, and restart persistence: PASS
+
+Image metadata
+Command:
+  docker image inspect --format 'image={{.RepoTags}} size={{.Size}} user={{.Config.User}} entrypoint={{json .Config.Entrypoint}} cmd={{json .Config.Cmd}} health={{json .Config.Healthcheck.Test}} volumes={{json .Config.Volumes}}' videnoa-controller:qa
+Sanitized result:
+  image=[videnoa-controller:qa]
+  size=104416752
+  user=10001:10001
+  entrypoint=["videnoa-controller"]
+  cmd=["--config","/etc/videnoa-controller/controller.toml","--host","0.0.0.0"]
+  health=["CMD","curl","--fail","--silent","--show-error","http://127.0.0.1:3001/api/health"]
+  volumes=/etc/videnoa-controller,/mnt/input,/mnt/output,/var/lib/videnoa-controller,/var/tmp/videnoa-controller
+
+Runtime linkage and content
+Command:
+  docker run --rm --entrypoint /bin/sh videnoa-controller:qa -c 'id; command -v node || true; command -v npm || true; ldd /usr/local/bin/videnoa-controller'
+Sanitized result:
+  uid=10001 gid=10001
+  node and npm absent
+  existing GPU videnoa binary absent
+  /app/models absent
+  linked libraries: libgcc_s.so.1, libm.so.6, libc.so.6, ld-linux-x86-64.so.2
+  exported runtime filesystem, installed packages, and linkage contained no ORT, ONNX Runtime, TensorRT, CUDA, cuDNN, NVIDIA, model, or trt_cache artifact.
+
+Controller gates
+Commands:
+  cargo fmt --all -- --check
+  cargo clippy -p videnoa-controller --all-targets --all-features -- -D warnings
+  cargo test -p videnoa-controller --all-targets
+  cargo +1.83.0 test -p videnoa-controller --test task22_container_config --test config_contract
+  cargo tree -p videnoa-controller --edges normal,build
+  git diff --quiet -- Dockerfile
+Results:
+  PASS; formatting and strict Clippy exited 0.
+  PASS; all Controller targets exited 0.
+  PASS; Rust 1.83 focused configuration tests: 8 passed, 0 failed.
+  PASS; Controller dependency tree contains no videnoa-core, ORT, CUDA, cuDNN, TensorRT, or model runtime dependency.
+  PASS; existing root GPU Dockerfile has no working-tree changes.

@@ -1,0 +1,23 @@
+Task 22 Controller container failure evidence
+Timestamp: 2026-09-04T03:50:58+10:00
+
+Command:
+  scripts/check_controller_container.sh videnoa-controller:qa --errors
+Sanitized result:
+  [controller-container] source contract: PASS
+  [controller-container] missing config: PASS (configuration file is missing)
+  [controller-container] missing admin hash: PASS (password hash file is missing or invalid)
+  [controller-container] unwritable data: PASS (unable to open database file)
+  [controller-container] outside-root task: PASS (HTTP 400, configured-root error)
+
+Failure details
+- The default image command exits nonzero when `/etc/videnoa-controller/controller.toml` is not mounted; an explicit missing `--config` path no longer falls back to defaults.
+- A mounted config that references an absent `/run/secrets/admin-password.phc` exits nonzero before listening.
+- A read-only `/var/lib/videnoa-controller` mount exits nonzero when SQLite cannot create/open its database.
+- An authenticated task with input `/etc/passwd.txt` returns HTTP 400 with field `input_path`, code `invalid_value`, and message `path is not available through configured roots`.
+- The generated test password, Bearer value, PHC hash, cookies, and CSRF material were not printed or retained in this evidence.
+
+Full reusable command:
+  scripts/check_controller_container.sh videnoa-controller:qa --all
+Result:
+  PASS for source, image content, non-root identity, embedded SPA, health, writable data/temp mounts, restart persistence, missing config, missing hash, unwritable data, and outside-root rejection.

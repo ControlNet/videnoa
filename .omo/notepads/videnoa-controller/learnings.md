@@ -322,3 +322,10 @@
 - Deterministic GNU tar/gzip output requires normalizing member order, ustar metadata, owner/group, modes, timestamps, and the gzip header; two independently produced Controller archives then share one SHA-256.
 - Exact ordered-manifest comparison is a stronger archive boundary than a forbidden-name list because every unapproved loose asset, runtime, model, cache, secret, or existing product binary fails closed.
 - Release archive smoke can prove frontend embedding by starting only the extracted binary with external config/data/hash paths and successfully requesting both `/api/health` and `/` without a sibling frontend directory.
+
+## 2026-09-04 Task 22
+
+- A separate Node stage plus `VIDENOA_CONTROLLER_WEB_PREBUILT=1` lets the container build frontend assets once, while the release Rust build still verifies and embeds `dist/index.html` through `rust-embed` without carrying Node or loose assets into runtime.
+- BuildKit registry, git, npm, and target cache mounts provide isolated dependency/frontend caching without generated placeholder sources or changes to the existing GPU Dockerfile.
+- A numeric non-root runtime requires bind-mounted admin hash files to be readable by UID 10001; read-only mount semantics protect the file, while host ownership/mode must permit the container user to read it.
+- Exported filesystem, package, and `ldd` inspection are complementary GPU-free checks: package names alone do not prove that no model or runtime artifact was copied into an otherwise CPU base.

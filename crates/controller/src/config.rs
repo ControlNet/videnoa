@@ -78,6 +78,8 @@ pub struct RetryConfig {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
+    #[error("configuration file is missing or invalid: {path}")]
+    MissingConfigFile { path: PathBuf },
     #[error("configuration schema is invalid: {detail}")]
     Schema { detail: String },
     #[error("configuration root `{field}` is invalid at {path}: {reason}")]
@@ -121,7 +123,12 @@ impl ControllerConfig {
     /// Returns [`ConfigError`] when extraction or runtime boundary validation fails.
     pub fn load(path: Option<&Path>) -> Result<Self, ConfigError> {
         let mut figment = Figment::from(Serialized::defaults(RawControllerConfig::default()));
-        if let Some(path) = path.filter(|candidate| candidate.exists()) {
+        if let Some(path) = path {
+            if !path.is_file() {
+                return Err(ConfigError::MissingConfigFile {
+                    path: path.to_path_buf(),
+                });
+            }
             figment = figment.merge(Toml::file_exact(path));
         }
         let figment = figment.merge(Env::prefixed(ENV_PREFIX).split("__"));

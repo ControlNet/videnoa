@@ -187,6 +187,7 @@ fn malformed_password_hash_is_rejected_during_configuration_load() -> TestResult
 
 fn config_error_code(error: &ConfigError) -> &'static str {
     match error {
+        ConfigError::MissingConfigFile { .. } => "missing_config_file",
         ConfigError::Schema { .. } => "schema",
         ConfigError::InvalidRoot { .. } => "invalid_root",
         ConfigError::MissingPasswordHashFile { .. } => "missing_password_hash_file",

@@ -218,3 +218,9 @@
 - Keep Controller archives independent from `package_dist`: dedicated scripts build only `videnoa-controller`, copy exactly the executable plus three root documents, and never consume the existing GPU asset bundles.
 - Support an explicit prebuilt-binary input for focused packaging tests and release workflow reuse, but enforce the same platform, version, dependency, layout, and forbidden-content gates as the normal Cargo build path.
 - Use explicit .NET `ZipArchive` entry creation with a fixed ZIP epoch for Windows instead of `Compress-Archive`, preserving deterministic ordering and metadata without adding a dependency.
+
+## 2026-09-04 Task 22
+
+- Keep `Dockerfile.controller` wholly separate from the root GPU image and target only `cargo build --release --locked -p videnoa-controller` under Rust 1.83.
+- Use Debian bookworm slim with only CA certificates and curl at runtime, numeric UID/GID 10001, and fixed mounts for config, SQLite data, temp work, NAS input, and NAS output.
+- Make the default image command require `/etc/videnoa-controller/controller.toml`, override only the listener host to `0.0.0.0`, and require the configuration to reference a separately mounted admin Argon2id hash file.

@@ -58,8 +58,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         .into());
     }
 
-    run_npm(&web_directory, &["ci", "--no-fund"])?;
-    run_npm(&web_directory, &["run", "build"])?;
+    if std::env::var_os("VIDENOA_CONTROLLER_WEB_PREBUILT").is_none() {
+        run_npm(&web_directory, &["ci", "--no-fund"])?;
+        run_npm(&web_directory, &["run", "build"])?;
+    }
 
     let index_path = web_directory.join("dist/index.html");
     if !index_path.is_file() {

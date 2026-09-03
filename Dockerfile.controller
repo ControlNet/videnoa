@@ -1,0 +1,36 @@
+# syntax=docker/dockerfile:1.7
+
+FROM node:24-bookworm-slim AS controller-web
+WORKDIR /build/controller-web
+COPY controller-web/package.json controller-web/package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm npm ci --no-fund
+COPY controller-web/ ./
+RUN npm run build
+
+FROM rust:1.83-bookworm AS controller-builder
+WORKDIR /build
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+COPY --from=controller-web /build/controller-web/dist/ controller-web/dist/
+ENV VIDENOA_CONTROLLER_WEB_PREBUILT=1
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/build/target \
+    cargo build --release --locked -p videnoa-controller \
+    && cp /build/target/release/videnoa-controller /usr/local/bin/videnoa-controller
+
+FROM debian:bookworm-slim AS runtime
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 controller \
+    && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin controller \
+    && mkdir -p /etc/videnoa-controller /var/lib/videnoa-controller /var/tmp/videnoa-controller /mnt/input /mnt/output /run/secrets \
+    && chown -R 10001:10001 /etc/videnoa-controller /var/lib/videnoa-controller /var/tmp/videnoa-controller /mnt/input /mnt/output /run/secrets
+COPY --from=controller-builder /usr/local/bin/videnoa-controller /usr/local/bin/videnoa-controller
+EXPOSE 3001
+VOLUME ["/etc/videnoa-controller", "/var/lib/videnoa-controller", "/var/tmp/videnoa-controller", "/mnt/input", "/mnt/output"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD ["curl", "--fail", "--silent", "--show-error", "http://127.0.0.1:3001/api/health"]
+USER 10001:10001
+ENTRYPOINT ["videnoa-controller"]
+CMD ["--config", "/etc/videnoa-controller/controller.toml", "--host", "0.0.0.0"]
