@@ -4,7 +4,7 @@ import { expect, test } from "@playwright/test"
 
 import { installOperationalApi } from "./operations-fixtures"
 
-const evidenceDir = "../.omo/evidence/videnoa-controller/task-18/workers-settings"
+const evidenceDir = "../.omo/evidence/videnoa-controller/task-19/playwright-report/screenshots/task-18/workers-settings"
 
 test("operates workers and runtime settings with safe failures", async ({ page }) => {
   // Given: deterministic same-origin Task 18 API fixtures.
@@ -196,7 +196,7 @@ test("operates workers and runtime settings with safe failures", async ({ page }
   })
   await page.screenshot({ path: `${evidenceDir}/workers-narrow-unauthorized.png` })
   expect(api.journal).toContain("unauthorized:POST:/api/workers/d2719a65-16d5-4e97-a756-d8f782769144/enable")
-  await writeFile("../.omo/evidence/videnoa-controller/task-18/workers-settings-errors.txt", [
+  await writeFile("../.omo/evidence/videnoa-controller/task-19/playwright-report/screenshots/task-18/workers-settings-errors.txt", [
     "Deterministic Playwright API fixtures were used.",
     "Delete conflict: worker is referenced by tasks -> safe disable guidance rendered.",
     "Rejected deletion restored the invoking row action; successful deletion removed the row and focused Add Worker.",
