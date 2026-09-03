@@ -219,3 +219,21 @@
 - Aggregate enum endpoints should project sparse persistence results onto one explicit ordered variant table so empty categories remain part of the stable HTTP contract.
 - A lifecycle service that publishes a durable change after commit must be the sole mutation notification boundary; handler-level reload-and-publish duplicates events and makes an already committed response fallible.
 - A post-commit decode regression trigger must satisfy SQLite constraints while violating the Rust decoder, such as schema-valid JSON containing a denied unknown field.
+
+## 2026-09-03 Task 15
+
+- Calling a captured browser-native `fetch` as an object method changes its receiver; Chromium throws `Illegal invocation` before Playwright or the server can observe a request. Preserve the browser global receiver when injecting fetch into Ky.
+- Responsive `display: none` on a button label removes its accessible name when the remaining icon is `aria-hidden`; icon-only breakpoints need an explicit state-aware label.
+- Browser geometry captured during a transform entrance animation can transiently exceed the viewport by one pixel. Waiting on `document.getAnimations().map(animation => animation.finished)` produces stable scroll-ownership evidence without arbitrary sleeps.
+- Explicit operational state must survive every responsive breakpoint. On narrow shells, hide the secondary technical endpoint label rather than the complete connection-status primitive.
+- A finite mocked SSE response naturally moves from connected to reconnecting after EOF. Browser assertions should require a visible explicit lifecycle surface instead of pinning a timing-sensitive single state.
+- Visual evidence directories are acceptance inputs: remove stale extra captures and verify exact file count and modification time after the final rendered-source edit.
+- Plan ownership must be read from the exact downstream task definitions: Task 16 owns the Tasks table, Task 17 owns manual task actions, and Task 18 jointly owns Workers and Settings.
+- Deterministic visual evidence should encode its rendering contract in Playwright: fixed CSS-pixel viewports, an explicit color scheme, reduced motion, settled animations, and `fullPage: false` prevent stale or oversized acceptance artifacts.
+- Programmatic focus is only visually provable when the focused error primitive has an explicit `:focus` treatment; relying solely on browser `:focus-visible` heuristics leaves screenshot evidence ambiguous.
+- A no-gradient operational surface can retain depth through solid luminance stacking, accent edges, inset highlights, and structural borders without flattening the shell.
+
+## 2026-09-03 Task 15 Focus Convergence
+
+- React passive effects can race an async DOM query under full-suite scheduling: the requested route was committed while `document.activeElement` remained `body`. Route-main focus belongs in `useLayoutEffect` so the accessibility transition completes before the committed shell is observable.
+- Browser reload coverage should assert focus ownership after an existing session is restored; visible route content alone does not prove the keyboard-navigation contract.

@@ -16,6 +16,7 @@ bench_per_commit*
 build.sh
 webgui-*.png
 .playwright-mcp/
+/.playwright-output/
 
 # Runtime-generated persistent logs (rolling files + panic crash artifacts)
 data/

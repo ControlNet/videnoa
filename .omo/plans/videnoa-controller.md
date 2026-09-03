@@ -338,7 +338,7 @@ Expected: the image starts without GPU flags/libraries; archives have the locked
 
   **Commit:** `feat(controller): expose operational control api`
 
-- [ ] 15. Build the authenticated Controller frontend shell and design system
+- [x] 15. Build the authenticated Controller frontend shell and design system
 
   **Depends on:** 1, 4, 14
 
