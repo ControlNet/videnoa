@@ -310,3 +310,9 @@
 - A controlled number input initialized in a passive open effect can merge a fast browser fill with the prior value (`4` plus `1` became `41`). Mounting the dialog only while open and initializing fields synchronously from the selected worker removes that observable race while refreshed optimistic versions continue to flow through props.
 - Table-owned horizontal overflow is discoverable when the named region is paired with visible narrow-only Left/Right controls and a concise `aria-describedby` hint; focusability alone does not explain the hidden columns.
 - Final browser evidence is reliable when all historical scenario screenshots, the HTML report, and result metadata are routed under one task directory, traces/videos are disabled, and signatures plus modification times are checked after the last rendered-source edit.
+
+## 2026-09-03 Task 19 Session Remediation
+
+- A session-expiry browser test is vacuous unless it first seeds and observes the named HttpOnly cookie. Modeling the production expired `Set-Cookie` response then proves browser cookie removal rather than only proving storage was already empty.
+- Invalid `/api/auth/session` responses should preserve the typed unauthorized body and status while expiring the existing cookie through the same cookie builder used by logout.
+- Duplicate screenshot basenames are not stale evidence when they belong to path-scoped historical matrices; comparing full paths and content hashes distinguishes intentional route captures from duplicate files.

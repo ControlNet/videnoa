@@ -132,9 +132,9 @@ async fn session(State(auth): State<AuthService>, headers: HeaderMap) -> Respons
                 );
                 response_with_csrf(Json(response).into_response(), &csrf)
             }
-            Err(error) => error_response(&error),
+            Err(error) => session_error_response(&auth, &error),
         },
-        Err(error) => error_response(&error),
+        Err(error) => session_error_response(&auth, &error),
     }
 }
 
@@ -199,6 +199,17 @@ fn session_cookie(auth: &AuthService, token: &str, expired: bool) -> String {
     format!(
         "{SESSION_COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={max_age}{secure}"
     )
+}
+
+fn session_error_response(auth: &AuthService, error: &AuthError) -> Response {
+    let mut response = error_response(error);
+    if matches!(error, AuthError::Unauthorized) {
+        response.headers_mut().insert(
+            header::SET_COOKIE,
+            header_value(&session_cookie(auth, "", true)),
+        );
+    }
+    response
 }
 
 fn error_response(error: &AuthError) -> Response {

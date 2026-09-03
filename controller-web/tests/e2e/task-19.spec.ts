@@ -117,9 +117,26 @@ test("preserves visible focus and instant feedback in forced colors and reduced 
 
 test("expires to a clean login surface without browser-stored credentials", async ({ page, context }) => {
   await disableEventSource(page)
+  await context.addCookies([{
+    name: "videnoa_session",
+    value: crypto.randomUUID(),
+    url: "http://127.0.0.1:4173",
+    httpOnly: true,
+    sameSite: "Strict",
+  }])
+  expect((await context.cookies()).map((cookie) => cookie.name)).toContain("videnoa_session")
   let authenticated = true
   await page.route("**/api/auth/session", async (route) => {
-    await fulfillJson(route, authenticated ? session : { error: "unauthorized" }, authenticated ? 200 : 401)
+    if (authenticated) {
+      await fulfillJson(route, session)
+      return
+    }
+    await route.fulfill({
+      status: 401,
+      contentType: "application/json",
+      headers: { "set-cookie": "videnoa_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0" },
+      body: JSON.stringify({ error: "unauthorized" }),
+    })
   })
   await installTaskRoutes(page, false, false)
   await page.setViewportSize({ width: 375, height: 812 })
@@ -135,7 +152,7 @@ test("expires to a clean login surface without browser-stored credentials", asyn
     local: Object.keys(localStorage),
     session: Object.keys(sessionStorage),
   }))).toEqual({ cacheKeys: [], indexedDatabases: [], local: [], session: [] })
-  expect(await context.cookies()).toEqual([])
+  expect((await context.cookies()).map((cookie) => cookie.name)).not.toContain("videnoa_session")
   await page.screenshot({ path: `${failureEvidenceDir}/session-expired-narrow.png`, animations: "disabled", fullPage: false, scale: "css" })
 })
 
