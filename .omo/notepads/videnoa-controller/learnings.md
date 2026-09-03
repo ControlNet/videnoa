@@ -329,3 +329,9 @@
 - BuildKit registry, git, npm, and target cache mounts provide isolated dependency/frontend caching without generated placeholder sources or changes to the existing GPU Dockerfile.
 - A numeric non-root runtime requires bind-mounted admin hash files to be readable by UID 10001; read-only mount semantics protect the file, while host ownership/mode must permit the container user to read it.
 - Exported filesystem, package, and `ldd` inspection are complementary GPU-free checks: package names alone do not prove that no model or runtime artifact was copied into an otherwise CPU base.
+
+## 2026-09-04 04:33:03 +10:00 Task 24
+
+- CI/release preservation is best locked by parsing the actual YAML, validating the dependency DAG, and asserting complete legacy plus Controller job/asset/tag contracts; token-only greps cannot prove failure propagation or non-overlap.
+- The dedicated archive and container scripts already provide the strongest negative boundaries. Workflows should call them directly so wrong versions, missing files, extra GPU/model content, and invalid runtime images fail at the same reusable contract locally and on hosted runners.
+- A release is complete only when the final GitHub release job depends on every legacy and Controller archive/image publication and post-publication verification checks all four Docker tags and all archive products.

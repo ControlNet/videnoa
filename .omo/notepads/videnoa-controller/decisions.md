@@ -224,3 +224,9 @@
 - Keep `Dockerfile.controller` wholly separate from the root GPU image and target only `cargo build --release --locked -p videnoa-controller` under Rust 1.83.
 - Use Debian bookworm slim with only CA certificates and curl at runtime, numeric UID/GID 10001, and fixed mounts for config, SQLite data, temp work, NAS input, and NAS output.
 - Make the default image command require `/etc/videnoa-controller/controller.toml`, override only the listener host to `0.0.0.0`, and require the configuration to reference a separately mounted admin Argon2id hash file.
+
+## 2026-09-04 04:33:03 +10:00 Task 24
+
+- Keep every current Videnoa job, package name, asset pattern, Docker tag, action version, and credential name intact; add Controller jobs and outputs without sharing archive artifacts or image tags.
+- Pin Controller Rust/package jobs to Rust 1.83, keep Controller frontend commands serial within one job, and use the existing package/container scripts as workflow entry points.
+- Make `github-release` depend on both Controller archive jobs and Controller Docker publication, and make `release-verify` unconditionally pull both Controller tags after exact asset checks.
