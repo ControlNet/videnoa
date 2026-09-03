@@ -43,7 +43,7 @@ test("replays one manual creation intent after a dropped response", async ({ pag
   await page.keyboard.press("Tab")
   await expect(replay).toBeFocused()
   await page.screenshot({
-    path: "../.omo/evidence/videnoa-controller/task-17/task-actions/manual-create-replay-keyboard-focus.png",
+    path: "../.omo/evidence/videnoa-controller/task-19/playwright-report/screenshots/task-17/task-actions/manual-create-replay-keyboard-focus.png",
     animations: "disabled",
   })
   await replay.click()
@@ -59,7 +59,7 @@ test("replays one manual creation intent after a dropped response", async ({ pag
   await expect(detail.locator("dt", { hasText: /^Priority$/ }).locator("xpath=following-sibling::dd")).toHaveText("17")
   await expect(detail.locator("dt", { hasText: /^Source$/ }).locator("xpath=following-sibling::dd")).toHaveText("manual")
   await detail.screenshot({
-    path: "../.omo/evidence/videnoa-controller/task-17/task-actions/manual-create-replay-success.png",
+    path: "../.omo/evidence/videnoa-controller/task-19/playwright-report/screenshots/task-17/task-actions/manual-create-replay-success.png",
     animations: "disabled",
   })
   expect(keys).toHaveLength(2)
@@ -142,7 +142,7 @@ test("focuses structured root and output collision errors and restores the add t
   await expect(page.getByRole("alert")).toContainText("outside the configured roots")
   await expect(page.getByLabel("Input Path")).toBeFocused()
   await page.screenshot({
-    path: "../.omo/evidence/videnoa-controller/task-17/task-actions/manual-intake-root-focus.png",
+    path: "../.omo/evidence/videnoa-controller/task-19/playwright-report/screenshots/task-17/task-actions/manual-intake-root-focus.png",
     animations: "disabled",
   })
   await page.getByLabel("Input Path").fill("/nas/input/exact.mkv")

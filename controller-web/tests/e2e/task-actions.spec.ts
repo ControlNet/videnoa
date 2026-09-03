@@ -54,7 +54,7 @@ test("opens authoritative detail and sends current versions for cancel and retry
   await pane.scrollIntoViewIfNeeded()
   await pane.evaluate((element) => element.scrollTo({ top: 0 }))
   await page.screenshot({
-    path: "../.omo/evidence/videnoa-controller/task-17/task-actions/detail-general-progress.png",
+    path: "../.omo/evidence/videnoa-controller/task-19/playwright-report/screenshots/task-17/task-actions/detail-general-progress.png",
     animations: "disabled",
   })
   await pane.evaluate((element) => {
@@ -62,7 +62,7 @@ test("opens authoritative detail and sends current versions for cancel and retry
     if (attempt instanceof HTMLElement) element.scrollTo({ top: attempt.offsetTop })
   })
   await page.screenshot({
-    path: "../.omo/evidence/videnoa-controller/task-17/task-actions/detail-attempts.png",
+    path: "../.omo/evidence/videnoa-controller/task-19/playwright-report/screenshots/task-17/task-actions/detail-attempts.png",
     animations: "disabled",
   })
   await page.getByRole("button", { name: "Cancel Task" }).click()
@@ -106,7 +106,7 @@ test("shows retry only for explicit safe failure evidence", async ({ page }) => 
   const retry = page.getByRole("button", { name: "Retry Failed Stage" })
   await retry.focus()
   await page.screenshot({
-    path: "../.omo/evidence/videnoa-controller/task-17/task-actions/safe-processing-retry.png",
+    path: "../.omo/evidence/videnoa-controller/task-19/playwright-report/screenshots/task-17/task-actions/safe-processing-retry.png",
     animations: "disabled",
   })
   await retry.click()
@@ -192,7 +192,7 @@ test("keeps task actions contained at narrow viewport width", async ({ page }) =
   await expect(page.getByText(/Inspect the destination and staging artifact/)).toBeVisible()
   await page.getByText(/Inspect the destination and staging artifact/).scrollIntoViewIfNeeded()
   await page.screenshot({
-    path: "../.omo/evidence/videnoa-controller/task-17/task-actions/narrow-ambiguous-retry-blocked.png",
+    path: "../.omo/evidence/videnoa-controller/task-19/playwright-report/screenshots/task-17/task-actions/narrow-ambiguous-retry-blocked.png",
     animations: "disabled",
   })
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(420)
