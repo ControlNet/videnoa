@@ -1,14 +1,6 @@
 import { expect, test } from "@playwright/test"
 
-import {
-  appendEvidence,
-  capture,
-  dispatchTaskUpdate,
-  installLiveApi,
-  installPagedApi,
-  requestJournal,
-  task,
-} from "./tasks-fixtures"
+import { appendEvidence, capture, dispatchTaskUpdate, installLiveApi, installPagedApi, requestJournal, task } from "./tasks-fixtures"
 
 test("keeps 20,000 task history bounded through filters, sorting, paging, and narrow table navigation", async ({ page }) => {
   // Given: a deterministic 20,000-task server that creates only requested-page rows.
@@ -22,7 +14,7 @@ test("keeps 20,000 task history bounded through filters, sorting, paging, and na
   expect(journal.counts).toHaveLength(1)
 
   // When: the operator applies coherent workflow/search state.
-  await page.getByLabel("Workflow").fill("anime-2x")
+  await page.getByRole("group", { name: "Task filters" }).getByLabel("Workflow").fill("anime-2x")
   await expect.poll(() => journal.tasks.length).toBe(2)
   await expect.poll(() => journal.counts.length).toBe(2)
   await page.getByLabel("Search task paths").fill("episode-00101")
@@ -36,7 +28,7 @@ test("keeps 20,000 task history bounded through filters, sorting, paging, and na
   await expect(filteredRows.first()).toContainText("episode-00101.mkv")
   await expect(filteredRows.first()).toContainText("anime-2x")
   await expect(page.getByLabel("Search task paths")).toHaveAttribute("name", "search")
-  await expect(page.getByLabel("Workflow")).toHaveAttribute("autocomplete", "off")
+  await expect(page.getByRole("group", { name: "Task filters" }).getByLabel("Workflow")).toHaveAttribute("autocomplete", "off")
   await capture(page, "desktop.png")
 
   // When: the operator clears search, changes ordering, and requests the next bounded page.
@@ -64,7 +56,9 @@ test("keeps 20,000 task history bounded through filters, sorting, paging, and na
 
   // When: narrow evidence intentionally navigates both shell and table scroll owners.
   await page.setViewportSize({ width: 375, height: 812 })
-  await page.locator(".shell-main").evaluate((element) => { element.scrollTop = 430 })
+  await page.locator(".shell-main").evaluate((element) => {
+    element.scrollTop = 430
+  })
   await page.locator(".task-table-frame").evaluate((element) => {
     element.scrollTop = 132
     element.scrollLeft = 420
@@ -74,8 +68,12 @@ test("keeps 20,000 task history bounded through filters, sorting, paging, and na
   expect(await page.locator(".task-table-frame").evaluate((element) => element.scrollLeft)).toBeGreaterThan(0)
   expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)).toBe(false)
   await capture(page, "narrow.png")
-  await page.locator(".task-table-frame").evaluate((element) => { element.scrollTop = element.scrollHeight })
-  await page.locator(".shell-main").evaluate((element) => { element.scrollTop = element.scrollHeight })
+  await page.locator(".task-table-frame").evaluate((element) => {
+    element.scrollTop = element.scrollHeight
+  })
+  await page.locator(".shell-main").evaluate((element) => {
+    element.scrollTop = element.scrollHeight
+  })
   expect(await page.locator(".task-table-frame").evaluate((element) => element.scrollTop)).toBeGreaterThan(132)
   await capture(page, "narrow-pagination.png")
 })
@@ -90,8 +88,15 @@ test("ignores stale and equal SSE task versions without mutation or refetch", as
   await expect(row).toContainText("0%")
 
   // When: equal and stale versions arrive.
-  await dispatchTaskUpdate(page, { ...current, progress: { ...current.progress, percent: 80 } })
-  await dispatchTaskUpdate(page, { ...current, version: 2, progress: { ...current.progress, percent: 90 } })
+  await dispatchTaskUpdate(page, {
+    ...current,
+    progress: { ...current.progress, percent: 80 },
+  })
+  await dispatchTaskUpdate(page, {
+    ...current,
+    version: 2,
+    progress: { ...current.progress, percent: 90 },
+  })
 
   // Then: neither the row nor either request stream changes.
   await expect(row).toContainText("0%")
@@ -108,7 +113,11 @@ test("merges a same-status same-order active progress delta without refetch", as
   await expect(page.getByRole("table").locator("tbody tr")).toHaveCount(1)
 
   // When: a newer update changes only progress-bearing fields.
-  await dispatchTaskUpdate(page, { ...current, version: 2, progress: { ...current.progress, percent: 42 } })
+  await dispatchTaskUpdate(page, {
+    ...current,
+    version: 2,
+    progress: { ...current.progress, percent: 42 },
+  })
 
   // Then: one row changes and neither bounded endpoint refetches.
   await expect(page.getByRole("table").locator("tbody tr").first()).toContainText("42%")
@@ -123,7 +132,11 @@ test("does not replay a retained task update when the Tasks route remounts", asy
   await installLiveApi(page, journal, current)
   await page.goto("/tasks")
   await expect(page.getByRole("table").locator("tbody tr")).toHaveCount(1)
-  await dispatchTaskUpdate(page, { ...current, version: 2, progress: { ...current.progress, percent: 42 } })
+  await dispatchTaskUpdate(page, {
+    ...current,
+    version: 2,
+    progress: { ...current.progress, percent: 42 },
+  })
   await expect(page.getByRole("table").locator("tbody tr").first()).toContainText("42%")
   expect(journal.tasks).toHaveLength(1)
   expect(journal.counts).toHaveLength(1)

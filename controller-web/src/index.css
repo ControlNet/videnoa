@@ -12,7 +12,7 @@
   --color-surface-hover: oklch(0.93 0.014 260);
   --color-text: oklch(0.18 0.02 260);
   --color-text-muted: oklch(0.45 0.018 260);
-  --color-text-quiet: oklch(0.57 0.014 260);
+  --color-text-quiet: oklch(0.54 0.014 260);
   --color-border: oklch(0.86 0.012 260);
   --color-border-subtle: oklch(0.91 0.008 260);
   --color-accent: oklch(0.53 0.2 292);
@@ -43,6 +43,9 @@
   --border-subtle: 1px solid var(--color-border-subtle);
   --motion-fast: 150ms cubic-bezier(0.16, 1, 0.3, 1);
   --motion-enter: 240ms cubic-bezier(0.16, 1, 0.3, 1);
+  --measure-dialog: 42rem;
+  --measure-detail: 34rem;
+  --control-compact: 2.25rem;
 }
 
 * {
@@ -63,7 +66,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -635,7 +639,7 @@ button:disabled {
     --color-surface-hover: oklch(0.23 0.025 260);
     --color-text: oklch(0.96 0.008 260);
     --color-text-muted: oklch(0.72 0.016 260);
-    --color-text-quiet: oklch(0.58 0.016 260);
+    --color-text-quiet: oklch(0.61 0.016 260);
     --color-border: oklch(0.29 0.02 260);
     --color-border-subtle: oklch(0.23 0.018 260);
     --color-accent: oklch(0.66 0.19 292);

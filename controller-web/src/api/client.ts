@@ -1,24 +1,30 @@
 import ky from "ky"
 import type { ZodType } from "zod"
 
-import { apiErrorSchema, type ServerApiErrorCode } from "./schemas"
+import { apiErrorSchema, type FieldErrorCode, type ServerApiErrorCode } from "./schemas"
 
-export type ApiErrorCode =
-  | ServerApiErrorCode
-  | "http_error"
-  | "malformed_response"
-  | "network_failure"
+export type ApiErrorCode = ServerApiErrorCode | "http_error" | "malformed_response" | "network_failure"
 
 export class ApiClientError extends Error {
   readonly name = "ApiClientError"
   readonly code: ApiErrorCode
   readonly status: number | null
+  readonly retryable: boolean
+  readonly fieldErrors: readonly ApiFieldError[]
 
-  constructor(code: ApiErrorCode, status: number | null = null, message: string = code) {
+  constructor(code: ApiErrorCode, status: number | null = null, message: string = code, retryable = false, fieldErrors: readonly ApiFieldError[] = []) {
     super(message)
     this.code = code
     this.status = status
+    this.retryable = retryable
+    this.fieldErrors = fieldErrors
   }
+}
+
+export type ApiFieldError = {
+  readonly field: string
+  readonly code: FieldErrorCode
+  readonly message: string
 }
 
 type ClientOptions = {
@@ -30,6 +36,7 @@ type RequestOptions<T> = {
   readonly schema: ZodType<T>
   readonly method?: "DELETE" | "GET" | "PATCH" | "POST" | "PUT"
   readonly json?: unknown
+  readonly headers?: Readonly<Record<string, string>>
   readonly signal?: AbortSignal
 }
 
@@ -58,6 +65,7 @@ export function createApiClient(options: ClientOptions): ApiClient {
     request: async <T>(path: string, requestOptions: RequestOptions<T>): Promise<T> => {
       const method = requestOptions.method ?? "GET"
       const headers = new Headers()
+      for (const [name, value] of Object.entries(requestOptions.headers ?? {})) headers.set(name, value)
       if (method !== "GET" && csrfProof !== null) {
         headers.set("x-csrf-token", csrfProof)
       }
@@ -88,7 +96,7 @@ export function createApiClient(options: ClientOptions): ApiClient {
         }
         const parsedError = apiErrorSchema.safeParse(await readJson(response))
         if (!parsedError.success) throw new ApiClientError("malformed_response", response.status)
-        throw new ApiClientError(parsedError.data.code, response.status, parsedError.data.message)
+        throw new ApiClientError(parsedError.data.code, response.status, parsedError.data.message, parsedError.data.retryable, parsedError.data.fieldErrors)
       }
 
       const parsed = requestOptions.schema.safeParse(await readJson(response))

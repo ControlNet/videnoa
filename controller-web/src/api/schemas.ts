@@ -25,14 +25,20 @@ const operationsErrorCodeSchema = z.enum([
   "unavailable",
   "internal_error",
 ])
+export const fieldErrorCodeSchema = z.enum(["required", "invalid_value", "unknown_value", "out_of_range", "conflict"])
 
-export type ServerApiErrorCode =
-  | z.infer<typeof authErrorCodeSchema>
-  | z.infer<typeof operationsErrorCodeSchema>
+export type ServerApiErrorCode = z.infer<typeof authErrorCodeSchema> | z.infer<typeof operationsErrorCodeSchema>
+export type FieldErrorCode = z.infer<typeof fieldErrorCodeSchema>
 
 type ParsedApiError = {
   readonly code: ServerApiErrorCode
   readonly message: string
+  readonly retryable: boolean
+  readonly fieldErrors: readonly {
+    readonly field: string
+    readonly code: FieldErrorCode
+    readonly message: string
+  }[]
 }
 
 const flatApiErrorSchema = z
@@ -40,7 +46,7 @@ const flatApiErrorSchema = z
     error: authErrorCodeSchema,
   })
   .strict()
-  .transform(({ error }): ParsedApiError => ({ code: error, message: error }))
+  .transform(({ error }): ParsedApiError => ({ code: error, message: error, retryable: false, fieldErrors: [] }))
 
 const nestedApiErrorSchema = z
   .object({
@@ -53,7 +59,7 @@ const nestedApiErrorSchema = z
           z
             .object({
               field: z.string(),
-              code: z.string(),
+              code: fieldErrorCodeSchema,
               message: z.string(),
             })
             .strict(),
@@ -62,7 +68,14 @@ const nestedApiErrorSchema = z
       .strict(),
   })
   .strict()
-  .transform(({ error }): ParsedApiError => ({ code: error.code, message: error.message }))
+  .transform(
+    ({ error }): ParsedApiError => ({
+      code: error.code,
+      message: error.message,
+      retryable: error.retryable,
+      fieldErrors: error.field_errors,
+    }),
+  )
 
 export const apiErrorSchema = z.union([flatApiErrorSchema, nestedApiErrorSchema])
 

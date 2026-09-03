@@ -169,3 +169,19 @@
 - Coordinate processing retry by verifying terminal remote state and converging workspace deletion before supplying genuine evidence to the existing lifecycle policy.
 - Register one shared durable-change observer on the cloned persistence store so lifecycle, recovery, transfer, scheduler, and worker-health mutations reach the bounded SSE hub without coupling those services to HTTP types.
 - Revalidate SSE sessions on a persistent interval with a passive cookie-session check so event traffic neither postpones checks nor extends idle expiry.
+
+## 2026-09-03 Task 17
+
+- Keep manual creation intent in component memory only, generated with `crypto.randomUUID()`, and reuse it solely after an ambiguous network response with an unchanged canonical body.
+- Treat `GET /api/tasks/{id}` as authoritative for detail, attempts, versions, and lifecycle controls; selected-task SSE updates trigger detail refetch rather than local projection.
+- Expose cancellation only from queued through verifying and require confirmation. Expose retry only for explicitly retryable failed evidence while blocking publication and remote-state ambiguity.
+
+## 2026-09-03 Task 17 Oracle Remediation
+
+- Treat `cancel_requested_at` as part of action eligibility, not display metadata; any persisted timestamp blocks another cancellation request even in a cancellable status.
+- Encode the Rust retry classifier as one exhaustive frontend allowlist of exact code/stage pairs, with ambiguity and all unsupported codes blocked independently of `retryable` metadata.
+- Keep cancellation confirmation inline with detail context but modal for keyboard focus: safe action first, two-action focus loop, and nested Escape before pane dismissal.
+
+## 2026-09-03 Task 17 Evidence Convergence
+
+- Override every authoritative replay fixture field that the scenario submits explicitly, and assert the rendered detail values field-by-field so helper defaults cannot contradict request evidence.
