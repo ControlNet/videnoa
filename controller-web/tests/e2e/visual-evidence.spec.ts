@@ -2,7 +2,7 @@ import { expect, type Page, type Route, test } from "@playwright/test"
 
 import { installOperationalReadRoutes } from "./operations-fixtures"
 
-const evidenceDir = "../.omo/evidence/videnoa-controller/task-15/visual-qa"
+const evidenceDir = "../.omo/evidence/videnoa-controller/task-19/playwright-report/screenshots/task-15/visual-qa"
 const viewports = {
   narrow: { width: 375, height: 812 },
   tablet: { width: 768, height: 900 },

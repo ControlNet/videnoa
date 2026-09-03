@@ -2,7 +2,7 @@ import { expect, type Page, type Route, test } from "@playwright/test"
 
 import { installOperationalReadRoutes } from "./operations-fixtures"
 
-const evidenceDir = "../.omo/evidence/videnoa-controller/task-15"
+const evidenceDir = "../.omo/evidence/videnoa-controller/task-19/playwright-report/screenshots/task-15"
 const session = {
   id: "550e8400-e29b-41d4-a716-446655440000",
   authenticated: true,
