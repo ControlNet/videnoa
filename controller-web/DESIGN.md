@@ -17,13 +17,13 @@ The memorable moment is the transition from the isolated sign-in panel into a fi
 | Hover | `--color-surface-hover` | `oklch(0.93 0.014 260)` | `oklch(0.23 0.025 260)` | Interactive hover |
 | Text | `--color-text` | `oklch(0.18 0.02 260)` | `oklch(0.96 0.008 260)` | Primary copy |
 | Muted text | `--color-text-muted` | `oklch(0.45 0.018 260)` | `oklch(0.72 0.016 260)` | Supporting copy |
-| Quiet text | `--color-text-quiet` | `oklch(0.54 0.014 260)` | `oklch(0.61 0.016 260)` | Metadata |
+| Quiet text | `--color-text-quiet` | `oklch(0.48 0.014 260)` | `oklch(0.61 0.016 260)` | Metadata |
 | Border | `--color-border` | `oklch(0.86 0.012 260)` | `oklch(0.29 0.02 260)` | Structural separation |
 | Border subtle | `--color-border-subtle` | `oklch(0.91 0.008 260)` | `oklch(0.23 0.018 260)` | Recessed divisions |
-| Accent | `--color-accent` | `oklch(0.53 0.2 292)` | `oklch(0.66 0.19 292)` | Focus, active route, primary action |
+| Accent | `--color-accent` | `oklch(0.51 0.2 292)` | `oklch(0.66 0.19 292)` | Focus, active route, primary action |
 | Accent strong | `--color-accent-strong` | `oklch(0.46 0.21 292)` | `oklch(0.72 0.17 292)` | Accent hover |
 | Accent wash | `--color-accent-wash` | `oklch(0.92 0.035 292)` | `oklch(0.22 0.055 292)` | Active navigation surface |
-| Healthy | `--color-healthy` | `oklch(0.5 0.15 145)` | `oklch(0.72 0.16 145)` | Connected service state |
+| Healthy | `--color-healthy` | `oklch(0.44 0.15 145)` | `oklch(0.72 0.16 145)` | Connected service state |
 | Danger | `--color-danger` | `oklch(0.48 0.18 25)` | `oklch(0.7 0.17 25)` | Recoverable error text |
 | Danger wash | `--color-danger-wash` | `oklch(0.94 0.025 25)` | `oklch(0.2 0.04 25)` | Error summary |
 
