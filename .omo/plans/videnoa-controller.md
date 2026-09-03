@@ -424,7 +424,7 @@ Expected: the image starts without GPU flags/libraries; archives have the locked
 
   **Commit:** `test(controller): prove crash-safe orchestration pipeline`
 
-- [ ] 21. Add adversarial history-load, concurrency, filesystem, and security suites
+- [x] 21. Add adversarial history-load, concurrency, filesystem, and security suites
 
   **Depends on:** 3, 4, 7, 11-14, 19
 
@@ -438,7 +438,7 @@ Expected: the image starts without GPU flags/libraries; archives have the locked
 
   **Commit:** `test(controller): add load and security regressions`
 
-- [ ] 22. Add the dedicated GPU-free Controller container image
+- [x] 22. Add the dedicated GPU-free Controller container image
 
   **Depends on:** 1-21
 
@@ -452,7 +452,7 @@ Expected: the image starts without GPU flags/libraries; archives have the locked
 
   **Commit:** `build(controller): add gpu-free container image`
 
-- [ ] 23. Add independent Linux and Windows Controller archive packaging
+- [x] 23. Add independent Linux and Windows Controller archive packaging
 
   **Depends on:** 1-21
 
@@ -466,7 +466,7 @@ Expected: the image starts without GPU flags/libraries; archives have the locked
 
   **Commit:** `build(controller): package standalone release archives`
 
-- [ ] 24. Integrate Controller into CI and existing release conventions
+- [x] 24. Integrate Controller into CI and existing release conventions
 
   **Depends on:** 20-23
 
@@ -480,7 +480,7 @@ Expected: the image starts without GPU flags/libraries; archives have the locked
 
   **Commit:** `ci(controller): publish independent service artifacts`
 
-- [ ] 25. Write Controller operator, API, security, recovery, and release documentation
+- [x] 25. Write Controller operator, API, security, recovery, and release documentation
 
   **Depends on:** 2-24
 
