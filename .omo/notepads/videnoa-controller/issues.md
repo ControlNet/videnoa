@@ -259,3 +259,9 @@
 
 - Neither `pwsh` nor Windows PowerShell is installed on the Linux host, and the existing MSVC-compatible compiler/archive tooling gap remains. The Windows packager received static contract/layout review but no native PowerShell parser, Windows build, or executable smoke; evidence does not overclaim those surfaces.
 - The first forbidden-content fixture used a non-contract archive filename, so filename validation correctly failed before member validation. Renaming the injected archive to the locked filename exposed and passed the intended exact-member rejection.
+
+## 2026-09-04 Task 22
+
+- The first live container start correctly rejected a mode-0600 root-owned bind-mounted hash file because numeric UID 10001 could not read it. The smoke fixture now uses a read-only bind mount with host permissions that permit the non-root process to read the PHC hash.
+- The first unwritable-data assertion expected SQLite's `readonly database` wording, while the actual create/open boundary reports `unable to open database file`; evidence now pins the observed stable failure without exposing paths or credentials.
+- No Task 22 product blocker remains after cached build, content/linkage scan, health, persistence, non-root write, missing-config/hash, read-only-data, outside-root, Rust 1.83, strict Clippy, and full Controller test verification.
