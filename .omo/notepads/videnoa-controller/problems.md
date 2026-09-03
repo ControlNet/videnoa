@@ -157,3 +157,8 @@
 - No confirmed Task 18 accessibility blocker remains after outcome-specific delete focus, first-invalid worker/settings validation, stable error associations and announcements, and explicit scope on all nine worker headers.
 - The external Bun no-excuse helper resolution gap remains tooling-only; all repository-native frontend gates pass.
 - Final review follow-ups for server slot errors and focused visual states are resolved; the worker scroll-focus capture intentionally shows table-owned horizontal overflow rather than pretending all nine dense columns fit at once.
+
+## 2026-09-03 Task 19
+
+- No confirmed Task 19 product or evidence blocker remains after semantic contrast correction, worker overflow controls, invoking-trigger focus restoration, synchronous worker-form initialization, reduced-motion enforcement, and the complete browser regression matrix.
+- The final gates pass 102 Vitest tests and 38 Chromium scenarios. Production builds retain the known non-fatal Rollup warnings for Zod dependency comments; the external Bun checker and repository-wide Secret Guard observations remain tooling or pre-existing scope only.

@@ -303,3 +303,10 @@
 - Delete outcomes need different stable targets: cancellation and rejection return to the exact row action, while successful removal focuses `Add Worker` because the original trigger no longer exists.
 - Native numeric constraints alone do not create associated inline error messages. `noValidate` lets the existing Zod boundary own deterministic first-invalid focus, stable error IDs, `aria-describedby`, and alert announcements while retaining min/max metadata.
 - Server field errors need the same mapping and focus path as local Zod errors, including `compute_slots`; adjacent rendering without focus is not equivalent accessibility.
+
+## 2026-09-03 Task 19
+
+- Route-level axe scans exposed light-theme semantic-token contrast failures that component-focused tests did not cover; correcting the shared quiet, accent, and healthy tokens fixed every affected operational surface together.
+- A controlled number input initialized in a passive open effect can merge a fast browser fill with the prior value (`4` plus `1` became `41`). Mounting the dialog only while open and initializing fields synchronously from the selected worker removes that observable race while refreshed optimistic versions continue to flow through props.
+- Table-owned horizontal overflow is discoverable when the named region is paired with visible narrow-only Left/Right controls and a concise `aria-describedby` hint; focusability alone does not explain the hidden columns.
+- Final browser evidence is reliable when all historical scenario screenshots, the HTML report, and result metadata are routed under one task directory, traces/videos are disabled, and signatures plus modification times are checked after the last rendered-source edit.
