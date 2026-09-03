@@ -161,7 +161,9 @@ fn all_public_http_contracts_roundtrip_and_can_write_evidence() -> TestResult {
             "source_reference": "ani-rss:item/0042"
         }))?,
         "task_idempotency_key": roundtrip::<IdempotencyKey>(json!("task-ingress-0001"))?,
-        "task_detail": roundtrip::<TaskDetailResponse>(json!({"task": task_value, "attempts": [attempt]}))?,
+        "task_detail": roundtrip::<TaskDetailResponse>(json!({
+            "task": task_value, "attempts": [attempt], "total": 1, "limit": 100, "offset": 0
+        }))?,
         "task_list_query": roundtrip::<TaskListQuery>(json!({}))?,
         "task_list": roundtrip::<TaskListResponse>(json!({
             "items": [task()], "total": 1, "limit": 100, "offset": 0

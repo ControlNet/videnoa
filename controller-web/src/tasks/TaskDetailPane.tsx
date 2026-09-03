@@ -166,7 +166,12 @@ export function TaskDetailPane({ apiClient, taskId, onClose, onChanged }: TaskDe
       {data.loading || data.detail === null ? (
         <p className="detail-loading">Loading task detail…</p>
       ) : (
-        <TaskDetailContent detail={data.detail} guidance={guidance} />
+        <TaskDetailContent
+          detail={data.detail}
+          guidance={guidance}
+          loadingMore={data.loadingMore}
+          onLoadMore={data.loadMore}
+        />
       )}
     </section>
   )

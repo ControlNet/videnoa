@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test"
 
-import { fulfillJson, installPagedApi, requestJournal, task } from "./tasks-fixtures"
+import { fulfillJson, installPagedApi, requestJournal, task, taskDetail } from "./tasks-fixtures"
 
 test("replays one manual creation intent after a dropped response", async ({ page }) => {
   // Given: the first create response drops after the server accepts the logical task.
@@ -16,7 +16,7 @@ test("replays one manual creation intent after a dropped response", async ({ pag
     workflow: "anime-2x",
     priority: 17,
   })
-  await page.route(`**/api/tasks/${createdTask.id}`, async (route) => fulfillJson(route, { task: createdTask, attempts: [] }))
+  await page.route(`**/api/tasks/${createdTask.id}?*`, async (route) => fulfillJson(route, taskDetail(createdTask)))
   await page.route("**/api/tasks", async (route) => {
     creates += 1
     keys.push(route.request().headers()["idempotency-key"] ?? "")

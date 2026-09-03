@@ -205,6 +205,9 @@ async fn create_replay_conflict_history_and_detail_are_consistent() -> TestResul
     let detail = json_body(response).await?;
     assert_eq!(detail["task"], created);
     assert_eq!(detail["attempts"], json!([]));
+    assert_eq!(detail["total"], 0);
+    assert_eq!(detail["limit"], 100);
+    assert_eq!(detail["offset"], 0);
     Ok(())
 }
 

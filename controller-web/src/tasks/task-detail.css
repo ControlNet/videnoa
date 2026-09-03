@@ -17,6 +17,7 @@
   border-inline-start: var(--space-1) solid var(--color-accent);
   border-radius: var(--radius-panel);
   background: var(--color-surface);
+  font-family: Manrope, "Avenir Next", "Segoe UI", "Noto Sans CJK KR", "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", "Droid Sans Fallback", sans-serif;
   scrollbar-gutter: stable;
 }
 
@@ -129,9 +130,13 @@
   line-height: 1.5;
 }
 
+.attempt-section > output {
+  display: block;
+}
+
 .copy-value {
   overflow-wrap: anywhere;
-  font-family: "Geist Mono", "SFMono-Regular", Consolas, monospace;
+  font-family: "Geist Mono", "SFMono-Regular", Consolas, "Noto Sans Mono CJK KR", "Noto Sans CJK KR", "Droid Sans Fallback", monospace;
   user-select: text;
 }
 

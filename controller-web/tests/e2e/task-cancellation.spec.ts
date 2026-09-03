@@ -1,13 +1,13 @@
 import { expect, test } from "@playwright/test"
 
-import { fulfillJson, installLiveApi, requestJournal, task } from "./tasks-fixtures"
+import { fulfillJson, installLiveApi, requestJournal, task, taskDetail } from "./tasks-fixtures"
 
 test("keeps cancellation confirmation keyboard focus safe and contained", async ({ page }) => {
   // Given: an authoritative processing detail with cancellation available.
   const journal = requestJournal()
   const processing = task(4, { status: "processing", version: 3 })
   await installLiveApi(page, journal, processing)
-  await page.route(`**/api/tasks/${processing.id}`, async (route) => fulfillJson(route, { task: processing, attempts: [] }))
+  await page.route(`**/api/tasks/${processing.id}?*`, async (route) => fulfillJson(route, taskDetail(processing)))
   await page.goto("/tasks")
   const rowTrigger = page.getByRole("button", { name: /Open task/ })
   await rowTrigger.click()
@@ -52,9 +52,9 @@ test("refetches one bounded page and counts with authoritative detail after a ve
   await installLiveApi(page, journal, initial)
   let detail = initial
   let detailRequests = 0
-  await page.route(`**/api/tasks/${initial.id}`, async (route) => {
+  await page.route(`**/api/tasks/${initial.id}?*`, async (route) => {
     detailRequests += 1
-    await fulfillJson(route, { task: detail, attempts: [] })
+    await fulfillJson(route, taskDetail(detail))
   })
   await page.route(`**/api/tasks/${initial.id}/cancel`, async (route) => {
     detail = current
@@ -92,7 +92,7 @@ for (const [caseName, authoritative] of blockedCancellationScenarios) {
   const listed = task(7, { id: authoritative.id, status: "processing" })
   const cancellationRequests: string[] = []
   await installLiveApi(page, journal, listed)
-  await page.route(`**/api/tasks/${listed.id}`, async (route) => fulfillJson(route, { task: authoritative, attempts: [] }))
+  await page.route(`**/api/tasks/${listed.id}?*`, async (route) => fulfillJson(route, taskDetail(authoritative)))
   await page.route(`**/api/tasks/${listed.id}/cancel`, async (route) => {
     cancellationRequests.push(route.request().url())
     await fulfillJson(route, { error: { code: "conflict", message: "late cancellation", retryable: false, field_errors: [] } }, 409)

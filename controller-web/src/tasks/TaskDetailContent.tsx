@@ -6,9 +6,11 @@ import type { FailureGuidance } from "./taskActionPolicy"
 type TaskDetailContentProps = {
   readonly detail: TaskDetail
   readonly guidance: FailureGuidance | null
+  readonly loadingMore: boolean
+  readonly onLoadMore: () => void
 }
 
-export function TaskDetailContent({ detail, guidance }: TaskDetailContentProps) {
+export function TaskDetailContent({ detail, guidance, loadingMore, onLoadMore }: TaskDetailContentProps) {
   return (
     <div className="task-detail-content">
       <section>
@@ -43,9 +45,19 @@ export function TaskDetailContent({ detail, guidance }: TaskDetailContentProps) 
           <Detail label="Total Bytes" value={optionalBytes(detail.task.progress.bytes_total)} />
         </dl>
       </section>
-      <section className="attempt-section">
+      <section className="attempt-section" aria-busy={loadingMore}>
         <h3>Attempts</h3>
         <TaskAttempts attempts={detail.attempts} />
+        <output className="detail-empty" aria-live="polite" aria-atomic="true">
+          {loadingMore
+            ? "Loading more persisted attempts…"
+            : `Showing ${detail.attempts.length.toLocaleString()} of ${detail.total.toLocaleString()} persisted attempts.`}
+        </output>
+        {detail.attempts.length < detail.total ? (
+          <button type="button" className="secondary-button" disabled={loadingMore} onClick={onLoadMore}>
+            {loadingMore ? "Loading attempts…" : "Load more attempts"}
+          </button>
+        ) : null}
       </section>
       <section>
         <h3>Error / Logs</h3>

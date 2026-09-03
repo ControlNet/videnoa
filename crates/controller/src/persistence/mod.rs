@@ -1,4 +1,5 @@
 mod attempt;
+mod attempt_query;
 mod codec;
 mod database;
 mod error;

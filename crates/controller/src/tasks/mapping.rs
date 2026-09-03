@@ -27,13 +27,22 @@ pub(crate) fn task(record: TaskRecord) -> Task {
     }
 }
 
-pub(crate) fn detail(record: TaskRecord, attempts: Vec<AttemptRecord>) -> TaskDetailResponse {
+pub(crate) fn detail(
+    record: TaskRecord,
+    page: PageResult<AttemptRecord>,
+    limit: u16,
+    offset: u64,
+) -> TaskDetailResponse {
     TaskDetailResponse {
         task: task(record),
-        attempts: attempts
+        attempts: page
+            .items
             .into_iter()
             .map(|record| record.attempt)
             .collect::<Vec<TaskAttempt>>(),
+        total: page.total,
+        limit,
+        offset,
     }
 }
 
