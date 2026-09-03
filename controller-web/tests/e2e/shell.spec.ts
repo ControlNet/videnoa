@@ -8,6 +8,11 @@ const session = {
   expires_at: "2030-01-01T00:00:00Z",
   idle_expires_at: "2030-01-01T00:00:00Z",
 } as const
+const emptyTaskPage = { items: [], total: 0, limit: 50, offset: 0 }
+const emptyTaskCounts = {
+  items: ["queued", "reserved", "uploading", "staged", "submitting", "processing", "remote_completed", "downloading", "verifying", "publishing", "remote_cleanup", "completed", "failed", "cancelled"].map((status) => ({ status, count: 0 })),
+  total: 0,
+}
 
 async function json(route: Route, body: unknown, status = 200, headers: Record<string, string> = {}): Promise<void> {
   await route.fulfill({ status, contentType: "application/json", headers, body: JSON.stringify(body) })
@@ -31,6 +36,8 @@ async function installApi(page: Page): Promise<{ readonly expire: () => void }> 
     authenticated = false
     await json(route, { logged_out: true })
   })
+  await page.route("**/api/tasks?*", async (route) => json(route, emptyTaskPage))
+  await page.route("**/api/status-counts", async (route) => json(route, emptyTaskCounts))
   return { expire: () => { expired = true } }
 }
 
@@ -111,6 +118,8 @@ test("logout failure keeps the shell authenticated and permits retry", async ({ 
     await route.fulfill({ status: 200, contentType: "text/event-stream", body: "event: refetch\ndata: {\"reason\":\"snapshot_required\"}\n\n" })
   })
   await page.route("**/api/auth/session", async (route) => json(route, session, 200, { "x-csrf-token": "session-proof" }))
+  await page.route("**/api/tasks?*", async (route) => json(route, emptyTaskPage))
+  await page.route("**/api/status-counts", async (route) => json(route, emptyTaskCounts))
   await page.route("**/api/auth/logout", async (route) => {
     logoutAttempts += 1
     if (logoutAttempts === 1) {

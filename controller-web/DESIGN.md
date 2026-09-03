@@ -96,6 +96,13 @@ At widths below 48rem, the frame becomes two rows. Navigation is a horizontally 
 - **Structure**: route heading, concise ownership description, one bordered readiness panel.
 - **Scope**: intentionally excludes Tasks table, task creation/detail, worker operations, and settings controls assigned to Tasks 16-18.
 
+### Task History Surface
+- **Structure**: compact status counters, one bounded filter toolbar, a semantic dense table, and server-page navigation.
+- **States**: loading rows, populated page, empty filter result, recoverable load failure, and live active-row replacement.
+- **Density**: numeric and identifier cells use Geist Mono; row separators replace cards; long values truncate with native title disclosure.
+- **Responsiveness**: the route never owns horizontal overflow; the table frame is the deliberate inline scroll region below 48rem.
+- **Live data**: matching active task deltas replace only newer row versions; membership or ordering changes refetch the bounded current page and counts.
+
 ### Connection Status
 - **Structure**: indicator plus explicit lifecycle text and `/api/events` technical label.
 - **States**: connecting before EventSource opens, connected after `open` or a valid event, reconnecting after a recoverable stream error, and unavailable after closure or missing EventSource support.

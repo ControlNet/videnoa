@@ -2,8 +2,9 @@ use sqlx::sqlite::SqliteRow;
 use sqlx::Row;
 
 use crate::domain::{
-    FailureInfo, InputExtension, InputPath, OutputExtension, OutputPath, RetryMetadata,
-    SourceReference, TaskCreateRequest, TaskId, TaskProgress, WorkerId, WorkflowName,
+    FailureInfo, InputExtension, InputPath, OutputExtension, OutputPath, RemoteJobId,
+    RetryMetadata, SourceReference, TaskCreateRequest, TaskId, TaskProgress, WorkerId,
+    WorkflowName,
 };
 
 use super::codec::{
@@ -25,7 +26,8 @@ pub(super) const TASK_COLUMNS: &str = "id, version, status, input_path, output_p
     submission_started_at_ms, processing_started_at_ms, remote_completed_at_ms, \
     download_started_at_ms, verified_at_ms, publishing_started_at_ms, \
     remote_cleanup_started_at_ms, completed_at_ms, expected_output_size, \
-    expected_output_sha256, destination_staging_name";
+    expected_output_sha256, destination_staging_name, (SELECT remote_job_id FROM task_attempts \
+    WHERE task_id = tasks.id ORDER BY attempt_no DESC LIMIT 1) AS remote_job_id";
 
 pub(super) fn map_task(row: &SqliteRow) -> Result<TaskRecord, PersistenceError> {
     let failure_stage: Option<String> = row.try_get("failure_stage")?;
@@ -58,6 +60,10 @@ pub(super) fn map_task(row: &SqliteRow) -> Result<TaskRecord, PersistenceError> 
     let worker_id = row
         .try_get::<Option<String>, _>("worker_id")?
         .map(|value| parse_brand::<WorkerId>("worker_id", &value))
+        .transpose()?;
+    let remote_job_id = row
+        .try_get::<Option<String>, _>("remote_job_id")?
+        .map(|value| parse_brand::<RemoteJobId>("remote_job_id", &value))
         .transpose()?;
     let source_reference = row
         .try_get::<Option<String>, _>("source_reference")?
@@ -97,6 +103,7 @@ pub(super) fn map_task(row: &SqliteRow) -> Result<TaskRecord, PersistenceError> 
         input_identity,
         input_content_identity,
         worker_id,
+        remote_job_id,
         progress: decode_json::<TaskProgress>("progress_json", row.try_get("progress_json")?)?,
         attempt_count: rust_u32("attempt_count", row.try_get("attempt_count")?)?,
         failure,

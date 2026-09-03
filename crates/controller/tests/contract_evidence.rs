@@ -36,6 +36,7 @@ fn progress() -> Value {
 fn task() -> Value {
     json!({
         "id": "00000000-0000-4000-8000-000000000001",
+        "version": 4,
         "status": "processing",
         "input_path": "/nas/input/Season ../episode.v1.mkv",
         "output_path": "/nas/output/Season ../episode.final.mp4",
@@ -45,7 +46,9 @@ fn task() -> Value {
         "priority": 17,
         "source": "api",
         "source_reference": "ani-rss:item/0042",
+        "input_size": 4_194_304,
         "worker_id": "00000000-0000-4000-8000-000000000003",
+        "remote_job_id": "00000000-0000-4000-8000-000000000005",
         "progress": progress(),
         "attempt_count": 1,
         "failure": null,

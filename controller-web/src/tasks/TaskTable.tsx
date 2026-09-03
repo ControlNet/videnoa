@@ -1,0 +1,79 @@
+import { useRef } from "react"
+
+import type { TaskList } from "../api/taskSchemas"
+import { formatBytes, formatDate, formatDuration, formatStatus } from "./format"
+import { taskName } from "./model"
+import type { OptionalColumn } from "./query"
+
+type TaskTableProps = {
+  readonly page: TaskList | null
+  readonly columns: readonly OptionalColumn[]
+  readonly loading: boolean
+}
+
+const loadingRowKeys = ["one", "two", "three", "four", "five", "six", "seven", "eight"] as const
+
+export function TaskTable({ page, columns, loading }: TaskTableProps) {
+  const frameRef = useRef<HTMLElement>(null)
+  if (page === null && !loading) return null
+  if (page !== null && page.items.length === 0) {
+    return <output className="task-empty" aria-live="polite"><strong>No tasks match this view.</strong><span>Adjust the filters or wait for new work.</span></output>
+  }
+
+  return (
+    <>
+      <nav className="task-table-scroll-controls" aria-label="Task table horizontal navigation">
+        <p className="task-table-hint" id="task-table-scroll-hint">Scroll table to view more columns.</p>
+        <div>
+          <button type="button" aria-label="Scroll task table left" onClick={() => frameRef.current?.scrollBy({ left: -240 })}>Left</button>
+          <button type="button" aria-label="Scroll task table right" onClick={() => frameRef.current?.scrollBy({ left: 240 })}>Right</button>
+        </div>
+      </nav>
+      <section ref={frameRef} className="task-table-frame" aria-label="Scrollable task results" aria-describedby="task-table-scroll-hint" aria-busy={loading}>
+        <table className="task-table">
+          <thead><tr>
+            <th scope="col">Status</th><th scope="col">Name</th><th scope="col">Workflow</th><th scope="col">Worker</th><th scope="col">Progress</th><th scope="col">FPS</th><th scope="col">ETA</th><th scope="col">Size</th><th scope="col">Created</th><th scope="col">Finished</th><th scope="col">Source</th>
+            {columns.map((column) => <th scope="col" key={column}>{column.replaceAll("_", " ")}</th>)}
+          </tr></thead>
+          <tbody>
+            {page === null ? <LoadingRows columns={columns.length} /> : page.items.map((task) => (
+              <tr key={task.id}>
+                <td><span className={`task-status ${task.status}`}>{formatStatus(task.status)}</span></td>
+                <td className="task-name" title={task.input_path}>{taskName(task)}</td>
+                <td>{task.workflow}</td>
+                <td className="mono-cell" title={task.worker_id ?? undefined}>{shortId(task.worker_id)}</td>
+                <td><span className="progress-cell"><span><i style={{ inlineSize: `${task.progress.percent}%` }} /></span><b>{Math.round(task.progress.percent)}%</b></span></td>
+                <td className="numeric-cell">{task.progress.frames_per_second?.toFixed(1) ?? "--"}</td>
+                <td className="numeric-cell">{formatDuration(task.progress.eta_seconds)}</td>
+                <td className="numeric-cell">{formatBytes(task.input_size)}</td>
+                <td className="date-cell">{formatDate(task.created_at)}</td>
+                <td className="date-cell">{formatDate(task.completed_at)}</td>
+                <td>{task.source}</td>
+                {columns.map((column) => <OptionalCell key={column} column={column} task={task} />)}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </section>
+    </>
+  )
+}
+
+function OptionalCell({ column, task }: { readonly column: OptionalColumn; readonly task: TaskList["items"][number] }) {
+  switch (column) {
+    case "path": return <td className="long-cell" title={task.input_path}>{task.input_path}</td>
+    case "attempts": return <td className="numeric-cell">{task.attempt_count}</td>
+    case "duration": return <td className="numeric-cell">{formatDuration((new Date(task.completed_at ?? task.updated_at).getTime() - new Date(task.created_at).getTime()) / 1000)}</td>
+    case "failure": return <td>{task.failure?.failure_code ?? "--"}</td>
+    case "error": return <td className="long-cell" title={task.failure?.message}>{task.failure?.message ?? "--"}</td>
+    case "remote_job": return <td className="mono-cell" title={task.remote_job_id ?? undefined}>{shortId(task.remote_job_id)}</td>
+  }
+}
+
+function LoadingRows({ columns }: { readonly columns: number }) {
+  return loadingRowKeys.map((key) => <tr className="loading-row" key={key}><td colSpan={11 + columns}><span /></td></tr>)
+}
+
+function shortId(value: string | null): string {
+  return value === null ? "--" : value.slice(0, 8)
+}

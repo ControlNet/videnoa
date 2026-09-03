@@ -237,3 +237,27 @@
 
 - React passive effects can race an async DOM query under full-suite scheduling: the requested route was committed while `document.activeElement` remained `body`. Route-main focus belongs in `useLayoutEffect` so the accessibility transition completes before the committed shell is observable.
 - Browser reload coverage should assert focus ownership after an existing session is restored; visible route content alone does not prove the keyboard-navigation contract.
+
+## 2026-09-03 Task 16
+
+- A large task-history surface stays bounded when URL state is parsed into a closed query model and every trigger issues exactly one limited page request plus bounded aggregate counts.
+- SSE row replacement requires both monotonic versioning and stable filter/order membership; an unseen update should invalidate only when it could enter the current query, not for every unrelated task delta.
+- Narrow responsive ownership is clearest when filters reflow without overflow and only the table frame scrolls horizontally, with a bounded vertical viewport keeping the horizontal scrollbar reachable.
+- Error and loading states must be independent: an initial failed page request should render the retryable alert without leaving a misleading skeleton table behind.
+- Deterministic post-interaction screenshots should reload the final URL before capture because a focused pagination control can restore a previously scrolled viewport after programmatic scroll resets.
+
+## 2026-09-03 Task 16 Remediation
+
+- Empty-page recovery is both bounded and loop-safe when the response `limit` and `offset` agree with the current URL, and correction applies `floor((total - 1) / limit) * limit` only when that canonical offset is lower than the requested offset.
+- Query-keyed page state prevents a failed changed-query request from rendering rows loaded for another URL, while clearing the keyed page at each request generation also keeps same-query retries from exposing stale results.
+- SSE handling needs three outcomes rather than treating every non-merge as invalidation: stale/equal versions are ignored, stable active progress updates merge, and membership or ordering changes refetch one current page plus one count set.
+- Evidence capture must set color/reduced-motion media before scrolling; changing media during capture can reset scroll state. Screenshot helpers should receive the complete filename once to avoid stale `.png` and fresh `.png.png` duplicates.
+- A full desktop page exposed that the original table height budget pushed pagination outside the non-scrolling shell. Reducing the table-owned vertical viewport keeps dense scrolling and pagination simultaneously reachable.
+- Narrow horizontal overflow is discoverable and keyboard-operable without making a non-interactive container focusable: expose a named `region`, pair it with visible Left/Right buttons, and connect a concise hint through `aria-describedby`.
+- For oversized table columns, `offsetLeft` is not a reliable scroll-frame coordinate. Align a header by adding its viewport-space left delta to the current `scrollLeft`, clamped to the frame's scroll range.
+- Evidence should align an oversized diagnostic column by its leading edge rather than the absolute scroll end; otherwise the right edge is visible while the header label and ellipsis can remain off-screen.
+
+## 2026-09-03 Task 16 Final Remount
+
+- A retained external-store snapshot is historical state for a newly mounted subscriber. Initializing the applied generation from the store snapshot at hook mount suppresses replay while preserving updates published after that render because the ref retains the earlier baseline.
+- Pagination ranges should require a non-empty current page whose response offset and limit match the URL and whose offset is below total. Empty or contradictory pages can still report the server total while truthfully displaying `0-0`.

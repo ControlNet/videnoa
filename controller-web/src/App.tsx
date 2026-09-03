@@ -25,7 +25,7 @@ function AuthGate() {
     case "unauthenticated":
       return <LoginPage login={controller.login} />
     case "authenticated":
-      return <AppShell logout={controller.logout} />
+      return <AppShell apiClient={controller.apiClient} logout={controller.logout} />
     case "bootstrap_error":
       return <BootstrapError message={controller.state.message} retry={controller.retryBootstrap} />
     default:
