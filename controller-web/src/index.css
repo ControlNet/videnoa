@@ -12,13 +12,13 @@
   --color-surface-hover: oklch(0.93 0.014 260);
   --color-text: oklch(0.18 0.02 260);
   --color-text-muted: oklch(0.45 0.018 260);
-  --color-text-quiet: oklch(0.54 0.014 260);
+  --color-text-quiet: oklch(0.48 0.014 260);
   --color-border: oklch(0.86 0.012 260);
   --color-border-subtle: oklch(0.91 0.008 260);
-  --color-accent: oklch(0.53 0.2 292);
+  --color-accent: oklch(0.51 0.2 292);
   --color-accent-strong: oklch(0.46 0.21 292);
   --color-accent-wash: oklch(0.92 0.035 292);
-  --color-healthy: oklch(0.5 0.15 145);
+  --color-healthy: oklch(0.44 0.15 145);
   --color-danger: oklch(0.48 0.18 25);
   --color-danger-wash: oklch(0.94 0.025 25);
   --type-title: clamp(1.75rem, 4vw, 2.5rem);
@@ -619,9 +619,9 @@ button:disabled {
   *::before,
   *::after {
     scroll-behavior: auto;
-    animation-duration: 0.01ms;
-    animation-iteration-count: 1;
-    transition-duration: 0.01ms;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 
   .primary-button:active:not(:disabled),
