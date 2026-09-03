@@ -243,3 +243,9 @@
 - The first focused red run produced five intended failures. A subsequent real Chromium run found rejected-delete focus still raced the disabled mutation state; render-synchronized focus routing fixed the browser-only timing defect.
 - The external Bun no-excuse helper still cannot resolve the project-local TypeScript package from its skill-cache path. Project-local ESLint, TypeScript, Vitest, build, and Playwright gates remain clean.
 - Final visual review exposed missing server `compute_slots` mapping and incomplete state captures. The mapping, focused regression, validation/delete/table-focus captures, and fixed-size viewport captures were added before final gates.
+
+## 2026-09-03 Task 19
+
+- A full Chromium verification initially failed the Task 18 capacity-conflict branch because the edit dialog submitted `compute_slots=41` instead of `1`. The isolated scenario reproduced the failure; synchronous mount-time field initialization fixed it, and five repeated isolated runs plus the complete suite passed.
+- React Doctor reports 56 remaining warnings in pre-existing schema, formatting, complexity, and analyzer-false-positive areas. It no longer reports the worker form state-in-effect defect; project TypeScript, ESLint, Vitest, build, and Playwright gates are authoritative and clean.
+- Secret Guard reports two unchanged tracked fixture literals and 19 repository-wide `.gitignore` hardening opportunities. Task 19 evidence contains only an explicitly synthetic Playwright password string embedded in HTML test source and no usable credential, token, private key, cookie, trace, or video.

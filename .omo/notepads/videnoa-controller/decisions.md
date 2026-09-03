@@ -206,3 +206,9 @@
 - Use stable field-specific error IDs with conditional `aria-describedby` and `role="alert"` on worker and runtime-settings validation messages.
 - Keep Zod as the form-validation authority with `noValidate`, preserving HTML min/max hints while ensuring numeric and cross-field failures share one accessible focus/error path.
 - Apply the same ordered focus routing to structured server field errors; do not reserve programmatic recovery for client-only validation.
+
+## 2026-09-03 Task 19
+
+- Run axe against the login surface and every operational route with the WCAG 2 A/AA, 2.1 AA, and 2.2 AA tag set, failing only serious or critical violations while retaining explicit functional assertions for focus, overflow, motion, and storage.
+- Render `WorkerFormDialog` only for an active form session and initialize its local fields from the selected worker during mount. Keep the authoritative refreshed worker object in the parent so optimistic versions update without erasing operator edits.
+- Store the complete Task 15-19 screenshot matrix, HTML report, and Playwright result metadata under `.omo/evidence/videnoa-controller/task-19/`; disable traces and videos so authentication request material cannot be retained accidentally.
