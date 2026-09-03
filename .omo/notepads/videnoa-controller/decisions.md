@@ -230,3 +230,13 @@
 - Keep every current Videnoa job, package name, asset pattern, Docker tag, action version, and credential name intact; add Controller jobs and outputs without sharing archive artifacts or image tags.
 - Pin Controller Rust/package jobs to Rust 1.83, keep Controller frontend commands serial within one job, and use the existing package/container scripts as workflow entry points.
 - Make `github-release` depend on both Controller archive jobs and Controller Docker publication, and make `release-verify` unconditionally pull both Controller tags after exact asset checks.
+
+## 2026-09-04 Task 25
+
+- Keep `README-controller.md` archive-complete while using `docs/controller.md`
+  for the full API and operational reference.
+- Validate docs with one shell contract for names/topics/links/secrets and one
+  Rust integration test that loads the real example configuration.
+- Document stopped-service whole-data-root backup as the portable SQLite WAL
+  procedure and require a pre-upgrade snapshot for rollback. Do not invent a
+  database downgrade command.

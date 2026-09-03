@@ -335,3 +335,15 @@
 - CI/release preservation is best locked by parsing the actual YAML, validating the dependency DAG, and asserting complete legacy plus Controller job/asset/tag contracts; token-only greps cannot prove failure propagation or non-overlap.
 - The dedicated archive and container scripts already provide the strongest negative boundaries. Workflows should call them directly so wrong versions, missing files, extra GPU/model content, and invalid runtime images fail at the same reusable contract locally and on hosted runners.
 - A release is complete only when the final GitHub release job depends on every legacy and Controller archive/image publication and post-publication verification checks all four Docker tags and all archive products.
+
+## 2026-09-04 Task 25
+
+- Archive documentation must contain its own first-run, persistence, ambiguity,
+  backup/restore, upgrade, and rollback path because release archives contain no
+  `docs/` directory.
+- A source-accurate config smoke can replace example paths with isolated
+  temporary directories and generate an ephemeral Argon2id hash, then load the
+  result through `ControllerConfig` without persisting test credentials.
+- SSE documentation is correct only when it distinguishes the initial and
+  lagged `refetch` signal from durable SQLite/API truth and keeps attempt history
+  on server-paginated HTTP responses.
