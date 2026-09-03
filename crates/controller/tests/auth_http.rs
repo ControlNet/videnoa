@@ -147,6 +147,40 @@ async fn protected_routes_reject_missing_auth_and_bearer_logout_is_csrf_exempt()
 }
 
 #[tokio::test]
+async fn unauthorized_session_check_expires_the_existing_cookie() -> TestResult {
+    // Given: a cookie session invalidated by administrator credential rotation.
+    let fixture = Fixture::new().await?;
+    let (cookie, _) = login(&fixture, PASSWORD).await?;
+    fs::write(&fixture.hash_file, hash_password("rotated-test-password")?)?;
+    let mut session = request("GET", "/api/auth/session", Body::empty())?;
+    session
+        .headers_mut()
+        .insert(header::COOKIE, cookie.parse()?);
+
+    // When: the browser checks the invalid session through the real HTTP handler.
+    let response = fixture.router().oneshot(session).await?;
+
+    // Then: the typed 401 response also expires the original session cookie contract.
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let set_cookie = response
+        .headers()
+        .get(header::SET_COOKIE)
+        .ok_or_else(|| {
+            std::io::Error::other("unauthorized session response omitted expired cookie")
+        })?
+        .to_str()?;
+    assert!(set_cookie.starts_with(&format!("{SESSION_COOKIE}=;")));
+    assert!(set_cookie.contains("HttpOnly"));
+    assert!(set_cookie.contains("SameSite=Strict"));
+    assert!(set_cookie.contains("Path=/"));
+    assert!(set_cookie.contains("Max-Age=0"));
+    assert!(!set_cookie.contains("Secure"));
+    let body = to_bytes(response.into_body(), 4096).await?;
+    assert_eq!(body.as_ref(), br#"{"error":"unauthorized"}"#);
+    Ok(())
+}
+
+#[tokio::test]
 async fn session_login_requires_csrf_and_same_origin_for_logout() -> TestResult {
     // Given: a valid administrator login.
     let fixture = Fixture::new().await?;
