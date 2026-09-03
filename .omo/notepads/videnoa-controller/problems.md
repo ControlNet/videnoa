@@ -162,3 +162,8 @@
 
 - No confirmed Task 19 product or evidence blocker remains after semantic contrast correction, worker overflow controls, invoking-trigger focus restoration, synchronous worker-form initialization, reduced-motion enforcement, and the complete browser regression matrix.
 - The final gates pass 102 Vitest tests and 38 Chromium scenarios. Production builds retain the known non-fatal Rollup warnings for Zod dependency comments; the external Bun checker and repository-wide Secret Guard observations remain tooling or pre-existing scope only.
+
+## 2026-09-04 04:33:03 +10:00 Task 24
+
+- No confirmed Task 24 workflow or reusable local-smoke blocker remains. Parsed positive/negative matrices, Linux archive contracts, full Controller container smoke, strict Clippy, fault/load/security suites, frontend unit/build, and 43 Chromium scenarios pass.
+- Native Windows archive execution and real publication are intentionally left to their GitHub-hosted jobs; local evidence records that boundary explicitly.

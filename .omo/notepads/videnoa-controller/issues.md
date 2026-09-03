@@ -265,3 +265,8 @@
 - The first live container start correctly rejected a mode-0600 root-owned bind-mounted hash file because numeric UID 10001 could not read it. The smoke fixture now uses a read-only bind mount with host permissions that permit the non-root process to read the PHC hash.
 - The first unwritable-data assertion expected SQLite's `readonly database` wording, while the actual create/open boundary reports `unable to open database file`; evidence now pins the observed stable failure without exposing paths or credentials.
 - No Task 22 product blocker remains after cached build, content/linkage scan, health, persistence, non-root write, missing-config/hash, read-only-data, outside-root, Rust 1.83, strict Clippy, and full Controller test verification.
+
+## 2026-09-04 04:33:03 +10:00 Task 24
+
+- The default Playwright port 4173 was occupied by an unrelated preserved process. The same 43-scenario production-preview suite passed through a temporary config on port 4193; no repository config or existing process was changed.
+- Native Windows packaging and real GitHub/Docker Hub publication cannot execute on this Linux worktree. Windows-hosted wiring, exact artifact paths, action dependencies, and reusable static/package contracts are validated without overclaiming hosted execution.
