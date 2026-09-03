@@ -4,7 +4,7 @@ import { expect, type Page, type Route } from "@playwright/test"
 
 import type { Task, TaskStatus } from "../../src/api/taskSchemas"
 
-export const evidenceDir = "../.omo/evidence/videnoa-controller/task-16"
+export const evidenceDir = "../.omo/evidence/videnoa-controller/task-19/playwright-report/screenshots/task-16"
 export const statuses = [
   "queued", "reserved", "uploading", "staged", "submitting", "processing", "remote_completed",
   "downloading", "verifying", "publishing", "remote_cleanup", "completed", "failed", "cancelled",
