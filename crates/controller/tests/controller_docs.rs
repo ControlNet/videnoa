@@ -1,12 +1,11 @@
 use std::fs;
 
-use anyhow::{Context, Result};
 use tempfile::tempdir;
 use videnoa_controller::auth::hash_password;
 use videnoa_controller::config::ControllerConfig;
 
 #[test]
-fn example_config_loads_when_operator_paths_exist() -> Result<()> {
+fn example_config_loads_when_operator_paths_exist() -> Result<(), Box<dyn std::error::Error>> {
     let root = tempdir()?;
     let input = root.path().join("input");
     let output = root.path().join("output");
@@ -37,8 +36,8 @@ fn example_config_loads_when_operator_paths_exist() -> Result<()> {
     Ok(())
 }
 
-fn path_text(path: &std::path::Path) -> Result<String> {
+fn path_text(path: &std::path::Path) -> Result<String, std::io::Error> {
     path.to_str()
         .map(str::to_owned)
-        .context("temporary path must be UTF-8")
+        .ok_or_else(|| std::io::Error::other("temporary path must be UTF-8"))
 }
