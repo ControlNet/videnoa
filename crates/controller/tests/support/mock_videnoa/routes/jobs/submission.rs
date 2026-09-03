@@ -8,8 +8,8 @@ use serde_json::Value;
 
 use super::super::catalog::{preset_entries, saved_workflows};
 use super::super::{
-    body_bytes, error_response, journal_request, json_response, record, DROP_RESPONSE_HEADER,
-    MAX_JSON_BYTES,
+    body_bytes, error_response, journal_request, json_response, raw_json_response, record,
+    DROP_RESPONSE_HEADER, MAX_JSON_BYTES,
 };
 use crate::mock_videnoa::checkpoints::Checkpoint;
 use crate::mock_videnoa::domain::{
@@ -52,6 +52,16 @@ pub(crate) async fn run(State(state): State<Arc<SharedState>>, request: Request)
     state
         .checkpoint(Checkpoint::BeforeRunPersistence, &mut checkpoints)
         .await;
+    if let Some(fault) = state.take_response_fault(Route::Run).await {
+        let status = match StatusCode::from_u16(fault.status) {
+            Ok(status) => status,
+            Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        let sequence = state.inner.lock().await.begin(Route::Run);
+        let journal = journal_request(&parts, &body, Route::Run, sequence, checkpoints);
+        record(&state, journal, status, JournalOutcome::FaultStatus).await;
+        return raw_json_response(status, fault.body);
+    }
     let Ok(persisted) = persist_run(&state, &prepared).await else {
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, "persistence_failed");
     };

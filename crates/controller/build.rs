@@ -31,6 +31,7 @@ fn controller_web_directory() -> PathBuf {
 
 fn main() -> Result<(), Box<dyn Error>> {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=migrations");
 
     if std::env::var("PROFILE").as_deref() != Ok("release") {
         return Ok(());

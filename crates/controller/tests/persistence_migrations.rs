@@ -67,7 +67,7 @@ async fn existing_database_migrates_idempotently() -> TestResult {
     // When: the same database is opened again.
     let database = Database::open(DatabaseOptions::new(&path)).await?;
 
-    // Then: SQLx records all production migrations and the singleton settings row remains unique.
+    // Then: SQLx records all migrations and preserves singleton and worker-scoped uniqueness.
     let migration_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations WHERE success = 1")
             .fetch_one(database.pool())
@@ -75,8 +75,21 @@ async fn existing_database_migrates_idempotently() -> TestResult {
     let settings_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM controller_settings")
         .fetch_one(database.pool())
         .await?;
-    assert_eq!(migration_count, 4);
+    let index_flags: (i64, i64) = sqlx::query_as(
+        "SELECT \"unique\", partial FROM pragma_index_list('task_attempts') \
+         WHERE name = 'idx_attempts_worker_remote_job'",
+    )
+    .fetch_one(database.pool())
+    .await?;
+    let index_columns: Vec<String> = sqlx::query_scalar(
+        "SELECT name FROM pragma_index_info('idx_attempts_worker_remote_job') ORDER BY seqno",
+    )
+    .fetch_all(database.pool())
+    .await?;
+    assert_eq!(migration_count, 5);
     assert_eq!(settings_count, 1);
+    assert_eq!(index_flags, (1, 1));
+    assert_eq!(index_columns, ["worker_id", "remote_job_id"]);
     Ok(())
 }
 

@@ -4,9 +4,16 @@ use futures_util::future::{ready, BoxFuture, FutureExt};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TransferCheckpointPoint {
+    UploadCompleted,
+    BeforeRemoteSubmit,
+    RemoteCompletionPersisted,
+    DownloadVerified,
+    BeforeDestinationStaging,
+    DestinationStaged,
     StagingVerified,
     PublicationFinalized,
     BeforeLocalCleanup,
+    LocalCleanupCompleted,
     BeforeRemoteDelete,
     RemoteDeleteSucceeded,
 }
@@ -23,6 +30,6 @@ impl TransferCheckpointObserver for NoopTransferCheckpointObserver {
     }
 }
 
-pub(super) fn noop_observer() -> Arc<dyn TransferCheckpointObserver> {
+pub(crate) fn noop_observer() -> Arc<dyn TransferCheckpointObserver> {
     Arc::new(NoopTransferCheckpointObserver)
 }

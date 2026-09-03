@@ -10,6 +10,10 @@ pub enum RecoveryError {
     Remote(#[from] crate::remote::VidenoaClientError),
     #[error(transparent)]
     Worker(#[from] crate::workers::WorkerRegistryError),
+    #[error(transparent)]
+    Scheduler(#[from] crate::scheduler::SchedulerError),
+    #[error("Controller-local cancellation cleanup failed")]
+    LocalCleanup(#[source] std::io::Error),
     #[error("durable task is missing its current attempt")]
     MissingAttempt,
     #[error("durable task is missing its assigned worker")]

@@ -29,13 +29,10 @@ pub(crate) async fn upload(
     state
         .checkpoint(Checkpoint::BeforeAcceptingUpload, &mut checkpoints)
         .await;
-    let Ok((parts, body)) = body_bytes(request, MAX_FILE_BYTES).await else {
+    let sequence = state.inner.lock().await.begin(Route::Upload);
+    let Ok((parts, body)) = upload_body(&state, request, &mut checkpoints).await else {
         return error_response(StatusCode::BAD_REQUEST, "invalid_body");
     };
-    let sequence = state.inner.lock().await.begin(Route::Upload);
-    state
-        .checkpoint(Checkpoint::AfterUploadBytesAccepted, &mut checkpoints)
-        .await;
     let Ok(size) = u64::try_from(body.len()) else {
         return error_response(StatusCode::BAD_REQUEST, "file_too_large");
     };
@@ -54,6 +51,32 @@ pub(crate) async fn upload(
     let journal = journal_request(&parts, &body, Route::Upload, sequence, checkpoints);
     record(&state, journal, StatusCode::OK, JournalOutcome::Delivered).await;
     response
+}
+
+async fn upload_body(
+    state: &SharedState,
+    request: Request,
+    checkpoints: &mut BTreeMap<String, crate::mock_videnoa::journal::LogicalTimestamp>,
+) -> Result<(axum::http::request::Parts, Bytes), ()> {
+    let (parts, body) = request.into_parts();
+    let mut stream = body.into_data_stream();
+    let mut accepted = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|_| ())?;
+        let next_len = accepted.len().checked_add(chunk.len()).ok_or(())?;
+        if next_len > MAX_FILE_BYTES {
+            return Err(());
+        }
+        accepted.extend_from_slice(&chunk);
+        if accepted.len() == chunk.len() && !accepted.is_empty() {
+            state.inner.lock().await.accepted_upload_bytes =
+                u64::try_from(accepted.len()).map_err(|_| ())?;
+            state
+                .checkpoint(Checkpoint::AfterUploadBytesAccepted, checkpoints)
+                .await;
+        }
+    }
+    Ok((parts, Bytes::from(accepted)))
 }
 
 pub(crate) async fn get(
@@ -185,15 +208,23 @@ async fn download(
         }
         (None, None, false) => {
             let len = stored.len();
-            let chunks = stream::unfold((stored, 0_usize), |(bytes, offset)| async move {
-                if offset >= bytes.len() {
-                    return None;
-                }
-                let end = (offset + 8 * 1024).min(bytes.len());
-                let chunk = Bytes::copy_from_slice(&bytes[offset..end]);
-                Some((Ok::<_, std::io::Error>(chunk), (bytes, end)))
-            });
-            (Body::from_stream(chunks), len, JournalOutcome::Delivered)
+            if stored.is_empty() {
+                (Body::empty(), len, JournalOutcome::Delivered)
+            } else {
+                let first = Bytes::copy_from_slice(&stored[..1]);
+                let rest = Bytes::copy_from_slice(&stored[1..]);
+                let checkpoint_state = Arc::clone(&state);
+                let chunks = stream::once(async move { Ok::<_, std::io::Error>(first) }).chain(
+                    stream::once(async move {
+                        let mut checkpoints = BTreeMap::new();
+                        checkpoint_state
+                            .checkpoint(Checkpoint::MidDownloadBody, &mut checkpoints)
+                            .await;
+                        Ok::<_, std::io::Error>(rest)
+                    }),
+                );
+                (Body::from_stream(chunks), len, JournalOutcome::Delivered)
+            }
         }
     };
     let response = Response::builder()
@@ -242,7 +273,15 @@ pub(crate) async fn delete(
         });
         let (status, outcome) = match result {
             DeleteOutcome::ClientError => (StatusCode::BAD_REQUEST, JournalOutcome::FaultStatus),
-            DeleteOutcome::NotFound => (StatusCode::NOT_FOUND, JournalOutcome::FaultStatus),
+            DeleteOutcome::NotFound => {
+                inner.persistent.files.retain(|candidate, _| {
+                    candidate != &path && !candidate.starts_with(&format!("{path}/"))
+                });
+                if state.persist_locked(&inner).await.is_err() {
+                    return error_response(StatusCode::INTERNAL_SERVER_ERROR, "persistence_failed");
+                }
+                (StatusCode::NOT_FOUND, JournalOutcome::FaultStatus)
+            }
             DeleteOutcome::ServerError => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 JournalOutcome::FaultStatus,

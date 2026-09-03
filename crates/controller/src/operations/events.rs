@@ -27,21 +27,30 @@ enum LiveEvent {
 #[derive(Clone)]
 pub struct EventHub {
     sender: broadcast::Sender<LiveEvent>,
+    wakeups: broadcast::Sender<()>,
 }
 
 impl EventHub {
     #[must_use]
     pub fn new() -> Self {
         let (sender, _) = broadcast::channel(EVENT_CAPACITY);
-        Self { sender }
+        let (wakeups, _) = broadcast::channel(EVENT_CAPACITY);
+        Self { sender, wakeups }
     }
 
     pub(crate) fn publish(&self, event: SseEvent) {
         let _ = self.sender.send(LiveEvent::Delta(Arc::new(event)));
+        let _ = self.wakeups.send(());
     }
 
     pub(crate) fn publish_change(&self, change: DurableChange) {
         let _ = self.sender.send(LiveEvent::DurableChange(change));
+        let _ = self.wakeups.send(());
+    }
+
+    #[must_use]
+    pub fn subscribe_wakeups(&self) -> broadcast::Receiver<()> {
+        self.wakeups.subscribe()
     }
 }
 

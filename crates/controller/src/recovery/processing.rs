@@ -56,6 +56,10 @@ impl Reconciler {
                             now,
                         )
                         .await?;
+                    self.checkpoint(
+                        crate::scheduler::TransferCheckpointPoint::RemoteCompletionPersisted,
+                    )
+                    .await;
                     report.push(task.id, RecoveryCommandKind::Download);
                 }
                 JobStatus::Failed => {
@@ -103,7 +107,11 @@ impl Reconciler {
                     .await?;
                 report.push(task.id, RecoveryCommandKind::Terminal);
             }
-            Err(error) => return Err(error.into()),
+            Err(error) => {
+                return self
+                    .resolve_processing_failure(&task, &attempt, error, now, stage, report)
+                    .await;
+            }
         }
         Ok(())
     }

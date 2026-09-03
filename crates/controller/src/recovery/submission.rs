@@ -1,11 +1,12 @@
 use chrono::{DateTime, Utc};
 
-use crate::domain::TaskStatus;
+use crate::domain::{FailureCode, FailureStage, TaskStatus};
 use crate::lifecycle::{
-    AdvanceCommand, LifecycleService, SubmissionCancellationReconciliation, SubmissionEvidence,
+    AdvanceCommand, DurableAction, LifecycleFailure, LifecycleService,
+    SubmissionCancellationReconciliation, SubmissionEvidence,
 };
 use crate::persistence::{AttemptRecord, TaskRecord};
-use crate::remote::{VidenoaClient, VidenoaClientError};
+use crate::remote::{FileApiPath, VidenoaClient, VidenoaClientError};
 
 use super::paths::submission_params;
 use super::{Reconciler, RecoveryCommandKind, RecoveryError, RecoveryReport, StagePermit};
@@ -39,13 +40,28 @@ impl Reconciler {
                 .ok_or(RecoveryError::MissingAttempt)?;
         }
         let (input, output) = remote_paths(&attempt)?;
-        let submitted = client
+        self.checkpoint(crate::scheduler::TransferCheckpointPoint::BeforeRemoteSubmit)
+            .await;
+        let scheduler = crate::scheduler::Scheduler::load(self.store.clone()).await?;
+        let Some(_admission) = scheduler.admit(DurableAction::Submit).await? else {
+            report.defer(task.id);
+            return Ok(());
+        };
+        let submitted = match client
             .run(
                 &task.request.workflow,
                 attempt.attempt.submission_key,
                 &submission_params(input, output),
             )
-            .await?;
+            .await
+        {
+            Ok(submitted) => submitted,
+            Err(error) => {
+                return self
+                    .resolve_submission_failure(&task, &attempt, error, now, stage, report)
+                    .await;
+            }
+        };
         let _write = stage.begin_write();
         service
             .advance(
@@ -86,7 +102,7 @@ impl Reconciler {
                     Ok(()) | Err(VidenoaClientError::NotFound) => {}
                     Err(error) => return Err(error.into()),
                 }
-                self.finish_cancellation(task, attempt, now, stage, report)
+                self.finish_cancellation(task, attempt, client, now, stage, report)
                     .await
             }
             TaskStatus::Reserved
@@ -95,7 +111,7 @@ impl Reconciler {
             | TaskStatus::RemoteCompleted
             | TaskStatus::Downloading
             | TaskStatus::Verifying => {
-                self.finish_cancellation(task, attempt, now, stage, report)
+                self.finish_cancellation(task, attempt, client, now, stage, report)
                     .await
             }
             TaskStatus::Queued
@@ -161,7 +177,7 @@ impl Reconciler {
             .current_attempt(task.id)
             .await?
             .ok_or(RecoveryError::MissingAttempt)?;
-        self.finish_cancellation(task, attempt, now, stage, report)
+        self.finish_cancellation(task, attempt, client, now, stage, report)
             .await
     }
 
@@ -169,10 +185,45 @@ impl Reconciler {
         &self,
         task: TaskRecord,
         attempt: AttemptRecord,
+        client: &VidenoaClient,
         now: DateTime<Utc>,
         stage: &StagePermit,
         report: &mut RecoveryReport,
     ) -> Result<(), RecoveryError> {
+        crate::scheduler::remove_task_workspace(&self.config.temp_root, task.id)
+            .await
+            .map_err(RecoveryError::LocalCleanup)?;
+        let workspace = FileApiPath::parse(&task.id.to_string())?;
+        match client.delete_file(&workspace).await {
+            Ok(()) | Err(VidenoaClientError::NotFound) => {}
+            Err(
+                error @ (VidenoaClientError::ServerStatus { .. }
+                | VidenoaClientError::Network
+                | VidenoaClientError::Timeout
+                | VidenoaClientError::Stall
+                | VidenoaClientError::LocalIo
+                | VidenoaClientError::InvalidFilePath
+                | VidenoaClientError::EndpointUrl),
+            ) => return Err(error.into()),
+            Err(error) => {
+                let _write = stage.begin_write();
+                LifecycleService::new(self.store.clone())
+                    .fail_recovery(
+                        &task,
+                        Some(&attempt),
+                        LifecycleFailure::terminal(
+                            task.status,
+                            FailureStage::RemoteCleanup,
+                            FailureCode::CleanupFailed,
+                            error.to_string(),
+                        ),
+                        now,
+                    )
+                    .await?;
+                report.push(task.id, RecoveryCommandKind::Terminal);
+                return Ok(());
+            }
+        }
         let _write = stage.begin_write();
         LifecycleService::new(self.store.clone())
             .finish_cancellation(&task, &attempt, now)

@@ -1,4 +1,3 @@
-use std::error::Error;
 use std::io::{BufRead, IsTerminal};
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
@@ -8,10 +7,11 @@ use std::time::Duration;
 use std::path::Path;
 
 use clap::{Parser, Subcommand};
+use tokio_util::sync::CancellationToken;
 use videnoa_controller::auth::{hash_password, AuthService};
 use videnoa_controller::config::ControllerConfig;
-use videnoa_controller::lifecycle::JitterSample;
 use videnoa_controller::operations::{EventHub, OperationsDependencies, OperationsState};
+use videnoa_controller::orchestration::Orchestrator;
 use videnoa_controller::paths::PathCapabilities;
 use videnoa_controller::persistence::{Database, DatabaseOptions, Store};
 use videnoa_controller::recovery::{Reconciler, RecoveryConfig, ShutdownCoordinator};
@@ -20,7 +20,7 @@ use videnoa_controller::scheduler::{
     Scheduler, TransferConfig, TransferExecutor, TransferResources,
 };
 use videnoa_controller::tasks::TaskService;
-use videnoa_controller::{serve_controller, FrontendAssets, StartupError};
+use videnoa_controller::{serve_controller_until, FrontendAssets, StartupError};
 
 const RECOVERY_JSON_LIMIT: usize = 1024 * 1024;
 const RECOVERY_TRANSFER_CHUNK: usize = 64 * 1024;
@@ -62,20 +62,10 @@ fn frontend_assets() -> Result<FrontendAssets, StartupError> {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     if matches!(cli.command, Some(Command::HashPassword)) {
-        let password = if std::io::stdin().is_terminal() {
-            eprint!("Password: ");
-            rpassword::read_password()?
-        } else {
-            let mut password = String::new();
-            std::io::stdin().lock().read_line(&mut password)?;
-            password.truncate(password.trim_end_matches(['\r', '\n']).len());
-            password
-        };
-        println!("{}", hash_password(&password)?);
-        return Ok(());
+        return print_password_hash();
     }
     let mut config = ControllerConfig::load(cli.config.as_deref())?;
     if let Some(host) = cli.host {
@@ -91,6 +81,106 @@ async fn main() -> Result<(), Box<dyn Error>> {
     ))
     .await?;
     let store = Store::new(database);
+    let recovery = recovery_runtime(&config, &store, &paths).await?;
+    let scheduler = recovery.scheduler;
+    let shutdown = recovery.shutdown;
+    let payload_limits = recovery.payload_limits;
+    let auth = AuthService::new(config.auth.clone(), store.clone())?;
+    let events = EventHub::new();
+    let runtime = Orchestrator::new(
+        store.clone(),
+        scheduler.clone(),
+        recovery.reconciler,
+        recovery.transfers,
+        shutdown.clone(),
+        &events,
+    )
+    .run();
+    let operations = OperationsState::new(OperationsDependencies {
+        auth: auth.clone(),
+        store: store.clone(),
+        scheduler: scheduler.clone(),
+        paths: paths.clone(),
+        config: config.clone(),
+        events: events.clone(),
+        payload_limits,
+    });
+    let tasks = TaskService::with_events(store.clone(), paths, events);
+    if !config.auth.secure_cookie {
+        eprintln!("warning: session cookies are running without Secure; use only on trusted HTTP networks");
+    }
+    let assets = frontend_assets()?;
+    let http_shutdown = CancellationToken::new();
+    let server = serve_controller_until(
+        address,
+        &assets,
+        auth,
+        tasks,
+        operations,
+        http_shutdown.child_token(),
+    );
+    tokio::pin!(server);
+    tokio::pin!(runtime);
+    let exit = tokio::select! {
+        result = &mut server => RuntimeExit::Server(result),
+        result = &mut runtime => RuntimeExit::Orchestration(result),
+        signal = shutdown_signal() => RuntimeExit::Signal(signal),
+    };
+    http_shutdown.cancel();
+    let shutdown_result = shutdown
+        .shutdown(&scheduler, chrono::Utc::now(), SHUTDOWN_DRAIN_BOUND)
+        .await;
+    match exit {
+        RuntimeExit::Server(primary) => {
+            let runtime_result = runtime.await;
+            primary?;
+            shutdown_result?;
+            runtime_result?;
+        }
+        RuntimeExit::Orchestration(primary) => {
+            let server_result = server.await;
+            primary?;
+            shutdown_result?;
+            server_result?;
+        }
+        RuntimeExit::Signal(primary) => {
+            let (server_result, runtime_result) = tokio::join!(server, runtime);
+            primary?;
+            shutdown_result?;
+            server_result?;
+            runtime_result?;
+        }
+    }
+    Ok(())
+}
+
+fn print_password_hash() -> anyhow::Result<()> {
+    let password = if std::io::stdin().is_terminal() {
+        eprint!("Password: ");
+        rpassword::read_password()?
+    } else {
+        let mut password = String::new();
+        std::io::stdin().lock().read_line(&mut password)?;
+        password.truncate(password.trim_end_matches(['\r', '\n']).len());
+        password
+    };
+    println!("{}", hash_password(&password)?);
+    Ok(())
+}
+
+struct RecoveryRuntime {
+    scheduler: Scheduler,
+    transfers: TransferExecutor,
+    reconciler: Reconciler,
+    shutdown: ShutdownCoordinator,
+    payload_limits: PayloadLimits,
+}
+
+async fn recovery_runtime(
+    config: &ControllerConfig,
+    store: &Store,
+    paths: &PathCapabilities,
+) -> anyhow::Result<RecoveryRuntime> {
     let shutdown = ShutdownCoordinator::new();
     let remote_timeouts = RemoteTimeouts::new(
         config.timeouts.health,
@@ -111,10 +201,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
             runtime_settings: scheduler.runtime_settings().clone(),
         },
     );
-    let startup_at = chrono::Utc::now();
     let reconciler = Reconciler::new(
         store.clone(),
         RecoveryConfig::new(
+            config.paths.temp_root.clone(),
             remote_timeouts,
             payload_limits,
             config.retry.initial,
@@ -123,43 +213,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
         ),
         shutdown.clone(),
     );
-    let recovery = reconciler.reconcile_startup(startup_at).await?;
-    let advanced = transfers
-        .dispatch_recovery(&recovery, startup_at, JitterSample::default())
-        .await?;
-    for task_id in advanced {
-        reconciler
-            .reconcile_task_id(task_id, chrono::Utc::now())
-            .await?;
-    }
-    let auth = AuthService::new(config.auth.clone(), store.clone())?;
-    let events = EventHub::new();
-    let operations = OperationsState::new(OperationsDependencies {
-        auth: auth.clone(),
-        store: store.clone(),
-        scheduler: scheduler.clone(),
-        paths: paths.clone(),
-        config: config.clone(),
-        events: events.clone(),
+    Ok(RecoveryRuntime {
+        scheduler,
+        transfers,
+        reconciler,
+        shutdown,
         payload_limits,
-    });
-    let tasks = TaskService::with_events(store.clone(), paths, events);
-    if !config.auth.secure_cookie {
-        eprintln!("warning: session cookies are running without Secure; use only on trusted HTTP networks");
-    }
-    let assets = frontend_assets()?;
-    let server = serve_controller(address, &assets, auth, tasks, operations);
-    tokio::pin!(server);
-    tokio::select! {
-        result = &mut server => result?,
-        signal = shutdown_signal() => {
-            signal?;
-            shutdown
-                .shutdown(&scheduler, chrono::Utc::now(), SHUTDOWN_DRAIN_BOUND)
-                .await?;
-        }
-    }
-    Ok(())
+    })
+}
+
+enum RuntimeExit {
+    Server(Result<(), StartupError>),
+    Orchestration(Result<(), videnoa_controller::orchestration::OrchestrationError>),
+    Signal(Result<(), std::io::Error>),
 }
 
 #[cfg(unix)]

@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 
 use super::{
     download_artifact::{download_artifact, recover_verified, DownloadArtifact},
-    DownloadOutcome, RetryResult, TransferError, TransferExecutor,
+    DownloadOutcome, RetryResult, TransferCheckpointPoint, TransferError, TransferExecutor,
 };
 
 impl TransferExecutor {
@@ -30,10 +30,8 @@ impl TransferExecutor {
         let Some(remote_input_path) = attempt.attempt.remote_input_path.as_ref() else {
             return self.download_ambiguity(&task, &attempt, now).await;
         };
-        let expected_output_path = sibling_output_path(
-            remote_input_path,
-            &format!("output.{}", task.output_extension.as_str()),
-        )?;
+        let output_name = format!("output.{}", task.output_extension.as_str());
+        let expected_output_path = sibling_output_path(remote_input_path, &output_name)?;
         if attempt.attempt.remote_job_id.is_none() || remote_output_path != expected_output_path {
             return self.download_ambiguity(&task, &attempt, now).await;
         }
@@ -108,6 +106,8 @@ impl TransferExecutor {
             };
             artifact
         };
+        self.checkpoint(TransferCheckpointPoint::DownloadVerified)
+            .await;
         LifecycleService::new(self.resources.store.clone())
             .advance(
                 &task,

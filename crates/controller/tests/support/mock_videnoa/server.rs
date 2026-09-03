@@ -1,5 +1,5 @@
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tempfile::TempDir;
@@ -8,7 +8,7 @@ use tokio::net::TcpListener;
 use super::checkpoints::{Checkpoint, CheckpointTicket};
 use super::domain::{JobProgress, JobStatus};
 use super::faults::{Fault, OfflineMode, RestartMode, RestartOutcome};
-use super::journal::{JournalEntry, RouteCounters};
+use super::journal::{sanitize_entries, JournalEntry, RouteCounters};
 use super::persistence::{self, PersistentState};
 use super::state::{HarnessError, SharedState};
 use super::transport::{spawn_runtime, ServerRuntime};
@@ -107,6 +107,14 @@ impl MockVidenoa {
         self.state.job_count().await
     }
 
+    pub async fn accepted_upload_bytes(&self) -> u64 {
+        self.state.inner.lock().await.accepted_upload_bytes
+    }
+
+    pub async fn file_count(&self) -> usize {
+        self.state.file_count().await
+    }
+
     pub async fn set_offline(&mut self, mode: OfflineMode) -> Result<(), HarnessError> {
         match mode {
             OfflineMode::ServiceUnavailable => {
@@ -160,7 +168,12 @@ impl MockVidenoa {
         let Some(path) = std::env::var_os("VIDENOA_MOCK_HAPPY_EVIDENCE") else {
             return Ok(());
         };
-        let mut bytes = serde_json::to_vec_pretty(&self.journal().await)?;
+        self.write_journal(path).await
+    }
+
+    pub async fn write_journal(&self, path: impl AsRef<Path>) -> Result<(), HarnessError> {
+        let entries = sanitize_entries(&self.journal().await);
+        let mut bytes = serde_json::to_vec_pretty(&entries)?;
         bytes.push(b'\n');
         tokio::fs::write(path, bytes).await?;
         Ok(())
@@ -171,9 +184,11 @@ impl MockVidenoa {
             return Ok(());
         };
         let output = format!(
-            "supported=disconnect_before_accept,accept_then_drop_run_response,restart_cancelled,offline_connect,offline_503,truncated_stream,delayed_poll,delete_404,delete_5xx,corrupt_output\ncounters={}\njournal_entries={}\n",
+            "supported=disconnect_before_accept,accept_then_drop_run_response,restart_cancelled,offline_connect,offline_503,truncated_stream,delayed_poll,delete_404,delete_5xx,corrupt_output\ncounters={}\njournal_entries={}\naccepted_upload_bytes={}\nremote_file_count={}\n",
             serde_json::to_string(&self.counters().await)?,
-            self.journal().await.len()
+            self.journal().await.len(),
+            self.accepted_upload_bytes().await,
+            self.file_count().await
         );
         tokio::fs::write(path, output).await?;
         Ok(())

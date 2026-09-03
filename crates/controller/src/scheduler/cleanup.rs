@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use chrono::{DateTime, Utc};
 
 use crate::domain::{TaskId, TaskStatus};
@@ -27,36 +29,24 @@ impl TransferExecutor {
             return Err(TransferError::Conflict);
         }
         Self::require_retry_due(&task, &attempt, now)?;
-        let temporary = self.config.temp_root.join(task.id.to_string());
         self.checkpoint(TransferCheckpointPoint::BeforeLocalCleanup)
             .await;
-        match tokio::fs::remove_dir_all(&temporary).await {
-            Ok(()) => {
-                if sync_directory(&self.config.temp_root).await.is_err() {
-                    return self
-                        .cleanup_retry(
-                            &task,
-                            &attempt,
-                            DownstreamFailure::LocalCleanup,
-                            now,
-                            jitter,
-                        )
-                        .await;
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => {
-                return self
-                    .cleanup_retry(
-                        &task,
-                        &attempt,
-                        DownstreamFailure::LocalCleanup,
-                        now,
-                        jitter,
-                    )
-                    .await;
-            }
+        if remove_task_workspace(&self.config.temp_root, task.id)
+            .await
+            .is_err()
+        {
+            return self
+                .cleanup_retry(
+                    &task,
+                    &attempt,
+                    DownstreamFailure::LocalCleanup,
+                    now,
+                    jitter,
+                )
+                .await;
         }
+        self.checkpoint(TransferCheckpointPoint::LocalCleanupCompleted)
+            .await;
         self.checkpoint(TransferCheckpointPoint::BeforeRemoteDelete)
             .await;
         self.delete_remote_workspace(&task, &attempt, now, jitter)
@@ -86,5 +76,16 @@ impl TransferExecutor {
                 RetryResult::Failed => PublicationOutcome::Failed,
             },
         )
+    }
+}
+
+pub(crate) async fn remove_task_workspace(
+    temp_root: &Path,
+    task_id: TaskId,
+) -> Result<(), std::io::Error> {
+    match tokio::fs::remove_dir_all(temp_root.join(task_id.to_string())).await {
+        Ok(()) => sync_directory(temp_root).await,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
     }
 }

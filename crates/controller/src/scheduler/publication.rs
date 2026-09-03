@@ -10,7 +10,7 @@ use crate::persistence::{AttemptRecord, TaskRecord};
 use super::download_artifact::recover_verified;
 use super::publication_artifact::{copy_verified, matches_file};
 use super::publication_failure::publication_evidence;
-use super::{PublicationOutcome, TransferError, TransferExecutor};
+use super::{PublicationOutcome, TransferCheckpointPoint, TransferError, TransferExecutor};
 
 impl TransferExecutor {
     /// Publishes verified output without replacing an existing destination, then converges cleanup.
@@ -193,6 +193,8 @@ impl TransferExecutor {
                 if let Err(error) = output.revalidate_missing() {
                     return self.fail_publication_path(task, attempt, error, now).await;
                 }
+                self.checkpoint(TransferCheckpointPoint::BeforeDestinationStaging)
+                    .await;
                 let staging = match output.create_staging(staging_name) {
                     Ok(staging) => staging,
                     Err(error) => {
@@ -205,6 +207,8 @@ impl TransferExecutor {
                 {
                     return self.fail_publication(task, attempt, now).await;
                 }
+                self.checkpoint(TransferCheckpointPoint::DestinationStaged)
+                    .await;
             }
             Ok(PublicationArtifact::NonRegular) => {
                 return self.fail_ambiguous(task, attempt, now).await;

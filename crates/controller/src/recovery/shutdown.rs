@@ -12,6 +12,13 @@ use crate::scheduler::{Scheduler, SchedulerError};
 pub enum ShutdownError {
     #[error(transparent)]
     Scheduler(#[from] SchedulerError),
+    #[error(
+        "shutdown drain timed out with {outstanding_stages} stages and {outstanding_writes} writes"
+    )]
+    DrainTimedOut {
+        outstanding_stages: u64,
+        outstanding_writes: u64,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -23,6 +30,7 @@ pub enum DrainOutcome {
 #[derive(Debug)]
 struct ShutdownState {
     accepting: AtomicBool,
+    outstanding_stages: AtomicU64,
     outstanding_writes: AtomicU64,
     changes: watch::Sender<u64>,
     cancellation: CancellationToken,
@@ -50,6 +58,7 @@ impl ShutdownCoordinator {
         Self {
             state: Arc::new(ShutdownState {
                 accepting: AtomicBool::new(true),
+                outstanding_stages: AtomicU64::new(0),
                 outstanding_writes: AtomicU64::new(0),
                 changes,
                 cancellation: CancellationToken::new(),
@@ -59,12 +68,21 @@ impl ShutdownCoordinator {
 
     #[must_use]
     pub fn begin_stage(&self) -> Option<StagePermit> {
+        if !self.state.accepting.load(Ordering::SeqCst) {
+            return None;
+        }
+        self.state.outstanding_stages.fetch_add(1, Ordering::SeqCst);
         self.state
-            .accepting
-            .load(Ordering::SeqCst)
-            .then(|| StagePermit {
+            .changes
+            .send_modify(|generation| *generation += 1);
+        if self.state.accepting.load(Ordering::SeqCst) {
+            Some(StagePermit {
                 state: Arc::clone(&self.state),
             })
+        } else {
+            release_stage(&self.state);
+            None
+        }
     }
 
     pub fn stop_stage_intake(&self) {
@@ -82,11 +100,18 @@ impl ShutdownCoordinator {
         self.state.outstanding_writes.load(Ordering::SeqCst)
     }
 
+    #[must_use]
+    pub fn outstanding_stages(&self) -> u64 {
+        self.state.outstanding_stages.load(Ordering::SeqCst)
+    }
+
     pub async fn drain(&self, bound: Duration) -> DrainOutcome {
         let mut changes = self.state.changes.subscribe();
         let drained = tokio::time::timeout(bound, async {
             loop {
-                if self.state.outstanding_writes.load(Ordering::SeqCst) == 0 {
+                if self.state.outstanding_stages.load(Ordering::SeqCst) == 0
+                    && self.state.outstanding_writes.load(Ordering::SeqCst) == 0
+                {
                     return;
                 }
                 if changes.changed().await.is_err() {
@@ -113,20 +138,31 @@ impl ShutdownCoordinator {
         now: chrono::DateTime<chrono::Utc>,
         bound: Duration,
     ) -> Result<DrainOutcome, ShutdownError> {
-        let settings = scheduler.settings().await?;
-        let mut status = settings.scheduler;
-        status.paused = true;
-        scheduler
-            .update_settings(SettingsUpdate {
-                expected_version: settings.version,
-                scheduler: status,
-                timeouts: settings.timeouts,
-                retry: settings.retry,
-                updated_at: now,
-            })
-            .await?;
+        let pause_result = async {
+            let settings = scheduler.settings().await?;
+            let mut status = settings.scheduler;
+            status.paused = true;
+            scheduler
+                .update_settings(SettingsUpdate {
+                    expected_version: settings.version,
+                    scheduler: status,
+                    timeouts: settings.timeouts,
+                    retry: settings.retry,
+                    updated_at: now,
+                })
+                .await
+        }
+        .await;
         self.stop_stage_intake();
-        Ok(self.drain(bound).await)
+        let outcome = self.drain(bound).await;
+        pause_result?;
+        match outcome {
+            DrainOutcome::Drained => Ok(DrainOutcome::Drained),
+            DrainOutcome::TimedOut { outstanding_writes } => Err(ShutdownError::DrainTimedOut {
+                outstanding_stages: self.outstanding_stages(),
+                outstanding_writes,
+            }),
+        }
     }
 }
 
@@ -147,9 +183,20 @@ impl StagePermit {
     }
 }
 
+impl Drop for StagePermit {
+    fn drop(&mut self) {
+        release_stage(&self.state);
+    }
+}
+
 impl Drop for WritePermit {
     fn drop(&mut self) {
         let outstanding = self.state.outstanding_writes.fetch_sub(1, Ordering::SeqCst) - 1;
         self.state.changes.send_replace(outstanding);
     }
+}
+
+fn release_stage(state: &ShutdownState) {
+    state.outstanding_stages.fetch_sub(1, Ordering::SeqCst);
+    state.changes.send_modify(|generation| *generation += 1);
 }

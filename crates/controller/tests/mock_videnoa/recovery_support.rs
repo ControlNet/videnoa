@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::error::Error;
+use std::path::PathBuf;
 
 use chrono::{DateTime, TimeZone, Utc};
 use serde_json::Value;
@@ -28,6 +29,7 @@ pub struct Fixture {
     pub _directory: TempDir,
     pub store: Store,
     pub service: LifecycleService,
+    pub temp_root: PathBuf,
     pub worker_id: WorkerId,
     pub now: DateTime<Utc>,
     server_url: WorkerApiUrl,
@@ -40,6 +42,8 @@ pub struct StateFixture {
 impl Fixture {
     pub async fn new(server: &MockVidenoa, slots: u64) -> TestResult<Self> {
         let directory = TempDir::new()?;
+        let temp_root = directory.path().join("temp");
+        std::fs::create_dir_all(&temp_root)?;
         let database = Database::open(DatabaseOptions::new(
             directory.path().join("controller.sqlite3"),
         ))
@@ -97,6 +101,7 @@ impl Fixture {
             _directory: directory,
             service: LifecycleService::new(store.clone()),
             store,
+            temp_root,
             worker_id,
             now,
             server_url,

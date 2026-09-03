@@ -5,6 +5,7 @@ mod model;
 mod paths;
 mod processing;
 mod reconciler;
+mod remote_failure;
 mod shutdown;
 mod submission;
 mod worker;

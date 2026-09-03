@@ -5865,6 +5865,7 @@ dependencies = [
 name = "videnoa-controller"
 version = "0.1.2"
 dependencies = [
+ "anyhow",
  "argon2",
  "axum",
  "base64 0.22.1",
