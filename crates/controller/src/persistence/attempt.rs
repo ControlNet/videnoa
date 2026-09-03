@@ -29,40 +29,6 @@ impl Store {
     }
 
     /// # Errors
-    /// Returns an error when `SQLite` access or persisted decoding fails.
-    pub async fn task_attempts(
-        &self,
-        task_id: TaskId,
-        limit: u16,
-    ) -> Result<Vec<AttemptRecord>, PersistenceError> {
-        let sql = format!("{ATTEMPT_SELECT_ALL} AND task_id = ? ORDER BY attempt_no DESC LIMIT ?");
-        let rows = sqlx::query(&sql)
-            .bind(task_id.to_string())
-            .bind(i64::from(limit))
-            .fetch_all(self.database.pool())
-            .await?;
-        rows.iter().map(map_attempt).collect()
-    }
-
-    /// Loads the newest durable attempt for one task.
-    ///
-    /// # Errors
-    /// Returns an error when `SQLite` access or persisted decoding fails.
-    pub async fn current_attempt(
-        &self,
-        task_id: TaskId,
-    ) -> Result<Option<AttemptRecord>, PersistenceError> {
-        let sql = format!("{ATTEMPT_SELECT_ALL} AND task_id = ? ORDER BY attempt_no DESC LIMIT 1");
-        sqlx::query(&sql)
-            .bind(task_id.to_string())
-            .fetch_optional(self.database.pool())
-            .await?
-            .as_ref()
-            .map(map_attempt)
-            .transpose()
-    }
-
-    /// # Errors
     /// Returns an error when `SQLite` access or value encoding fails.
     pub async fn update_attempt_remote(
         &self,
@@ -146,13 +112,16 @@ const ATTEMPT_SELECT: &str = "SELECT id, task_id, attempt_no, version, worker_id
     retry_count, next_retry_at_ms, failure_stage, failure_code, failure_message,
     failure_retryable, created_at_ms, updated_at_ms, started_at_ms, submitted_at_ms,
     completed_at_ms FROM task_attempts WHERE id = ?";
-const ATTEMPT_SELECT_ALL: &str = "SELECT id, task_id, attempt_no, version, worker_id, status,
+pub(super) const ATTEMPT_SELECT_ALL: &str =
+    "SELECT id, task_id, attempt_no, version, worker_id, status,
     submission_key, remote_job_id, remote_input_path, remote_output_path, progress_json,
     retry_count, next_retry_at_ms, failure_stage, failure_code, failure_message,
     failure_retryable, created_at_ms, updated_at_ms, started_at_ms, submitted_at_ms,
     completed_at_ms FROM task_attempts WHERE 1 = 1";
 
-fn map_attempt(row: &sqlx::sqlite::SqliteRow) -> Result<AttemptRecord, PersistenceError> {
+pub(super) fn map_attempt(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<AttemptRecord, PersistenceError> {
     let failure = map_failure(row)?;
     let worker_id = optional_brand::<WorkerId>(row, "worker_id")?;
     let remote_job_id = optional_brand::<RemoteJobId>(row, "remote_job_id")?;

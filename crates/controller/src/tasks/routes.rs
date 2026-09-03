@@ -9,8 +9,8 @@ use chrono::Utc;
 
 use crate::auth::{authenticate, authorize_mutation, AuthService};
 use crate::domain::{
-    FieldErrorCode, IdempotencyKey, Task, TaskCreateRequest, TaskDetailResponse, TaskId,
-    TaskListQuery, TaskListResponse,
+    FieldErrorCode, IdempotencyKey, PageRequest, Task, TaskCreateRequest, TaskDetailResponse,
+    TaskId, TaskListQuery, TaskListResponse,
 };
 
 use super::error::TaskApiError;
@@ -96,8 +96,10 @@ async fn list_tasks(
 async fn task_detail(
     State(state): State<TaskRouteState>,
     id: Result<Path<TaskId>, PathRejection>,
+    query: Result<Query<PageRequest>, QueryRejection>,
 ) -> Result<Json<TaskDetailResponse>, TaskApiError> {
     let Path(id) = id.map_err(|_| TaskApiError::InvalidRequest)?;
+    let Query(page_request) = query.map_err(|_| TaskApiError::InvalidRequest)?;
     let task = state
         .tasks
         .store()
@@ -108,10 +110,15 @@ async fn task_detail(
     let attempts = state
         .tasks
         .store()
-        .task_attempts(id, u16::MAX)
+        .task_attempt_page(id, page_request)
         .await
         .map_err(|_| TaskApiError::Internal)?;
-    Ok(Json(mapping::detail(task, attempts)))
+    Ok(Json(mapping::detail(
+        task,
+        attempts,
+        page_request.limit().get(),
+        page_request.offset().get(),
+    )))
 }
 
 fn idempotency_key(headers: &HeaderMap) -> Result<IdempotencyKey, TaskApiError> {

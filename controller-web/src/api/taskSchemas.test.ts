@@ -78,6 +78,9 @@ describe("Task 17 API schemas", () => {
           completed_at: null,
         },
       ],
+      total: 1,
+      limit: 100,
+      offset: 0,
     }
 
     // When: detail is parsed with one unknown server field added.
@@ -112,6 +115,9 @@ describe("Task 17 API schemas", () => {
           completed_at: null,
         },
       ],
+      total: 1,
+      limit: 100,
+      offset: 0,
     }
 
     // When: the response crosses the strict API boundary.

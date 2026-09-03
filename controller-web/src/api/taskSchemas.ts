@@ -133,6 +133,9 @@ export const taskDetailSchema = z
   .object({
     task: taskSchema,
     attempts: z.array(taskAttemptSchema),
+    total: z.number().int().nonnegative(),
+    limit: z.number().int().positive().max(500),
+    offset: z.number().int().nonnegative(),
   })
   .strict()
 

@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test"
 
-import { dispatchTaskUpdate, fulfillJson, installLiveApi, requestJournal, task } from "./tasks-fixtures"
+import { dispatchTaskUpdate, fulfillJson, installLiveApi, requestJournal, task, taskDetail } from "./tasks-fixtures"
 
 test("opens authoritative detail and sends current versions for cancel and retry", async ({ page }) => {
   // Given: a processing row with persisted attempt detail and action routes.
@@ -9,10 +9,8 @@ test("opens authoritative detail and sends current versions for cancel and retry
   const processing = task(0, { status: "processing", version: 7 })
   await installLiveApi(page, journal, processing)
   const versions: number[] = []
-  await page.route(`**/api/tasks/${processing.id}`, async (route) =>
-    fulfillJson(route, {
-      task: processing,
-      attempts: [
+  await page.route(`**/api/tasks/${processing.id}?*`, async (route) =>
+    fulfillJson(route, taskDetail(processing, [
         {
           id: "00000000-0000-4000-8000-000000000002",
           task_id: processing.id,
@@ -30,8 +28,7 @@ test("opens authoritative detail and sends current versions for cancel and retry
           started_at: processing.updated_at,
           completed_at: null,
         },
-      ],
-    }),
+      ])),
   )
   await page.route(`**/api/tasks/${processing.id}/cancel`, async (route) => {
     versions.push(route.request().postDataJSON().version)
@@ -87,7 +84,7 @@ test("shows retry only for explicit safe failure evidence", async ({ page }) => 
   })
   await installLiveApi(page, journal, failed)
   let retriedVersion: number | null = null
-  await page.route(`**/api/tasks/${failed.id}`, async (route) => fulfillJson(route, { task: failed, attempts: [] }))
+  await page.route(`**/api/tasks/${failed.id}?*`, async (route) => fulfillJson(route, taskDetail(failed)))
   await page.route(`**/api/tasks/${failed.id}/retry`, async (route) => {
     retriedVersion = route.request().postDataJSON().version
     await fulfillJson(route, {
@@ -128,7 +125,7 @@ test("blocks retry for ambiguous failure evidence", async ({ page }) => {
     },
   })
   await installLiveApi(page, journal, ambiguous)
-  await page.route(`**/api/tasks/${ambiguous.id}`, async (route) => fulfillJson(route, { task: ambiguous, attempts: [] }))
+  await page.route(`**/api/tasks/${ambiguous.id}?*`, async (route) => fulfillJson(route, taskDetail(ambiguous)))
   await page.goto("/tasks")
 
   // When: the authoritative failure detail is opened.
@@ -151,9 +148,9 @@ test("refetches authoritative detail after a selected task event", async ({ page
   await installLiveApi(page, journal, initial)
   let detail = initial
   let detailRequests = 0
-  await page.route(`**/api/tasks/${initial.id}`, async (route) => {
+  await page.route(`**/api/tasks/${initial.id}?*`, async (route) => {
     detailRequests += 1
-    await fulfillJson(route, { task: detail, attempts: [] })
+    await fulfillJson(route, taskDetail(detail))
   })
   await page.goto("/tasks")
   await page.getByRole("button", { name: /Open task/ }).click()
@@ -182,7 +179,7 @@ test("keeps task actions contained at narrow viewport width", async ({ page }) =
     },
   })
   await installLiveApi(page, journal, ambiguous)
-  await page.route(`**/api/tasks/${ambiguous.id}`, async (route) => fulfillJson(route, { task: ambiguous, attempts: [] }))
+  await page.route(`**/api/tasks/${ambiguous.id}?*`, async (route) => fulfillJson(route, taskDetail(ambiguous)))
 
   // When: the table and bottom detail pane are rendered.
   await page.goto("/tasks")

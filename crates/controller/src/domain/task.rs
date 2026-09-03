@@ -87,6 +87,9 @@ pub type TaskSummary = Task;
 pub struct TaskDetailResponse {
     pub task: Task,
     pub attempts: Vec<TaskAttempt>,
+    pub total: u64,
+    pub limit: u16,
+    pub offset: u64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]

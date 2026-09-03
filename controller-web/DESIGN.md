@@ -111,7 +111,9 @@ At widths below 48rem, the frame becomes two rows. Navigation is a horizontally 
 
 ### Task Detail Inspector
 - **Structure**: selecting a task opens a table-adjacent bottom pane containing authoritative general data, progress, persisted attempts, and failure evidence.
-- **Authority**: list rows and SSE deltas select or invalidate; `GET /api/tasks/{id}` remains the source of truth for versions, attempts, and action eligibility.
+- **Authority**: list rows and SSE deltas select or invalidate; bounded `GET /api/tasks/{id}?limit=&offset=` pages remain the source of truth for versions, attempts, and action eligibility. The inspector loads 100 newest attempts first and exposes an explicit next-page action while more persisted history exists.
+- **History concurrency**: each next-page request is owned by the selected task, detail generation, and requested offset. Selection changes, manual reloads, and SSE invalidation abort pending history work; ownership checks reject late transport completions, while ID deduplication preserves newest-to-oldest order and keeps loaded counts within the authoritative total.
+- **History accessibility**: the attempts section exposes busy state and politely announces loading plus the settled loaded/total count. Request errors remain assertive alerts with the existing keyboard retry action.
 - **Actions**: cancellation is confirmed, available only through verifying, and hidden once `cancel_requested_at` is persisted. Retry requires `retryable=true` plus an exact Rust-supported failure code/stage pair; publication and remote-state ambiguity remain blocked regardless of contradictory metadata.
 - **Confirmation**: the alertdialog starts on `Keep Task`, traps Tab and Shift+Tab between its two actions, and consumes Escape before restoring focus to `Cancel Task`. Escape closes the surrounding detail only when confirmation is absent.
 - **Concurrency**: cancel and retry send the displayed version. HTTP 409 triggers exactly one selected-detail refetch plus one bounded current-page and count refresh before another action.

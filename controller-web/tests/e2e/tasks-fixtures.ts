@@ -2,7 +2,7 @@ import { appendFile, mkdir } from "node:fs/promises"
 
 import { expect, type Page, type Route } from "@playwright/test"
 
-import type { Task, TaskStatus } from "../../src/api/taskSchemas"
+import type { Task, TaskAttempt, TaskDetail, TaskStatus } from "../../src/api/taskSchemas"
 
 export const evidenceDir = "../.omo/evidence/videnoa-controller/task-19/playwright-report/screenshots/task-16"
 export const statuses = [
@@ -71,6 +71,10 @@ export function task(index: number, overrides: Partial<Task> = {}): Task {
     completed_at: completed ? new Date(Date.UTC(2030, 0, 1, 0, 5, index)).toISOString() : null,
   } as const satisfies Task
   return { ...base, ...overrides }
+}
+
+export function taskDetail(taskValue: Task, attempts: readonly TaskAttempt[] = []): TaskDetail {
+  return { task: taskValue, attempts: [...attempts], total: attempts.length, limit: 100, offset: 0 }
 }
 
 export async function installPagedApi(page: Page, journal: RequestJournal, total = 20_000): Promise<void> {
