@@ -352,7 +352,7 @@ Expected: the image starts without GPU flags/libraries; archives have the locked
 
   **Commit:** `feat(controller-web): add authenticated application shell`
 
-- [ ] 16. Implement the dense server-paginated Tasks table and active counters
+- [x] 16. Implement the dense server-paginated Tasks table and active counters
 
   **Depends on:** 7, 14, 15
 

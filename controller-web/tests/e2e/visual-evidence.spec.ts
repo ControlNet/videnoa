@@ -14,6 +14,11 @@ const session = {
   expires_at: "2030-01-01T00:00:00Z",
   idle_expires_at: "2030-01-01T00:00:00Z",
 } as const
+const emptyTaskPage = { items: [], total: 0, limit: 50, offset: 0 }
+const emptyTaskCounts = {
+  items: ["queued", "reserved", "uploading", "staged", "submitting", "processing", "remote_completed", "downloading", "verifying", "publishing", "remote_cleanup", "completed", "failed", "cancelled"].map((status) => ({ status, count: 0 })),
+  total: 0,
+}
 
 async function json(route: Route, body: unknown, status = 200, headers: Record<string, string> = {}): Promise<void> {
   await route.fulfill({ status, contentType: "application/json", headers, body: JSON.stringify(body) })
@@ -35,6 +40,8 @@ async function installApi(page: Page): Promise<void> {
   await page.route("**/api/auth/logout", async (route) => {
     await json(route, { error: { code: "unavailable", message: "remote worker is unavailable", retryable: true, field_errors: [] } }, 503)
   })
+  await page.route("**/api/tasks?*", async (route) => json(route, emptyTaskPage))
+  await page.route("**/api/status-counts", async (route) => json(route, emptyTaskCounts))
 }
 
 async function settleAndCapture(page: Page, name: string, viewport: { readonly width: number; readonly height: number }): Promise<void> {
@@ -90,15 +97,17 @@ test("captures the complete Task 15 visual evidence matrix deterministically", a
     await page.getByRole("link", { name: `${route[0]?.toUpperCase()}${route.slice(1)}` }).click()
     await expect(page).toHaveURL(new RegExp(`/${route}$`))
     await expectNoRenderedGradients(page)
-    const readinessType = await page.evaluate(() => ({
-      token: getComputedStyle(document.documentElement).getPropertyValue("--type-subtitle").trim(),
-      root: getComputedStyle(document.documentElement).fontSize,
-      heading: (() => {
-        const heading = document.querySelector(".readiness-panel h2")
-        return heading === null ? "" : getComputedStyle(heading).fontSize
-      })(),
-    }))
-    expect(Number.parseFloat(readinessType.heading)).toBe(Number.parseFloat(readinessType.token) * Number.parseFloat(readinessType.root))
+    if (route !== "tasks") {
+      const readinessType = await page.evaluate(() => ({
+        token: getComputedStyle(document.documentElement).getPropertyValue("--type-subtitle").trim(),
+        root: getComputedStyle(document.documentElement).fontSize,
+        heading: (() => {
+          const heading = document.querySelector(".readiness-panel h2")
+          return heading === null ? "" : getComputedStyle(heading).fontSize
+        })(),
+      }))
+      expect(Number.parseFloat(readinessType.heading)).toBe(Number.parseFloat(readinessType.token) * Number.parseFloat(readinessType.root))
+    }
     for (const [viewportName, viewport] of Object.entries(viewports)) {
       await settleAndCapture(page, `${route}-${viewportName}`, viewport)
     }

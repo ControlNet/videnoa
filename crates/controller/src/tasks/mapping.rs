@@ -4,6 +4,7 @@ use crate::persistence::{AttemptRecord, PageResult, TaskRecord};
 pub(crate) fn task(record: TaskRecord) -> Task {
     Task {
         id: record.id,
+        version: record.version,
         status: record.status,
         input_path: record.request.input_path,
         output_path: record.request.output_path,
@@ -13,7 +14,9 @@ pub(crate) fn task(record: TaskRecord) -> Task {
         priority: record.request.priority,
         source: record.request.source,
         source_reference: record.request.source_reference,
+        input_size: record.input_size,
         worker_id: record.worker_id,
+        remote_job_id: record.remote_job_id,
         progress: record.progress,
         attempt_count: record.attempt_count,
         failure: record.failure,

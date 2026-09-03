@@ -1,8 +1,8 @@
 use chrono::{DateTime, Utc};
 
 use crate::domain::{
-    AttemptId, FailureInfo, InputExtension, OutputExtension, RetryMetadata, SubmissionKey,
-    TaskCreateRequest, TaskId, TaskProgress, TaskStatus, WorkerId,
+    AttemptId, FailureInfo, InputExtension, OutputExtension, RemoteJobId, RetryMetadata,
+    SubmissionKey, TaskCreateRequest, TaskId, TaskProgress, TaskStatus, WorkerId,
 };
 
 use super::{InputContentIdentity, InputIdentity, Sha256Digest};
@@ -57,6 +57,7 @@ pub struct TaskRecord {
     pub input_identity: Option<InputIdentity>,
     pub input_content_identity: Option<InputContentIdentity>,
     pub worker_id: Option<WorkerId>,
+    pub remote_job_id: Option<RemoteJobId>,
     pub progress: TaskProgress,
     pub attempt_count: u32,
     pub failure: Option<FailureInfo>,

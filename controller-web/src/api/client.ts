@@ -30,6 +30,7 @@ type RequestOptions<T> = {
   readonly schema: ZodType<T>
   readonly method?: "DELETE" | "GET" | "PATCH" | "POST" | "PUT"
   readonly json?: unknown
+  readonly signal?: AbortSignal
 }
 
 export type ApiClient = {
@@ -67,6 +68,7 @@ export function createApiClient(options: ClientOptions): ApiClient {
           headers,
           json: requestOptions.json,
           method,
+          ...(requestOptions.signal === undefined ? {} : { signal: requestOptions.signal }),
         })
       } catch (error) {
         if (error instanceof TypeError || error instanceof DOMException) {

@@ -58,6 +58,7 @@ pub struct TaskAttempt {
 #[serde(deny_unknown_fields)]
 pub struct Task {
     pub id: TaskId,
+    pub version: u64,
     pub status: TaskStatus,
     pub input_path: InputPath,
     pub output_path: OutputPath,
@@ -67,7 +68,9 @@ pub struct Task {
     pub priority: i32,
     pub source: TaskSource,
     pub source_reference: Option<SourceReference>,
+    pub input_size: u64,
     pub worker_id: Option<WorkerId>,
+    pub remote_job_id: Option<RemoteJobId>,
     pub progress: TaskProgress,
     pub attempt_count: u32,
     pub failure: Option<FailureInfo>,

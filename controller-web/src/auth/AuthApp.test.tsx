@@ -11,6 +11,16 @@ const session = {
   idle_expires_at: "2030-01-01T00:00:00Z",
 } as const
 
+const emptyTaskPage = { items: [], total: 0, limit: 50, offset: 0 }
+const emptyTaskCounts = {
+  items: [
+    "queued", "reserved", "uploading", "staged", "submitting", "processing",
+    "remote_completed", "downloading", "verifying", "publishing", "remote_cleanup",
+    "completed", "failed", "cancelled",
+  ].map((status) => ({ status, count: 0 })),
+  total: 0,
+}
+
 class FakeEventSource extends EventTarget {
   static latest: FakeEventSource | null = null
   static readonly CONNECTING = 0
@@ -52,6 +62,22 @@ function response(body: unknown, status = 200, csrf?: string): Response {
   return new Response(JSON.stringify(body), { status, headers })
 }
 
+function pathFor(input: RequestInfo | URL): string {
+  const value = input instanceof Request ? input.url : String(input)
+  return new URL(value, window.location.origin).pathname
+}
+
+function authenticatedFetcher(): ReturnType<typeof vi.fn<typeof fetch>> {
+  return vi.fn<typeof fetch>((input) => {
+    switch (pathFor(input)) {
+      case "/api/auth/session": return Promise.resolve(response(session, 200, "proof"))
+      case "/api/tasks": return Promise.resolve(response(emptyTaskPage))
+      case "/api/status-counts": return Promise.resolve(response(emptyTaskCounts))
+      default: return Promise.resolve(response({ error: "internal" }, 500))
+    }
+  })
+}
+
 describe("authenticated Controller shell", () => {
   afterEach(() => {
     FakeEventSource.latest = null
@@ -76,7 +102,7 @@ describe("authenticated Controller shell", () => {
   it("bootstraps an existing cookie session directly into the requested route", async () => {
     // Given: a valid HttpOnly-cookie session and a deep link.
     window.history.replaceState({}, "", "/settings")
-    vi.stubGlobal("fetch", vi.fn<typeof fetch>().mockResolvedValue(response(session, 200, "proof")))
+    vi.stubGlobal("fetch", authenticatedFetcher())
 
     // When: passive session bootstrap succeeds.
     render(<App />)
@@ -87,14 +113,14 @@ describe("authenticated Controller shell", () => {
     expect(screen.getByRole("main")).toHaveFocus()
   })
 
-  it("shows the accurate implementation owner for every placeholder route", async () => {
+  it("keeps implementation ownership accurate after the Tasks route is delivered", async () => {
     // Given: an authenticated Controller shell.
-    vi.stubGlobal("fetch", vi.fn<typeof fetch>().mockResolvedValue(response(session, 200, "proof")))
+    vi.stubGlobal("fetch", authenticatedFetcher())
     render(<App />)
     await screen.findByRole("heading", { name: "Tasks" })
 
-    // When/Then: each route names the task that owns its domain implementation.
-    expect(screen.getByText("TASK 16")).toBeVisible()
+    // When/Then: Tasks is operational while remaining placeholders name their implementation owner.
+    expect(screen.getByRole("table")).toBeVisible()
     fireEvent.click(screen.getByRole("link", { name: "Settings" }))
     expect(screen.getByText("TASK 18")).toBeVisible()
     fireEvent.click(screen.getByRole("link", { name: "Workers" }))
@@ -103,10 +129,16 @@ describe("authenticated Controller shell", () => {
 
   it("logs in, navigates by links, and logs out without browser storage", async () => {
     // Given: an unauthenticated bootstrap followed by successful login and logout.
-    const fetcher = vi.fn<typeof fetch>()
-      .mockResolvedValueOnce(response({ error: "unauthorized" }, 401))
-      .mockResolvedValueOnce(response({ session }, 200, "proof"))
-      .mockResolvedValueOnce(response({ logged_out: true }))
+    const fetcher = vi.fn<typeof fetch>((input) => {
+      switch (pathFor(input)) {
+        case "/api/auth/session": return Promise.resolve(response({ error: "unauthorized" }, 401))
+        case "/api/auth/login": return Promise.resolve(response({ session }, 200, "proof"))
+        case "/api/tasks": return Promise.resolve(response(emptyTaskPage))
+        case "/api/status-counts": return Promise.resolve(response(emptyTaskCounts))
+        case "/api/auth/logout": return Promise.resolve(response({ logged_out: true }))
+        default: return Promise.resolve(response({ error: "internal" }, 500))
+      }
+    })
     vi.stubGlobal("fetch", fetcher)
     render(<App />)
     const password = await screen.findByLabelText("Controller password")
@@ -165,10 +197,21 @@ describe("authenticated Controller shell", () => {
 
   it("keeps the authenticated shell operable when logout fails and allows retry", async () => {
     // Given: an authenticated shell whose first logout request fails.
-    const fetcher = vi.fn<typeof fetch>()
-      .mockResolvedValueOnce(response(session, 200, "proof"))
-      .mockResolvedValueOnce(response({ error: { code: "unavailable", message: "remote worker is unavailable", retryable: true, field_errors: [] } }, 503))
-      .mockResolvedValueOnce(response({ logged_out: true }))
+    let logoutAttempts = 0
+    const fetcher = vi.fn<typeof fetch>((input) => {
+      switch (pathFor(input)) {
+        case "/api/auth/session": return Promise.resolve(response(session, 200, "proof"))
+        case "/api/tasks": return Promise.resolve(response(emptyTaskPage))
+        case "/api/status-counts": return Promise.resolve(response(emptyTaskCounts))
+        case "/api/auth/logout": {
+          logoutAttempts += 1
+          return logoutAttempts === 1
+            ? Promise.resolve(response({ error: { code: "unavailable", message: "remote worker is unavailable", retryable: true, field_errors: [] } }, 503))
+            : Promise.resolve(response({ logged_out: true }))
+        }
+        default: return Promise.resolve(response({ error: "internal" }, 500))
+      }
+    })
     vi.stubGlobal("fetch", fetcher)
     render(<App />)
     await screen.findByRole("heading", { name: "Tasks" })
@@ -188,7 +231,7 @@ describe("authenticated Controller shell", () => {
   it("reports the actual event-stream lifecycle", async () => {
     // Given: an authenticated shell with a controllable EventSource.
     vi.stubGlobal("EventSource", FakeEventSource)
-    vi.stubGlobal("fetch", vi.fn<typeof fetch>().mockResolvedValue(response(session, 200, "proof")))
+    vi.stubGlobal("fetch", authenticatedFetcher())
     render(<App />)
     await screen.findByRole("heading", { name: "Tasks" })
 

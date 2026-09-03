@@ -158,6 +158,29 @@
 - Same-size remove-and-recreate could reuse the exact device, inode, length, and nanosecond mtime, so metadata-only upload admission staged changed bytes and issued one PUT. New tasks now persist a separate truncated SHA-256 content identity while rooted reopen still checks platform metadata before and after hashing; migrated legacy rows retain nullable metadata-only admission.
 - Rust 1.83 tests pass, but strict Clippy on that older toolchain remains blocked by 140+ pre-existing pedantic diagnostics in untouched modules. Current-toolchain strict Clippy passes.
 
+## 2026-09-03 Task 16
+
+- Visual review found toolbar overflow, inaccessible search focus, missing column scopes, and a skeleton persisting after initial load failure. The responsive grid, focus-within treatment, scoped headers, and explicit failed-load state resolve those defects.
+- Rollup emits informational warnings while bundling two Zod annotation comments; frontend build and Playwright output remain successful.
+
+## 2026-09-03 Task 16 Remediation
+
+- Independent review blockers reproduced before fixes: deep empty offsets stepped backward one page per request, failed changed-query loads retained old rows, stale/equal SSE versions refetched, priority changes merged in place, filter metadata/live announcements were incomplete, and the original evidence did not prove coherent filtering or narrow rows/pagination.
+- A new pagination-in-viewport browser assertion proved an additional evidence-rooted product defect: full desktop pages made the pagination footer unreachable inside the fixed shell. The table height budget now leaves the footer visible while retaining table-owned vertical and horizontal scrolling.
+- The first regenerated evidence pass exposed duplicate `.png.png` captures beside stale `.png` files. The path helper was corrected, all seven affected Task 16 images were removed, and exactly five fresh correctly named PNGs were regenerated.
+- The programming no-excuse helper could not resolve the project-local `typescript` package when launched through Bun. Project TypeScript, ESLint, Vitest, production build, and Playwright gates all ran successfully through the repository's npm scripts.
+- Final independent visual review found two remaining narrow-table blockers: the diagnostic capture clipped the `Error` header, and horizontal overflow had no keyboard/assistive or visible navigation affordance.
+- A focusable generic `div`, then a focusable semantic `section`, satisfied browser behavior but failed Biome's `noNoninteractiveTabindex` rule. The shipped resolution is a named non-focusable region with explicit native Left/Right buttons and a visible narrow hint.
+- The `Error` column is wider than the narrow frame, so `scrollLeft = scrollWidth` and `offsetLeft` alignment both clipped its leading label. Viewport-delta alignment plus an 18 rem narrow long-cell bound now keeps `ERROR`, ellipses, rows, and pagination visible together.
+- Two independent post-fix visual reviews returned PASS: exactly five fresh valid captures, visible narrow navigation and Error context, contained ellipses, readable pagination, and no remaining product or evidence blockers.
+
+## 2026-09-03 Task 16 Final Remount
+
+- Final functional review found that `useTasksData` initialized its applied update generation to zero, so Tasks -> Workers -> Tasks replayed the retained global update during loading and produced a second unnecessary page/count request pair.
+- The failing browser regression observed three total task requests and three total count requests instead of two. Basing the mount ref on `appTaskUpdateStore.snapshot().generation` restores exactly one request pair on remount while existing newer-update merge and refetch scenarios remain green.
+- Contradictory empty metadata rendered `10,001-123 of 123`. Range derivation now requires coherent non-empty page metadata and displays `0-0 of 123` without enabling forward pagination or entering a correction loop.
+- Independent final functional and visual/integrity reviews both returned PASS with no remaining Task 16 blockers.
+
 ## 2026-09-03 Task 14 Oracle Blockers
 
 - Processing retry accepted terminal jobs with contradictory or absent identity fields, then deleted the workspace and created a replacement attempt. It now reuses the recovery identity predicate before any cleanup.

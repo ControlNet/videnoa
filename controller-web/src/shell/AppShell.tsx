@@ -2,11 +2,14 @@ import { ListTodo, LogOut, ServerCog, Settings } from "lucide-react"
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { Navigate, NavLink, Route, Routes, useLocation } from "react-router"
 
+import type { ApiClient } from "../api/client"
 import type { LogoutResult } from "../auth/useSessionController"
 import { type ConnectionState, SessionEvents } from "../events/SessionEvents"
+import { TasksPage } from "../tasks/TasksPage"
 import { PlaceholderPage } from "./PlaceholderPage"
 
 type AppShellProps = {
+  readonly apiClient: ApiClient
   readonly logout: () => Promise<LogoutResult>
 }
 
@@ -16,7 +19,7 @@ const navigation = [
   { path: "/settings", label: "Settings", icon: Settings },
 ] as const
 
-export function AppShell({ logout }: AppShellProps) {
+export function AppShell({ apiClient, logout }: AppShellProps) {
   const location = useLocation()
   const mainRef = useRef<HTMLElement>(null)
   const logoutAlertRef = useRef<HTMLDivElement>(null)
@@ -89,7 +92,7 @@ export function AppShell({ logout }: AppShellProps) {
       <main className="shell-main" tabIndex={-1} ref={mainRef}>
         <Routes>
           <Route path="/" element={<Navigate to="/tasks" replace />} />
-          <Route path="/tasks" element={<PlaceholderPage title="Tasks" nextTask="TASK 16" description="Monitor durable processing work and coordinate its lifecycle." />} />
+          <Route path="/tasks" element={<TasksPage apiClient={apiClient} />} />
           <Route path="/workers" element={<PlaceholderPage title="Workers" nextTask="TASK 18" description="Inspect processing capacity and the health of connected Videnoa nodes." />} />
           <Route path="/settings" element={<PlaceholderPage title="Settings" nextTask="TASK 18" description="Review scheduler policy, paths, retry behavior, and session boundaries." />} />
           <Route path="*" element={<Navigate to="/tasks" replace />} />
