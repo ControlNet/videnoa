@@ -410,7 +410,7 @@ Expected: the image starts without GPU flags/libraries; archives have the locked
 
 ### Wave 4 — Delivery and system proof
 
-- [ ] 20. Prove one-worker and multi-worker pipelines under crash and outage injection
+- [x] 20. Prove one-worker and multi-worker pipelines under crash and outage injection
 
   **Depends on:** 6-14
 
