@@ -254,3 +254,8 @@
 
 - Acceptance review found that unauthorized session checks returned the correct typed `401` but left an invalid browser cookie intact, while the expiry scenario asserted an empty cookie jar without first creating that cookie. A real handler regression and a seeded browser scenario now cover both sides of the contract.
 - The configured Chromium run passed all 38 scenarios and regenerated passing metadata. The final audit found 62 valid fresh PNGs, no identical content hashes, no stale failure markdown, and no trace, video, error-context, or cookie artifacts.
+
+## 2026-09-04 Task 23
+
+- Neither `pwsh` nor Windows PowerShell is installed on the Linux host, and the existing MSVC-compatible compiler/archive tooling gap remains. The Windows packager received static contract/layout review but no native PowerShell parser, Windows build, or executable smoke; evidence does not overclaim those surfaces.
+- The first forbidden-content fixture used a non-contract archive filename, so filename validation correctly failed before member validation. Renaming the injected archive to the locked filename exposed and passed the intended exact-member rejection.

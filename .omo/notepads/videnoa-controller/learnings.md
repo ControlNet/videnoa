@@ -316,3 +316,9 @@
 - A session-expiry browser test is vacuous unless it first seeds and observes the named HttpOnly cookie. Modeling the production expired `Set-Cookie` response then proves browser cookie removal rather than only proving storage was already empty.
 - Invalid `/api/auth/session` responses should preserve the typed unauthorized body and status while expiring the existing cookie through the same cookie builder used by logout.
 - Duplicate screenshot basenames are not stale evidence when they belong to path-scoped historical matrices; comparing full paths and content hashes distinguishes intentional route captures from duplicate files.
+
+## 2026-09-04 Task 23
+
+- Deterministic GNU tar/gzip output requires normalizing member order, ustar metadata, owner/group, modes, timestamps, and the gzip header; two independently produced Controller archives then share one SHA-256.
+- Exact ordered-manifest comparison is a stronger archive boundary than a forbidden-name list because every unapproved loose asset, runtime, model, cache, secret, or existing product binary fails closed.
+- Release archive smoke can prove frontend embedding by starting only the extracted binary with external config/data/hash paths and successfully requesting both `/api/health` and `/` without a sibling frontend directory.

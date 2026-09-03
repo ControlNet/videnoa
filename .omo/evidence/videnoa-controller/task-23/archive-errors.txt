@@ -1,0 +1,39 @@
+Task 23 sanitized archive failure evidence
+Generated: 2026-09-04
+
+Missing packaging implementation red phase
+Command: scripts/tests/package_controller_test.sh
+Exit: nonzero
+Sanitized result: missing executable packaging script: scripts/package_controller.sh
+
+Missing required archive-root source file
+Command: scripts/package_controller.sh --source-dir <fixture-without-readme> --binary-path <test-binary> --output-dir <temp> --force
+Exit: nonzero
+Sanitized result: missing required file: README-controller.md
+
+Controller binary/workspace version mismatch
+Command: scripts/package_controller.sh --binary-path <binary-reporting-9.9.9> --output-dir <temp> --force
+Exit: nonzero
+Sanitized result: binary version mismatch: expected videnoa-controller 0.1.2, got videnoa-controller 9.9.9
+
+Forbidden injected model content
+Command: inject models/model.onnx into an otherwise valid archive, then run
+scripts/package_controller.sh --verify-archive <injected-archive>
+Exit: nonzero
+Sanitized result: unexpected archive member or ordering
+
+Wrong archive filename/version contract
+Command: scripts/package_controller.sh --verify-archive forbidden.tar.gz
+Exit: nonzero
+Sanitized result: archive filename does not match the Linux Controller contract
+
+Windows native verification unavailable
+Command: command -v pwsh || command -v powershell
+Result: no command found. Native PowerShell syntax execution, Windows compilation,
+and Windows executable smoke were not run or claimed. The PowerShell packager
+fails closed on non-Windows hosts when binary version execution cannot be proven.
+
+Secret handling
+No password, PHC hash, Authorization header, cookie, CSRF value, API token, or
+private key is present in this evidence. The manual smoke generated a temporary
+test-only hash outside the repository and evidence records only its path category.
