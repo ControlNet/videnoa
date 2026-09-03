@@ -38,6 +38,10 @@
 }
 
 .operation-error button { border: 0; background: transparent; color: inherit; font-weight: 700; }
+.worker-table-scroll-controls { display: none; align-items: center; justify-content: space-between; gap: var(--space-3); margin-block-end: var(--space-2); }
+.worker-table-scroll-controls p { margin: 0; color: var(--color-text-quiet); font-size: var(--type-micro); }
+.worker-table-scroll-controls div { display: flex; gap: var(--space-2); }
+.worker-table-scroll-controls button { min-block-size: var(--control-compact); padding-inline: var(--space-3); border: var(--border-default); border-radius: var(--radius-control); background: var(--color-surface-elevated); color: var(--color-text); font-size: var(--type-label); font-weight: 650; }
 .worker-table-frame { overflow: auto; border: var(--border-default); border-radius: var(--radius-control); background: var(--color-surface); scrollbar-gutter: stable; }
 .worker-table { inline-size: 100%; min-inline-size: 86rem; border-collapse: collapse; white-space: nowrap; font-size: var(--type-label); }
 .worker-table th { position: sticky; inset-block-start: 0; z-index: 1; padding: var(--space-2) var(--space-3); border-block-end: var(--border-default); background: var(--color-surface-elevated); color: var(--color-text-quiet); font-size: var(--type-micro); text-align: start; text-transform: uppercase; letter-spacing: 0.06em; }
@@ -104,4 +108,5 @@
   .read-only-settings dl div { grid-template-columns: 1fr; gap: var(--space-1); }
   .operation-confirmation { padding: var(--space-4); }
   .operation-confirmation footer { align-items: stretch; flex-direction: column; }
+  .worker-table-scroll-controls { display: flex; }
 }
