@@ -380,7 +380,7 @@ Expected: the image starts without GPU flags/libraries; archives have the locked
 
   **Commit:** `feat(controller-web): add task creation and lifecycle controls`
 
-- [ ] 18. Implement Workers and Settings operational pages
+- [x] 18. Implement Workers and Settings operational pages
 
   **Depends on:** 11, 14, 15
 

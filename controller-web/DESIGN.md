@@ -123,6 +123,20 @@ At widths below 48rem, the frame becomes two rows. Navigation is a horizontally 
 - **Accessibility**: status changes are announced politely and every state has explicit text; green is used only for a verified open stream.
 - **Motion**: no decorative pulse.
 
+### Worker Operations Surface
+- **Structure**: a compact semantic table separates health, enabled policy, slot usage, task stages, transfer activity, last contact, and failure state; row actions open one shared native add/edit dialog.
+- **Authority**: `GET /api/workers` is authoritative. Successful writes update from returned DTOs, while stale versions and retained SSE invalidations trigger one bounded list refetch.
+- **Errors**: duplicate identity, busy deletion, stale version, invalid URL, and capacity conflicts remain visible beside the affected operation; field errors stay adjacent to matching controls, are programmatically associated, and move focus to the first invalid field.
+- **Deletion confirmation**: the modal alertdialog names the exact worker and API URL, starts on `Keep Worker`, traps Tab and Shift+Tab between its two actions, and consumes Escape. Cancellation or rejection restores the invoking row action; successful deletion moves focus to the stable `Add Worker` action.
+- **Responsiveness**: the table frame owns horizontal overflow and is keyboard-focusable; the route never creates document-level overflow.
+
+### Runtime Settings Surface
+- **Structure**: scheduler controls, transfer limits, timeout/retry fields, readiness, and restart-required configuration are separated by ruled sections rather than cards.
+- **Authority**: runtime writes submit the displayed settings version. Stale writes refetch settings and readiness before another action.
+- **Safety**: paths, cookie/session policy, and password-hash file location are read-only browser output. Credential material is never returned, entered, or stored.
+- **Pause semantics**: pausing blocks new reservations, prefetch, and compute starts. Already-running processing continues; transfer and publication continue where applicable; cleanup continues.
+- **Accessibility**: every numeric control has a visible label and exact server bounds; validation errors are programmatically associated and focus the first invalid field, including retry cross-field failures; readiness and mutation errors use explicit text rather than color alone.
+
 ## 6. Motion & Interaction
 
 - `--motion-fast: 150ms cubic-bezier(0.16, 1, 0.3, 1)` for hover, focus, and active feedback.
@@ -147,6 +161,7 @@ Constraints:
 - WCAG 2.2 AA contrast, visible keyboard focus, semantic landmarks, and ordered headings.
 - Login, navigation, logout, bootstrap retry, and expiry recovery are keyboard operable.
 - Manual task creation, task selection, detail dismissal, cancellation confirmation, and eligible retry are keyboard operable.
+- Worker creation/editing, enable policy, deletion, scheduler pause/resume, and runtime settings updates are keyboard operable.
 - No authentication material is written to local or session storage.
 - No color-only status or error communication.
 - No horizontal page overflow at 375px, 768px, or 1280px.
@@ -158,5 +173,4 @@ Accepted debt:
 
 | Item | Location | Why accepted | Owner / Exit |
 |---|---|---|---|
-| Route bodies are readiness placeholders | Tasks, Workers, Settings | Tasks content belongs to Task 16; Workers and Settings belong to Task 18 | Replace within each dedicated task |
-| SSE deltas only invalidate app snapshots | Authenticated frame | Domain stores arrive with Tasks 16-18 | Subscribe each route store in its task |
+| No client-side table virtualization | Tasks and Workers | Bounded operational datasets preserve semantic table navigation | Revisit only with measured scale evidence |

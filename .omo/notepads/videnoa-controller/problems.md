@@ -141,3 +141,19 @@
 ## 2026-09-03 Task 17 Evidence Convergence
 
 - No replay evidence inconsistency remains: the request, authoritative fixture, detail assertions, and success screenshot agree on both exact paths, workflow anime-2x, priority 17, and manual source.
+
+## 2026-09-03 Task 18
+
+- No confirmed Task 18 product or evidence blocker remains after operational Workers/Settings delivery, strict boundary parsing, optimistic mutation recovery, safe conflict guidance, responsive overflow verification, and complete section captures.
+- The external dependency build still emits known non-fatal Rollup warnings for comments inside Zod; project tests, typecheck, lint, production build, and Chromium scenarios pass.
+
+## 2026-09-03 Task 18 Remediation
+
+- No confirmed Task 18 remediation blocker remains after replacing browser-native confirmation, correcting pause semantics, and executing duplicate-name plus unauthenticated mutation browser coverage.
+- The first independent visual pass requested keyboard access to the worker overflow owner and fuller visual evidence; both gaps were remediated before final gates.
+
+## 2026-09-03 Task 18 Accessibility Convergence
+
+- No confirmed Task 18 accessibility blocker remains after outcome-specific delete focus, first-invalid worker/settings validation, stable error associations and announcements, and explicit scope on all nine worker headers.
+- The external Bun no-excuse helper resolution gap remains tooling-only; all repository-native frontend gates pass.
+- Final review follow-ups for server slot errors and focused visual states are resolved; the worker scroll-focus capture intentionally shows table-owned horizontal overflow rather than pretending all nine dense columns fit at once.

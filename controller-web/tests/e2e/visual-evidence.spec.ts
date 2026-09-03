@@ -1,5 +1,7 @@
 import { expect, type Page, type Route, test } from "@playwright/test"
 
+import { installOperationalReadRoutes } from "./operations-fixtures"
+
 const evidenceDir = "../.omo/evidence/videnoa-controller/task-15/visual-qa"
 const viewports = {
   narrow: { width: 375, height: 812 },
@@ -42,6 +44,7 @@ async function installApi(page: Page): Promise<void> {
   })
   await page.route("**/api/tasks?*", async (route) => json(route, emptyTaskPage))
   await page.route("**/api/status-counts", async (route) => json(route, emptyTaskCounts))
+  await installOperationalReadRoutes(page)
 }
 
 async function settleAndCapture(page: Page, name: string, viewport: { readonly width: number; readonly height: number }): Promise<void> {
@@ -65,7 +68,7 @@ async function settleAndCapture(page: Page, name: string, viewport: { readonly w
 
 async function expectNoRenderedGradients(page: Page): Promise<void> {
   const backgroundImages = await page.evaluate(() => {
-    const selectors = [".login-page", ".boundary-line", ".readiness-panel"]
+    const selectors = [".login-page", ".boundary-line", ".operation-page"]
     const values = selectors.flatMap((selector) => {
       const element = document.querySelector(selector)
       if (element === null) return []
@@ -97,17 +100,6 @@ test("captures the complete Task 15 visual evidence matrix deterministically", a
     await page.getByRole("link", { name: `${route[0]?.toUpperCase()}${route.slice(1)}` }).click()
     await expect(page).toHaveURL(new RegExp(`/${route}$`))
     await expectNoRenderedGradients(page)
-    if (route !== "tasks") {
-      const readinessType = await page.evaluate(() => ({
-        token: getComputedStyle(document.documentElement).getPropertyValue("--type-subtitle").trim(),
-        root: getComputedStyle(document.documentElement).fontSize,
-        heading: (() => {
-          const heading = document.querySelector(".readiness-panel h2")
-          return heading === null ? "" : getComputedStyle(heading).fontSize
-        })(),
-      }))
-      expect(Number.parseFloat(readinessType.heading)).toBe(Number.parseFloat(readinessType.token) * Number.parseFloat(readinessType.root))
-    }
     for (const [viewportName, viewport] of Object.entries(viewports)) {
       await settleAndCapture(page, `${route}-${viewportName}`, viewport)
     }

@@ -279,3 +279,27 @@
 ## 2026-09-03 Task 17 Evidence Convergence
 
 - Replay evidence represents one logical task only when the authoritative response fixture explicitly matches every submitted field; helper defaults can otherwise produce a visually contradictory success capture despite correct request assertions.
+
+## 2026-09-03 Task 18
+
+- Operational tables need explicit left, middle, and right evidence at narrow widths; page-level no-overflow assertions alone do not prove every locally scrolled column and action is reachable.
+- Element screenshots are the reliable evidence shape for a complete section inside a fixed-height shell, while page-context captures establish navigation and responsive hierarchy.
+- Mutation fixtures should parse submitted bodies through the same production Zod schemas and journal optimistic versions so the browser test proves both visible behavior and exact API contract use.
+- Readiness rows need a small inline-end inset because edge-aligned flex text can lose antialiased pixels at element screenshot boundaries even when the page itself does not overflow.
+- Operator guidance must key from the exact serialized `OperationsError` messages, not the internal `WorkerRegistryError` display strings that are translated before HTTP; production-shaped fixtures and a shared mapping test prevent raw error leakage.
+- A conflict refetch is incomplete while an edit dialog retains the original record object. Derive the submitted worker version from the refreshed list while keeping form fields local, so a reviewed retry advances without erasing operator input.
+
+## 2026-09-03 Task 18 Remediation
+
+- Restoring row-action focus before a mutation settles is racy because the temporary disabled state makes the browser discard focus. Cancellation can restore immediately, while confirmed deletion must restore only after mutation settlement and the enabled button render.
+- A worker deletion confirmation needs the exact row trigger, not a page-level fallback: passing `event.currentTarget` through the table action preserves precise focus restoration across Escape, safe cancellation, and rejected deletion.
+- Scheduler pause guidance must distinguish admission from continuation: no new reservation, prefetch, or compute starts, while active processing, applicable transfer/publication, and cleanup continue.
+- A production-shaped authentication failure is the top-level `401 {"error":"unauthorized"}` boundary, unlike nested OperationsError responses; browser coverage should prove it replaces the operational shell without rendering request proof or credential material.
+- Contained horizontal overflow is not keyboard-accessible merely because row actions are tabbable; the overflow owner itself needs a labelled focus stop so keyboard users can pan hidden columns before reaching controls.
+
+## 2026-09-03 Task 18 Accessibility Convergence
+
+- Post-confirm focus must wait for React to commit mutation teardown because the invoking row action remains disabled until `mutating` clears; a render-synchronized generation closes the browser timing gap.
+- Delete outcomes need different stable targets: cancellation and rejection return to the exact row action, while successful removal focuses `Add Worker` because the original trigger no longer exists.
+- Native numeric constraints alone do not create associated inline error messages. `noValidate` lets the existing Zod boundary own deterministic first-invalid focus, stable error IDs, `aria-describedby`, and alert announcements while retaining min/max metadata.
+- Server field errors need the same mapping and focus path as local Zod errors, including `compute_slots`; adjacent rendering without focus is not equivalent accessibility.

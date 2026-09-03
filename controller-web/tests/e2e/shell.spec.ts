@@ -1,5 +1,7 @@
 import { expect, type Page, type Route, test } from "@playwright/test"
 
+import { installOperationalReadRoutes } from "./operations-fixtures"
+
 const evidenceDir = "../.omo/evidence/videnoa-controller/task-15"
 const session = {
   id: "550e8400-e29b-41d4-a716-446655440000",
@@ -38,6 +40,7 @@ async function installApi(page: Page): Promise<{ readonly expire: () => void }> 
   })
   await page.route("**/api/tasks?*", async (route) => json(route, emptyTaskPage))
   await page.route("**/api/status-counts", async (route) => json(route, emptyTaskCounts))
+  await installOperationalReadRoutes(page)
   return { expire: () => { expired = true } }
 }
 
@@ -57,10 +60,10 @@ test("login, protected navigation, reload, narrow layout, and logout", async ({ 
   await page.screenshot({ path: `${evidenceDir}/shell-desktop.png`, fullPage: true })
   await page.getByRole("link", { name: "Workers" }).click()
   await expect(page).toHaveURL(/\/workers$/)
-  await expect(page.getByText("TASK 18")).toBeVisible()
+  await expect(page.getByText("render-east")).toBeVisible()
   await page.getByRole("link", { name: "Settings" }).click()
   await expect(page).toHaveURL(/\/settings$/)
-  await expect(page.getByText("TASK 18")).toBeVisible()
+  await expect(page.getByText("Runtime settings")).toBeVisible()
   await page.reload()
   await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible()
   await expect(page.getByRole("main")).toBeFocused()
