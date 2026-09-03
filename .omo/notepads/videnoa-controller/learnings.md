@@ -218,6 +218,12 @@
 - Retry cleanup proof is identity proof, not merely terminal-status proof: job ID, workflow, and exact durable input/output params must match before deleting remote workspace state.
 - Aggregate enum endpoints should project sparse persistence results onto one explicit ordered variant table so empty categories remain part of the stable HTTP contract.
 - A lifecycle service that publishes a durable change after commit must be the sole mutation notification boundary; handler-level reload-and-publish duplicates events and makes an already committed response fallible.
+
+## 2026-09-03 Task 17
+
+- A creation retry key belongs to one canonical request body, not to the dialog session. Clearing ambiguous intent on the first field edit makes changed-body key reuse unrepresentable in the UI.
+- Task-list SSE payloads are useful invalidation evidence but are not authoritative detail. Refetching the selected task preserves persisted attempt history and current optimistic versions.
+- Browser error fixtures must satisfy the same strict Zod contract as production, including the operations error code and each field error's machine code; otherwise the correct client behavior is `malformed_response`.
 - A post-commit decode regression trigger must satisfy SQLite constraints while violating the Rust decoder, such as schema-valid JSON containing a denied unknown field.
 
 ## 2026-09-03 Task 15
@@ -261,3 +267,15 @@
 
 - A retained external-store snapshot is historical state for a newly mounted subscriber. Initializing the applied generation from the store snapshot at hook mount suppresses replay while preserving updates published after that render because the ref retains the earlier baseline.
 - Pagination ranges should require a non-empty current page whose response offset and limit match the URL and whose offset is below total. Empty or contradictory pages can still report the server total while truthfully displaying `0-0`.
+
+## 2026-09-03 Task 17 Oracle Remediation
+
+- Frontend retry visibility must mirror `Lifecycle::retry_mode` as an allowlist of exact failure-code/stage pairs; `retryable=true` is necessary but cannot authorize contradictory persisted evidence.
+- Cancellation status alone is insufficient once durable intent exists. Authoritative `cancel_requested_at` must be null before the frontend exposes the first cancellation request.
+- Intake recovery guidance must inspect structured field, closed field-error code, and message because real Rust validation deliberately keeps the top-level message generic.
+- Programmatic safe focus after a pointer-opened confirmation does not necessarily match `:focus-visible`; a confirmation-specific `:focus` treatment is needed for visible evidence.
+- Scroll-contained detail evidence is truthful when fixed-viewport captures enumerate the top General/Progress state and the lower Attempts/Error state rather than attempting a clipped full-content element screenshot.
+
+## 2026-09-03 Task 17 Evidence Convergence
+
+- Replay evidence represents one logical task only when the authoritative response fixture explicitly matches every submitted field; helper defaults can otherwise produce a visually contradictory success capture despite correct request assertions.

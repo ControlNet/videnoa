@@ -17,7 +17,7 @@ The memorable moment is the transition from the isolated sign-in panel into a fi
 | Hover | `--color-surface-hover` | `oklch(0.93 0.014 260)` | `oklch(0.23 0.025 260)` | Interactive hover |
 | Text | `--color-text` | `oklch(0.18 0.02 260)` | `oklch(0.96 0.008 260)` | Primary copy |
 | Muted text | `--color-text-muted` | `oklch(0.45 0.018 260)` | `oklch(0.72 0.016 260)` | Supporting copy |
-| Quiet text | `--color-text-quiet` | `oklch(0.57 0.014 260)` | `oklch(0.58 0.016 260)` | Metadata |
+| Quiet text | `--color-text-quiet` | `oklch(0.54 0.014 260)` | `oklch(0.61 0.016 260)` | Metadata |
 | Border | `--color-border` | `oklch(0.86 0.012 260)` | `oklch(0.29 0.02 260)` | Structural separation |
 | Border subtle | `--color-border-subtle` | `oklch(0.91 0.008 260)` | `oklch(0.23 0.018 260)` | Recessed divisions |
 | Accent | `--color-accent` | `oklch(0.53 0.2 292)` | `oklch(0.66 0.19 292)` | Focus, active route, primary action |
@@ -103,6 +103,20 @@ At widths below 48rem, the frame becomes two rows. Navigation is a horizontally 
 - **Responsiveness**: the route never owns horizontal overflow; the table frame is the deliberate inline scroll region below 48rem.
 - **Live data**: matching active task deltas replace only newer row versions; membership or ordering changes refetch the bounded current page and counts.
 
+### Manual Task Intake
+- **Structure**: a compact native modal with exact input/output paths, workflow, integer priority, and explicit manual source semantics.
+- **Idempotency**: the client keeps one in-memory UUID only for an unchanged request whose response was lost. Any field edit or confirmed API response ends that intent; a changed submission receives a new key.
+- **Errors**: boundary validation uses the closed server field-error code set, preserves adjacent messages, and moves focus to the first invalid control. Structured path messages drive outside-root and no-clobber guidance even when the top-level message is generic. Ambiguous transport failure offers an explicit `Retry Same Task`; key/body conflicts explain that the next submission is a new intent.
+- **Accessibility**: native modal focus containment, Escape dismissal, visible labels, and trigger-focus restoration support keyboard-only operation.
+
+### Task Detail Inspector
+- **Structure**: selecting a task opens a table-adjacent bottom pane containing authoritative general data, progress, persisted attempts, and failure evidence.
+- **Authority**: list rows and SSE deltas select or invalidate; `GET /api/tasks/{id}` remains the source of truth for versions, attempts, and action eligibility.
+- **Actions**: cancellation is confirmed, available only through verifying, and hidden once `cancel_requested_at` is persisted. Retry requires `retryable=true` plus an exact Rust-supported failure code/stage pair; publication and remote-state ambiguity remain blocked regardless of contradictory metadata.
+- **Confirmation**: the alertdialog starts on `Keep Task`, traps Tab and Shift+Tab between its two actions, and consumes Escape before restoring focus to `Cancel Task`. Escape closes the surrounding detail only when confirmation is absent.
+- **Concurrency**: cancel and retry send the displayed version. HTTP 409 triggers exactly one selected-detail refetch plus one bounded current-page and count refresh before another action.
+- **Responsiveness**: the inspector stacks beneath the table, wraps action controls, contains long technical values, and does not introduce document-level horizontal overflow.
+
 ### Connection Status
 - **Structure**: indicator plus explicit lifecycle text and `/api/events` technical label.
 - **States**: connecting before EventSource opens, connected after `open` or a valid event, reconnecting after a recoverable stream error, and unavailable after closure or missing EventSource support.
@@ -132,6 +146,7 @@ Depth uses solid luminance stacking and fine structural borders rather than grad
 Constraints:
 - WCAG 2.2 AA contrast, visible keyboard focus, semantic landmarks, and ordered headings.
 - Login, navigation, logout, bootstrap retry, and expiry recovery are keyboard operable.
+- Manual task creation, task selection, detail dismissal, cancellation confirmation, and eligible retry are keyboard operable.
 - No authentication material is written to local or session storage.
 - No color-only status or error communication.
 - No horizontal page overflow at 375px, 768px, or 1280px.

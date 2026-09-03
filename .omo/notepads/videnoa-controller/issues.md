@@ -205,3 +205,20 @@
 ## 2026-09-03 Task 15 Focus Convergence
 
 - Independent full-suite verification reproduced the existing-session focus assertion intermittently with the Settings shell committed and `body` still focused. Moving route focus from a passive effect to a layout effect removed the scheduling window; the focused test passed 20 consecutive runs and Chromium reload coverage passed.
+
+## 2026-09-03 Task 17
+
+- The first full Playwright run found the Task 16 workflow filter selector ambiguous after the closed creation dialog added a second labelled Workflow input. Scoping the existing assertion to the `Task filters` fieldset preserves both accessible labels.
+- The programming no-excuse helper still cannot resolve project-local TypeScript when launched from its external skill path through Bun. Repository TypeScript, ESLint, Vitest, build, and Playwright gates remain the authoritative project checks.
+- Production builds retain the known non-fatal Rollup warnings for Zod annotation comments.
+- Independent visual review found the quiet-text token below AA on light page canvas and dark elevated surfaces. Setting light/dark OKLCH lightness to `0.54`/`0.61` restores contrast while preserving the graphite hierarchy.
+
+## 2026-09-03 Task 17 Oracle Remediation
+
+- Functional review confirmed repeated cancellation visibility, retry eligibility broader than Rust, generic-only intake guidance, a non-UUID submission key, an open field-error code schema, and incomplete 409 request assertions. Each defect was reproduced by a focused failing test before correction.
+- Visual review confirmed destructive initial focus, missing confirmation focus containment and nested Escape behavior, incomplete detail evidence, and absent executed no-clobber/late-cancel transcript entries. The fresh keyboard scenarios and exact eight-image inventory now cover those states without duplicate captures.
+- The first complete-detail element capture was invalid because ancestor overflow clipped content and produced blank regions. It was removed and replaced by real top/lower scroll-state viewport captures.
+
+## 2026-09-03 Task 17 Evidence Convergence
+
+- The replay success fixture inherited priority 20,000 while the submitted body used 17. The fixture and field-specific detail assertions now align all submitted values, and the regenerated success capture visibly shows Priority 17.

@@ -127,3 +127,17 @@
 ## 2026-09-03 Task 15 Focus Convergence
 
 - No confirmed focus blocker remains. Existing-session bootstrap, route retention, and main-landmark focus pass 20 focused Vitest repetitions, the full frontend gate, and live Chromium reload QA.
+
+## 2026-09-03 Task 17
+
+- No confirmed Task 17 product blocker remains after exact manual creation, ambiguous-response replay, changed-intent key rotation, authoritative detail and attempts, lifecycle-gated cancel/retry, stale-version refetch, focus recovery, and narrow containment verification.
+- The external Bun no-excuse helper resolution gap is unchanged from Task 16 and does not affect project-local TypeScript or frontend quality gates.
+
+## 2026-09-03 Task 17 Oracle Remediation
+
+- No confirmed Task 17 functional blocker remains after exact cancellation intent gating, Rust-pair retry classification, structured intake guidance, strict UUID/field-error schemas, bounded 409 refresh assertions, and alertdialog keyboard correction.
+- No confirmed Task 17 evidence blocker remains after executing outside-root, existing-output, changed-key collision, ambiguity, late/repeated cancel, and stale-version scenarios and replacing stale captures with the exact fresh eight-image inventory.
+
+## 2026-09-03 Task 17 Evidence Convergence
+
+- No replay evidence inconsistency remains: the request, authoritative fixture, detail assertions, and success screenshot agree on both exact paths, workflow anime-2x, priority 17, and manual source.

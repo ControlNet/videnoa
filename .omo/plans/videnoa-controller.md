@@ -366,7 +366,7 @@ Expected: the image starts without GPU flags/libraries; archives have the locked
 
   **Commit:** `feat(controller-web): add dense task history table`
 
-- [ ] 17. Add manual task creation, detail pane, attempts, cancel, and stage-aware retry UX
+- [x] 17. Add manual task creation, detail pane, attempts, cancel, and stage-aware retry UX
 
   **Depends on:** 7, 9, 14-16
 
