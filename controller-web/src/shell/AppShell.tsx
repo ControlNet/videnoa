@@ -5,8 +5,9 @@ import { Navigate, NavLink, Route, Routes, useLocation } from "react-router"
 import type { ApiClient } from "../api/client"
 import type { LogoutResult } from "../auth/useSessionController"
 import { type ConnectionState, SessionEvents } from "../events/SessionEvents"
+import { SettingsPage } from "../settings/SettingsPage"
 import { TasksPage } from "../tasks/TasksPage"
-import { PlaceholderPage } from "./PlaceholderPage"
+import { WorkersPage } from "../workers/WorkersPage"
 
 type AppShellProps = {
   readonly apiClient: ApiClient
@@ -93,8 +94,8 @@ export function AppShell({ apiClient, logout }: AppShellProps) {
         <Routes>
           <Route path="/" element={<Navigate to="/tasks" replace />} />
           <Route path="/tasks" element={<TasksPage apiClient={apiClient} />} />
-          <Route path="/workers" element={<PlaceholderPage title="Workers" nextTask="TASK 18" description="Inspect processing capacity and the health of connected Videnoa nodes." />} />
-          <Route path="/settings" element={<PlaceholderPage title="Settings" nextTask="TASK 18" description="Review scheduler policy, paths, retry behavior, and session boundaries." />} />
+          <Route path="/workers" element={<WorkersPage apiClient={apiClient} />} />
+          <Route path="/settings" element={<SettingsPage apiClient={apiClient} />} />
           <Route path="*" element={<Navigate to="/tasks" replace />} />
         </Routes>
       </main>

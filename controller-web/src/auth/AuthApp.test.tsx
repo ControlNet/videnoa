@@ -113,18 +113,19 @@ describe("authenticated Controller shell", () => {
     expect(screen.getByRole("main")).toHaveFocus()
   })
 
-  it("keeps implementation ownership accurate after the Tasks route is delivered", async () => {
+  it("renders every delivered operational route without placeholder ownership", async () => {
     // Given: an authenticated Controller shell.
     vi.stubGlobal("fetch", authenticatedFetcher())
     render(<App />)
     await screen.findByRole("heading", { name: "Tasks" })
 
-    // When/Then: Tasks is operational while remaining placeholders name their implementation owner.
+    // When/Then: Tasks, Settings, and Workers each render their delivered operational surface.
     expect(screen.getByRole("table")).toBeVisible()
     fireEvent.click(screen.getByRole("link", { name: "Settings" }))
-    expect(screen.getByText("TASK 18")).toBeVisible()
+    expect(screen.getByRole("heading", { name: "Settings" })).toBeVisible()
     fireEvent.click(screen.getByRole("link", { name: "Workers" }))
-    expect(screen.getByText("TASK 18")).toBeVisible()
+    expect(screen.getByRole("heading", { name: "Workers" })).toBeVisible()
+    expect(screen.queryByText("TASK 18")).not.toBeInTheDocument()
   })
 
   it("logs in, navigates by links, and logs out without browser storage", async () => {

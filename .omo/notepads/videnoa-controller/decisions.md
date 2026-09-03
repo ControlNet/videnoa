@@ -185,3 +185,24 @@
 ## 2026-09-03 Task 17 Evidence Convergence
 
 - Override every authoritative replay fixture field that the scenario submits explicitly, and assert the rendered detail values field-by-field so helper defaults cannot contradict request evidence.
+
+## 2026-09-03 Task 18
+
+- Keep Workers and Settings as direct consumers of the Task 14 APIs; do not add backend endpoints, dependencies, compatibility paths, or speculative client state.
+- Treat optimistic conflicts as bounded invalidation: preserve the operator-facing failure, refetch one authoritative snapshot, and require review before retry.
+- Keep enabled policy independent from online health, and direct referenced-worker deletion failures toward the existing disable operation.
+- Keep restart-required configuration read-only and expose scheduler pause semantics adjacent to the pause/resume control.
+
+## 2026-09-03 Task 18 Remediation
+
+- Reuse the Task 17 two-action alertdialog keyboard contract for worker deletion, while keeping the worker modal visually within the existing operational dialog system.
+- Preserve the exact invoking delete button in a ref and restore it after cancellation or rejected mutation; do not redirect focus to `Add Worker`.
+- Describe pause as an admission boundary only: block reservation, prefetch, and compute starts without claiming active uploads or other already-running work stop.
+- Keep the semantic worker-results section and add the standards-required scroll-container focus stop, with a localized Biome rationale rather than weakening the accessibility contract.
+
+## 2026-09-03 Task 18 Accessibility Convergence
+
+- Route confirmed-delete focus by outcome after mutation settlement: `trigger` for rejection and `add` for success; keep Escape and `Keep Worker` restoration immediate.
+- Use stable field-specific error IDs with conditional `aria-describedby` and `role="alert"` on worker and runtime-settings validation messages.
+- Keep Zod as the form-validation authority with `noValidate`, preserving HTML min/max hints while ensuring numeric and cross-field failures share one accessible focus/error path.
+- Apply the same ordered focus routing to structured server field errors; do not reserve programmatic recovery for client-only validation.

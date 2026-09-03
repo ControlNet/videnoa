@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test"
 
+import { installOperationalReadRoutes } from "./operations-fixtures"
 import { appendEvidence, capture, dispatchTaskUpdate, installLiveApi, installPagedApi, requestJournal, task } from "./tasks-fixtures"
 
 test("keeps 20,000 task history bounded through filters, sorting, paging, and narrow table navigation", async ({ page }) => {
@@ -130,6 +131,7 @@ test("does not replay a retained task update when the Tasks route remounts", asy
   const journal = requestJournal()
   const current = task(0)
   await installLiveApi(page, journal, current)
+  await installOperationalReadRoutes(page)
   await page.goto("/tasks")
   await expect(page.getByRole("table").locator("tbody tr")).toHaveCount(1)
   await dispatchTaskUpdate(page, {

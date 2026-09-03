@@ -222,3 +222,24 @@
 ## 2026-09-03 Task 17 Evidence Convergence
 
 - The replay success fixture inherited priority 20,000 while the submitted body used 17. The fixture and field-specific detail assertions now align all submitted values, and the regenerated success capture visibly shows Priority 17.
+
+## 2026-09-03 Task 18
+
+- Initial shell and visual Playwright coverage still expected Task 18 placeholders; both suites now use operational worker/settings read fixtures.
+- Visual QA found action focus leaving the worker table horizontally shifted, incomplete section coverage, stale narrow navigation timing, and edge-clipped readiness values. Explicit scroll positions, settled route assertions, full-section captures, and a local readiness inset resolved the evidence and product defects.
+- Production builds retain the known non-fatal Rollup warnings for Zod dependency annotation comments.
+- Functional review traced referenced-worker and capacity guidance through both the registry enum and the public operations translation. The final tests and fixtures lock the serialized HTTP strings from `operations/error.rs`, including empty conflict field-error arrays, API-URL duplication, capacity rejection, and referenced deletion.
+- Final coverage review required browser-level stale worker/settings refetch and validation-bound evidence. The new stale-worker scenario exposed the open dialog reusing its original version; `WorkersPage` now supplies the refreshed record version while preserving local fields.
+
+## 2026-09-03 Task 18 Remediation
+
+- The first Chromium confirm-path run found focus restoration occurring before the rejected delete mutation completed; the disabled row action then lost focus. Restoration now waits for mutation settlement, while Escape and `Keep Worker` remain immediate.
+- The deterministic Task 18 browser fixture previously modeled duplicate-name and unauthorized responses but did not execute both operator outcomes. The scenario and transcript now prove adjacent duplicate-name guidance and safe sign-in fallback after a `401` mutation.
+- Independent visual review found the table overflow owner lacked a keyboard focus stop and the evidence packet omitted a post-`401` capture plus a complete runtime-editor capture. The region is now focusable and all three outcomes are covered by fresh browser evidence.
+
+## 2026-09-03 Task 18 Accessibility Convergence
+
+- Review found successful deletion targeting a detached row button, worker/settings errors without programmatic associations or first-invalid focus, and nine worker headers without explicit column scope.
+- The first focused red run produced five intended failures. A subsequent real Chromium run found rejected-delete focus still raced the disabled mutation state; render-synchronized focus routing fixed the browser-only timing defect.
+- The external Bun no-excuse helper still cannot resolve the project-local TypeScript package from its skill-cache path. Project-local ESLint, TypeScript, Vitest, build, and Playwright gates remain clean.
+- Final visual review exposed missing server `compute_slots` mapping and incomplete state captures. The mapping, focused regression, validation/delete/table-focus captures, and fixed-size viewport captures were added before final gates.
