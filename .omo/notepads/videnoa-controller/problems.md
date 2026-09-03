@@ -114,3 +114,16 @@
 - No confirmed Task 14 product blocker remains for worker/settings controls, cancellation, downstream retry, readiness, counts, authentication, optimistic concurrency, or bounded SSE.
 - Processing retry now provides genuine remote-terminal and workspace-cleanup evidence before the Task 9 lifecycle transition; nonterminal, unavailable, and ambiguous remote state remain safely blocked.
 - Private and loopback worker URLs remain intentionally supported because Controller-managed Videnoa workers commonly run on trusted private networks; outbound redirects are disabled, and worker administration remains authenticated and CSRF-protected.
+
+## 2026-09-03 Task 15
+
+- No confirmed Task 15 product or evidence blocker remains after restoring explicit narrow connection lifecycle text and removing the stale extra screenshot.
+- Unit, typecheck, lint, production build, four Chromium scenarios, release embedded-SPA routing, changed-file diagnostics, manual browser QA, and two independent visual reviewers pass.
+- The project-pinned TypeScript 5.9.3 cannot execute the bundled audit script's TypeScript 7-only unstable API checks; this is a tooling compatibility gap, not a failing project gate.
+- No ownership blocker remains: Tasks identifies Task 16, while Workers and Settings both identify Task 18; Task 17 remains reserved for manual task creation and lifecycle actions.
+- No confirmed visual-remediation blocker remains after removing rendered gradients, tokenizing readiness typography, making alert focus visible, regenerating all exact-size captures, and removing `controller-web/test-results` residue.
+- Independent UX/accessibility and strict visual/source reviewers both passed the complete fresh 14-image set with no blockers.
+
+## 2026-09-03 Task 15 Focus Convergence
+
+- No confirmed focus blocker remains. Existing-session bootstrap, route retention, and main-landmark focus pass 20 focused Vitest repetitions, the full frontend gate, and live Chromium reload QA.

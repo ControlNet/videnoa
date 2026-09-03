@@ -1,31 +1,55 @@
+import { BrowserRouter } from "react-router"
+
+import { AppErrorBoundary } from "./AppErrorBoundary"
+import { BootstrapError } from "./auth/BootstrapError"
+import { LoginPage } from "./auth/LoginPage"
+import { type AuthState, useSessionController } from "./auth/useSessionController"
+import { AppShell } from "./shell/AppShell"
+
 export function App() {
   return (
-    <main className="controller-shell">
-      <article className="controller-panel" aria-labelledby="controller-title">
-        <header className="product-header">
-          <span className="product-mark" aria-hidden="true">
-            V
-          </span>
-          <p className="product-name">Videnoa Controller</p>
-          <p className="product-role">Coordination service</p>
-        </header>
+    <AppErrorBoundary>
+      <BrowserRouter>
+        <AuthGate />
+      </BrowserRouter>
+    </AppErrorBoundary>
+  )
+}
 
-        <section className="workspace-intro">
-          <p className="section-label">Independent service boundary</p>
-          <h1 id="controller-title">Controller workspace</h1>
-          <p className="workspace-summary">
-            A GPU-free control plane for coordinating Videnoa processing services across your NAS.
-          </p>
-        </section>
+function AuthGate() {
+  const controller = useSessionController()
 
-        <footer className="service-status">
-          <output className="status-message" aria-label="Controller service status">
-            <span className="status-indicator" aria-hidden="true" />
-            <span className="status-label">Service online</span>
-          </output>
-          <code>/api/health</code>
-        </footer>
-      </article>
+  switch (controller.state.kind) {
+    case "checking":
+      return <LoadingSession />
+    case "unauthenticated":
+      return <LoginPage login={controller.login} />
+    case "authenticated":
+      return <AppShell logout={controller.logout} />
+    case "bootstrap_error":
+      return <BootstrapError message={controller.state.message} retry={controller.retryBootstrap} />
+    default:
+      return assertNever(controller.state)
+  }
+}
+
+function LoadingSession() {
+  return (
+    <main className="login-page">
+      <output className="session-loading">Checking Controller session...</output>
     </main>
   )
+}
+
+function assertNever(state: never): never {
+  throw new UnknownAuthStateError(state)
+}
+
+class UnknownAuthStateError extends Error {
+  readonly name = "UnknownAuthStateError"
+
+  constructor(state: AuthState) {
+    super("Unknown authentication state")
+    void state
+  }
 }

@@ -163,3 +163,22 @@
 - Processing retry accepted terminal jobs with contradictory or absent identity fields, then deleted the workspace and created a replacement attempt. It now reuses the recovery identity predicate before any cleanup.
 - Status counts exposed sparse SQL groups directly. The API now returns all fourteen statuses in deterministic lifecycle order, including zero counts.
 - Cancel/retry handlers duplicated lifecycle SSE publication and reloaded the task after commit, allowing publication/read failure to turn durable success into HTTP 500. The redundant handler path was removed.
+
+## 2026-09-03 Task 15
+
+- Initial Playwright bootstrap failed before issuing `/api/auth/session` because the injected native fetch received `ClientOptions` as its receiver. The receiver regression is now covered and all browser scenarios pass.
+- Narrow layout hid the Sign out text and left an unnamed icon-only button. A state-aware accessible label restored keyboard and locator access without changing the visual layout.
+- The first independent visual review found two acceptance blockers: connection lifecycle text disappeared below 48rem, and an extra stale focus capture showed Settings as `TASK 18`. A failing narrow Playwright regression now locks status visibility, narrow CSS hides only `/api/events`, and the stale capture was removed.
+- No unresolved Task 15 product or evidence blocker remains. The final 14-file evidence set passed both independent reviewers. Production builds retain non-fatal Rollup warnings from Zod dependency comments.
+- Ownership correction: the earlier interpretation that Settings belonged to Task 17 was incorrect. The plan assigns both Workers and Settings to Task 18; shell source, Vitest, Playwright, design documentation, durable knowledge, and all five Settings-bearing captures now agree.
+
+## 2026-09-03 Task 15 Visual Remediation
+
+- Follow-up review found four rendered gradients, an undeclared readiness font size, stale route captures, oversized narrow full-page images, ambiguous alert-focus evidence, and generated `test-results` residue.
+- A failing browser contract reproduced the visual violations. Solid tokenized surfaces, viewport-only reduced-motion capture, explicit alert focus styling, and relocated Playwright output resolve the confirmed product and evidence blockers.
+- The fresh inventory contains exactly 14 correctly sized PNGs and no `controller-web/test-results` files.
+- Two fresh independent full-set reviews returned PASS with no product or evidence blockers.
+
+## 2026-09-03 Task 15 Focus Convergence
+
+- Independent full-suite verification reproduced the existing-session focus assertion intermittently with the Settings shell committed and `body` still focused. Moving route focus from a passive effect to a layout effect removed the scheduling window; the focused test passed 20 consecutive runs and Chromium reload coverage passed.
