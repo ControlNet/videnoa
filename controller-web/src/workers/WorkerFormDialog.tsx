@@ -35,25 +35,22 @@ export function WorkerFormDialog(props: WorkerFormDialogProps) {
   const firstInputRef = useRef<HTMLInputElement>(null)
   const apiUrlRef = useRef<HTMLInputElement>(null)
   const computeSlotsRef = useRef<HTMLInputElement>(null)
-  const [fields, setFields] = useState<WorkerFields>(emptyFields)
+  const [fields, setFields] = useState<WorkerFields>(() => props.worker === null ? emptyFields : {
+    name: props.worker.name,
+    apiUrl: props.worker.api_url,
+    computeSlots: String(props.worker.compute_slots),
+    enabled: props.worker.enabled,
+  })
   const [fieldErrors, setFieldErrors] = useState<Partial<Record<keyof WorkerFields, string>>>({})
 
   useEffect(() => {
     const dialog = dialogRef.current
     if (props.open && dialog !== null && !dialog.open) {
-      const worker = props.worker
-      setFields(worker === null ? emptyFields : {
-        name: worker.name,
-        apiUrl: worker.api_url,
-        computeSlots: String(worker.compute_slots),
-        enabled: worker.enabled,
-      })
-      setFieldErrors({})
       dialog.showModal()
       queueMicrotask(() => firstInputRef.current?.focus())
     }
     if (!props.open && dialog?.open === true) dialog.close()
-  }, [props.open, props.worker])
+  }, [props.open])
 
   async function submit(): Promise<void> {
     const raw = {
