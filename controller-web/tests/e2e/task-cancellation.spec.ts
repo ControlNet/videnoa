@@ -22,7 +22,7 @@ test("keeps cancellation confirmation keyboard focus safe and contained", async 
   await expect(keepTask).toBeFocused()
   expect(await keepTask.evaluate((button) => getComputedStyle(button).outlineStyle)).toBe("solid")
   await page.screenshot({
-    path: "../.omo/evidence/videnoa-controller/task-17/task-actions/cancel-confirmation-safe-focus.png",
+    path: "../.omo/evidence/videnoa-controller/task-19/playwright-report/screenshots/task-17/task-actions/cancel-confirmation-safe-focus.png",
     animations: "disabled",
   })
   await page.keyboard.press("Tab")
