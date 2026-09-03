@@ -394,7 +394,7 @@ Expected: the image starts without GPU flags/libraries; archives have the locked
 
   **Commit:** `feat(controller-web): add worker and scheduler management`
 
-- [ ] 19. Complete frontend accessibility, responsive behavior, and browser regression coverage
+- [x] 19. Complete frontend accessibility, responsive behavior, and browser regression coverage
 
   **Depends on:** 15-18
 
