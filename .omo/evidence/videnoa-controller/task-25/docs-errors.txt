@@ -1,0 +1,39 @@
+Task 25 documentation negative validation
+Date: 2026-09-04
+Method: copy docs/config into an isolated temporary root, mutate one contract at a time, run CONTROLLER_DOCS_ROOT=<temp> bash scripts/tests/controller_docs_test.sh, require nonzero exit, then delete the fixture.
+
+BASELINE
+Result:
+  exit 0
+  [controller-docs] required topics, routes, fields, names, links, and secret patterns: PASS
+
+MISSING GUIDE
+Mutation:
+  remove <temp>/docs/controller.md
+Result:
+  exit 1
+  [controller-docs][error] missing required file: docs/controller.md
+
+STALE ENDPOINT
+Mutation:
+  replace /api/readiness with /api/ready in the temporary expanded guide
+Result:
+  exit 1
+  [controller-docs][error] controller.md is missing: /api/readiness
+
+PLAINTEXT SECRET ASSIGNMENT
+Mutation:
+  append a forbidden password assignment to the temporary example config
+Result:
+  exit 1
+  detector reported the temporary file and line
+  [controller-docs][error] documentation contains a plaintext secret assignment
+  The mutation value was a non-reusable sentinel in a deleted temporary file and is intentionally omitted here.
+
+STATIC NEGATIVE SCANS
+Commands:
+  grep docs for stale product/image/archive names and /api/ready
+  grep docs/config for plaintext password/token/secret/cookie/CSRF assignments
+  grep changed prose for forbidden writing-style phrases and dash characters
+Result:
+  no matches

@@ -270,3 +270,12 @@
 
 - The default Playwright port 4173 was occupied by an unrelated preserved process. The same 43-scenario production-preview suite passed through a temporary config on port 4193; no repository config or existing process was changed.
 - Native Windows packaging and real GitHub/Docker Hub publication cannot execute on this Linux worktree. Windows-hosted wiring, exact artifact paths, action dependencies, and reusable static/package contracts are validated without overclaiming hosted execution.
+
+## 2026-09-04 Task 25
+
+- Native Windows command execution is unavailable on this Linux host. The docs
+  use source-backed PowerShell commands, and the Windows archive/package runtime
+  proof remains assigned to `windows-latest`.
+- Real GitHub Release and Docker Hub publication weren't run locally. Exact
+  image tags, archive names, dependencies, and publishing steps were validated
+  against the tracked release workflow and packaging scripts.

@@ -167,3 +167,11 @@
 
 - No confirmed Task 24 workflow or reusable local-smoke blocker remains. Parsed positive/negative matrices, Linux archive contracts, full Controller container smoke, strict Clippy, fault/load/security suites, frontend unit/build, and 43 Chromium scenarios pass.
 - Native Windows archive execution and real publication are intentionally left to their GitHub-hosted jobs; local evidence records that boundary explicitly.
+
+## 2026-09-04 Task 25
+
+- No confirmed documentation or config-validation problem remains after the
+  required-topic, route, artifact, link, secret-pattern, CLI, config-load, and
+  negative mutation checks pass.
+- Native Windows execution and hosted publication remain explicit environment
+  boundaries, not unresolved Controller documentation defects.

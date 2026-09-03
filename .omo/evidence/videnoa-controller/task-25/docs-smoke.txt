@@ -1,0 +1,84 @@
+Task 25 documentation smoke
+Date: 2026-09-04
+Host boundary: Linux repository worktree. All paths and generated credentials were isolated and removed. No credential value was recorded.
+
+RED PHASE
+Command:
+  bash scripts/tests/controller_docs_test.sh
+Result before docs/controller.md existed:
+  exit 1
+  [controller-docs][error] missing required file: docs/controller.md
+
+DOCUMENT CONTRACT
+Command:
+  bash -n scripts/tests/controller_docs_test.sh
+  bash scripts/tests/controller_docs_test.sh
+Result:
+  exit 0
+  [controller-docs] required topics, routes, fields, names, links, and secret patterns: PASS
+
+EXAMPLE CONFIG LOAD
+Command:
+  cargo test -p videnoa-controller --test controller_docs --test config_contract
+Result:
+  exit 0
+  config_contract: 7 passed
+  controller_docs: 1 passed
+  The docs test replaced example paths with an isolated temporary tree, generated an ephemeral Argon2id hash, loaded controller.example.toml through ControllerConfig, and deleted the fixture. The password and PHC value were not printed or retained.
+
+CLI CONTRACT
+Command:
+  cargo run -q -p videnoa-controller -- --help
+Result:
+  exit 0
+  Usage: videnoa-controller [OPTIONS] [COMMAND]
+  Commands: hash-password, help
+  Options: --config, --host, --port, --help, --version
+
+Command:
+  cargo run -q -p videnoa-controller -- --version
+Result:
+  exit 0
+  videnoa-controller 0.1.2
+
+LOCAL STARTUP
+Sanitized command shape:
+  create isolated input/output/data/temp directories
+  generate an ephemeral hash through stdin into a temporary file
+  rewrite controller.example.toml paths into that temporary tree
+  cargo run -q -p videnoa-controller -- --config <temp>/controller.toml --port 43125
+  curl --fail http://127.0.0.1:43125/api/health
+  curl http://127.0.0.1:43125/api/readiness
+  send SIGTERM and verify <temp>/data/controller.sqlite3 exists
+Result:
+  exit 0
+  health: {"status":"ok"}
+  unauthenticated readiness: HTTP 401
+  SQLite persisted and clean shutdown completed
+  Initial connection-refused retries occurred while the process started, then health passed.
+
+PACKAGING AND CONTAINER REFERENCES
+Command:
+  bash scripts/package_controller.sh --help
+  bash scripts/tests/controller_archive_root_files_test.sh
+  bash scripts/tests/package_controller_windows_static_test.sh
+  bash scripts/check_controller_container.sh videnoa-controller:qa --source
+Result:
+  exit 0
+  Linux archive CLI exposes locked target/build/verify options.
+  Archive root files are complete and secret-free.
+  Windows PowerShell archive contracts are present.
+  Dockerfile.controller source contract passes.
+
+QUALITY
+Command:
+  cargo fmt --all -- --check
+  cargo clippy -p videnoa-controller --test controller_docs -- -D warnings
+  lsp_diagnostics crates/controller/tests/controller_docs.rs
+  lsp_diagnostics scripts/tests/controller_docs_test.sh
+Result:
+  all exit 0 or report no diagnostics
+
+BOUNDARIES NOT CLAIMED
+  Native Windows PowerShell/package execution requires a Windows host and remains covered by windows-latest.
+  Real GitHub Release creation and Docker Hub publication require hosted credentials and were not run locally.
