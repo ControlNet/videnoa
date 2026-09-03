@@ -1,0 +1,32 @@
+[server]
+host = "127.0.0.1"
+port = 3001
+
+[paths]
+input_roots = ["/srv/media/incoming"]
+output_roots = ["/srv/media/library"]
+data_root = "/var/lib/videnoa-controller"
+temp_root = "/var/lib/videnoa-controller/temp"
+
+[auth]
+password_hash_file = "/var/lib/videnoa-controller/admin-password.phc"
+secure_cookie = true
+session_absolute_seconds = 86400
+session_idle_seconds = 3600
+
+[scheduler]
+paused = false
+default_compute_slots = 1
+prefetch_per_worker = 1
+max_concurrent_uploads = 1
+max_concurrent_downloads = 1
+
+[timeouts]
+health_seconds = 10
+poll_seconds = 5
+transfer_seconds = 300
+
+[retry]
+initial_seconds = 1
+maximum_seconds = 60
+max_attempts = 5

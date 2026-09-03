@@ -1,0 +1,79 @@
+Task 23 archive manifests and smoke evidence
+Generated: 2026-09-04
+
+Workspace version source
+Command: cargo pkgid -p videnoa-controller
+Result: path+file:///home/zhixi/GitRepos/videnoa/crates/controller#videnoa-controller@0.1.2
+
+Focused archive contract tests
+Command: scripts/tests/package_controller_test.sh
+Result: PASS; exact Linux manifest, version rejection, missing-file rejection,
+forbidden-member rejection, and identical-input checksum equality passed.
+
+Command: bash scripts/tests/package_controller_windows_static_test.sh
+Result: PASS; locked Windows target/name, PE executable entry, ZIP epoch,
+version/layout checks, GPU runtime checks, and independence from package_dist
+are present.
+
+Command: bash scripts/tests/controller_archive_root_files_test.sh
+Result: PASS; the example configuration has every strict section, references a
+hash file path, contains no credential/hash value, and the README includes
+hash generation, explicit config startup, and health smoke commands.
+
+Normal Linux build/package command
+Command: scripts/package_controller.sh --target x86_64-unknown-linux-gnu --output-dir /tmp/opencode/task23-normal
+Result: PASS; cargo release build completed and produced:
+/tmp/opencode/task23-normal/videnoa-controller-v0.1.2-linux-x86_64.tar.gz
+
+Repeatable packaging commands
+Command: scripts/package_controller.sh --binary-path target/release/videnoa-controller --output-dir /tmp/opencode/task23-package-a
+Command: scripts/package_controller.sh --binary-path target/release/videnoa-controller --output-dir /tmp/opencode/task23-package-b
+Result: PASS
+
+Checksums
+Command: sha256sum /tmp/opencode/task23-package-{a,b}/videnoa-controller-v0.1.2-linux-x86_64.tar.gz
+8f439ea173be8d59ca9576332e31c1db7684353dc6050e5e5fd95724a31adab6  /tmp/opencode/task23-package-a/videnoa-controller-v0.1.2-linux-x86_64.tar.gz
+8f439ea173be8d59ca9576332e31c1db7684353dc6050e5e5fd95724a31adab6  /tmp/opencode/task23-package-b/videnoa-controller-v0.1.2-linux-x86_64.tar.gz
+
+Archive manifest and normalized metadata
+Command: tar -tvzf /tmp/opencode/task23-package-a/videnoa-controller-v0.1.2-linux-x86_64.tar.gz
+drwxr-xr-x 0/0 0 1970-01-01 videnoa-controller-v0.1.2-linux-x86_64/
+-rw-r--r-- 0/0 34523 1970-01-01 videnoa-controller-v0.1.2-linux-x86_64/LICENSE
+-rw-r--r-- 0/0 1998 1970-01-01 videnoa-controller-v0.1.2-linux-x86_64/README-controller.md
+-rw-r--r-- 0/0 647 1970-01-01 videnoa-controller-v0.1.2-linux-x86_64/controller.example.toml
+-rwxr-xr-x 0/0 15774056 1970-01-01 videnoa-controller-v0.1.2-linux-x86_64/videnoa-controller
+
+Extracted binary smoke
+Command: videnoa-controller --version
+Result: videnoa-controller 0.1.2
+
+Command: videnoa-controller --help
+Result: PASS; help reports the GPU-free coordination service and hash-password command.
+
+Command: start extracted binary with an external temporary config/hash/root set,
+then curl --fail http://127.0.0.1:38123/api/health and /
+Result: PASS; health returned {"status":"ok"}; root returned embedded <!doctype html>.
+No controller-web/dist directory or loose web asset was present beside the binary.
+
+Binary format/runtime inspection
+Command: file extracted/videnoa-controller && ldd extracted/videnoa-controller
+Result: ELF 64-bit x86-64; dependencies are libgcc_s, libm, libc, and ld-linux only.
+No ORT, CUDA, cuDNN, TensorRT, or model runtime dependency was present.
+
+Regression and quality gates
+Command: cargo fmt --all -- --check
+Result: PASS
+
+Command: cargo clippy -p videnoa-controller --all-targets --all-features -- -D warnings
+Result: PASS
+
+Command: cargo test -p videnoa-controller --all-targets
+Result: PASS, including the inherited Task 20-21 test targets.
+
+Command: git diff -- scripts/package_dist.sh scripts/package_dist.ps1
+Result: empty; existing Videnoa package layouts and scripts are unchanged.
+
+Windows host limitation
+Neither pwsh nor Windows PowerShell is installed on this Linux host. The script
+received Bash-carried static contract checks and .NET API-oriented source review,
+but no native Windows build, PowerShell parser execution, or .exe smoke is claimed.
