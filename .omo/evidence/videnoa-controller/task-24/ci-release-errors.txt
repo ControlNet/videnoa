@@ -1,0 +1,41 @@
+Task 24 negative validation and execution boundaries
+Generated: 2026-09-04T04:33:03+10:00
+All values are sanitized; no credential values, authorization material, cookies, or registry tokens are present.
+
+Command: node scripts/tests/validate_ci_release_workflows.test.mjs
+Result: PASS
+  existing package break: removing docker-build-smoke failed with "missing required job: docker-build-smoke"
+  missing Controller Dockerfile: replacing the dedicated build command failed with missing "Dockerfile.controller"
+  Controller version mismatch gate removed: removing crates/controller/Cargo.toml from version-gate failed
+  missing Controller archive: removing the Linux Controller release file failed on the exact linux-x86_64.tar.gz contract
+  missing Controller version tag: retaining only latest failed on the versioned controlnet/videnoa-controller tag contract
+  forbidden GPU content check removed: replacing package_controller_test.sh failed on the required content/version/layout negative suite
+
+Command: bash scripts/tests/package_controller_test.sh
+Result: PASS
+  two identical Linux inputs produced identical archives
+  wrong binary version failed
+  missing README-controller.md failed
+  injected models/model.onnx failed exact archive membership validation
+
+Command: bash scripts/tests/package_controller_windows_static_test.sh
+Result: PASS
+  locked target/name/PE entry/deterministic epoch/version gate/GPU-runtime gate/exact layout are present
+  no coupling to package_dist or existing GPU bundles was found
+
+Command: bash scripts/check_controller_container.sh videnoa-controller:qa --all
+Result: PASS
+  missing config failed
+  missing admin hash failed
+  unwritable data root failed
+  outside-root task returned HTTP 400
+  image filesystem/linkage/package scans found no GPU/model runtime content
+
+Command: npm run test:e2e
+Initial local result: not executed because an unrelated existing process owned 127.0.0.1:4173; the process was preserved.
+Equivalent isolated command: temporary copy of playwright.config.ts with baseURL/webServer port 4193, then npx playwright test --config=playwright.task24.tmp.config.ts
+Result: PASS, 43/43 Chromium scenarios. The temporary config was removed.
+
+Native boundary: Windows Controller packaging cannot execute on this Linux host because pwsh and a native Windows runtime are unavailable. The workflow uses windows-latest, Rust 1.83, and the existing package_controller.ps1 contract; local validation proves YAML wiring and PowerShell source/static gates without claiming native PE execution.
+
+Native boundary: Docker Hub pushes, GitHub release creation, artifact transfer between hosted jobs, and post-publication pulls cannot be performed locally without creating a real release. Static parsed wiring, exact action inputs, complete dependencies, credential names, fail_on_unmatched_files, and negative mutations were validated instead.

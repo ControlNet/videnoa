@@ -1,0 +1,108 @@
+Task 24 CI and release matrix
+Generated: 2026-09-04T04:33:03+10:00
+Repository: ControlNet/videnoa
+Branch: dev
+Workspace version source: Cargo.toml [workspace.package].version = 0.1.2
+
+PR / reusable quality workflow (.github/workflows/unittest.yaml)
+
+workflow-contracts
+  runner: ubuntu-latest
+  command: npm ci --no-fund (controller-web)
+  command: node scripts/tests/validate_ci_release_workflows.test.mjs
+  result: PASS; parsed both YAML files, verified dependency graph and complete legacy/Controller contracts
+
+rust-tests (preserved)
+  matrix: ubuntu-latest, windows-latest
+  commands: cargo test -p videnoa-core --lib --tests; cargo test -p videnoa-app --lib --tests
+  downstream: package-linux64-smoke, package-win64-smoke, docker-build-smoke
+
+web-build-check (preserved)
+  matrix: ubuntu-latest, windows-latest
+  commands: npm ci --no-fund; npm run build (web)
+  downstream: package-linux64-smoke, package-win64-smoke, docker-build-smoke
+
+controller-rust
+  runner/toolchain: ubuntu-latest / Rust 1.83 with rustfmt and clippy
+  commands: cargo fmt --all -- --check
+            cargo clippy -p videnoa-controller --all-targets --all-features -- -D warnings
+            cargo test -p videnoa-controller --all-targets
+  result: local fmt PASS; local strict Clippy PASS
+
+controller-fault-load
+  needs: controller-rust
+  commands: cargo test -p videnoa-controller --test task20 -- --nocapture
+            cargo test -p videnoa-controller --test task21 --test task21_concurrency --test task21_filesystem --test task21_resources --test task21_security -- --nocapture
+  result: PASS; Task 20 21/21, Task 21 targets 7+18+22+1+46 = 94/94
+
+controller-web
+  runner: ubuntu-latest
+  serial commands after one npm ci: npm run lint; npm test -- --run; npm run build; npx playwright install --with-deps chromium; npm run test:e2e
+  result: PASS; lint, 104/104 Vitest, production build, 43/43 Chromium scenarios (isolated local port 4193)
+
+controller-package-linux-smoke
+  needs: controller-rust, controller-web
+  runner/toolchain: ubuntu-22.04 / Rust 1.83
+  reusable commands: bash scripts/tests/controller_archive_root_files_test.sh
+                     bash scripts/tests/package_controller_test.sh
+                     bash scripts/package_controller.sh --target x86_64-unknown-linux-gnu --output-dir "$RUNNER_TEMP/controller-linux"
+  locked output: videnoa-controller-v0.1.2-linux-x86_64.tar.gz
+  result: PASS; deterministic archive, version gate, exact manifest, missing-file and forbidden-content failures
+
+controller-package-windows-smoke
+  needs: controller-rust, controller-web
+  runner/toolchain: windows-latest / Rust 1.83
+  reusable command: pwsh -File scripts/package_controller.ps1 -Target x86_64-pc-windows-msvc -OutputDir "$env:RUNNER_TEMP\controller-windows"
+  locked output: videnoa-controller-v0.1.2-windows-x86_64.zip
+  verification: archive must exist, then package_controller.ps1 -VerifyArchive
+  local result: PowerShell source/static contract PASS; native PE build/version/archive execution delegated to windows-latest
+
+controller-docker-smoke
+  needs: controller-rust, controller-web
+  commands: docker build -f Dockerfile.controller -t videnoa-controller:ci .
+            bash scripts/check_controller_container.sh videnoa-controller:ci --all
+  local reusable smoke: bash scripts/check_controller_container.sh videnoa-controller:qa --all
+  result: PASS; source, image metadata/content/linkage, CLI, embedded SPA, health, persistence, writable mounts, and error paths
+
+Preserved Videnoa package/image jobs
+  package-linux64-smoke -> videnoa-linux64-smoke.7z
+  package-win64-smoke -> videnoa-win64-smoke.7z
+  docker-build-smoke -> root Dockerfile / videnoa-ci-smoke
+  workflow validator result: all three jobs, their commands, and rust-tests+web-build-check dependencies present
+
+Release workflow (.github/workflows/release.yaml)
+
+version-gate
+  compared manifests: crates/app/Cargo.toml, crates/controller/Cargo.toml, crates/core/Cargo.toml, crates/desktop/Cargo.toml
+  source: workspace version; release tag v0.1.2
+  failure: any package/workspace mismatch exits nonzero before quality or publication
+
+quality-gate
+  needs: version-gate
+  reusable workflow: ./.github/workflows/unittest.yaml with run_packaging_checks=true
+
+Preserved release outputs
+  GitHub: videnoa-linux64-0.1.2.7z*; videnoa-win64-0.1.2.7z*
+  Docker Hub: controlnet/videnoa:0.1.2; controlnet/videnoa:latest
+
+Independent Controller release outputs
+  package-controller-linux -> artifact videnoa-controller-linux-0.1.2 -> videnoa-controller-v0.1.2-linux-x86_64.tar.gz
+  package-controller-windows -> artifact videnoa-controller-windows-0.1.2 -> videnoa-controller-v0.1.2-windows-x86_64.zip
+  controller-dockerhub-publish -> controlnet/videnoa-controller:0.1.2; controlnet/videnoa-controller:latest
+  credentials: existing DOCKERHUB_USERNAME and DOCKERHUB_TOKEN only
+
+github-release
+  needs: version-gate, quality-gate, both preserved packages, preserved Docker publish, both Controller packages, Controller Docker publish
+  upload action: softprops/action-gh-release@v2 with fail_on_unmatched_files=true
+  assets: two preserved Videnoa archive patterns plus exact Linux and Windows Controller archives
+
+release-verify
+  needs: version-gate, github-release, dockerhub-publish, controller-dockerhub-publish
+  assertions: legacy Linux split-or-single archive; legacy Windows split-or-single archive; exact Controller Linux archive; exact Controller Windows archive
+  pulls: controlnet/videnoa:0.1.2, controlnet/videnoa:latest, controlnet/videnoa-controller:0.1.2, controlnet/videnoa-controller:latest
+
+Read-only GitHub convention inspection
+  command: gh workflow list --repo ControlNet/videnoa --limit 20
+  result: Release Workflow active; Unittest Workflow active
+  command: gh run view 33788425581 --repo ControlNet/videnoa --json jobs,url,conclusion,name
+  result: legacy Rust/Web jobs and dependent package/Docker skip-on-failure behavior confirmed
