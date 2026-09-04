@@ -13,18 +13,22 @@ macro_rules! branded_uuid {
         pub struct $name(Uuid);
 
         impl $name {
+            #[must_use]
             pub fn random() -> Self {
                 Self(Uuid::new_v4())
             }
 
+            #[must_use]
             pub const fn from_uuid(value: Uuid) -> Self {
                 Self(value)
             }
 
+            #[must_use]
             pub const fn as_uuid(&self) -> &Uuid {
                 &self.0
             }
 
+            #[must_use]
             pub const fn into_uuid(self) -> Uuid {
                 self.0
             }
