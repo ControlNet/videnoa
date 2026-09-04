@@ -1,8 +1,6 @@
 mod attempt;
 mod attempt_query;
 mod codec;
-mod database;
-mod error;
 mod idempotency;
 mod lifecycle_evidence;
 mod lifecycle_retry;
@@ -14,6 +12,10 @@ mod reservation;
 mod scheduler;
 mod session;
 mod settings;
+#[path = "database.rs"]
+mod sqlite;
+#[path = "error.rs"]
+mod storage_error;
 mod task;
 mod task_mutation;
 mod task_query;
@@ -23,8 +25,6 @@ mod worker;
 mod worker_query;
 mod worker_registry;
 
-pub use database::{Database, DatabaseOptions};
-pub use error::PersistenceError;
 pub use models::{
     AttemptFailureUpdate, AttemptProgressUpdate, AttemptRecord, AttemptRemoteUpdate, AuthDigest,
     CasOutcome, IdempotencyRecord, InputContentIdentity, InputIdentity, NewSession, NewTask,
@@ -34,6 +34,8 @@ pub use models::{
     WorkerDeleteOutcome, WorkerHealthUpdate, WorkerIdentityConflict, WorkerRecord, WorkerUpdate,
     WorkerUpdateOutcome,
 };
+pub use sqlite::{Database, DatabaseOptions};
+pub use storage_error::PersistenceError;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum DurableChange {
