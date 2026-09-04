@@ -63,7 +63,9 @@ test("opens authoritative detail and sends current versions for cancel and retry
     animations: "disabled",
   })
   await page.getByRole("button", { name: "Cancel Task" }).click()
+  const cancellation = page.waitForResponse(`**/api/tasks/${processing.id}/cancel`)
   await page.getByRole("button", { name: "Confirm Cancellation" }).click()
+  await cancellation
 
   // Then: the detail route, persisted attempt, and optimistic version are authoritative.
   expect(versions).toEqual([7])
