@@ -14,20 +14,7 @@ use axum::Json;
 use axum::Router;
 use percent_encoding::percent_decode_str;
 
-mod asset_path;
-pub mod auth;
-pub mod config;
-pub mod domain;
-pub mod lifecycle;
-pub mod operations;
-pub mod orchestration;
-pub mod paths;
-pub mod persistence;
-pub mod recovery;
-pub mod remote;
-pub mod scheduler;
-pub mod tasks;
-pub mod workers;
+include!("module_topology.rs");
 use asset_path::ExactAssetPath;
 pub use auth::{
     authenticated_app_router, controller_app_router, serve_authenticated, serve_controller,
