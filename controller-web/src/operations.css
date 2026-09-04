@@ -63,7 +63,7 @@
 .worker-table td.operation-empty { padding: var(--space-8); text-align: center; }
 .operation-footnote { display: flex; justify-content: space-between; gap: var(--space-4); padding-block: var(--space-3); color: var(--color-text-quiet); font-size: var(--type-micro); }
 
-.operation-dialog { inline-size: min(calc(100% - var(--space-6)), var(--measure-dialog)); padding: 0; border: var(--border-default); border-radius: var(--radius-panel); background: var(--color-surface); color: var(--color-text); }
+.operation-dialog { inline-size: min(calc(100% - var(--space-6)), var(--measure-dialog)); max-block-size: calc(100dvb - var(--space-8)); margin: auto; padding: 0; overflow: auto; overscroll-behavior: contain; border: var(--border-default); border-radius: var(--radius-panel); background: var(--color-surface); color: var(--color-text); }
 .operation-dialog::backdrop { background: color-mix(in oklch, var(--color-background-deep) 72%, transparent); }
 .operation-confirmation { display: grid; gap: var(--space-4); padding: var(--space-6); }
 .operation-confirmation header { display: grid; gap: var(--space-1); }
