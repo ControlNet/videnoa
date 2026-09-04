@@ -484,3 +484,10 @@
 - Right-edge intent has three distinct states: `none`, `pending`, and `anchored`. Pending survives the initial no-overflow loading phase, anchored survives observer-owned geometry contraction/growth, and anchored clears when content overflow genuinely disappears so a later responsive overflow starts at the left boundary.
 - Browser-owned contraction can clamp `scrollLeft` by the same amount that the maximum contracts. That delta is layout movement, not user-left intent; only movement beyond the contracted edge or movement without contraction cancels anchoring.
 - Final verification: the deterministic pre-growth regression failed at `0` versus expected `420` before the final correction and passed afterward; full Vitest passed `112/112` twice; the exact reported Chromium command passed `30/30`; the focused scenario passed a fresh uninterrupted `60/60`; ESLint, TypeScript, production build, changed-file diagnostics, `git diff --check`, and the complete Playwright suite at `47/47` passed.
+
+## 2026-09-05 F3 Controller Shell Containment
+
+- Equal `min-block-size` and `max-block-size` bounds do not give a CSS Grid container the definite block size needed to constrain an implicit row. `block-size: 100dvb` makes the track definite, allowing the existing `min-block-size: 0; overflow: auto` main region to become the sole vertical scroll owner.
+- A fixed narrow error alert can remain inside the viewport yet still obscure enabled controls. Putting the focused alert in an explicit grid row between the mobile shell header and main content prevents overlap without weakening route scrolling.
+- Browser regressions are stronger when they combine a real wheel gesture with frame/document scroll invariants, fixed-footer visibility, focus-outline containment, and rectangle intersections against every visible enabled control.
+- Fresh production-preview captures at 1440x900 and 1024x900 reached each Settings scroll maximum while keeping Sign out and final readiness content visible. At 375x812, the focused alert occupied `y=129..197`, main began at `y=201`, and the intersection set was empty.
