@@ -74,6 +74,12 @@ impl Root {
         Ok(directory)
     }
 
+    pub(super) fn clone_directory(&self) -> Result<Dir, PathError> {
+        self.directory
+            .try_clone()
+            .map_err(|source| io_error(&self.ambient_path, source))
+    }
+
     pub(super) fn open_nearest_directory(
         &self,
         relative: &Path,

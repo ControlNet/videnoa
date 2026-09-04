@@ -14,10 +14,12 @@ mod publication_finalizer;
 #[cfg(test)]
 mod publication_tests;
 mod root;
+mod temp;
 use input_identity::content_identity;
 pub(crate) use publication::PublicationArtifact;
 pub(crate) use publication_finalizer::PublicationFinalizer;
 use root::{identity, select_root, Root};
+pub(crate) use temp::{TempArtifact, TempWorkspace};
 
 #[derive(Debug, thiserror::Error)]
 pub enum PathError {
@@ -49,6 +51,7 @@ pub enum PathError {
 pub struct PathCapabilities {
     inputs: Vec<Root>,
     outputs: Vec<Root>,
+    temp: Root,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -114,6 +117,7 @@ impl PathCapabilities {
                 .iter()
                 .map(|path| Root::open(path))
                 .collect::<Result<_, _>>()?,
+            temp: Root::open(&config.temp_root)?,
         })
     }
 
@@ -123,7 +127,8 @@ impl PathCapabilities {
         self.inputs
             .iter()
             .chain(&self.outputs)
-            .try_for_each(Root::ensure_current)
+            .try_for_each(Root::ensure_current)?;
+        self.temp.ensure_current()
     }
 
     /// Opens a regular input and records its descriptor-derived identity and metadata.
