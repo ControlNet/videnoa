@@ -96,6 +96,15 @@ describe("task surface accessibility", () => {
     fireEvent.keyDown(frame, { key: "End" })
     expect(right).toBeDisabled()
 
+    // When: late layout growth extends the scroll range after reaching the right edge.
+    setScrollGeometry(frame, { clientWidth: 400, scrollWidth: 820 })
+    setScrollGeometry(table, { clientWidth: 810, scrollWidth: 810, offsetWidth: 810 })
+    act(() => notifyResize?.([], {} as ResizeObserver))
+
+    // Then: the explicit edge position remains anchored and unavailable.
+    expect(frame.scrollLeft).toBe(420)
+    expect(right).toBeDisabled()
+
     // When: the resized table no longer overflows.
     setScrollGeometry(frame, { clientWidth: 800, scrollWidth: 810 })
     setScrollGeometry(table, { clientWidth: 800, scrollWidth: 800, offsetWidth: 800 })
