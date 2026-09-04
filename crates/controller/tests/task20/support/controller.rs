@@ -30,7 +30,7 @@ pub struct ControllerFixture {
     pub output_root: PathBuf,
     pub temp_root: PathBuf,
     database_path: PathBuf,
-    path_config: PathConfig,
+    pub(super) path_config: PathConfig,
     auth_config: AuthConfig,
     pub(super) base_url: String,
     pub(super) client: reqwest::Client,
