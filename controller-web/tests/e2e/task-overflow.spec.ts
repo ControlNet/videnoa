@@ -22,6 +22,49 @@ test.beforeEach(async ({ page }) => {
   await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" })
 })
 
+test("characterizes the native disabled transition at the right scroll edge", async ({ page }) => {
+  // Given: an overflowing task table at its initial left boundary.
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto("/tasks?columns=path,error,remote_job,attempts,duration,failure")
+  const frame = page.getByRole("region", { name: "Scrollable task results" })
+  const left = page.getByRole("button", { name: "Scroll task table left" })
+  const right = page.getByRole("button", { name: "Scroll task table right" })
+  await expect(left).toBeDisabled()
+  await expect(right).toBeEnabled()
+
+  // When: keyboard navigation moves directly to the effective right edge.
+  await frame.focus()
+  await frame.press("End")
+
+  // Then: the native disabled state transfers to the right control.
+  await expect(left).toBeEnabled()
+  await expect(right).toBeDisabled()
+})
+
+test("keeps unavailable styling when right-edge layout geometry grows", async ({ page }) => {
+  // Given: keyboard navigation has committed the unavailable right-edge state.
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto("/tasks?columns=path,error,remote_job,attempts,duration,failure")
+  const frame = page.getByRole("region", { name: "Scrollable task results" })
+  const table = page.getByRole("table")
+  const left = page.getByRole("button", { name: "Scroll task table left" })
+  const right = page.getByRole("button", { name: "Scroll task table right" })
+  await frame.focus()
+  await frame.press("End")
+  await expectUnavailableControlStyle(right, left)
+  const initialMaximum = await frame.evaluate((element) => element.scrollWidth - element.clientWidth)
+
+  // When: a settled layout change expands the table after the edge was reached.
+  await table.evaluate((element) => {
+    if (!(element instanceof HTMLTableElement)) throw new TypeError("task table is missing")
+    element.style.minInlineSize = `${element.offsetWidth + 20}px`
+  })
+  await expect.poll(() => frame.evaluate((element) => element.scrollWidth - element.clientWidth)).toBeGreaterThan(initialMaximum)
+
+  // Then: the frame stays anchored and the native and computed unavailable states agree.
+  await expectUnavailableControlStyle(right, left)
+})
+
 test("keeps measured task overflow continuously discoverable and keyboard operable", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.goto("/tasks?columns=path,error,remote_job,attempts,duration,failure")
