@@ -368,3 +368,46 @@
 - Bounded diagnostics proved this was not a late mock counter or journal observation. After ten seconds, task and attempt were durably version 11/`Completed`, remote files were absent, and the delete counter remained one.
 - The local fault matrix released its checkpoint after `ControllerRuntime::crash`. Because nested stage cancellation had no joined completion barrier, the release could wake the old cleanup future and allow it to commit completion before restart recovery ran.
 - The correction removes only that post-crash release. Verification passed 10/10 focused CPU-0 matrices, two simultaneous CPU-0 Task 20 targets at 30/30 each, the complete Controller all-target/all-feature test suite, formatting, Rust 1.83 strict Clippy, no-excuse checks, `git diff --check`, and zero diagnostics across all 24 Task 20 Rust files.
+
+## 2026-09-05 F2-B2 rustls-webpki Remediation
+
+- Full `cargo deny check` no longer reports `RUSTSEC-2026-0049`, `RUSTSEC-2026-0098`, `RUSTSEC-2026-0099`, or `RUSTSEC-2026-0104`, and the Controller production tree contains no `rustls-webpki 0.103.9`. The command still fails on pre-existing or independently scoped workspace advisories and license policy findings.
+- `RUSTSEC-2026-0190` for `anyhow 1.0.101` is reachable directly from the Controller normal/build graph and remains outside this exact webpki update. The reported `h2`, `time`, XML, GTK, and legacy Unicode findings are absent from the Controller normal/build tree or belong to other workspace products.
+- The first Rust 1.83 all-target run overlapped the independently owned authentication limiter remediation and observed its temporary `401` versus expected `429` state. After those disjoint changes settled, the isolated limiter test and the complete Controller all-target/all-feature suite passed; no authentication files were edited by F2-B2.
+- `cargo-audit` is not installed in this environment, so advisory evidence comes from `cargo deny check`, the inverse dependency tree, and exact advisory-ID absence checks.
+
+## 2026-09-05 F1-B1 Task Overflow Determinism Completion
+
+- A first manual assertion incorrectly treated `scrollWidth - clientWidth` as Chromium's reachable right edge and reported a ten-pixel gap. Runtime saturation confirmed that the gap was the existing stable scrollbar gutter, and the E2E assertion now compares against the browser's effective edge.
+- Independent behavior review found missing coverage for initial non-anchoring, sub-tolerance left movement during growth, and explicit End at a gutter-sized range. Deterministic regressions now cover all three and pass.
+- No TaskTable overflow blocker remains. Production builds retain the unchanged non-fatal Rollup warnings for annotation comments in Zod.
+
+## 2026-09-05 F2-B1 Bearer Limiter Remediation
+
+- Bearer password verification bypassed the existing peer-IP login failure budget because the shared authentication boundary did not receive the connection peer address. A failing real-router regression reproduced the sixth combined login/Bearer failure as `401` instead of typed `429`.
+- Every active and passive Bearer boundary now receives the direct `ConnectInfo<SocketAddr>` peer IP. Task and operations middleware preserve the typed `rate_limited` response, while cookie-session validation remains outside the password failure budget.
+- Live TCP verification changed `X-Forwarded-For` on every request and still observed five `401` responses followed by `429`; successful Bearer authentication cleared the direct peer state and the next invalid request returned `401`.
+
+## 2026-09-05 F2-B2 anyhow Remediation
+
+- The earlier F2-B2 report that Controller-reachable `RUSTSEC-2026-0190` remained is now corrected: the lock resolves `anyhow 1.0.103`, and the post-update deny report contains no occurrence of that advisory.
+- Full `cargo deny check` still exits nonzero on independently scoped workspace policy findings: `RUSTSEC-2026-0258`, `RUSTSEC-2026-0194`, `RUSTSEC-2026-0195`, `RUSTSEC-2026-0009`, unmaintained GTK/desktop dependencies, and existing license rejections. No advisory ignore or policy downgrade was added.
+- The package-scoped Controller normal/build tree excludes `h2 0.4.13`, `quick-xml 0.38.4`, and `time 0.3.45`; the workspace-wide deny graph can still display shared metadata paths through packages selected elsewhere in the workspace.
+
+## 2026-09-05 F2-B2 h2 Remediation
+
+- This entry supersedes the earlier statements that `h2 0.4.13` was outside Controller reachability. Independent deny evidence and the combined workspace inverse tree prove Controller paths through Axum/Hyper and Reqwest/Hyper-Rustls.
+- The lock now resolves `h2 0.4.16`, and post-update `cargo deny check` contains no `RUSTSEC-2026-0258`, `RUSTSEC-2026-0190`, or prior webpki advisory ID. No ignore, allowlist, manifest pin, or deny-policy change was added.
+- The remaining vulnerability advisories are `RUSTSEC-2026-0194` and `RUSTSEC-2026-0195` through desktop `quick-xml`, plus `RUSTSEC-2026-0009` through desktop/core `time`; none reaches Controller. Remaining unmaintained advisories (`RUSTSEC-2024-0370`, `RUSTSEC-2024-0411` through `RUSTSEC-2024-0420`, `RUSTSEC-2025-0057`, `RUSTSEC-2025-0075`, `RUSTSEC-2025-0080`, `RUSTSEC-2025-0081`, `RUSTSEC-2025-0098`, and `RUSTSEC-2025-0100`) are desktop-only.
+- Full deny status remains `advisories FAILED, bans ok, licenses FAILED, sources ok` because those independently scoped workspace advisories and existing license rejections remain.
+
+## 2026-09-05 Controller Logout Focus Ownership
+
+- The first required `task-overflow.spec.ts --repeat-each=5` browser run observed one preserved overflow-style failure followed by 14 passes; the identical unmodified confirming run passed 15/15 and the full Playwright suite passed all 47 scenarios. No TaskTable, overflow hook, overflow test, or styling file was changed by the auth focus fix.
+- `src/auth/AuthApp.test.tsx` remains an inherited large integration test module at 290 pure LOC. Splitting it was intentionally not mixed into this minimal focus remediation because the requested exact regression path and shared-worktree scope had to remain stable.
+
+## 2026-09-05 Task Overflow Pre-growth End Completion
+
+- The first contraction-aware candidate was incomplete: the formerly flaky scenario still failed once in 60 runs because `End` could be handled before rendered overflow existed. The deterministic component regression reproduced the same transition as `scrollLeft=0` instead of `420`.
+- Preserving a single boolean intent through all no-overflow states then regressed the existing responsive contract `10/10`: after overflow was deliberately removed and restored at 1024px, Right remained disabled instead of exposing the left boundary. Modeling pending versus anchored intent resolved both contracts without waits, retries, timeout changes, or weakened assertions.
+- No task-table overflow blocker remains after `112/112` Vitest tests passed twice, the exact reported Chromium command passed `30/30`, the final focused scenario passed `60/60`, and the complete Playwright suite passed `47/47`. Production builds retain only the unchanged non-fatal Rollup warnings for Zod dependency comments.
