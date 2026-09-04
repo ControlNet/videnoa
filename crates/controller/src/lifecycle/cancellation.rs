@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use crate::domain::TaskStatus;
 use crate::persistence::{AttemptRecord, TaskRecord};
 
-use super::service::{applied, attempt_cas};
+use super::engine::{applied, attempt_cas};
 use super::{
     CancellationWrite, CommandKind, CommittedCommand, DurableAction, Lifecycle, LifecycleError,
     LifecycleService, PairedTransition, SubmissionCancellationReconciliation, TransitionTarget,

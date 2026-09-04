@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use crate::domain::{FailureCode, RetryMetadata, TaskStatus};
 use crate::persistence::{AttemptRecord, TaskRecord};
 
-use super::service::{applied, attempt_cas};
+use super::engine::{applied, attempt_cas};
 use super::{
     CommittedCommand, DurableAction, Lifecycle, LifecycleError, LifecycleService,
     ProcessingRetryCommand, ProcessingRetryWrite, ResumeStage, RetryMode, RetryWrite,
