@@ -392,3 +392,23 @@
 - A complete NUL-safe changed-file audit is required after targeted size fixes; it found `mock_videnoa/recovery_support.rs` at 323 pure LOC, `task12/support.rs` at 360, and an additional `main.rs` boundary at 251 that earlier partial reports missed.
 - Test helpers loaded through `#[path]` need explicit child paths when their extracted sources live below a directory named after the parent file. This keeps nested support private without creating standalone integration targets.
 - Re-exporting test utilities can become an unused import when the shared parent is compiled into several integration targets. Thin root delegates preserve existing helper paths and satisfy strict Clippy without allowances.
+
+## 2026-09-04 Final Wave F2 Task Overflow Determinism
+
+- A right edge derived from scroll geometry can become stale when fonts or table layout expand after keyboard `End`; preserving the prior effective-edge intent during layout observers keeps the control state stable without blocking ordinary user scroll events.
+- Native disabled state and computed unavailable styling must be captured in one browser evaluation. Sequential locator assertions can truthfully observe different render generations even when each individual read is correct.
+- Deterministic layout-growth fixtures are stronger than timing amplification: increasing the rendered table width after reaching the edge reproduced the race on every run without sleeps or retries.
+
+## 2026-09-04 F3 SSE Shutdown Remediation
+
+- Axum graceful shutdown stops listener intake but still waits for response bodies; every long-lived SSE stream must independently observe the owning runtime cancellation token.
+- Deriving HTTP shutdown and per-stream child tokens from the existing `ShutdownCoordinator` preserves one cancellation tree without changing durable stage/write drain or remote compute semantics.
+- An external authenticated SSE regression must prove both listener closure and process exit while the client remains connected; either observation alone misses the original hang.
+
+## 2026-09-04 F4 Duplicate Submission Remediation
+
+- Remote idempotency prevents duplicate jobs but does not prevent duplicate requests; uncertain acceptance needs a separate durable executor-ownership boundary.
+- A Reconciler-generation owner persisted with attempt-version CAS blocks same-process replay while allowing a newly constructed Controller generation to take over and replay the unchanged key after restart.
+- Submission ownership must be claimed after scheduler admission and immediately before the remote request. Claiming before admission strands paused work under the current generation.
+- Cancellation of a `Submitting` attempt cannot bypass uncertain-acceptance ownership. Reusing the same claim boundary proves the owning generation emits neither a second `/api/run` nor a cancellation request without durable remote evidence.
+- Migration upgrade coverage must construct a database at the prior migration boundary; reopening a fully current database proves idempotence but not that the new column is added to deployed state.
