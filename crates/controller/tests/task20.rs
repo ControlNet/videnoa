@@ -30,6 +30,8 @@ mod remote_isolation;
 mod retry;
 #[path = "task20/shutdown.rs"]
 mod shutdown;
+#[path = "task20/submission_ownership.rs"]
+mod submission_ownership;
 #[path = "task20/support/mod.rs"]
 mod support;
 #[path = "task20/worker_health.rs"]
