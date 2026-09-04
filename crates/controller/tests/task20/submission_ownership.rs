@@ -12,8 +12,8 @@ use crate::mock_videnoa::faults::Fault;
 use crate::mock_videnoa::journal::{HeaderValueSnapshot, Route};
 use crate::mock_videnoa::server::MockVidenoa;
 use crate::support::{
-    assert_completed_pipeline, assert_restarted_pipeline, complete_mock_job, CheckpointGate,
-    ControllerFixture, TestResult,
+    assert_completed_pipeline, assert_restarted_pipeline, coherent_task_attempt, complete_mock_job,
+    lifecycle_operation_error, CheckpointGate, ControllerFixture, TestResult,
 };
 
 #[tokio::test]
@@ -182,19 +182,24 @@ async fn same_generation_cancellation_defers_owned_submission_without_duplicate_
         .reconcile_task_id(task.id, chrono::Utc::now())
         .await
         .is_err());
-    let durable_task = fixture
-        .store
-        .task(task.id)
-        .await?
-        .ok_or_else(|| std::io::Error::other("durable task is missing"))?;
-    let durable_attempt = fixture
-        .store
-        .current_attempt(task.id)
-        .await?
-        .ok_or_else(|| std::io::Error::other("durable attempt is missing"))?;
+    let (durable_task, durable_attempt) = coherent_task_attempt(
+        &fixture,
+        &task,
+        TaskStatus::Submitting,
+        "request owned submission cancellation",
+    )
+    .await?;
     LifecycleService::new(fixture.store.clone())
         .request_cancellation(&durable_task, Some(&durable_attempt), chrono::Utc::now())
-        .await?;
+        .await
+        .map_err(|error| {
+            lifecycle_operation_error(
+                "request owned submission cancellation",
+                &durable_task,
+                &durable_attempt,
+                error,
+            )
+        })?;
 
     // When: cancellation reconciliation re-enters through that same generation.
     let report = reconciler

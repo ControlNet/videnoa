@@ -10,7 +10,10 @@ use videnoa_controller::scheduler::{TransferCheckpointObserver, TransferCheckpoi
 
 use crate::mock_videnoa::checkpoints::Checkpoint;
 use crate::mock_videnoa::server::MockVidenoa;
-use crate::support::{complete_mock_job, CheckpointGate, ControllerFixture, TestResult};
+use crate::support::{
+    coherent_task_attempt, complete_mock_job, lifecycle_operation_error,
+    wait_for_positive_download_partial, CheckpointGate, ControllerFixture, TestResult,
+};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn downloading_cancellation_removes_positive_partial_workspace() -> TestResult {
@@ -32,27 +35,31 @@ async fn downloading_cancellation_removes_positive_partial_workspace() -> TestRe
     worker.release(run).await?;
     worker.await_checkpoint(&download).await?;
     let workspace = fixture.temp_root.join(task.id.to_string());
-    let part = workspace.join("output.mp4.part");
     assert_eq!(
         fixture.task(&task).await?.task.status,
         TaskStatus::Downloading
     );
-    assert!(tokio::fs::metadata(&part).await?.len() > 0);
+    wait_for_positive_download_partial(&fixture, &worker, &task).await?;
 
     // When: cancellation intent is persisted and the blocked Controller generation crashes.
-    let task_record = fixture
-        .store
-        .task(task.id)
-        .await?
-        .ok_or_else(|| std::io::Error::other("downloading task record is missing"))?;
-    let attempt = fixture
-        .store
-        .current_attempt(task.id)
-        .await?
-        .ok_or_else(|| std::io::Error::other("downloading attempt record is missing"))?;
+    let (task_record, attempt) = coherent_task_attempt(
+        &fixture,
+        &task,
+        TaskStatus::Downloading,
+        "request downloading cancellation",
+    )
+    .await?;
     LifecycleService::new(fixture.store.clone())
         .request_cancellation(&task_record, Some(&attempt), Utc::now())
-        .await?;
+        .await
+        .map_err(|error| {
+            lifecycle_operation_error(
+                "request downloading cancellation",
+                &task_record,
+                &attempt,
+                error,
+            )
+        })?;
     fixture.crash().await?;
     worker.release(download).await?;
     fixture.restart().await?;
@@ -86,17 +93,13 @@ async fn verifying_cancellation_removes_verified_workspace() -> TestResult {
     assert!(workspace.join("output.mp4.verified").exists());
     assert!(workspace.join("output.mp4.verified.evidence").exists());
     fixture.crash().await?;
-    gate.release();
-    let task_record = fixture
-        .store
-        .task(task.id)
-        .await?
-        .ok_or_else(|| std::io::Error::other("download task record is missing"))?;
-    let attempt = fixture
-        .store
-        .current_attempt(task.id)
-        .await?
-        .ok_or_else(|| std::io::Error::other("download attempt record is missing"))?;
+    let (task_record, attempt) = coherent_task_attempt(
+        &fixture,
+        &task,
+        TaskStatus::Downloading,
+        "finish checkpointed download",
+    )
+    .await?;
     LifecycleService::new(fixture.store.clone())
         .advance(
             &task_record,
@@ -107,21 +110,35 @@ async fn verifying_cancellation_removes_verified_workspace() -> TestResult {
             }),
             Utc::now(),
         )
-        .await?;
-    let task_record = fixture
-        .store
-        .task(task.id)
-        .await?
-        .ok_or_else(|| std::io::Error::other("verifying task record is missing"))?;
-    let attempt = fixture
-        .store
-        .current_attempt(task.id)
-        .await?
-        .ok_or_else(|| std::io::Error::other("verifying attempt record is missing"))?;
+        .await
+        .map_err(|error| {
+            lifecycle_operation_error(
+                "finish checkpointed download",
+                &task_record,
+                &attempt,
+                error,
+            )
+        })?;
+    let (task_record, attempt) = coherent_task_attempt(
+        &fixture,
+        &task,
+        TaskStatus::Verifying,
+        "request verifying cancellation",
+    )
+    .await?;
     assert_eq!(task_record.status, TaskStatus::Verifying);
     LifecycleService::new(fixture.store.clone())
         .request_cancellation(&task_record, Some(&attempt), Utc::now())
-        .await?;
+        .await
+        .map_err(|error| {
+            lifecycle_operation_error(
+                "request verifying cancellation",
+                &task_record,
+                &attempt,
+                error,
+            )
+        })?;
+    gate.release();
 
     // When: a fresh Controller generation reconciles the durable Verifying cancellation.
     fixture.restart().await?;
