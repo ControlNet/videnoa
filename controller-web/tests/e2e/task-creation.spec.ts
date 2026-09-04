@@ -31,6 +31,7 @@ test("replays one manual creation intent after a dropped response", async ({ pag
 
   // When: the operator submits exact paths, sees ambiguity, and retries unchanged.
   await page.getByRole("button", { name: "Add Task" }).click()
+  expect(Number.parseFloat(await page.getByRole("button", { name: "Create Task" }).evaluate((element) => getComputedStyle(element).columnGap))).toBeGreaterThan(0)
   await page.getByLabel("Input Path").fill("/nas/input/Show/episode.01.mkv")
   await page.getByLabel("Output Path").fill("/nas/output/Show/episode.01.mp4")
   await page.getByLabel("Workflow").last().fill("anime-2x")

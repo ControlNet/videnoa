@@ -108,6 +108,10 @@
   padding-block-start: var(--space-2);
 }
 
+.task-create-submit {
+  gap: var(--space-2);
+}
+
 .secondary-button,
 .danger-button,
 .icon-button,
