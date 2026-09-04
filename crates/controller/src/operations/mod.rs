@@ -12,6 +12,7 @@ use axum::response::Response;
 use axum::routing::{get, post, put};
 use axum::Router;
 use chrono::Utc;
+use tokio_util::sync::CancellationToken;
 
 use crate::auth::{authenticate, authorize_mutation, AuthService};
 use crate::config::ControllerConfig;
@@ -47,6 +48,7 @@ pub struct OperationsState {
     lifecycle: LifecycleService,
     events: EventHub,
     payload_limits: PayloadLimits,
+    shutdown: Option<CancellationToken>,
 }
 
 impl OperationsState {
@@ -68,7 +70,14 @@ impl OperationsState {
             paths: dependencies.paths,
             config: dependencies.config,
             payload_limits: dependencies.payload_limits,
+            shutdown: None,
         }
+    }
+
+    #[must_use]
+    pub(crate) fn with_shutdown(mut self, shutdown: CancellationToken) -> Self {
+        self.shutdown = Some(shutdown);
+        self
     }
 
     pub(crate) fn event_hub(&self) -> EventHub {

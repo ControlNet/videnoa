@@ -113,6 +113,7 @@ pub async fn serve_controller_until(
     let listener = tokio::net::TcpListener::bind(address)
         .await
         .map_err(|source| StartupError::Bind { address, source })?;
+    let operations = operations.with_shutdown(shutdown.child_token());
     axum::serve(
         listener,
         controller_app_router(assets, auth, tasks, operations)
