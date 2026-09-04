@@ -508,7 +508,7 @@ Expected: the image starts without GPU flags/libraries; archives have the locked
 
   Launch a production-like Controller with a test-only password hash, NAS roots, and multiple mock Videnoa instances. Use Playwright for login, workers/settings, manual/API tasks, live pipeline, 20,000-row filters, pause, cancel/retry, Controller/worker restarts, output, and cleanup. Capture desktop/narrow/CJK screenshots plus DB/filesystem/remote evidence. Reject a card-heavy/sparse/inaccessible UI, clipping, credential leakage, or divergence from API/DB truth. Save `.omo/evidence/videnoa-controller/final/F3-manual-visual.md`.
 
-- [ ] F4. Packaging, release, regression, and repository-landing audit
+- [x] F4. Packaging, release, regression, and repository-landing audit
 
   Build/smoke the dedicated image and Linux/Windows archives; inspect linkage/content; run existing Videnoa workspace/web/package/GPU Docker/version checks; verify exact new names and unchanged old layouts. Test migration plus backup/rollback instructions. Reject GPU dependencies, existing regressions, incomplete release success, uncommitted/unpushed work, or branch not up-to-date. Save `.omo/evidence/videnoa-controller/final/F4-release-regression.md`.
 
