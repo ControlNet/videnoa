@@ -16,6 +16,7 @@ mod settings;
 mod sqlite;
 #[path = "error.rs"]
 mod storage_error;
+mod submission_claim;
 mod task;
 mod task_mutation;
 mod task_query;
@@ -34,6 +35,7 @@ pub use models::{
     WorkerDeleteOutcome, WorkerHealthUpdate, WorkerIdentityConflict, WorkerRecord, WorkerUpdate,
     WorkerUpdateOutcome,
 };
+pub(crate) use models::{SubmissionClaim, SubmissionClaimOutcome, SubmissionOwner};
 pub use sqlite::{Database, DatabaseOptions};
 pub use storage_error::PersistenceError;
 

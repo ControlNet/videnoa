@@ -18,6 +18,7 @@ pub use common::{
     Sha256Digest, TaskIngressOutcome,
 };
 pub use execution_records::{AttemptRecord, AttemptRemoteUpdate};
+pub(crate) use execution_records::{SubmissionClaim, SubmissionClaimOutcome, SubmissionOwner};
 pub use mutation::{
     AttemptFailureUpdate, AttemptProgressUpdate, PublicationUpdate, TaskFailureUpdate,
     TaskProgressUpdate, TaskRetryUpdate,
