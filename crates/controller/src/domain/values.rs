@@ -15,10 +15,12 @@ macro_rules! string_value {
                 Self(value.into())
             }
 
+            #[must_use]
             pub fn as_str(&self) -> &str {
                 &self.0
             }
 
+            #[must_use]
             pub fn into_string(self) -> String {
                 self.0
             }
@@ -118,6 +120,7 @@ macro_rules! positive_u16 {
         pub struct $name(NonZeroU16);
 
         impl $name {
+            #[must_use]
             pub const fn get(self) -> u16 {
                 self.0.get()
             }
