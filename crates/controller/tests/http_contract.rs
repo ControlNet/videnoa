@@ -43,10 +43,8 @@ async fn api_root_returns_not_found_for_get() -> TestResult {
     // Given: the API boundary has no resource at its root.
 
     // When: a client requests the API root.
-    let result = assert_api_not_found(Method::GET, "/api").await;
-
     // Then: it returns the exact API not-found contract instead of SPA HTML.
-    result
+    assert_api_not_found(Method::GET, "/api").await
 }
 
 #[tokio::test]
@@ -54,10 +52,8 @@ async fn api_root_with_slash_returns_not_found_for_post() -> TestResult {
     // Given: the API boundary has no resource at its slash-terminated root.
 
     // When: a client posts to the slash-terminated API root.
-    let result = assert_api_not_found(Method::POST, "/api/").await;
-
     // Then: it returns the exact API not-found contract instead of SPA HTML.
-    result
+    assert_api_not_found(Method::POST, "/api/").await
 }
 
 #[tokio::test]
@@ -65,10 +61,8 @@ async fn unknown_api_route_returns_not_found_for_delete() -> TestResult {
     // Given: the API boundary does not expose the requested resource.
 
     // When: a client deletes an unknown API route.
-    let result = assert_api_not_found(Method::DELETE, "/api/unknown").await;
-
     // Then: it returns the exact API not-found contract instead of SPA HTML.
-    result
+    assert_api_not_found(Method::DELETE, "/api/unknown").await
 }
 
 #[tokio::test]
@@ -217,10 +211,8 @@ async fn spa_fallback_rejects_post_when_route_is_nested() -> TestResult {
     // Given: a nested client-side route.
 
     // When: a client posts to a nested client-side route.
-    let result = assert_spa_method_rejected(Method::POST).await;
-
     // Then: both profiles reject the method without serving SPA HTML.
-    result
+    assert_spa_method_rejected(Method::POST).await
 }
 
 #[tokio::test]
@@ -228,10 +220,8 @@ async fn spa_fallback_rejects_options_when_route_is_nested() -> TestResult {
     // Given: a nested client-side route.
 
     // When: a client sends OPTIONS to a nested client-side route.
-    let result = assert_spa_method_rejected(Method::OPTIONS).await;
-
     // Then: both profiles reject the method without serving SPA HTML.
-    result
+    assert_spa_method_rejected(Method::OPTIONS).await
 }
 
 #[tokio::test]
