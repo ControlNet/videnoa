@@ -1,4 +1,5 @@
 mod actions;
+mod admission;
 #[path = "controller.rs"]
 mod harness;
 mod http;
