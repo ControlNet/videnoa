@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use axum::http::header;
 use futures_util::StreamExt;
 use tempfile::TempDir;
+use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
 use tokio::process::{Child, Command};
 use videnoa_controller::auth::hash_password;
@@ -70,7 +71,7 @@ impl ProcessFixture {
             .arg(&self.config_path)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .kill_on_drop(true);
         Ok(command.spawn()?)
     }
@@ -91,6 +92,28 @@ async fn sigterm_with_authenticated_sse_exits_inside_drain_bound() -> TestResult
         let _ = child.wait().await;
     }
     result
+}
+
+#[tokio::test]
+async fn early_controller_exit_reports_startup_stderr() -> TestResult {
+    // Given: a real Controller child whose owned configuration is unavailable at startup.
+    let fixture = ProcessFixture::new()?;
+    fs::remove_file(&fixture.config_path)?;
+    let mut child = fixture.spawn()?;
+
+    // When: startup exits before the listener can accept connections.
+    let error = wait_for_listener(fixture.address, &mut child)
+        .await
+        .expect_err("missing config must stop Controller startup");
+
+    // Then: the process status and typed startup reason remain visible to the test failure.
+    let message = error.to_string();
+    assert!(message.contains("exit status: 1"), "{message}");
+    assert!(
+        message.contains("configuration file is missing or invalid"),
+        "{message}"
+    );
+    Ok(())
 }
 
 async fn exercise_shutdown(fixture: &ProcessFixture, child: &mut Child) -> TestResult {
@@ -172,8 +195,13 @@ async fn wait_for_listener(address: SocketAddr, child: &mut Child) -> TestResult
                 return Ok(());
             }
             if let Some(status) = child.try_wait()? {
+                let mut stderr = String::new();
+                if let Some(mut child_stderr) = child.stderr.take() {
+                    child_stderr.read_to_string(&mut stderr).await?;
+                }
                 return Err(std::io::Error::other(format!(
-                    "Controller exited before accepting connections: {status}"
+                    "Controller exited before accepting connections: {status}; stderr: {}",
+                    stderr.trim()
                 )));
             }
             tokio::task::yield_now().await;
