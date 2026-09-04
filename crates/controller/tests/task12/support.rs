@@ -1,24 +1,17 @@
-use std::collections::BTreeMap;
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use chrono::{DateTime, TimeZone, Utc};
-use serde_json::Value;
 use tempfile::TempDir;
 use videnoa_controller::config::PathConfig;
 use videnoa_controller::domain::{
-    AttemptId, ComputeSlots, InputExtension, InputPath, OutputExtension, OutputPath, RemoteJobId,
-    SourceReference, SubmissionKey, TaskCreateRequest, TaskId, TaskSource, WorkerApiUrl,
-    WorkerCapabilities, WorkerId, WorkerName, WorkflowKind, WorkflowName, WorkflowSummary,
-};
-use videnoa_controller::lifecycle::{
-    AdvanceCommand, JitterSample, LifecycleService, ReserveCommand, SubmissionEvidence,
+    AttemptId, ComputeSlots, RemoteJobId, TaskId, WorkerApiUrl, WorkerCapabilities, WorkerId,
+    WorkerName, WorkflowKind, WorkflowName, WorkflowSummary,
 };
 use videnoa_controller::paths::PathCapabilities;
 use videnoa_controller::persistence::{
-    Database, DatabaseOptions, InputContentIdentity, InputIdentity, NewTask, NewWorker, Store,
-    TaskRecord, WorkerHealthUpdate,
+    Database, DatabaseOptions, NewWorker, Store, TaskRecord, WorkerHealthUpdate,
 };
 use videnoa_controller::remote::{PayloadLimits, RemoteTimeouts, VidenoaClient};
 use videnoa_controller::scheduler::{
@@ -26,6 +19,11 @@ use videnoa_controller::scheduler::{
 };
 
 use crate::mock_videnoa::server::MockVidenoa;
+
+#[path = "support/artifact_paths.rs"]
+mod artifact_paths;
+#[path = "support/task_lifecycle.rs"]
+mod task_lifecycle;
 
 pub type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -41,6 +39,22 @@ pub struct Fixture {
     pub output_root: PathBuf,
     pub temp_root: PathBuf,
     server_url: WorkerApiUrl,
+}
+
+pub fn zero_jitter() -> TestResult<videnoa_controller::lifecycle::JitterSample> {
+    artifact_paths::zero_jitter()
+}
+
+pub fn verified_path(root: &Path, task_id: TaskId) -> PathBuf {
+    artifact_paths::verified_path(root, task_id)
+}
+
+pub fn part_path(root: &Path, task_id: TaskId) -> PathBuf {
+    artifact_paths::part_path(root, task_id)
+}
+
+pub fn evidence_path(root: &Path, task_id: TaskId) -> PathBuf {
+    artifact_paths::evidence_path(root, task_id)
 }
 
 pub struct PreparedTask {
@@ -159,7 +173,6 @@ impl Fixture {
                 coordinator: self.coordinator.clone(),
             },
             TransferConfig {
-                temp_root: self.temp_root.clone(),
                 payload_limits: PayloadLimits::new(1024 * 1024, 4096)?,
                 runtime_settings: RuntimeSettings::new(
                     &videnoa_controller::domain::TimeoutSettingsDto {
@@ -175,137 +188,6 @@ impl Fixture {
                 )?,
             },
         ))
-    }
-
-    pub async fn reserved_task(&self, input_bytes: Vec<u8>) -> TestResult<PreparedTask> {
-        let task_id = TaskId::random();
-        let input_path = self.input_root.join(format!("{task_id}.mkv"));
-        tokio::fs::write(&input_path, &input_bytes).await?;
-        let rooted = self.paths.open_input(&input_path)?;
-        let attempt_id = AttemptId::random();
-        self.store
-            .insert_task(&NewTask {
-                id: task_id,
-                request: TaskCreateRequest {
-                    input_path: InputPath::new(path_string(&input_path)?),
-                    output_path: OutputPath::new(path_string(
-                        &self.output_root.join(format!("{task_id}.mp4")),
-                    )?),
-                    workflow: WorkflowName::new("eligible-workflow.json"),
-                    priority: 10,
-                    source: TaskSource::Api,
-                    source_reference: Some(SourceReference::new("task-12")),
-                },
-                input_extension: InputExtension::new("mkv"),
-                output_extension: OutputExtension::new("mp4"),
-                input_size: rooted.snapshot().length,
-                input_mtime: DateTime::<Utc>::from(rooted.snapshot().modified),
-                input_identity: InputIdentity::new(rooted.snapshot().platform_identity()),
-                input_content_identity: InputContentIdentity::new(
-                    rooted.snapshot().content_identity(),
-                ),
-                created_at: self.now,
-            })
-            .await?;
-        LifecycleService::new(self.store.clone())
-            .reserve(&ReserveCommand {
-                task_id,
-                expected_task_version: 0,
-                worker_id: self.worker_id,
-                attempt_id,
-                submission_key: SubmissionKey::random(),
-                reserved_at: self.now,
-            })
-            .await?;
-        Ok(PreparedTask {
-            task_id,
-            attempt_id,
-        })
-    }
-
-    pub async fn remote_completed(
-        &self,
-        server: &MockVidenoa,
-        output_bytes: &[u8],
-    ) -> TestResult<PreparedTask> {
-        let prepared = self.reserved_task(vec![7_u8; 20_000]).await?;
-        let executor = self.executor()?;
-        let upload = executor
-            .upload(prepared.task_id, self.now, JitterSample::try_from(0)?)
-            .await?;
-        let evidence = match upload {
-            videnoa_controller::scheduler::UploadOutcome::Staged(evidence) => evidence,
-            other => {
-                return Err(std::io::Error::other(format!("unexpected upload: {other:?}")).into())
-            }
-        };
-        let service = LifecycleService::new(self.store.clone());
-        self.advance(
-            prepared.task_id,
-            prepared.attempt_id,
-            AdvanceCommand::StartSubmission,
-        )
-        .await?;
-        let attempt = self.attempt(prepared.attempt_id).await?;
-        let params = BTreeMap::from([
-            (
-                "input".to_owned(),
-                Value::String(evidence.remote_input_path.as_str().to_owned()),
-            ),
-            (
-                "output".to_owned(),
-                Value::String(evidence.remote_output_path.as_str().to_owned()),
-            ),
-        ]);
-        let submitted = self
-            .client()?
-            .run(
-                &WorkflowName::new("eligible-workflow.json"),
-                attempt.attempt.submission_key,
-                &params,
-            )
-            .await?;
-        self.advance(
-            prepared.task_id,
-            prepared.attempt_id,
-            AdvanceCommand::PersistSubmission(SubmissionEvidence {
-                remote_job_id: submitted.receipt.id,
-                remote_input_path: evidence.remote_input_path,
-                remote_output_path: evidence.remote_output_path,
-            }),
-        )
-        .await?;
-        server
-            .complete_job(
-                &submitted.receipt.id.to_string(),
-                &format!("{}/output.mp4", prepared.task_id),
-                output_bytes,
-            )
-            .await?;
-        let task = self.task(prepared.task_id).await?;
-        let attempt = self.attempt(prepared.attempt_id).await?;
-        service
-            .advance(&task, &attempt, AdvanceCommand::FinishProcessing, self.now)
-            .await?;
-        Ok(prepared)
-    }
-
-    pub async fn mark_uploading(&self, prepared: &PreparedTask) -> TestResult {
-        self.advance(
-            prepared.task_id,
-            prepared.attempt_id,
-            AdvanceCommand::StartUpload,
-        )
-        .await
-    }
-
-    pub async fn mark_downloading(&self, prepared: &PreparedTask) -> TestResult {
-        self.advance(
-            prepared.task_id,
-            prepared.attempt_id,
-            AdvanceCommand::StartDownload,
-        )
-        .await
     }
 
     pub async fn task(&self, task_id: TaskId) -> TestResult<TaskRecord> {
@@ -344,36 +226,4 @@ impl Fixture {
             .remote_job_id
             .ok_or_else(|| std::io::Error::other("remote job missing").into())
     }
-
-    async fn advance(
-        &self,
-        task_id: TaskId,
-        attempt_id: AttemptId,
-        command: AdvanceCommand,
-    ) -> TestResult {
-        let task = self.task(task_id).await?;
-        let attempt = self.attempt(attempt_id).await?;
-        LifecycleService::new(self.store.clone())
-            .advance(&task, &attempt, command, self.now)
-            .await?;
-        Ok(())
-    }
-}
-
-pub fn zero_jitter() -> TestResult<JitterSample> {
-    Ok(JitterSample::try_from(0)?)
-}
-
-pub fn verified_path(root: &Path, task_id: TaskId) -> PathBuf {
-    root.join(task_id.to_string()).join("output.mp4.verified")
-}
-
-pub fn part_path(root: &Path, task_id: TaskId) -> PathBuf {
-    root.join(task_id.to_string()).join("output.mp4.part")
-}
-
-fn path_string(path: &Path) -> TestResult<String> {
-    path.to_str()
-        .map(str::to_owned)
-        .ok_or_else(|| std::io::Error::other("test path is not UTF-8").into())
 }
