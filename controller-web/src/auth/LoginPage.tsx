@@ -1,36 +1,46 @@
 import { LockKeyhole } from "lucide-react"
-import { type FormEvent, useEffect, useRef, useState } from "react"
+import { type FormEvent, useLayoutEffect, useRef, useState } from "react"
 
 import type { LoginResult } from "./useSessionController"
+import "./auth.css"
 
 type LoginPageProps = {
   readonly login: (password: string) => Promise<LoginResult>
 }
 
+type LoginError = Extract<LoginResult, { readonly ok: false }> & { readonly generation: number }
+
+const loginErrorId = "login-error-summary"
+
 export function LoginPage({ login }: LoginPageProps) {
   const [password, setPassword] = useState("")
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<LoginError | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const alertRef = useRef<HTMLDivElement>(null)
   const passwordRef = useRef<HTMLInputElement>(null)
+  const submitGenerationRef = useRef(0)
 
-  useEffect(() => passwordRef.current?.focus(), [])
+  useLayoutEffect(() => {
+    passwordRef.current?.focus()
+    return () => {
+      submitGenerationRef.current += 1
+    }
+  }, [])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (error !== null) alertRef.current?.focus()
   }, [error])
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    const generation = submitGenerationRef.current + 1
+    submitGenerationRef.current = generation
     setError(null)
     setSubmitting(true)
     const result = await login(password)
+    if (generation !== submitGenerationRef.current || result.ok) return
     setSubmitting(false)
-    if (result.ok) {
-      setPassword("")
-      return
-    }
-    setError(result.message)
+    setError({ ...result, generation })
   }
 
   return (
@@ -48,8 +58,8 @@ export function LoginPage({ login }: LoginPageProps) {
 
         <form className="login-form" onSubmit={handleSubmit}>
           {error === null ? null : (
-            <div className="error-summary" role="alert" tabIndex={-1} ref={alertRef}>
-              {error}
+            <div id={loginErrorId} className="error-summary" role="alert" tabIndex={-1} ref={alertRef}>
+              {error.message}
             </div>
           )}
           <label htmlFor="controller-password">Controller password</label>
@@ -61,6 +71,8 @@ export function LoginPage({ login }: LoginPageProps) {
               autoComplete="current-password"
               ref={passwordRef}
               value={password}
+              aria-invalid={error?.kind === "invalid_credentials" ? true : undefined}
+              aria-describedby={error?.kind === "invalid_credentials" ? loginErrorId : undefined}
               onChange={(event) => setPassword(event.currentTarget.value)}
               disabled={submitting}
               required

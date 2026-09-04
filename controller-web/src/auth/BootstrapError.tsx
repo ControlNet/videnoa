@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react"
+import { useLayoutEffect, useRef } from "react"
 
 type BootstrapErrorProps = {
   readonly message: string
@@ -8,7 +8,7 @@ type BootstrapErrorProps = {
 export function BootstrapError({ message, retry }: BootstrapErrorProps) {
   const alertRef = useRef<HTMLDivElement>(null)
 
-  useEffect(() => alertRef.current?.focus(), [])
+  useLayoutEffect(() => alertRef.current?.focus(), [])
 
   return (
     <main className="login-page">

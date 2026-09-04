@@ -1,0 +1,4 @@
+.login-panel .error-summary:focus {
+  outline: 3px solid var(--color-accent);
+  outline-offset: var(--space-1);
+}
