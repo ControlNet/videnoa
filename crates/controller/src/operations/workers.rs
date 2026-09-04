@@ -11,7 +11,7 @@ use crate::domain::{
 };
 use crate::persistence::WorkerRecord;
 
-use super::error::OperationsError;
+use super::request_failure::OperationsError;
 use super::OperationsState;
 
 #[derive(Deserialize)]
