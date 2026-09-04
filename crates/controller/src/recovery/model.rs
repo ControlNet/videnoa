@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::domain::TaskId;
@@ -6,9 +5,9 @@ use crate::remote::{PayloadLimits, RemoteTimeouts};
 
 use super::RecoveryCommandKind;
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct RecoveryConfig {
-    pub(crate) temp_root: PathBuf,
+    pub(crate) paths: crate::paths::PathCapabilities,
     pub(crate) timeouts: RemoteTimeouts,
     pub(crate) limits: PayloadLimits,
     pub(crate) health_initial: Duration,
@@ -19,7 +18,7 @@ pub struct RecoveryConfig {
 impl RecoveryConfig {
     #[must_use]
     pub fn new(
-        temp_root: PathBuf,
+        paths: crate::paths::PathCapabilities,
         timeouts: RemoteTimeouts,
         limits: PayloadLimits,
         health_initial: Duration,
@@ -27,7 +26,7 @@ impl RecoveryConfig {
         health_max_attempts: u32,
     ) -> Self {
         Self {
-            temp_root,
+            paths,
             timeouts,
             limits,
             health_initial,
