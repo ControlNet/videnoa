@@ -1,8 +1,9 @@
-use std::path::{Path, PathBuf};
+use std::io::Read;
 
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+use crate::paths::{TempArtifact, TempWorkspace};
 use crate::persistence::Sha256Digest;
 use crate::remote::{FileApiPath, VidenoaClient};
 
@@ -13,7 +14,7 @@ const EVIDENCE_BYTES: usize = 40;
 pub(super) struct DownloadArtifact<'a> {
     pub client: &'a VidenoaClient,
     pub remote_path: &'a FileApiPath,
-    pub directory: PathBuf,
+    pub workspace: TempWorkspace,
     pub extension: &'a str,
     pub expected_size: u64,
 }
@@ -21,20 +22,16 @@ pub(super) struct DownloadArtifact<'a> {
 pub(super) async fn download_artifact(
     request: DownloadArtifact<'_>,
 ) -> Result<VerifiedArtifact, TransferError> {
-    tokio::fs::create_dir_all(&request.directory).await?;
     let part = request
-        .directory
-        .join(format!("output.{}.part", request.extension));
+        .workspace
+        .artifact(format!("output.{}.part", request.extension))?;
     let verified = request
-        .directory
-        .join(format!("output.{}.verified", request.extension));
-    let evidence = evidence_path(&verified);
-    let file = tokio::fs::OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(&part)
-        .await?;
+        .workspace
+        .artifact(format!("output.{}.verified", request.extension))?;
+    let evidence = request
+        .workspace
+        .artifact(format!("output.{}.verified.evidence", request.extension))?;
+    let file = tokio::fs::File::from_std(part.create_truncated()?.into_std());
     let mut writer = HashingWriter::new(file);
     if let Err(error) = request
         .client
@@ -42,126 +39,109 @@ pub(super) async fn download_artifact(
         .await
     {
         drop(writer);
-        remove_owned(&part).await?;
+        part.remove()?;
         return Err(error.into());
     }
     writer.flush().await?;
     let (file, size, sha256) = writer.finish();
     if size != request.expected_size {
         drop(file);
-        remove_owned(&part).await?;
+        part.remove()?;
         return Err(TransferError::Conflict);
     }
     file.sync_all().await?;
     write_evidence(&evidence, size, sha256).await?;
-    Box::pin(install_verified(&part, &verified, size, sha256)).await?;
+    install_verified(&part, &verified, size, sha256).await?;
     Ok(VerifiedArtifact {
-        path: verified,
+        path: verified.display_path().to_path_buf(),
         size,
         sha256,
+        source: verified,
     })
 }
 
 pub(super) async fn recover_verified(
-    directory: &Path,
+    workspace: &TempWorkspace,
     extension: &str,
 ) -> Result<Option<VerifiedArtifact>, TransferError> {
-    let verified = directory.join(format!("output.{extension}.verified"));
-    let evidence = evidence_path(&verified);
-    let metadata = match tokio::fs::metadata(&verified).await {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            remove_owned(&evidence).await?;
-            return Ok(None);
-        }
-        Err(error) => return Err(error.into()),
+    let verified = workspace.artifact(format!("output.{extension}.verified"))?;
+    let evidence = workspace.artifact(format!("output.{extension}.verified.evidence"))?;
+    let Some((file, metadata)) = verified.open_read()? else {
+        evidence.remove()?;
+        return Ok(None);
     };
     let Some((size, sha256)) = read_evidence(&evidence).await? else {
         remove_invalid_verified(&verified, &evidence).await?;
         return Ok(None);
     };
-    let valid = metadata.is_file()
-        && size > 0
-        && metadata.len() == size
-        && hash_file(&verified).await? == sha256;
+    let valid = size > 0 && metadata.len() == size && hash_file(file).await? == sha256;
     if !valid {
         remove_invalid_verified(&verified, &evidence).await?;
         return Ok(None);
     }
     Ok(Some(VerifiedArtifact {
-        path: verified,
+        path: verified.display_path().to_path_buf(),
         size,
         sha256,
+        source: verified,
     }))
 }
 
-async fn remove_owned(path: &Path) -> Result<(), std::io::Error> {
-    match tokio::fs::remove_file(path).await {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
-    }
-}
-
-async fn remove_invalid_verified(verified: &Path, evidence: &Path) -> Result<(), std::io::Error> {
-    remove_owned(verified).await?;
-    remove_owned(evidence).await?;
-    sync_directory(parent(verified)?).await
+async fn remove_invalid_verified(
+    verified: &TempArtifact,
+    evidence: &TempArtifact,
+) -> Result<(), TransferError> {
+    verified.remove()?;
+    evidence.remove()?;
+    verified.sync_parent().await?;
+    Ok(())
 }
 
 async fn install_verified(
-    part: &Path,
-    verified: &Path,
+    part: &TempArtifact,
+    verified: &TempArtifact,
     size: u64,
     sha256: Sha256Digest,
-) -> Result<(), std::io::Error> {
-    match tokio::fs::metadata(verified).await {
-        Ok(metadata) => {
-            let matches = metadata.len() == size && Box::pin(hash_file(verified)).await? == sha256;
-            if matches {
-                remove_owned(part).await?;
-                return sync_directory(parent(verified)?).await;
-            }
-            remove_owned(verified).await?;
+) -> Result<(), TransferError> {
+    if let Some((file, metadata)) = verified.open_read()? {
+        let matches = metadata.len() == size && hash_file(file).await? == sha256;
+        if matches {
+            part.remove()?;
+            part.sync_parent().await?;
+            return Ok(());
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
+        verified.remove()?;
     }
-    tokio::fs::rename(part, verified).await?;
-    sync_directory(parent(verified)?).await
+    part.rename_to(verified).await?;
+    Ok(())
 }
 
 async fn write_evidence(
-    path: &Path,
+    evidence: &TempArtifact,
     size: u64,
     sha256: Sha256Digest,
-) -> Result<(), std::io::Error> {
+) -> Result<(), TransferError> {
     let mut bytes = [0_u8; EVIDENCE_BYTES];
     bytes[..8].copy_from_slice(&size.to_be_bytes());
     bytes[8..].copy_from_slice(sha256.as_bytes());
-    let mut file = tokio::fs::OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(path)
-        .await?;
+    let mut file = tokio::fs::File::from_std(evidence.create_truncated()?.into_std());
     file.write_all(&bytes).await?;
     file.sync_all().await?;
-    sync_directory(parent(path)?).await
+    evidence.sync_parent().await?;
+    Ok(())
 }
 
-async fn read_evidence(path: &Path) -> Result<Option<(u64, Sha256Digest)>, std::io::Error> {
-    let metadata = match tokio::fs::metadata(path).await {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error),
+async fn read_evidence(
+    evidence: &TempArtifact,
+) -> Result<Option<(u64, Sha256Digest)>, TransferError> {
+    let Some((file, metadata)) = evidence.open_read()? else {
+        return Ok(None);
     };
-    if !metadata.is_file() || metadata.len() != EVIDENCE_BYTES as u64 {
+    if metadata.len() != EVIDENCE_BYTES as u64 {
         return Ok(None);
     }
     let mut bytes = [0_u8; EVIDENCE_BYTES];
-    tokio::fs::File::open(path)
-        .await?
+    tokio::fs::File::from_std(file.into_std())
         .read_exact(&mut bytes)
         .await?;
     let mut size = [0_u8; 8];
@@ -171,102 +151,21 @@ async fn read_evidence(path: &Path) -> Result<Option<(u64, Sha256Digest)>, std::
     Ok(Some((u64::from_be_bytes(size), Sha256Digest::new(sha256))))
 }
 
-fn evidence_path(verified: &Path) -> PathBuf {
-    let mut path = verified.as_os_str().to_owned();
-    path.push(".evidence");
-    PathBuf::from(path)
-}
-
-async fn hash_file(path: &Path) -> Result<Sha256Digest, std::io::Error> {
-    let mut file = tokio::fs::File::open(path).await?;
-    let mut hasher = Sha256::new();
-    let mut buffer = vec![0_u8; 64 * 1024].into_boxed_slice();
-    loop {
-        let read = file.read(&mut buffer).await?;
-        if read == 0 {
-            break;
+async fn hash_file(file: cap_std::fs::File) -> Result<Sha256Digest, TransferError> {
+    tokio::task::spawn_blocking(move || {
+        let mut file = file;
+        let mut hasher = Sha256::new();
+        let mut buffer = vec![0_u8; 64 * 1024].into_boxed_slice();
+        loop {
+            let read = file.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..read]);
         }
-        hasher.update(&buffer[..read]);
-    }
-    Ok(Sha256Digest::new(hasher.finalize().into()))
-}
-
-fn parent(path: &Path) -> Result<&Path, std::io::Error> {
-    path.parent()
-        .ok_or_else(|| std::io::Error::other("verified artifact has no parent directory"))
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum DurabilityPolicy {
-    SyncDirectory,
-    SyncedFilesWithSameDirectoryRename,
-    Unsupported,
-}
-
-const fn durability_policy(is_unix: bool, is_windows: bool) -> DurabilityPolicy {
-    if is_unix {
-        DurabilityPolicy::SyncDirectory
-    } else if is_windows {
-        DurabilityPolicy::SyncedFilesWithSameDirectoryRename
-    } else {
-        DurabilityPolicy::Unsupported
-    }
-}
-
-#[cfg(unix)]
-const _: () = assert!(matches!(
-    durability_policy(true, false),
-    DurabilityPolicy::SyncDirectory
-));
-
-#[cfg(unix)]
-async fn sync_directory(path: &Path) -> Result<(), std::io::Error> {
-    let path = path.to_owned();
-    tokio::task::spawn_blocking(move || std::fs::File::open(path)?.sync_all())
-        .await
-        .map_err(std::io::Error::other)?
-}
-
-#[cfg(windows)]
-const _: () = assert!(matches!(
-    durability_policy(false, true),
-    DurabilityPolicy::SyncedFilesWithSameDirectoryRename
-));
-
-#[cfg(windows)]
-async fn sync_directory(_path: &Path) -> Result<(), std::io::Error> {
-    // Windows durability relies on each file's sync_all before its same-directory rename.
-    Ok(())
-}
-
-#[cfg(not(any(unix, windows)))]
-const _: () = assert!(matches!(
-    durability_policy(false, false),
-    DurabilityPolicy::Unsupported
-));
-
-#[cfg(not(any(unix, windows)))]
-async fn sync_directory(_path: &Path) -> Result<(), std::io::Error> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "durable directory synchronization is unsupported on this platform",
-    ))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{durability_policy, DurabilityPolicy};
-
-    #[test]
-    fn windows_is_supported_when_files_are_synced_before_same_directory_rename() {
-        // Given: the Windows durability boundary.
-        let is_unix = false;
-        let is_windows = true;
-
-        // When: the platform durability policy is selected.
-        let policy = durability_policy(is_unix, is_windows);
-
-        // Then: synced files and same-directory rename are a supported contract.
-        assert_eq!(policy, DurabilityPolicy::SyncedFilesWithSameDirectoryRename);
-    }
+        Ok::<_, std::io::Error>(Sha256Digest::new(hasher.finalize().into()))
+    })
+    .await
+    .map_err(std::io::Error::other)?
+    .map_err(Into::into)
 }

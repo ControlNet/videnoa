@@ -9,6 +9,7 @@ use chrono::{DateTime, Utc};
 use super::{
     download_artifact::{download_artifact, recover_verified, DownloadArtifact},
     DownloadOutcome, RetryResult, TransferCheckpointPoint, TransferError, TransferExecutor,
+    VerifiedArtifact,
 };
 
 impl TransferExecutor {
@@ -61,10 +62,10 @@ impl TransferExecutor {
             | TaskStatus::Failed
             | TaskStatus::Cancelled => return Err(TransferError::Conflict),
         }
-        let directory = self.config.temp_root.join(task.id.to_string());
-        let artifact = if let Some(artifact) =
-            recover_verified(&directory, task.output_extension.as_str()).await?
-        {
+        let Ok((workspace, recovered)) = self.recover_local_artifact(&task).await else {
+            return self.download_retry(&task, &attempt, now, jitter).await;
+        };
+        let artifact = if let Some(artifact) = recovered {
             artifact
         } else {
             let worker_id = attempt
@@ -96,7 +97,7 @@ impl TransferExecutor {
             let Ok(artifact) = Box::pin(download_artifact(DownloadArtifact {
                 client: &client,
                 remote_path: &remote_path,
-                directory,
+                workspace,
                 extension: task.output_extension.as_str(),
                 expected_size: stat.size,
             }))
@@ -119,7 +120,20 @@ impl TransferExecutor {
                 now,
             )
             .await?;
-        Ok(DownloadOutcome::Verified(artifact))
+        Ok(DownloadOutcome::Verified(Box::new(artifact)))
+    }
+
+    async fn recover_local_artifact(
+        &self,
+        task: &crate::persistence::TaskRecord,
+    ) -> Result<(crate::paths::TempWorkspace, Option<VerifiedArtifact>), TransferError> {
+        let workspace = self
+            .resources
+            .paths
+            .temp_workspace(task.id, true)?
+            .ok_or(TransferError::MissingEvidence)?;
+        let recovered = recover_verified(&workspace, task.output_extension.as_str()).await?;
+        Ok((workspace, recovered))
     }
 
     async fn download_ambiguity(

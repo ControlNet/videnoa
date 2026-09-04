@@ -12,7 +12,7 @@ use crate::paths::PathCapabilities;
 use crate::persistence::{Sha256Digest, Store};
 use crate::remote::PayloadLimits;
 
-use super::transfer_checkpoint::noop_observer;
+use super::checkpoints::noop_observer;
 use super::{
     TransferCheckpointObserver, TransferCheckpointPoint, TransferCoordinator, TransferError,
 };
@@ -26,7 +26,6 @@ pub struct TransferResources {
 
 #[derive(Clone, Debug)]
 pub struct TransferConfig {
-    pub temp_root: PathBuf,
     pub payload_limits: PayloadLimits,
     pub runtime_settings: super::RuntimeSettings,
 }
@@ -48,16 +47,17 @@ pub enum UploadOutcome {
     Failed,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone)]
 pub struct VerifiedArtifact {
     pub path: PathBuf,
     pub size: u64,
     pub sha256: Sha256Digest,
+    pub(crate) source: crate::paths::TempArtifact,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone)]
 pub enum DownloadOutcome {
-    Verified(VerifiedArtifact),
+    Verified(Box<VerifiedArtifact>),
     RetryScheduled {
         retry_count: u32,
         next_retry_at: DateTime<Utc>,
