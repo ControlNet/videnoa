@@ -52,7 +52,6 @@ async fn restart_at_transfer_checkpoint(point: TransferCheckpointPoint) -> TestR
     gate.wait().await?;
     let run_requests = assert_pre_crash_checkpoint(&fixture, &worker, &task, point).await?;
     fixture.crash().await?;
-    gate.release();
     fixture.restart().await?;
     assert_restarted_pipeline(&fixture, &worker, &task, b"enhanced-video").await?;
     assert_eq!(worker.counters().await.get(Route::Run), run_requests);
