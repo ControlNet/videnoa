@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::domain::{WorkflowKind, WorkflowName};
+use crate::domain::{WorkflowKind, WorkflowName, WorkflowSummary};
 
 use super::WorkflowInterface;
 
@@ -39,6 +39,18 @@ impl CompatibilityCatalog {
     #[must_use]
     pub fn entry(&self, name: &WorkflowName) -> Option<&CompatibilityEntry> {
         self.entries.get(name)
+    }
+
+    #[must_use]
+    pub fn eligible_workflows(&self) -> Vec<WorkflowSummary> {
+        self.entries
+            .iter()
+            .filter(|(_, entry)| entry.compatibility == Compatibility::Eligible)
+            .map(|(name, entry)| WorkflowSummary {
+                name: name.clone(),
+                kind: entry.kind,
+            })
+            .collect()
     }
 
     pub(crate) fn insert(

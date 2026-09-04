@@ -9,10 +9,9 @@ use videnoa_controller::auth::hash_password;
 use videnoa_controller::config::{AuthConfig, PathConfig};
 use videnoa_controller::domain::{
     ComputeSlots, InputPath, OutputPath, SourceReference, Task, TaskCreateRequest,
-    TaskDetailResponse, TaskSource, WorkerCapabilities, WorkerCreateRequest, WorkerSummary,
-    WorkflowKind, WorkflowName, WorkflowSummary,
+    TaskDetailResponse, TaskSource, WorkerCreateRequest, WorkerSummary, WorkflowName,
 };
-use videnoa_controller::persistence::{Database, DatabaseOptions, Store, WorkerHealthUpdate};
+use videnoa_controller::persistence::{Database, DatabaseOptions, Store};
 use videnoa_controller::scheduler::TransferCheckpointObserver;
 
 use crate::mock_videnoa::server::MockVidenoa;
@@ -140,6 +139,45 @@ impl ControllerFixture {
         server: &MockVidenoa,
         name: &str,
     ) -> TestResult<WorkerSummary> {
+        self.register_worker_enabled(server, name, true).await
+    }
+
+    pub async fn register_worker_enabled(
+        &self,
+        server: &MockVidenoa,
+        name: &str,
+        enabled: bool,
+    ) -> TestResult<WorkerSummary> {
+        let worker = self
+            .register_worker_without_wait(server, name, enabled)
+            .await?;
+        if enabled {
+            let worker_id = worker.id;
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    if self
+                        .store
+                        .worker(worker_id)
+                        .await?
+                        .is_some_and(|record| record.online)
+                    {
+                        return TestResult::Ok(());
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .map_err(|_| std::io::Error::other("worker did not become online"))??;
+        }
+        Ok(worker)
+    }
+
+    pub async fn register_worker_without_wait(
+        &self,
+        server: &MockVidenoa,
+        name: &str,
+        enabled: bool,
+    ) -> TestResult<WorkerSummary> {
         let response = self
             .client
             .post(format!("{}/api/workers", self.base_url))
@@ -147,7 +185,7 @@ impl ControllerFixture {
             .json(&WorkerCreateRequest {
                 name: videnoa_controller::domain::WorkerName::new(name),
                 api_url: videnoa_controller::domain::WorkerApiUrl::parse(server.base_url())?,
-                enabled: true,
+                enabled,
                 compute_slots: ComputeSlots::try_from(1_u64)?,
             })
             .send()
@@ -157,28 +195,15 @@ impl ControllerFixture {
             reqwest::StatusCode::CREATED,
             "create worker",
         )?;
-        let worker = response.json::<WorkerSummary>().await?;
-        let now = chrono::Utc::now();
-        self.store
-            .update_worker_health(&WorkerHealthUpdate {
-                id: worker.id,
-                expected_version: worker.version,
-                online: true,
-                capabilities: WorkerCapabilities {
-                    workflows: vec![WorkflowSummary {
-                        name: WorkflowName::new("eligible-workflow.json"),
-                        kind: WorkflowKind::Workflow,
-                    }],
-                    refreshed_at: Some(now),
-                },
-                last_seen_at: Some(now),
-                health_retry_count: 0,
-                next_health_check_at: None,
-                last_error: None,
-                updated_at: now,
-            })
-            .await?;
-        Ok(worker)
+        Ok(response.json::<WorkerSummary>().await?)
+    }
+
+    pub async fn stop(mut self) -> TestResult {
+        let runtime = self
+            .runtime
+            .take()
+            .ok_or_else(|| std::io::Error::other("Controller runtime is not running"))?;
+        runtime.stop().await
     }
 
     pub async fn create_task(&self, name: &str, input: &[u8]) -> TestResult<Task> {

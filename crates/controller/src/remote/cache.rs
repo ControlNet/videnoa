@@ -82,6 +82,11 @@ impl<C: MonotonicClock> CapabilityCache<C> {
         );
     }
 
+    #[must_use]
+    pub fn catalog(&mut self, worker: &WorkerApiUrl) -> Option<CompatibilityCatalog> {
+        self.cached(worker).cloned()
+    }
+
     pub fn invalidate(&mut self, worker: &WorkerApiUrl, reason: CacheInvalidation) {
         match reason {
             CacheInvalidation::HealthFailure

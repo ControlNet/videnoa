@@ -17,6 +17,7 @@ use videnoa_controller::scheduler::{
     Scheduler, TransferCheckpointObserver, TransferConfig, TransferExecutor, TransferResources,
 };
 use videnoa_controller::tasks::TaskService;
+use videnoa_controller::workers::WorkerHealthService;
 use videnoa_controller::{controller_app_router, FrontendAssets};
 
 use super::TestResult;
@@ -27,6 +28,8 @@ pub(super) struct ControllerRuntime {
     task: tokio::task::JoinHandle<Result<(), std::io::Error>>,
     orchestration:
         tokio::task::JoinHandle<Result<(), videnoa_controller::orchestration::OrchestrationError>>,
+    worker_health:
+        tokio::task::JoinHandle<Result<(), videnoa_controller::workers::WorkerHealthError>>,
     coordinator: ShutdownCoordinator,
 }
 
@@ -52,6 +55,7 @@ pub(super) async fn start_runtime(
     };
     let settings = store.settings().await?;
     let mut runtime_timeouts = settings.timeouts;
+    runtime_timeouts.health_seconds = 1;
     runtime_timeouts.poll_seconds = 1;
     scheduler
         .update_settings(SettingsUpdate {
@@ -76,7 +80,6 @@ pub(super) async fn start_runtime(
             coordinator: scheduler.transfers().clone(),
         },
         TransferConfig {
-            temp_root: path_config.temp_root.clone(),
             payload_limits,
             runtime_settings: scheduler.runtime_settings().clone(),
         },
@@ -87,7 +90,7 @@ pub(super) async fn start_runtime(
     let mut reconciler = Reconciler::new(
         store.clone(),
         RecoveryConfig::new(
-            path_config.temp_root.clone(),
+            paths.clone(),
             remote_timeouts,
             payload_limits,
             config.retry.initial,
@@ -107,6 +110,13 @@ pub(super) async fn start_runtime(
         shutdown.clone(),
         &events,
     );
+    let worker_health = WorkerHealthService::new(
+        store.clone(),
+        scheduler.runtime_settings().clone(),
+        payload_limits,
+        shutdown.clone(),
+        &events,
+    );
     let operations = OperationsState::new(OperationsDependencies {
         auth: auth.clone(),
         store: store.clone(),
@@ -118,13 +128,14 @@ pub(super) async fn start_runtime(
     });
     let tasks = TaskService::new(store.clone(), paths);
     let router = controller_app_router(&assets(root)?, auth, tasks, operations);
-    ControllerRuntime::start(router, orchestrator, shutdown).await
+    ControllerRuntime::start(router, orchestrator, worker_health, shutdown).await
 }
 
 impl ControllerRuntime {
     async fn start(
         router: axum::Router,
         orchestrator: Orchestrator,
+        worker_health: WorkerHealthService,
         coordinator: ShutdownCoordinator,
     ) -> TestResult<Self> {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
@@ -145,15 +156,34 @@ impl ControllerRuntime {
             shutdown: Some(shutdown),
             task,
             orchestration: tokio::spawn(orchestrator.run()),
+            worker_health: tokio::spawn(worker_health.run()),
             coordinator,
         })
     }
 
     pub(super) async fn crash(mut self) {
         self.orchestration.abort();
+        self.worker_health.abort();
         self.task.abort();
         let _ = (&mut self.orchestration).await;
+        let _ = (&mut self.worker_health).await;
         let _ = (&mut self.task).await;
+    }
+
+    pub(super) async fn stop(mut self) -> TestResult {
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
+        }
+        self.coordinator.stop_stage_intake();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            (&mut self.task).await??;
+            (&mut self.orchestration).await??;
+            (&mut self.worker_health).await??;
+            TestResult::Ok(())
+        })
+        .await
+        .map_err(|_| std::io::Error::other("Controller runtime did not stop"))??;
+        Ok(())
     }
 
     pub(super) async fn wait_for_orchestration_error(
@@ -176,6 +206,7 @@ impl Drop for ControllerRuntime {
         }
         self.coordinator.stop_stage_intake();
         self.orchestration.abort();
+        self.worker_health.abort();
         self.task.abort();
     }
 }
