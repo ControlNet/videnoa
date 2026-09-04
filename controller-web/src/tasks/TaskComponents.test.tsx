@@ -99,11 +99,23 @@ describe("task surface accessibility", () => {
     // When: late layout growth extends the scroll range after reaching the right edge.
     setScrollGeometry(frame, { clientWidth: 400, scrollWidth: 820 })
     setScrollGeometry(table, { clientWidth: 810, scrollWidth: 810, offsetWidth: 810 })
+    fireEvent.scroll(frame)
     act(() => notifyResize?.([], {} as ResizeObserver))
 
-    // Then: the explicit edge position remains anchored and unavailable.
+    // Then: a scroll notification delivered before resize cannot clear explicit edge intent.
     expect(frame.scrollLeft).toBe(420)
     expect(right).toBeDisabled()
+
+    // When: the user moves left while another layout change extends the range.
+    frame.scrollLeft = 419.5
+    setScrollGeometry(frame, { clientWidth: 400, scrollWidth: 830 })
+    setScrollGeometry(table, { clientWidth: 820, scrollWidth: 820, offsetWidth: 820 })
+    fireEvent.scroll(frame)
+    act(() => notifyResize?.([], {} as ResizeObserver))
+
+    // Then: even sub-tolerance user movement clears sticky edge intent before anchoring.
+    expect(frame.scrollLeft).toBe(419.5)
+    expect(right).not.toBeDisabled()
 
     // When: the resized table no longer overflows.
     setScrollGeometry(frame, { clientWidth: 800, scrollWidth: 810 })
@@ -136,6 +148,123 @@ describe("task surface accessibility", () => {
     // Then: navigation remains discoverable despite the frame's reserved gutter.
     expect(screen.getByRole("navigation", { name: "Task table horizontal navigation" })).toBeInTheDocument()
     expect(frame).toHaveAttribute("tabindex", "0")
+  })
+
+  it("does not infer right-edge intent from initial layout growth", () => {
+    // Given: an overflowing table that has never been horizontally navigated.
+    let notifyResize: ResizeObserverCallback | null = null
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: ResizeObserverCallback) { notifyResize = callback }
+      observe(): void {}
+      disconnect(): void {}
+    })
+    render(<TaskTable page={null} columns={[]} loading />)
+    const frame = screen.getByRole("region", { name: "Scrollable task results" })
+    const table = screen.getByRole("table")
+    setScrollGeometry(frame, { clientWidth: 400, scrollWidth: 410 })
+    setScrollGeometry(table, { clientWidth: 401, scrollWidth: 401, offsetWidth: 401 })
+    act(() => notifyResize?.([], {} as ResizeObserver))
+
+    // When: layout growth extends the range without user navigation.
+    setScrollGeometry(frame, { clientWidth: 400, scrollWidth: 420 })
+    setScrollGeometry(table, { clientWidth: 411, scrollWidth: 411, offsetWidth: 411 })
+    fireEvent.scroll(frame)
+    act(() => notifyResize?.([], {} as ResizeObserver))
+
+    // Then: the table remains at its initial left edge.
+    expect(frame.scrollLeft).toBe(0)
+  })
+
+  it("preserves explicit End intent from the smallest effective range", () => {
+    // Given: one pixel of table overflow inside a ten-pixel stable scrollbar gutter.
+    let notifyResize: ResizeObserverCallback | null = null
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: ResizeObserverCallback) { notifyResize = callback }
+      observe(): void {}
+      disconnect(): void {}
+    })
+    render(<TaskTable page={null} columns={[]} loading />)
+    const frame = screen.getByRole("region", { name: "Scrollable task results" })
+    const table = screen.getByRole("table")
+    setScrollGeometry(frame, { clientWidth: 400, scrollWidth: 410, offsetWidth: 410 })
+    setScrollGeometry(table, { clientWidth: 401, scrollWidth: 401, offsetWidth: 401 })
+    act(() => notifyResize?.([], {} as ResizeObserver))
+    frame.focus()
+    fireEvent.keyDown(frame, { key: "End" })
+
+    // When: later layout growth extends the effective range.
+    setScrollGeometry(frame, { clientWidth: 400, scrollWidth: 420, offsetWidth: 410 })
+    setScrollGeometry(table, { clientWidth: 411, scrollWidth: 411, offsetWidth: 411 })
+    fireEvent.scroll(frame)
+    act(() => notifyResize?.([], {} as ResizeObserver))
+
+    // Then: explicit keyboard intent remains anchored at the new edge.
+    expect(frame.scrollLeft).toBe(20)
+  })
+
+  it("preserves explicit End intent issued before task rows create overflow", () => {
+    // Given: the loading table exists, but its task rows have not created overflow yet.
+    let notifyResize: ResizeObserverCallback | null = null
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: ResizeObserverCallback) { notifyResize = callback }
+      observe(): void {}
+      disconnect(): void {}
+    })
+    render(<TaskTable page={null} columns={[]} loading />)
+    const frame = screen.getByRole("region", { name: "Scrollable task results" })
+    const table = screen.getByRole("table")
+    setScrollGeometry(frame, { clientWidth: 400, scrollWidth: 400 })
+    setScrollGeometry(table, { clientWidth: 400, scrollWidth: 400, offsetWidth: 400 })
+    act(() => notifyResize?.([], {} as ResizeObserver))
+    frame.focus()
+
+    // When: End is pressed before asynchronous task rows expand the table.
+    fireEvent.keyDown(frame, { key: "End" })
+    expect(screen.queryByRole("navigation", { name: "Task table horizontal navigation" })).not.toBeInTheDocument()
+    setScrollGeometry(frame, { clientWidth: 400, scrollWidth: 820 })
+    setScrollGeometry(table, { clientWidth: 820, scrollWidth: 820, offsetWidth: 820 })
+    act(() => notifyResize?.([], {} as ResizeObserver))
+
+    // Then: the committed intent reaches the new edge without exposing two enabled controls.
+    expect(frame.scrollLeft).toBe(420)
+    expect(screen.getByRole("button", { name: "Scroll task table left" })).not.toBeDisabled()
+    expect(screen.getByRole("button", { name: "Scroll task table right" })).toBeDisabled()
+  })
+
+  it("preserves explicit End intent through initial edge contraction and restoration", () => {
+    // Given: End has reached the right edge while initial layout observers are still active.
+    let notifyResize: ResizeObserverCallback | null = null
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: ResizeObserverCallback) { notifyResize = callback }
+      observe(): void {}
+      disconnect(): void {}
+    })
+    render(<TaskTable page={null} columns={[]} loading />)
+    const frame = screen.getByRole("region", { name: "Scrollable task results" })
+    const table = screen.getByRole("table")
+    setScrollGeometry(frame, { clientWidth: 400, scrollWidth: 820 })
+    setScrollGeometry(table, { clientWidth: 820, scrollWidth: 820, offsetWidth: 820 })
+    act(() => notifyResize?.([], {} as ResizeObserver))
+    frame.focus()
+    fireEvent.keyDown(frame, { key: "End" })
+    const left = screen.getByRole("button", { name: "Scroll task table left" })
+    const right = screen.getByRole("button", { name: "Scroll task table right" })
+    expect(right).toBeDisabled()
+
+    // When: initial layout contracts the range and clamps the edge, then restores it.
+    frame.scrollLeft = 416
+    setScrollGeometry(frame, { clientWidth: 400, scrollWidth: 816 })
+    setScrollGeometry(table, { clientWidth: 816, scrollWidth: 816, offsetWidth: 816 })
+    fireEvent.scroll(frame)
+    act(() => notifyResize?.([], {} as ResizeObserver))
+    setScrollGeometry(frame, { clientWidth: 400, scrollWidth: 820 })
+    setScrollGeometry(table, { clientWidth: 820, scrollWidth: 820, offsetWidth: 820 })
+    act(() => notifyResize?.([], {} as ResizeObserver))
+
+    // Then: observer-owned geometry activity keeps the frame at the rendered edge.
+    expect(frame.scrollLeft).toBe(420)
+    expect(left).not.toBeDisabled()
+    expect(right).toBeDisabled()
   })
 })
 
