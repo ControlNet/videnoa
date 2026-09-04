@@ -16,5 +16,7 @@ mod download_recovery;
 mod recovery_dispatch;
 #[path = "task12/support.rs"]
 mod support;
+#[path = "task12/temp_security.rs"]
+mod temp_security;
 #[path = "task12/upload.rs"]
 mod upload;
