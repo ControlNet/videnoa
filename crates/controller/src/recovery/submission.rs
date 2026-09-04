@@ -8,7 +8,8 @@ use crate::lifecycle::{
 use crate::persistence::{AttemptRecord, TaskRecord};
 use crate::remote::{FileApiPath, VidenoaClient, VidenoaClientError};
 
-use super::paths::submission_params;
+use super::paths::{remote_paths, submission_params};
+use super::submission_ownership::SubmissionOwnership;
 use super::{Reconciler, RecoveryCommandKind, RecoveryError, RecoveryReport, StagePermit};
 
 impl Reconciler {
@@ -39,7 +40,6 @@ impl Reconciler {
                 .await?
                 .ok_or(RecoveryError::MissingAttempt)?;
         }
-        let (input, output) = remote_paths(&attempt)?;
         self.checkpoint(crate::scheduler::TransferCheckpointPoint::BeforeRemoteSubmit)
             .await;
         let scheduler = crate::scheduler::Scheduler::load(self.store.clone()).await?;
@@ -47,6 +47,11 @@ impl Reconciler {
             report.defer(task.id);
             return Ok(());
         };
+        if self.claim_submission(&mut attempt, now).await? == SubmissionOwnership::Owned {
+            report.defer(task.id);
+            return Ok(());
+        }
+        let (input, output) = remote_paths(&attempt)?;
         let submitted = match client
             .run(
                 &task.request.workflow,
@@ -126,12 +131,16 @@ impl Reconciler {
     async fn cancel_submission(
         &self,
         task: TaskRecord,
-        attempt: AttemptRecord,
+        mut attempt: AttemptRecord,
         client: &VidenoaClient,
         now: DateTime<Utc>,
         stage: &StagePermit,
         report: &mut RecoveryReport,
     ) -> Result<(), RecoveryError> {
+        if self.claim_submission(&mut attempt, now).await? == SubmissionOwnership::Owned {
+            report.defer(task.id);
+            return Ok(());
+        }
         let (input, output) = remote_paths(&attempt)?;
         let reconciliation = match client
             .run(
@@ -231,20 +240,4 @@ impl Reconciler {
         report.push(task.id, RecoveryCommandKind::Terminal);
         Ok(())
     }
-}
-
-fn remote_paths(
-    attempt: &AttemptRecord,
-) -> Result<(&crate::domain::RemotePath, &crate::domain::RemotePath), RecoveryError> {
-    let input = attempt
-        .attempt
-        .remote_input_path
-        .as_ref()
-        .ok_or(RecoveryError::MissingRemoteEvidence)?;
-    let output = attempt
-        .attempt
-        .remote_output_path
-        .as_ref()
-        .ok_or(RecoveryError::MissingRemoteEvidence)?;
-    Ok((input, output))
 }
