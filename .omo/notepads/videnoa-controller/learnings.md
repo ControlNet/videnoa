@@ -347,3 +347,48 @@
 - SSE documentation is correct only when it distinguishes the initial and
   lagged `refetch` signal from durable SQLite/API truth and keeps attempt history
   on server-paginated HTTP responses.
+
+## 2026-09-04 F4-B3 Legacy Linux Package Remediation
+
+- p7zip 16.02 exit code 2 is a fatal operation error, while bad command-line parameters use exit 7. The hosted log reached input scanning and archive creation before `System ERROR: E_FAIL`, so argument order, quoting, cwd, missing input, and initial output-path resolution were not the cause.
+- The legacy bundle is about 5.33 GB but compresses to about 2.29 GB. GitHub-hosted Linux guarantees only 14 GB free, so post-build cache reclamation plus a conservative full-input-size disk preflight avoids image-dependent archive headroom failures.
+- Split archive verification must enter through `.7z.001`, while the same helper can preserve the existing unsplit `.7z` fallback. `7z t` proves integrity before `7z l` checks the `videnoa/` root.
+
+## 2026-09-04 F4-B2 Auth Focus Remediation
+
+- Recoverable async focus belongs in `useLayoutEffect` after React commits the current error generation; passive focus can remain on the password field under hosted scheduling.
+- A monotonically increasing submit generation prevents stale or post-unmount login responses from rendering or stealing focus while still refocusing repeated identical failures.
+- Authentication semantics must distinguish invalid credentials from transport or malformed-response recovery so only credential rejection marks and describes the password input as invalid.
+- Full-shell jsdom tests need a local `ResizeObserver` boundary after the task table adopted measured overflow; mirroring the task component test stub keeps browser-only API compatibility out of production code.
+
+## 2026-09-04 07:10:53 +10:00 F1-B1/F3-B1 Worker Health Remediation
+
+- Worker creation is only durable registration; a production-owned runtime must probe `/api/health`, discover capabilities, and persist the online transition before scheduling can select the worker.
+- Persisting health through `WorkerRegistry::refresh_health` emits the existing durable worker change, so capability discovery wakes queued scheduling without a separate in-memory notification path.
+- Failed probes should retain durable capabilities and last-seen evidence while marking the worker offline and advancing bounded backoff; successful probes replace eligible workflows and reset retry state.
+- Production-shaped tests must register workers through the authenticated API and wait for the runtime transition. Failure-path tests need a no-wait registration helper so they can observe the first offline result without injecting database state.
+
+## 2026-09-04 F3-B2 Task Overflow Remediation
+
+- Overflow affordance visibility and scroll-boundary disabling require different measurements: compare the rendered table `offsetWidth` to the frame `clientWidth` for actual content overflow, but use the frame scroll extent plus reserved scrollbar gutter for effective left/right boundaries.
+- Chromium with `scrollbar-gutter: stable` can stop about the gutter width before `scrollWidth - clientWidth`; treating that difference as content-overflow tolerance hides real small overflows, while treating it only as edge tolerance preserves both discoverability and correct disabled states.
+- A deterministic one-pixel overflow unit case prevents the reserved gutter from suppressing navigation, while production-preview browser coverage remains responsible for the actual effective scroll-end geometry.
+- Fresh fixed-viewport captures at 1440, 1024, and 375 pixels plus independent visual passes distinguish expected table-viewport clipping from document overflow, cell escape, or CJK glyph defects.
+
+## 2026-09-04 Rust 1.83 Clippy Compatibility
+
+- Clippy lint-group membership changes across toolchains: Rust 1.83 includes `module_name_repetitions` in `pedantic`, while the current toolchain does not enable it through the same group. A named package-level override can preserve stable strict-group policy without renaming public APIs.
+- Resolving the initial 95 repeated-module-name and 48 must-use diagnostics exposed five previously masked `let_and_return` findings in integration tests; cross-version lint remediation should iterate until the old-toolchain command is fully clean.
+- `PathCapabilities::open` requires every configured root to exist. Test fixtures must create `data_root` and `temp_root` as well as input/output roots before opening capabilities.
+
+## 2026-09-04 Rust 1.83 Clippy Compatibility Correction
+
+- A package-wide `module_name_repetitions` allowance is not an acceptable compatibility mechanism because it hides real diagnostics across the package. The accepted solution assigns responsibility-based logical names to implementation modules and retains established public paths through root façade modules.
+- Rust `#[path]` changes a module's logical name without moving the source file. This resolves repeated module/type naming while leaving Rust item names and serde, SQLx, Clap, HTTP, and database string contracts untouched.
+- Integration support files directly under `tests/` become standalone Cargo test targets. Shared fixture code must live below the owning test module, as in `tests/task_api/support.rs`, to avoid accidental public-target lint requirements.
+
+## 2026-09-04 Rust 1.83 Clippy LOC Completion
+
+- A complete NUL-safe changed-file audit is required after targeted size fixes; it found `mock_videnoa/recovery_support.rs` at 323 pure LOC, `task12/support.rs` at 360, and an additional `main.rs` boundary at 251 that earlier partial reports missed.
+- Test helpers loaded through `#[path]` need explicit child paths when their extracted sources live below a directory named after the parent file. This keeps nested support private without creating standalone integration targets.
+- Re-exporting test utilities can become an unused import when the shared parent is compiled into several integration targets. Thin root delegates preserve existing helper paths and satisfy strict Clippy without allowances.
