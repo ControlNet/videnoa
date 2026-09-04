@@ -17,35 +17,33 @@ type TaskTableProps = {
 const loadingRowKeys = ["one", "two", "three", "four", "five", "six", "seven", "eight"] as const
 const scrollEdgeTolerance = 1
 
-type ScrollState = {
-  readonly hasOverflow: boolean
-  readonly canScrollLeft: boolean
-  readonly canScrollRight: boolean
-}
+type ScrollState = { readonly hasOverflow: boolean; readonly canScrollLeft: boolean; readonly canScrollRight: boolean }
 
-const initialScrollState: ScrollState = {
-  hasOverflow: false,
-  canScrollLeft: false,
-  canScrollRight: false,
-}
+const initialScrollState: ScrollState = { hasOverflow: false, canScrollLeft: false, canScrollRight: false }
 
 export function TaskTable({ page, columns, loading, selectedTaskId = null, onSelectTask }: TaskTableProps) {
   const rendersTable = page === null ? loading : page.items.length > 0
   const frameRef = useRef<HTMLElement>(null)
   const tableRef = useRef<HTMLTableElement>(null)
   const [scrollState, setScrollState] = useState(initialScrollState)
-  const updateScrollState = useCallback(() => {
+  const scrollStateRef = useRef(initialScrollState)
+  const updateScrollState = useCallback((anchorRightEdge = false) => {
     const frame = frameRef.current
     const table = tableRef.current
     if (frame === null || table === null) return
     const contentOverflow = Math.max(0, table.offsetWidth - frame.clientWidth)
     const maximumScroll = Math.max(0, frame.scrollWidth - frame.clientWidth)
     const edgeTolerance = Math.max(scrollEdgeTolerance, frame.offsetWidth - frame.clientWidth)
+    const previousState = scrollStateRef.current
+    if (anchorRightEdge && previousState.hasOverflow && !previousState.canScrollRight && frame.scrollLeft > 0) {
+      frame.scrollLeft = maximumScroll
+    }
     const nextState = {
       hasOverflow: contentOverflow > 0,
       canScrollLeft: frame.scrollLeft > edgeTolerance,
       canScrollRight: frame.scrollLeft < maximumScroll - edgeTolerance,
     }
+    scrollStateRef.current = nextState
     setScrollState((current) => current.hasOverflow === nextState.hasOverflow
       && current.canScrollLeft === nextState.canScrollLeft
       && current.canScrollRight === nextState.canScrollRight ? current : nextState)
@@ -56,20 +54,22 @@ export function TaskTable({ page, columns, loading, selectedTaskId = null, onSel
     const frame = frameRef.current
     const table = tableRef.current
     if (frame === null || table === null) return
-    const observer = new ResizeObserver(updateScrollState)
-    const mutationObserver = new MutationObserver(updateScrollState)
+    const updateScrolledState = () => updateScrollState()
+    const updateLayoutScrollState = () => updateScrollState(true)
+    const observer = new ResizeObserver(updateLayoutScrollState)
+    const mutationObserver = new MutationObserver(updateLayoutScrollState)
     observer.observe(frame)
     observer.observe(table)
     mutationObserver.observe(table, { childList: true, characterData: true, subtree: true })
-    frame.addEventListener("scroll", updateScrollState, { passive: true })
-    document.fonts?.addEventListener("loadingdone", updateScrollState)
-    void document.fonts?.ready.then(updateScrollState)
+    frame.addEventListener("scroll", updateScrolledState, { passive: true })
+    document.fonts?.addEventListener("loadingdone", updateLayoutScrollState)
+    void document.fonts?.ready.then(updateLayoutScrollState)
     updateScrollState()
     return () => {
       observer.disconnect()
       mutationObserver.disconnect()
-      frame.removeEventListener("scroll", updateScrollState)
-      document.fonts?.removeEventListener("loadingdone", updateScrollState)
+      frame.removeEventListener("scroll", updateScrolledState)
+      document.fonts?.removeEventListener("loadingdone", updateLayoutScrollState)
     }
   }, [rendersTable, updateScrollState])
 
