@@ -52,6 +52,7 @@ test("keeps unavailable styling when right-edge layout geometry grows", async ({
   await frame.focus()
   await frame.press("End")
   await expectUnavailableControlStyle(right, left)
+  const initialPosition = await frame.evaluate((element) => element.scrollLeft)
   const initialMaximum = await frame.evaluate((element) => element.scrollWidth - element.clientWidth)
 
   // When: a settled layout change expands the table after the edge was reached.
@@ -62,6 +63,12 @@ test("keeps unavailable styling when right-edge layout geometry grows", async ({
   await expect.poll(() => frame.evaluate((element) => element.scrollWidth - element.clientWidth)).toBeGreaterThan(initialMaximum)
 
   // Then: the frame stays anchored and the native and computed unavailable states agree.
+  await expect.poll(() => frame.evaluate((element, previousPosition) => {
+    const anchoredPosition = element.scrollLeft
+    element.scrollLeft = Number.MAX_SAFE_INTEGER
+    const saturatedPosition = element.scrollLeft
+    return { anchored: anchoredPosition === saturatedPosition, grew: saturatedPosition > previousPosition }
+  }, initialPosition)).toEqual({ anchored: true, grew: true })
   await expectUnavailableControlStyle(right, left)
 })
 

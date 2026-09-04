@@ -1,10 +1,11 @@
 import { ChevronLeft, ChevronRight } from "lucide-react"
-import { type KeyboardEvent, useCallback, useLayoutEffect, useRef, useState } from "react"
+import type { KeyboardEvent } from "react"
 
 import type { TaskList } from "../api/taskSchemas"
 import { formatBytes, formatDate, formatDuration, formatStatus } from "./format"
 import { taskName } from "./model"
 import type { OptionalColumn } from "./query"
+import { type ScrollUpdate, useTaskTableScroll } from "./useTaskTableScroll"
 
 type TaskTableProps = {
   readonly page: TaskList | null
@@ -15,63 +16,9 @@ type TaskTableProps = {
 }
 
 const loadingRowKeys = ["one", "two", "three", "four", "five", "six", "seven", "eight"] as const
-const scrollEdgeTolerance = 1
-
-type ScrollState = { readonly hasOverflow: boolean; readonly canScrollLeft: boolean; readonly canScrollRight: boolean }
-
-const initialScrollState: ScrollState = { hasOverflow: false, canScrollLeft: false, canScrollRight: false }
-
 export function TaskTable({ page, columns, loading, selectedTaskId = null, onSelectTask }: TaskTableProps) {
   const rendersTable = page === null ? loading : page.items.length > 0
-  const frameRef = useRef<HTMLElement>(null)
-  const tableRef = useRef<HTMLTableElement>(null)
-  const [scrollState, setScrollState] = useState(initialScrollState)
-  const scrollStateRef = useRef(initialScrollState)
-  const updateScrollState = useCallback((anchorRightEdge = false) => {
-    const frame = frameRef.current
-    const table = tableRef.current
-    if (frame === null || table === null) return
-    const contentOverflow = Math.max(0, table.offsetWidth - frame.clientWidth)
-    const maximumScroll = Math.max(0, frame.scrollWidth - frame.clientWidth)
-    const edgeTolerance = Math.max(scrollEdgeTolerance, frame.offsetWidth - frame.clientWidth)
-    const previousState = scrollStateRef.current
-    if (anchorRightEdge && previousState.hasOverflow && !previousState.canScrollRight && frame.scrollLeft > 0) {
-      frame.scrollLeft = maximumScroll
-    }
-    const nextState = {
-      hasOverflow: contentOverflow > 0,
-      canScrollLeft: frame.scrollLeft > edgeTolerance,
-      canScrollRight: frame.scrollLeft < maximumScroll - edgeTolerance,
-    }
-    scrollStateRef.current = nextState
-    setScrollState((current) => current.hasOverflow === nextState.hasOverflow
-      && current.canScrollLeft === nextState.canScrollLeft
-      && current.canScrollRight === nextState.canScrollRight ? current : nextState)
-  }, [])
-
-  useLayoutEffect(() => {
-    if (!rendersTable) return
-    const frame = frameRef.current
-    const table = tableRef.current
-    if (frame === null || table === null) return
-    const updateScrolledState = () => updateScrollState()
-    const updateLayoutScrollState = () => updateScrollState(true)
-    const observer = new ResizeObserver(updateLayoutScrollState)
-    const mutationObserver = new MutationObserver(updateLayoutScrollState)
-    observer.observe(frame)
-    observer.observe(table)
-    mutationObserver.observe(table, { childList: true, characterData: true, subtree: true })
-    frame.addEventListener("scroll", updateScrolledState, { passive: true })
-    document.fonts?.addEventListener("loadingdone", updateLayoutScrollState)
-    void document.fonts?.ready.then(updateLayoutScrollState)
-    updateScrollState()
-    return () => {
-      observer.disconnect()
-      mutationObserver.disconnect()
-      frame.removeEventListener("scroll", updateScrolledState)
-      document.fonts?.removeEventListener("loadingdone", updateLayoutScrollState)
-    }
-  }, [rendersTable, updateScrollState])
+  const { frameRef, tableRef, scrollState, updateScrollState } = useTaskTableScroll(rendersTable)
 
   if (page === null && !loading) return null
   if (page !== null && page.items.length === 0) {
@@ -185,13 +132,13 @@ export function TaskTable({ page, columns, loading, selectedTaskId = null, onSel
   )
 }
 
-function scrollTable(frame: HTMLElement | null, direction: "left" | "right", onScroll: () => void): void {
+function scrollTable(frame: HTMLElement | null, direction: "left" | "right", onScroll: ScrollUpdate): void {
   if (frame === null) return
   frame.scrollBy({ left: frame.clientWidth * (direction === "left" ? -0.75 : 0.75) })
-  requestAnimationFrame(onScroll)
+  requestAnimationFrame(() => onScroll())
 }
 
-function handleScrollKey(event: KeyboardEvent<HTMLElement>, onScroll: () => void): void {
+function handleScrollKey(event: KeyboardEvent<HTMLElement>, onScroll: ScrollUpdate): void {
   if (event.target !== event.currentTarget) return
   const frame = event.currentTarget
   switch (event.key) {
@@ -206,12 +153,11 @@ function handleScrollKey(event: KeyboardEvent<HTMLElement>, onScroll: () => void
     case "Home":
       event.preventDefault()
       frame.scrollLeft = 0
-      onScroll()
+      onScroll("left")
       break
     case "End":
       event.preventDefault()
-      frame.scrollLeft = frame.scrollWidth - frame.clientWidth
-      onScroll()
+      onScroll("right")
       break
   }
 }
