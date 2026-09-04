@@ -7,7 +7,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::Utc;
 
-use crate::auth::{authenticate, authorize_mutation, AuthService};
+use crate::auth::{authenticate, authorize_mutation, peer_ip, AuthService};
 use crate::domain::{
     FieldErrorCode, IdempotencyKey, PageRequest, Task, TaskCreateRequest, TaskDetailResponse,
     TaskId, TaskListQuery, TaskListResponse,
@@ -45,7 +45,7 @@ async fn require_auth(
     request: Request,
     next: Next,
 ) -> Result<Response, TaskApiError> {
-    authenticate(&state.auth, request.headers(), Utc::now())
+    authenticate(&state.auth, peer_ip(&request), request.headers(), Utc::now())
         .await
         .map_err(|error| TaskApiError::from_auth(&error))?;
     Ok(next.run(request).await)
@@ -56,7 +56,7 @@ async fn require_mutation(
     request: Request,
     next: Next,
 ) -> Result<Response, TaskApiError> {
-    authorize_mutation(&state.auth, request.headers(), Utc::now())
+    authorize_mutation(&state.auth, peer_ip(&request), request.headers(), Utc::now())
         .await
         .map_err(|error| TaskApiError::from_auth(&error))?;
     Ok(next.run(request).await)

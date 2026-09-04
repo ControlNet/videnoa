@@ -1,9 +1,11 @@
 use std::error::Error;
 use std::fs;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use axum::body::{to_bytes, Body};
+use axum::extract::connect_info::ConnectInfo;
 use axum::http::{header, Request};
 use axum::Router;
 use serde_json::{json, Value};
@@ -124,7 +126,12 @@ pub(super) fn request(method: &str, uri: &str, body: Option<&Value>) -> TestResu
         }
         None => Body::empty(),
     };
-    Ok(builder.body(body)?)
+    let mut request = builder.body(body)?;
+    request.extensions_mut().insert(ConnectInfo(SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        40_000,
+    )));
+    Ok(request)
 }
 
 pub(super) async fn json_body(response: axum::response::Response) -> TestResult<Value> {

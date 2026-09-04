@@ -1,9 +1,11 @@
 use std::error::Error;
 use std::fs;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use axum::body::Body;
+use axum::extract::connect_info::ConnectInfo;
 use axum::http::{header, Request};
 use axum::Router;
 use tempfile::TempDir;
@@ -85,10 +87,12 @@ pub async fn fixture() -> TestResult<Fixture> {
 }
 
 pub fn request(uri: &str) -> TestResult<Request<Body>> {
-    Ok(Request::builder()
+    let mut request = Request::builder()
         .uri(uri)
         .header(header::AUTHORIZATION, format!("Bearer {PASSWORD}"))
-        .body(Body::empty())?)
+        .body(Body::empty())?;
+    add_peer(&mut request);
+    Ok(request)
 }
 
 pub fn json_request(
@@ -96,12 +100,21 @@ pub fn json_request(
     uri: &str,
     body: &serde_json::Value,
 ) -> TestResult<Request<Body>> {
-    Ok(Request::builder()
+    let mut request = Request::builder()
         .method(method)
         .uri(uri)
         .header(header::AUTHORIZATION, format!("Bearer {PASSWORD}"))
         .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(serde_json::to_vec(body)?))?)
+        .body(Body::from(serde_json::to_vec(body)?))?;
+    add_peer(&mut request);
+    Ok(request)
+}
+
+pub fn add_peer(request: &mut Request<Body>) {
+    request.extensions_mut().insert(ConnectInfo(SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        40_000,
+    )));
 }
 
 #[cfg(debug_assertions)]

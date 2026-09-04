@@ -217,15 +217,23 @@ impl AuthService {
     /// Verifies a raw bearer password against the current hash file.
     ///
     /// # Errors
-    /// Returns [`AuthError::Unauthorized`] when the password does not match.
-    pub fn authenticate_bearer(&self, password: &str) -> Result<(), AuthError> {
+    /// Returns a typed authentication or throttling error when the password does not match.
+    pub fn authenticate_bearer(
+        &self,
+        address: IpAddr,
+        password: &str,
+        now: DateTime<Utc>,
+    ) -> Result<(), AuthError> {
         if self
             .inner
             .password
             .load()?
             .verify(&SecretString::new(password))
         {
+            self.inner.limiter.clear(address);
             Ok(())
+        } else if self.inner.limiter.record_failure(address, now) {
+            Err(AuthError::RateLimited)
         } else {
             Err(AuthError::Unauthorized)
         }

@@ -12,6 +12,7 @@ use crate::workers::{WorkerRegistryError, WorkerRegistryErrorCode};
 #[derive(Debug)]
 pub(super) enum OperationsError {
     Unauthorized,
+    RateLimited,
     Forbidden,
     InvalidRequest,
     InvalidField(&'static str, &'static str),
@@ -26,7 +27,8 @@ pub(super) enum OperationsError {
 impl OperationsError {
     pub(super) fn from_auth(error: &AuthError) -> Self {
         match error {
-            AuthError::Unauthorized | AuthError::RateLimited => Self::Unauthorized,
+            AuthError::Unauthorized => Self::Unauthorized,
+            AuthError::RateLimited => Self::RateLimited,
             AuthError::Forbidden => Self::Forbidden,
             AuthError::InvalidPasswordHash
             | AuthError::PasswordHashing
@@ -104,6 +106,12 @@ impl IntoResponse for OperationsError {
                 StatusCode::UNAUTHORIZED,
                 ApiErrorCode::Unauthorized,
                 "authentication required",
+                Vec::new(),
+            ),
+            Self::RateLimited => (
+                StatusCode::TOO_MANY_REQUESTS,
+                ApiErrorCode::RateLimited,
+                "too many authentication attempts",
                 Vec::new(),
             ),
             Self::Forbidden => (

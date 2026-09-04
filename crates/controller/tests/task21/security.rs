@@ -152,12 +152,13 @@ async fn authenticated_sse_disconnect_reconnect_refetches_without_history_replay
 async fn cross_origin_preflight_never_receives_cors_authorization() -> TestResult {
     // Given: an attacker-origin preflight for an authenticated mutation route.
     let fixture = fixture().await?;
-    let request = Request::builder()
+    let mut request = Request::builder()
         .method("OPTIONS")
         .uri("/api/tasks")
         .header(header::ORIGIN, "https://attacker.invalid")
         .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
         .body(Body::empty())?;
+    super::support::add_peer(&mut request);
 
     // When: the complete production router evaluates the preflight.
     let response = fixture.router.oneshot(request).await?;

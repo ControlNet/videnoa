@@ -1,3 +1,6 @@
+use std::net::SocketAddr;
+
+use axum::extract::connect_info::ConnectInfo;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -55,14 +58,22 @@ pub(super) async fn counts(
 
 pub(super) async fn readiness(
     State(state): State<OperationsState>,
+    ConnectInfo(address): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Result<Response, OperationsError> {
-    let authentication = match crate::auth::authenticate(&state.auth, &headers, Utc::now()).await {
+    let authentication = match crate::auth::authenticate(
+        &state.auth,
+        address.ip(),
+        &headers,
+        Utc::now(),
+    )
+    .await
+    {
         Ok(_) => state.auth.check_ready().is_ok(),
         Err(crate::auth::AuthError::Unauthorized | crate::auth::AuthError::Forbidden) => {
             return Err(OperationsError::Unauthorized);
         }
-        Err(crate::auth::AuthError::RateLimited) => return Err(OperationsError::Unauthorized),
+        Err(crate::auth::AuthError::RateLimited) => return Err(OperationsError::RateLimited),
         Err(
             crate::auth::AuthError::InvalidPasswordHash
             | crate::auth::AuthError::PasswordHashing
