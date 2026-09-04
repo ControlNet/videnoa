@@ -1,7 +1,9 @@
 use std::convert::Infallible;
 use std::future::{pending, ready};
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
+use axum::extract::connect_info::ConnectInfo;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -62,6 +64,7 @@ impl Default for EventHub {
 
 pub(super) async fn stream(
     State(state): State<OperationsState>,
+    ConnectInfo(address): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let initial = stream::once(ready(Ok(refetch_event())));
@@ -73,11 +76,19 @@ pub(super) async fn stream(
         (
             state.events.sender.subscribe(),
             state,
+            address.ip(),
             headers,
             auth_recheck,
             shutdown,
         ),
-        |(mut receiver, state, headers, mut auth_recheck, shutdown)| async move {
+        |(mut receiver, state, address, headers, mut auth_recheck, shutdown): (
+            _,
+            _,
+            IpAddr,
+            _,
+            _,
+            _,
+        )| async move {
             loop {
                 tokio::select! {
                     biased;
@@ -96,10 +107,10 @@ pub(super) async fn stream(
                             Err(broadcast::error::RecvError::Lagged(_)) => refetch_event(),
                             Err(broadcast::error::RecvError::Closed) => return None,
                         };
-                        return Some((Ok(event), (receiver, state, headers, auth_recheck, shutdown)));
+                        return Some((Ok(event), (receiver, state, address, headers, auth_recheck, shutdown)));
                     }
                     _ = auth_recheck.tick() => {
-                        if authenticate_passive(&state.auth, &headers, chrono::Utc::now()).await.is_err() {
+                        if authenticate_passive(&state.auth, address, &headers, chrono::Utc::now()).await.is_err() {
                             return None;
                         }
                     }

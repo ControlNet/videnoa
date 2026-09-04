@@ -144,7 +144,12 @@ impl Fixture {
             }
             None => Body::empty(),
         };
-        Ok(builder.body(body)?)
+        let mut request = builder.body(body)?;
+        request.extensions_mut().insert(ConnectInfo(SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            40_000,
+        )));
+        Ok(request)
     }
 }
 
@@ -176,11 +181,12 @@ async fn operational_routes_require_authentication() -> TestResult {
         "/api/status-counts",
         "/api/events",
     ] {
-        let response = fixture
-            .router
-            .clone()
-            .oneshot(Request::builder().uri(uri).body(Body::empty())?)
-            .await?;
+        let mut request = Request::builder().uri(uri).body(Body::empty())?;
+        request.extensions_mut().insert(ConnectInfo(SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            40_000,
+        )));
+        let response = fixture.router.clone().oneshot(request).await?;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{uri}");
     }
     Ok(())
@@ -621,35 +627,37 @@ async fn cookie_mutations_require_same_origin_csrf_proof() -> TestResult {
         "enabled": true, "compute_slots": 1
     });
 
-    let forbidden = fixture
-        .router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/workers")
-                .header(header::CONTENT_TYPE, "application/json")
-                .header(header::COOKIE, &cookie)
-                .body(Body::from(serde_json::to_vec(&worker)?))?,
-        )
-        .await?;
+    let mut forbidden = Request::builder()
+        .method("POST")
+        .uri("/api/workers")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::COOKIE, &cookie)
+        .body(Body::from(serde_json::to_vec(&worker)?))?;
+    forbidden
+        .extensions_mut()
+        .insert(ConnectInfo(SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            40_000,
+        )));
+    let forbidden = fixture.router.clone().oneshot(forbidden).await?;
     assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
 
-    let accepted = fixture
-        .router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/workers")
-                .header(header::CONTENT_TYPE, "application/json")
-                .header(header::COOKIE, cookie)
-                .header(header::HOST, "controller.test")
-                .header(header::ORIGIN, "http://controller.test")
-                .header("x-csrf-token", csrf)
-                .body(Body::from(serde_json::to_vec(&worker)?))?,
-        )
-        .await?;
+    let mut accepted = Request::builder()
+        .method("POST")
+        .uri("/api/workers")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::COOKIE, cookie)
+        .header(header::HOST, "controller.test")
+        .header(header::ORIGIN, "http://controller.test")
+        .header("x-csrf-token", csrf)
+        .body(Body::from(serde_json::to_vec(&worker)?))?;
+    accepted
+        .extensions_mut()
+        .insert(ConnectInfo(SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            40_000,
+        )));
+    let accepted = fixture.router.clone().oneshot(accepted).await?;
     assert_eq!(accepted.status(), StatusCode::CREATED);
     Ok(())
 }

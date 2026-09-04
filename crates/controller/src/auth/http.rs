@@ -138,9 +138,13 @@ async fn login(
     }
 }
 
-async fn session(State(auth): State<AuthService>, headers: HeaderMap) -> Response {
+async fn session(
+    State(auth): State<AuthService>,
+    ConnectInfo(address): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
     let now = Utc::now();
-    match authenticate(&auth, &headers, now).await {
+    match authenticate(&auth, address.ip(), &headers, now).await {
         Ok(RequestAuth::Bearer) => Json(session_response(
             crate::domain::SessionId::random(),
             AuthMethod::Bearer,
@@ -164,8 +168,12 @@ async fn session(State(auth): State<AuthService>, headers: HeaderMap) -> Respons
     }
 }
 
-async fn logout(State(auth): State<AuthService>, headers: HeaderMap) -> Response {
-    match authorize_mutation(&auth, &headers, Utc::now()).await {
+async fn logout(
+    State(auth): State<AuthService>,
+    ConnectInfo(address): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    match authorize_mutation(&auth, address.ip(), &headers, Utc::now()).await {
         Ok(RequestAuth::Bearer) => logout_response(&auth),
         Ok(RequestAuth::Session(record)) => match auth.logout(record.id, Utc::now()).await {
             Ok(()) => logout_response(&auth),
@@ -175,8 +183,12 @@ async fn logout(State(auth): State<AuthService>, headers: HeaderMap) -> Response
     }
 }
 
-async fn readiness(State(auth): State<AuthService>, headers: HeaderMap) -> Response {
-    match authenticate(&auth, &headers, Utc::now()).await {
+async fn readiness(
+    State(auth): State<AuthService>,
+    ConnectInfo(address): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    match authenticate(&auth, address.ip(), &headers, Utc::now()).await {
         Ok(RequestAuth::Bearer | RequestAuth::Session(_)) => Json(ReadinessResponse {
             status: ReadinessStatus::Ready,
             checks: vec![ReadinessCheck {

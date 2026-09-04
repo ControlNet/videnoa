@@ -70,16 +70,27 @@ fn test_frontend_assets(_: &std::path::Path) -> TestResult<FrontendAssets> {
 }
 
 fn request(method: &str, uri: &str, body: Body) -> TestResult<Request<Body>> {
+    request_from(
+        method,
+        uri,
+        body,
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 40_000),
+    )
+}
+
+fn request_from(
+    method: &str,
+    uri: &str,
+    body: Body,
+    address: SocketAddr,
+) -> TestResult<Request<Body>> {
     let mut request = Request::builder()
         .method(method)
         .uri(uri)
         .header(header::HOST, "controller.test")
         .header(header::CONTENT_TYPE, "application/json")
         .body(body)?;
-    request.extensions_mut().insert(ConnectInfo(SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
-        40_000,
-    )));
+    request.extensions_mut().insert(ConnectInfo(address));
     Ok(request)
 }
 
@@ -242,6 +253,98 @@ async fn sixth_failed_login_is_throttled_without_reflecting_credentials() -> Tes
     // Then: five attempts are indistinguishable unauthorized responses and the sixth is limited.
     assert_eq!(&statuses[..5], &[StatusCode::UNAUTHORIZED; 5]);
     assert_eq!(statuses[5], StatusCode::TOO_MANY_REQUESTS);
+    Ok(())
+}
+
+#[tokio::test]
+async fn login_and_bearer_share_the_direct_peer_failure_budget() -> TestResult {
+    let fixture = Fixture::new().await?;
+    let limited_peer = SocketAddr::from(([127, 0, 0, 1], 40_000));
+    let other_peer = SocketAddr::from(([127, 0, 0, 2], 40_000));
+    let (cookie, _) = login(&fixture, PASSWORD).await?;
+
+    for authorization in ["Basic wrong-secret", "Bearer"] {
+        let mut malformed = request_from("GET", "/api/readiness", Body::empty(), limited_peer)?;
+        malformed
+            .headers_mut()
+            .insert(header::AUTHORIZATION, authorization.parse()?);
+        assert_eq!(
+            fixture.router().oneshot(malformed).await?.status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    for _ in 0..2 {
+        let body = serde_json::to_vec(&serde_json::json!({"password": "wrong-secret"}))?;
+        let response = fixture
+            .router()
+            .oneshot(request_from(
+                "POST",
+                "/api/auth/login",
+                Body::from(body),
+                limited_peer,
+            )?)
+            .await?;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+    for forwarded_for in ["192.0.2.1", "192.0.2.2", "192.0.2.3"] {
+        let mut bearer = request_from("GET", "/api/readiness", Body::empty(), limited_peer)?;
+        bearer
+            .headers_mut()
+            .insert(header::AUTHORIZATION, "Bearer wrong-secret".parse()?);
+        bearer
+            .headers_mut()
+            .insert("x-forwarded-for", forwarded_for.parse()?);
+        let response = fixture.router().oneshot(bearer).await?;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    let mut session = request_from("GET", "/api/auth/session", Body::empty(), limited_peer)?;
+    session
+        .headers_mut()
+        .insert(header::COOKIE, cookie.parse()?);
+    assert_eq!(
+        fixture.router().oneshot(session).await?.status(),
+        StatusCode::OK
+    );
+
+    let mut sixth = request_from("GET", "/api/readiness", Body::empty(), limited_peer)?;
+    sixth
+        .headers_mut()
+        .insert(header::AUTHORIZATION, "Bearer wrong-secret".parse()?);
+    let sixth = fixture.router().oneshot(sixth).await?;
+    assert_eq!(sixth.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        to_bytes(sixth.into_body(), 4096).await?.as_ref(),
+        br#"{"error":"rate_limited"}"#
+    );
+
+    let mut isolated = request_from("GET", "/api/readiness", Body::empty(), other_peer)?;
+    isolated
+        .headers_mut()
+        .insert(header::AUTHORIZATION, "Bearer wrong-secret".parse()?);
+    assert_eq!(
+        fixture.router().oneshot(isolated).await?.status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    let mut valid = request_from("GET", "/api/readiness", Body::empty(), limited_peer)?;
+    valid
+        .headers_mut()
+        .insert(header::AUTHORIZATION, format!("Bearer {PASSWORD}").parse()?);
+    assert_eq!(
+        fixture.router().oneshot(valid).await?.status(),
+        StatusCode::OK
+    );
+
+    let mut after_clear = request_from("GET", "/api/readiness", Body::empty(), limited_peer)?;
+    after_clear
+        .headers_mut()
+        .insert(header::AUTHORIZATION, "Bearer wrong-secret".parse()?);
+    assert_eq!(
+        fixture.router().oneshot(after_clear).await?.status(),
+        StatusCode::UNAUTHORIZED
+    );
     Ok(())
 }
 

@@ -14,4 +14,6 @@ pub use http::{
     serve_controller_until, CSRF_HEADER, SESSION_COOKIE,
 };
 
-pub(crate) use boundary::{authenticate, authenticate_passive, authorize_mutation, RequestAuth};
+pub(crate) use boundary::{
+    authenticate, authenticate_passive, authorize_mutation, peer_ip, RequestAuth,
+};

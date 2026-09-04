@@ -8,6 +8,7 @@ use crate::domain::{ApiError, ApiErrorCode, ApiErrorEnvelope, FieldError, FieldE
 #[derive(Debug)]
 pub(crate) enum TaskApiError {
     Unauthorized,
+    RateLimited,
     Forbidden,
     InvalidField {
         field: &'static str,
@@ -23,7 +24,8 @@ pub(crate) enum TaskApiError {
 impl TaskApiError {
     pub(crate) fn from_auth(error: &AuthError) -> Self {
         match error {
-            AuthError::Unauthorized | AuthError::RateLimited => Self::Unauthorized,
+            AuthError::Unauthorized => Self::Unauthorized,
+            AuthError::RateLimited => Self::RateLimited,
             AuthError::Forbidden => Self::Forbidden,
             AuthError::InvalidPasswordHash
             | AuthError::PasswordHashing
@@ -53,6 +55,12 @@ impl IntoResponse for TaskApiError {
                 StatusCode::UNAUTHORIZED,
                 ApiErrorCode::Unauthorized,
                 "authentication required",
+                Vec::new(),
+            ),
+            Self::RateLimited => (
+                StatusCode::TOO_MANY_REQUESTS,
+                ApiErrorCode::RateLimited,
+                "too many authentication attempts",
                 Vec::new(),
             ),
             Self::Forbidden => (
