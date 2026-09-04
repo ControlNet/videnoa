@@ -81,6 +81,35 @@ test("login, protected navigation, reload, narrow layout, and logout", async ({ 
   await expect(page.getByRole("heading", { name: "Sign in to Controller" })).toBeVisible()
 })
 
+test("desktop Settings wheel scroll reaches final content while Sign out stays visible", async ({ page }) => {
+  // Given: an authenticated desktop shell with the complete runtime Settings surface.
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await installApi(page)
+  await signIn(page)
+  await page.getByRole("link", { name: "Settings" }).click()
+  await expect(page.getByRole("heading", { name: "Restart-required configuration" })).toBeVisible()
+  await page.locator(".app-frame").evaluate(async (element) => {
+    await Promise.all(element.getAnimations({ subtree: true }).map((animation) => animation.finished))
+  })
+  const main = page.locator(".shell-main")
+  await main.evaluate((element) => { element.scrollTop = 0 })
+
+  // When: the operator uses a normal wheel gesture over the route body.
+  await main.hover()
+  await page.mouse.wheel(0, 1_000)
+
+  // Then: only main scrolls, the final Settings content is reachable, and Sign out remains fixed.
+  await expect.poll(() => main.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+  await expect(page.getByRole("button", { name: "Save runtime settings" })).toBeInViewport({ ratio: 1 })
+  await expect(page.locator(".read-only-settings .readiness-check").last()).toBeInViewport({ ratio: 1 })
+  await expect(page.getByRole("button", { name: "Sign out" })).toBeInViewport({ ratio: 1 })
+  expect(await page.evaluate(() => {
+    const frame = document.querySelector(".app-frame")
+    if (!(frame instanceof HTMLElement)) throw new TypeError("application frame is missing")
+    return { documentScrollTop: document.documentElement.scrollTop, frameScrollTop: frame.scrollTop, frameClientHeight: frame.clientHeight, frameScrollHeight: frame.scrollHeight }
+  })).toEqual({ documentScrollTop: 0, frameScrollTop: 0, frameClientHeight: 900, frameScrollHeight: 900 })
+})
+
 test("wrong password, malformed response, network failure, and expiry remain recoverable", async ({ page }) => {
   // Given: deterministic failure modes at the same-origin login boundary.
   let attempt = 0
@@ -184,7 +213,26 @@ test("logout failure keeps the shell authenticated and permits retry", async ({ 
   await expect(alert).toBeFocused()
   const alertBox = await alert.boundingBox()
   const headerBox = await page.locator(".shell-sidebar").boundingBox()
-  expect(alertBox?.y).toBeGreaterThanOrEqual((headerBox?.y ?? 0) + (headerBox?.height ?? Number.MAX_SAFE_INTEGER))
+  if (alertBox === null || headerBox === null) throw new TypeError("logout alert shell geometry is missing")
+  expect(alertBox.y).toBeGreaterThanOrEqual(headerBox.y + headerBox.height)
+  expect(await alert.evaluate((element) => {
+    const box = element.getBoundingClientRect()
+    const style = getComputedStyle(element)
+    const focusExtent = Number.parseFloat(style.outlineWidth) + Number.parseFloat(style.outlineOffset)
+    return box.left - focusExtent >= 0 && box.top - focusExtent >= 0 && box.right + focusExtent <= innerWidth && box.bottom + focusExtent <= innerHeight
+  })).toBe(true)
+  expect(await page.locator(".shell-main").evaluate((main) => {
+    const alertElement = document.querySelector(".shell-alert")
+    if (!(alertElement instanceof HTMLElement)) throw new TypeError("logout alert is missing")
+    const alertBounds = alertElement.getBoundingClientRect()
+    return Array.from(main.querySelectorAll<HTMLElement>("button:not(:disabled), input:not(:disabled), select:not(:disabled), a[href]"))
+      .filter((control) => {
+        const bounds = control.getBoundingClientRect()
+        const visible = bounds.right > 0 && bounds.bottom > 0 && bounds.left < innerWidth && bounds.top < innerHeight
+        return visible && bounds.left < alertBounds.right && bounds.right > alertBounds.left && bounds.top < alertBounds.bottom && bounds.bottom > alertBounds.top
+      })
+      .map((control) => control.getAttribute("aria-label") ?? control.textContent?.trim() ?? control.tagName)
+  })).toEqual([])
   await expect(page.getByRole("heading", { name: "Tasks" })).toBeVisible()
   await page.getByRole("button", { name: "Sign out" }).click()
   await expect(page.getByRole("heading", { name: "Sign in to Controller" })).toBeVisible()
