@@ -16,7 +16,11 @@ export type AuthState =
 
 export type LoginResult =
   | { readonly ok: true }
-  | { readonly ok: false; readonly message: string }
+  | {
+      readonly ok: false
+      readonly kind: "invalid_credentials" | "recovery"
+      readonly message: string
+    }
 
 export type LogoutResult =
   | { readonly ok: true }
@@ -69,7 +73,13 @@ export function useSessionController(): SessionController {
         setState({ kind: "authenticated", session: response.session })
         return { ok: true }
       } catch (error) {
-        if (error instanceof ApiClientError) return { ok: false, message: messageFor(error) }
+        if (error instanceof ApiClientError) {
+          return {
+            ok: false,
+            kind: error.code === "unauthorized" ? "invalid_credentials" : "recovery",
+            message: messageFor(error),
+          }
+        }
         throw error
       }
     },

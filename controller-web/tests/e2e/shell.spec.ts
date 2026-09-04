@@ -3,6 +3,7 @@ import { expect, type Page, type Route, test } from "@playwright/test"
 import { installOperationalReadRoutes } from "./operations-fixtures"
 
 const evidenceDir = "../.omo/evidence/videnoa-controller/task-19/playwright-report/screenshots/task-15"
+const authFocusEvidence = "../.omo/evidence/videnoa-controller/final/remediation-auth-focus/malformed-login-focused.png"
 const session = {
   id: "550e8400-e29b-41d4-a716-446655440000",
   authenticated: true,
@@ -98,6 +99,45 @@ test("wrong password, malformed response, network failure, and expiry remain rec
     await page.getByRole("button", { name: "Sign in" }).click()
     await expect(page.getByRole("alert")).toContainText(expected)
   }
+})
+
+test("malformed login response focuses its summary and supports keyboard recovery", async ({ page }) => {
+  // Given: an unauthenticated login whose first response is malformed and whose retry succeeds.
+  await page.setViewportSize({ width: 1280, height: 900 })
+  let loginAttempts = 0
+  await page.route("**/api/events", async (route) => {
+    await route.fulfill({ status: 200, contentType: "text/event-stream", body: "" })
+  })
+  await page.route("**/api/auth/session", async (route) => json(route, { error: "unauthorized" }, 401))
+  await page.route("**/api/auth/login", async (route) => {
+    loginAttempts += 1
+    if (loginAttempts === 1) {
+      await route.fulfill({ status: 200, contentType: "application/json", body: "{" })
+      return
+    }
+    await json(route, { session }, 200, { "x-csrf-token": "login-proof" })
+  })
+  await page.route("**/api/tasks?*", async (route) => json(route, emptyTaskPage))
+  await page.route("**/api/status-counts", async (route) => json(route, emptyTaskCounts))
+  await installOperationalReadRoutes(page)
+  await page.goto("/")
+  const password = page.getByLabel("Controller password")
+  await password.fill("synthetic-keyboard-value")
+
+  // When: the operator submits and receives the recoverable malformed-response summary.
+  await password.press("Enter")
+
+  // Then: the summary owns visible focus, Tab returns to the field, and Enter retries successfully.
+  const alert = page.getByRole("alert")
+  await expect(alert).toContainText("Controller returned an invalid response.")
+  await expect(alert).toBeFocused()
+  expect(await alert.evaluate((element) => getComputedStyle(element).outlineStyle)).not.toBe("none")
+  await page.screenshot({ path: authFocusEvidence, fullPage: false })
+  await page.keyboard.press("Tab")
+  await expect(password).toBeFocused()
+  await password.press("Enter")
+  await expect(page.getByRole("heading", { name: "Tasks" })).toBeVisible()
+  await expect(page.getByRole("main")).toBeFocused()
 })
 
 test("session expiry redirects to login", async ({ page }) => {

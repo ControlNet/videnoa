@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { App } from "../App"
 
@@ -20,6 +20,7 @@ const emptyTaskCounts = {
   ].map((status) => ({ status, count: 0 })),
   total: 0,
 }
+const emptyWorkerList = { items: [], total: 0 }
 
 class FakeEventSource extends EventTarget {
   static latest: FakeEventSource | null = null
@@ -78,7 +79,29 @@ function authenticatedFetcher(): ReturnType<typeof vi.fn<typeof fetch>> {
   })
 }
 
+function deferred<T>(): { readonly promise: Promise<T>; readonly resolve: (value: T) => void } {
+  let resolvePromise: ((value: T) => void) | null = null
+  const promise = new Promise<T>((resolve) => {
+    resolvePromise = resolve
+  })
+  return {
+    promise,
+    resolve: (value) => {
+      if (resolvePromise === null) throw new TypeError("Deferred promise was not initialized")
+      resolvePromise(value)
+    },
+  }
+}
+
 describe("authenticated Controller shell", () => {
+  beforeEach(() => {
+    vi.stubGlobal("ResizeObserver", class {
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    })
+  })
+
   afterEach(() => {
     FakeEventSource.latest = null
     vi.unstubAllGlobals()
@@ -159,9 +182,9 @@ describe("authenticated Controller shell", () => {
   })
 
   it.each([
-    ["wrong password", response({ error: "unauthorized" }, 401), "The password was not accepted."],
-    ["malformed response", new Response("not-json", { status: 200, headers: { "content-type": "application/json" } }), "Controller returned an invalid response."],
-  ])("shows a recoverable summary for %s", async (_name, loginResponse, message) => {
+    ["wrong password", response({ error: "unauthorized" }, 401), "The password was not accepted.", true],
+    ["malformed response", new Response("not-json", { status: 200, headers: { "content-type": "application/json" } }), "Controller returned an invalid response.", false],
+  ])("shows a recoverable summary for %s", async (_name, loginResponse, message, passwordInvalid) => {
     // Given: login starts unauthenticated and the mutation fails recoverably.
     const fetcher = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(response({ error: "unauthorized" }, 401))
@@ -177,7 +200,80 @@ describe("authenticated Controller shell", () => {
     const alert = await screen.findByRole("alert")
     expect(alert).toHaveTextContent(message)
     expect(alert).toHaveFocus()
+    const password = screen.getByLabelText("Controller password")
+    if (passwordInvalid) {
+      expect(password).toHaveAttribute("aria-invalid", "true")
+      expect(password).toHaveAttribute("aria-describedby", alert.id)
+    } else {
+      expect(password).not.toHaveAttribute("aria-invalid")
+      expect(password).not.toHaveAttribute("aria-describedby")
+    }
     expect(screen.getByRole("button", { name: "Sign in" })).toBeEnabled()
+  })
+
+  it("refocuses the current malformed-response generation and permits recovery", async () => {
+    // Given: two malformed login responses followed by a successful retry.
+    let loginAttempts = 0
+    const fetcher = vi.fn<typeof fetch>((input) => {
+      switch (pathFor(input)) {
+        case "/api/auth/session": return Promise.resolve(response({ error: "unauthorized" }, 401))
+        case "/api/auth/login": {
+          loginAttempts += 1
+          return loginAttempts < 3
+            ? Promise.resolve(new Response("not-json", { status: 200, headers: { "content-type": "application/json" } }))
+            : Promise.resolve(response({ session }, 200, "proof"))
+        }
+        case "/api/tasks": return Promise.resolve(response(emptyTaskPage))
+        case "/api/status-counts": return Promise.resolve(response(emptyTaskCounts))
+        case "/api/workers": return Promise.resolve(response(emptyWorkerList))
+        default: return Promise.resolve(response({ error: "internal" }, 500))
+      }
+    })
+    vi.stubGlobal("fetch", fetcher)
+    window.history.replaceState({}, "", "/workers")
+    render(<App />)
+    const password = await screen.findByLabelText("Controller password")
+    fireEvent.change(password, { target: { value: "synthetic-retry-value" } })
+
+    // When: the same recoverable failure is retried after focus moves back to the field.
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }))
+    const firstAlert = await screen.findByRole("alert")
+    expect(firstAlert).toHaveFocus()
+    password.focus()
+    fireEvent.change(password, { target: { value: "synthetic-retry-value-updated" } })
+    expect(password).toHaveFocus()
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }))
+
+    // Then: the current summary owns focus again and a later success retains route focus behavior.
+    const secondAlert = await screen.findByRole("alert")
+    expect(secondAlert).toHaveFocus()
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }))
+    expect(await screen.findByRole("heading", { name: "Workers" })).toBeVisible()
+    expect(screen.getByRole("main")).toHaveFocus()
+  })
+
+  it("does not apply malformed-response focus after the login page unmounts", async () => {
+    // Given: an in-flight login request and an unrelated focus target outside the app.
+    const loginResponse = deferred<Response>()
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(response({ error: "unauthorized" }, 401))
+      .mockReturnValueOnce(loginResponse.promise)
+    vi.stubGlobal("fetch", fetcher)
+    const rendered = render(<App />)
+    fireEvent.change(await screen.findByLabelText("Controller password"), { target: { value: "synthetic-stale-value" } })
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }))
+    const outsideTarget = document.createElement("button")
+    document.body.append(outsideTarget)
+    rendered.unmount()
+    outsideTarget.focus()
+
+    // When: the stale request completes with a malformed response after unmount.
+    await act(async () => loginResponse.resolve(new Response("not-json", { status: 200, headers: { "content-type": "application/json" } })))
+
+    // Then: no stale summary is rendered and unrelated focus is unchanged.
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+    expect(outsideTarget).toHaveFocus()
+    outsideTarget.remove()
   })
 
   it("recovers from a session bootstrap network failure", async () => {
@@ -194,6 +290,25 @@ describe("authenticated Controller shell", () => {
 
     // Then: recovery returns to login rather than crashing.
     await waitFor(() => expect(screen.getByRole("heading", { name: "Sign in to Controller" })).toBeVisible())
+  })
+
+  it("focuses a malformed session bootstrap summary and recovers on retry", async () => {
+    // Given: session bootstrap returns malformed JSON before a retry reports no session.
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response("not-json", { status: 200, headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(response({ error: "unauthorized" }, 401))
+    vi.stubGlobal("fetch", fetcher)
+    render(<App />)
+
+    // When: the malformed bootstrap response is committed and the operator retries.
+    const alert = await screen.findByRole("alert")
+
+    // Then: the summary owns focus before retry, and login restores normal initial field focus.
+    expect(alert).toHaveTextContent("Controller returned an invalid response.")
+    expect(alert).toHaveFocus()
+    fireEvent.click(screen.getByRole("button", { name: "Retry session check" }))
+    expect(await screen.findByRole("heading", { name: "Sign in to Controller" })).toBeVisible()
+    expect(screen.getByLabelText("Controller password")).toHaveFocus()
   })
 
   it("keeps the authenticated shell operable when logout fails and allows retry", async () => {
