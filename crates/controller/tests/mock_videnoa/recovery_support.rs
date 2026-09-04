@@ -1,27 +1,23 @@
-use std::collections::BTreeMap;
 use std::error::Error;
-use std::path::PathBuf;
 
 use chrono::{DateTime, TimeZone, Utc};
-use serde_json::Value;
 use tempfile::TempDir;
+use videnoa_controller::config::PathConfig;
 use videnoa_controller::domain::{
-    AttemptId, ComputeSlots, InputExtension, InputPath, OutputExtension, OutputPath,
-    SourceReference, SubmissionKey, TaskCreateRequest, TaskId, TaskSource, TaskStatus,
-    WorkerApiUrl, WorkerCapabilities, WorkerId, WorkerName, WorkflowKind, WorkflowName,
-    WorkflowSummary,
+    ComputeSlots, TaskId, WorkerApiUrl, WorkerCapabilities, WorkerId, WorkerName, WorkflowKind,
+    WorkflowName, WorkflowSummary,
 };
-use videnoa_controller::lifecycle::{
-    AdvanceCommand, DownloadEvidence, LifecycleService, ReserveCommand, SubmissionEvidence,
-    UploadEvidence,
-};
+use videnoa_controller::lifecycle::LifecycleService;
+use videnoa_controller::paths::PathCapabilities;
 use videnoa_controller::persistence::{
-    Database, DatabaseOptions, InputContentIdentity, InputIdentity, NewTask, NewWorker,
-    SettingsUpdate, Store, TaskRecord, WorkerHealthUpdate,
+    Database, DatabaseOptions, NewWorker, SettingsUpdate, Store, TaskRecord, WorkerHealthUpdate,
 };
-use videnoa_controller::remote::{PayloadLimits, RemoteTimeouts, UploadReceipt, VidenoaClient};
+use videnoa_controller::remote::{PayloadLimits, RemoteTimeouts, VidenoaClient};
 
 use super::mock_videnoa::server::MockVidenoa;
+
+#[path = "recovery_support/state_builder.rs"]
+mod state_builder;
 
 type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -29,7 +25,7 @@ pub struct Fixture {
     pub _directory: TempDir,
     pub store: Store,
     pub service: LifecycleService,
-    pub temp_root: PathBuf,
+    pub paths: PathCapabilities,
     pub worker_id: WorkerId,
     pub now: DateTime<Utc>,
     server_url: WorkerApiUrl,
@@ -43,7 +39,18 @@ impl Fixture {
     pub async fn new(server: &MockVidenoa, slots: u64) -> TestResult<Self> {
         let directory = TempDir::new()?;
         let temp_root = directory.path().join("temp");
-        std::fs::create_dir_all(&temp_root)?;
+        let input_root = directory.path().join("input");
+        let output_root = directory.path().join("output");
+        let data_root = directory.path().join("data");
+        for path in [&temp_root, &input_root, &output_root, &data_root] {
+            std::fs::create_dir_all(path)?;
+        }
+        let paths = PathCapabilities::open(&PathConfig {
+            input_roots: vec![input_root],
+            output_roots: vec![output_root],
+            data_root,
+            temp_root: temp_root.clone(),
+        })?;
         let database = Database::open(DatabaseOptions::new(
             directory.path().join("controller.sqlite3"),
         ))
@@ -101,180 +108,11 @@ impl Fixture {
             _directory: directory,
             service: LifecycleService::new(store.clone()),
             store,
-            temp_root,
+            paths,
             worker_id,
             now,
             server_url,
         })
-    }
-
-    pub async fn task_at(&self, status: TaskStatus) -> TestResult<StateFixture> {
-        let task_id = self.insert_task().await?;
-        if status == TaskStatus::Queued {
-            return Ok(StateFixture { task_id });
-        }
-        let attempt_id = AttemptId::random();
-        self.service
-            .reserve(&ReserveCommand {
-                task_id,
-                expected_task_version: 0,
-                worker_id: self.worker_id,
-                attempt_id,
-                submission_key: SubmissionKey::random(),
-                reserved_at: self.now,
-            })
-            .await?;
-        if status == TaskStatus::Reserved {
-            return Ok(StateFixture { task_id });
-        }
-        self.advance(task_id, attempt_id, AdvanceCommand::StartUpload)
-            .await?;
-        if status == TaskStatus::Uploading {
-            return Ok(StateFixture { task_id });
-        }
-        let (client, upload) = self.upload_input(task_id).await?;
-        let output = videnoa_controller::remote::sibling_output_path(&upload.path, "output.mp4")?;
-        self.advance(
-            task_id,
-            attempt_id,
-            AdvanceCommand::FinishUpload(UploadEvidence {
-                remote_input_path: upload.path.clone(),
-                remote_output_path: output,
-            }),
-        )
-        .await?;
-        if status == TaskStatus::Staged {
-            return Ok(StateFixture { task_id });
-        }
-        self.advance(task_id, attempt_id, AdvanceCommand::StartSubmission)
-            .await?;
-        if status == TaskStatus::Submitting {
-            return Ok(StateFixture { task_id });
-        }
-        let remote_job_id = self
-            .persist_submission(task_id, attempt_id, &client, upload)
-            .await?;
-        self.set_remote_running(remote_job_id, &client).await?;
-        if status == TaskStatus::Processing {
-            return Ok(StateFixture { task_id });
-        }
-        self.advance(task_id, attempt_id, AdvanceCommand::FinishProcessing)
-            .await?;
-        if status == TaskStatus::RemoteCompleted {
-            return Ok(StateFixture { task_id });
-        }
-        self.advance(task_id, attempt_id, AdvanceCommand::StartDownload)
-            .await?;
-        if status == TaskStatus::Downloading {
-            return Ok(StateFixture { task_id });
-        }
-        self.advance(
-            task_id,
-            attempt_id,
-            AdvanceCommand::FinishDownload(DownloadEvidence {
-                size: 4,
-                sha256: videnoa_controller::persistence::Sha256Digest::new([1; 32]),
-            }),
-        )
-        .await?;
-        if status == TaskStatus::Verifying {
-            return Ok(StateFixture { task_id });
-        }
-        self.advance(
-            task_id,
-            attempt_id,
-            AdvanceCommand::FinishVerification(
-                videnoa_controller::lifecycle::PublicationIntent::new(
-                    ".videnoa-recovery-support.staging",
-                ),
-            ),
-        )
-        .await?;
-        if status == TaskStatus::Publishing {
-            return Ok(StateFixture { task_id });
-        }
-        self.advance(task_id, attempt_id, AdvanceCommand::FinishPublication)
-            .await?;
-        Ok(StateFixture { task_id })
-    }
-
-    async fn insert_task(&self) -> TestResult<TaskId> {
-        let task_id = TaskId::random();
-        self.store
-            .insert_task(&NewTask {
-                id: task_id,
-                request: TaskCreateRequest {
-                    input_path: InputPath::new(format!("/nas/input/{task_id}.mkv")),
-                    output_path: OutputPath::new(format!("/nas/output/{task_id}.mp4")),
-                    workflow: WorkflowName::new("eligible-workflow.json"),
-                    priority: 10,
-                    source: TaskSource::Api,
-                    source_reference: Some(SourceReference::new("task-10")),
-                },
-                input_extension: InputExtension::new("mkv"),
-                output_extension: OutputExtension::new("mp4"),
-                input_size: 4,
-                input_mtime: self.now,
-                input_identity: InputIdentity::new([1; 16]),
-                input_content_identity: InputContentIdentity::new([2; 16]),
-                created_at: self.now,
-            })
-            .await?;
-        Ok(task_id)
-    }
-
-    async fn upload_input(&self, task_id: TaskId) -> TestResult<(VidenoaClient, UploadReceipt)> {
-        let client = self.client()?;
-        let upload = client
-            .upload(
-                &videnoa_controller::remote::FileApiPath::parse(&format!("{task_id}/input.mkv"))?,
-                4,
-                std::io::Cursor::new(vec![1_u8, 2, 3, 4]),
-            )
-            .await?;
-        Ok((client, upload))
-    }
-
-    async fn persist_submission(
-        &self,
-        task_id: TaskId,
-        attempt_id: AttemptId,
-        client: &VidenoaClient,
-        upload: UploadReceipt,
-    ) -> TestResult<videnoa_controller::domain::RemoteJobId> {
-        let output = videnoa_controller::remote::sibling_output_path(&upload.path, "output.mp4")?;
-        let mut params = BTreeMap::new();
-        params.insert(
-            "input".to_owned(),
-            Value::String(upload.path.as_str().to_owned()),
-        );
-        params.insert(
-            "output".to_owned(),
-            Value::String(output.as_str().to_owned()),
-        );
-        let attempt = self
-            .store
-            .attempt(attempt_id)
-            .await?
-            .ok_or_else(|| std::io::Error::other("attempt missing"))?;
-        let submitted = client
-            .run(
-                &WorkflowName::new("eligible-workflow.json"),
-                attempt.attempt.submission_key,
-                &params,
-            )
-            .await?;
-        self.advance(
-            task_id,
-            attempt_id,
-            AdvanceCommand::PersistSubmission(SubmissionEvidence {
-                remote_job_id: submitted.receipt.id,
-                remote_input_path: upload.path,
-                remote_output_path: output,
-            }),
-        )
-        .await?;
-        Ok(submitted.receipt.id)
     }
 
     pub async fn load_task(&self, task_id: TaskId) -> TestResult<TaskRecord> {
@@ -282,24 +120,6 @@ impl Fixture {
             .task(task_id)
             .await?
             .ok_or_else(|| std::io::Error::other("task missing").into())
-    }
-
-    async fn advance(
-        &self,
-        task_id: TaskId,
-        attempt_id: AttemptId,
-        command: AdvanceCommand,
-    ) -> TestResult {
-        let task = self.load_task(task_id).await?;
-        let attempt = self
-            .store
-            .attempt(attempt_id)
-            .await?
-            .ok_or_else(|| std::io::Error::other("attempt missing"))?;
-        self.service
-            .advance(&task, &attempt, command, self.now)
-            .await?;
-        Ok(())
     }
 
     fn client(&self) -> TestResult<VidenoaClient> {
@@ -312,14 +132,5 @@ impl Fixture {
             )?,
             PayloadLimits::new(1024 * 1024, 4096)?,
         )?)
-    }
-
-    async fn set_remote_running(
-        &self,
-        remote_job_id: videnoa_controller::domain::RemoteJobId,
-        client: &VidenoaClient,
-    ) -> TestResult {
-        let _ = client.job(remote_job_id).await?;
-        Ok(())
     }
 }
