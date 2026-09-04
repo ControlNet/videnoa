@@ -14,12 +14,16 @@ use super::{PathCapabilities, PathError, PublicationArtifact};
 fn created_publication_parent_replacement_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
     let directory = TempDir::new()?;
     let root = directory.path().join("output");
-    std::fs::create_dir(&root)?;
+    let data_root = directory.path().join("data");
+    let temp_root = directory.path().join("temp");
+    for path in [&root, &data_root, &temp_root] {
+        std::fs::create_dir(path)?;
+    }
     let config = PathConfig {
         input_roots: vec![root.clone()],
         output_roots: vec![root.clone()],
-        data_root: directory.path().join("data"),
-        temp_root: directory.path().join("temp"),
+        data_root,
+        temp_root,
     };
     let capabilities = PathCapabilities::open(&config)?;
     let output = capabilities.reopen_output(root.join("created/final.bin"))?;
@@ -58,12 +62,16 @@ fn parent_sync_uses_the_directory_opened_for_finalization() -> Result<(), Box<dy
     let directory = TempDir::new()?;
     let root = directory.path().join("output");
     let parent = root.join("parent");
+    let data_root = directory.path().join("data");
+    let temp_root = directory.path().join("temp");
     std::fs::create_dir_all(&parent)?;
+    std::fs::create_dir(&data_root)?;
+    std::fs::create_dir(&temp_root)?;
     let capabilities = PathCapabilities::open(&PathConfig {
         input_roots: vec![root.clone()],
         output_roots: vec![root.clone()],
-        data_root: directory.path().join("data"),
-        temp_root: directory.path().join("temp"),
+        data_root,
+        temp_root,
     })?;
     let output = capabilities.reopen_output(parent.join("final.bin"))?;
     output
@@ -92,12 +100,16 @@ fn regular_staging_swapped_to_fifo_is_classified_from_the_open_handle(
     // Given: a regular staging leaf is swapped to a FIFO immediately before its production open.
     let directory = TempDir::new()?;
     let root = directory.path().join("output");
-    std::fs::create_dir(&root)?;
+    let data_root = directory.path().join("data");
+    let temp_root = directory.path().join("temp");
+    for path in [&root, &data_root, &temp_root] {
+        std::fs::create_dir(path)?;
+    }
     let capabilities = PathCapabilities::open(&PathConfig {
         input_roots: vec![root.clone()],
         output_roots: vec![root.clone()],
-        data_root: directory.path().join("data"),
-        temp_root: directory.path().join("temp"),
+        data_root,
+        temp_root,
     })?;
     let output = capabilities.reopen_output(root.join("final.bin"))?;
     let staging_name = ".videnoa-fifo-swap.staging";
