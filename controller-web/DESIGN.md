@@ -100,7 +100,7 @@ At widths below 48rem, the frame becomes two rows. Navigation is a horizontally 
 - **Structure**: compact status counters, one bounded filter toolbar, a semantic dense table, and server-page navigation.
 - **States**: loading rows, populated page, empty filter result, recoverable load failure, and live active-row replacement.
 - **Density**: numeric and identifier cells use Geist Mono; row separators replace cards; long values truncate with native title disclosure.
-- **Responsiveness**: the route never owns horizontal overflow; the table frame is the deliberate inline scroll region below 48rem.
+- **Responsiveness**: the route never owns horizontal overflow; the table frame is the deliberate inline scroll region whenever measured content width exceeds its client width. A concise associated hint and compact boundary-aware navigation remain visible above the frame while overflow exists at any viewport width, and the named frame becomes a visible-focus keyboard scroll stop.
 - **Live data**: matching active task deltas replace only newer row versions; membership or ordering changes refetch the bounded current page and counts.
 
 ### Manual Task Intake
