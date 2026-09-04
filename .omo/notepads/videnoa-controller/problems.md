@@ -175,3 +175,28 @@
   negative mutation checks pass.
 - Native Windows execution and hosted publication remain explicit environment
   boundaries, not unresolved Controller documentation defects.
+
+## 2026-09-04 F4-B2 Auth Focus Remediation
+
+- No confirmed F4-B2 product blocker remains. Repeated malformed login responses, stale post-unmount completion, malformed bootstrap retry, keyboard recovery, successful route focus, and credential-specific associations are covered by passing tests and live Chromium QA.
+- The external TypeScript audit helper resolution gap and existing Zod bundle warnings are tooling observations, not failing project gates.
+
+## 2026-09-04 F3-B2 Task Overflow Remediation
+
+- No confirmed F3-B2 product or evidence blocker remains. Actual rendered overflow now exposes controls at every tested width, boundaries account for Chromium's stable scrollbar gutter, and ArrowLeft/ArrowRight/Home/End are covered.
+- Six fresh valid RGB captures prove desktop, intermediate, and narrow containment, visible focus, CJK rendering, hidden-column reachability, and narrow pagination; automated browser assertions prove pagination remains in the viewport at every tested width.
+
+## 2026-09-04 Rust 1.83 Clippy Compatibility
+
+- No confirmed compatibility or product blocker remains. Rust 1.83 strict Clippy, current strict Clippy, formatting, diff checks, focused regressions, and the complete Controller all-targets suite pass.
+- The compatibility override is intentionally limited to `module_name_repetitions`; no public names, serialization contracts, or runtime behavior changed.
+
+## 2026-09-04 Rust 1.83 Clippy Compatibility Correction
+
+- The earlier suppression-based solution is superseded and no longer present. No confirmed Rust 1.83 Clippy, current Clippy, behavior, formatting, diagnostics, or module-size blocker remains.
+- Public item names and machine-consumed contracts remain unchanged; only private implementation module identities and test-support organization changed.
+
+## 2026-09-04 Rust 1.83 Clippy LOC Completion
+
+- No hard changed-file LOC defect remains. The two oversized test helpers and the independently discovered 251-line binary entrypoint were split by responsibility without lint allowances, padding, exceptions, or duplicated fixture logic.
+- Recovery-focused mock tests, Tasks 12/13/20/21, both strict Clippy toolchains, formatting, diagnostics, diff checks, and the complete 368-test Controller all-target suite pass.

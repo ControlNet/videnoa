@@ -279,3 +279,46 @@
 - Real GitHub Release and Docker Hub publication weren't run locally. Exact
   image tags, archive names, dependencies, and publishing steps were validated
   against the tracked release workflow and packaging scripts.
+
+## 2026-09-04 F4-B3 Legacy Linux Package Remediation
+
+- Run `33799944410` failed only after p7zip scanned the complete 5,335,320,003-byte bundle and opened the archive path, then emitted opaque `System ERROR: E_FAIL` with exit 2. The same command passed on the immediately preceding runner image, identifying resource headroom rather than a deterministic command or layout defect.
+- No hosted rerun was triggered for the working-tree remediation. Local real-bundle archive creation/integrity/layout, focused negative contracts, workflow contracts, and diagnostics are the available evidence for Atlas before landing.
+
+## 2026-09-04 F4-B2 Auth Focus Remediation
+
+- The hosted malformed-login focus failure was scheduling-sensitive: the exact test passed locally before the fix, but passive effect timing allowed committed error UI while focus remained on the password field.
+- Concurrent task-table work introduced a deterministic jsdom-only `ResizeObserver is not defined` failure in full-shell auth tests. A test-local observer stub resolved it without touching the unrelated task implementation.
+- The external programming-skill TypeScript audit helper still cannot resolve the project-local `typescript` package from its own caller path. Repository-native lint, typecheck, Vitest, build, diagnostics, and Chromium gates pass.
+- Production builds retain the known non-fatal Rollup warnings for annotation comments inside Zod.
+
+## 2026-09-04 07:10:53 +10:00 F1-B1/F3-B1 Worker Health Remediation
+
+- Removing Task 20's direct `WorkerHealthUpdate` fixture exposed the production defect: an API-created worker remained offline with no attempts or remote run requests because no runtime owned general health refresh.
+- The first full-suite rerun exposed a test-only race: an outage scenario used the normal registration helper, which now correctly waits for successful onboarding. A no-wait API helper now preserves the intended initial-failure observation.
+- No worker-health product blocker remains. Current strict Clippy, current-toolchain tests, Rust 1.83 tests, formatting, diagnostics, and production-shaped HTTP scheduling coverage pass.
+
+## 2026-09-04 F3-B2 Task Overflow Remediation
+
+- Independent review found the initial measured-overflow state reused scrollbar-gutter edge tolerance for `hasOverflow`, which could hide a small real overflow. A one-pixel unit regression and rendered-table measurement now lock the corrected contract.
+- The first two browser reruns exposed Chromium's effective scroll end and intrinsic cell-overflow distinctions. Runtime geometry confirmed the gutter mechanism; the final implementation uses table `offsetWidth` for affordance visibility and frame scroll geometry for boundaries.
+- Final repository-native gates pass: production build, ESLint, TypeScript, 108 Vitest tests, the focused production-preview overflow scenario, and 14 existing Tasks/Task 19 Chromium scenarios. Production builds retain the known non-fatal Rollup warnings for Zod dependency comments.
+- Two independent reviewers passed all six final fresh PNG captures with no product or evidence blockers.
+
+## 2026-09-04 Rust 1.83 Clippy Compatibility
+
+- The initial Rust 1.83 strict Clippy inventory contained 143 diagnostics: 95 `module_name_repetitions` and 48 `must_use_candidate`. After those were resolved, five masked `let_and_return` diagnostics appeared in `http_contract.rs` and were simplified without behavior changes.
+- Full verification exposed inherited test fixtures that configured nonexistent `data_root` and `temp_root` directories before `PathCapabilities::open`; the fixtures now establish the same precondition required in production.
+- One combined focused run observed a Task 20 cleanup assertion failure. The exact test, the full Task 20 target, and the final all-targets suite passed on quiet reruns, so no production cleanup change was justified.
+
+## 2026-09-04 Rust 1.83 Clippy Compatibility Correction
+
+- The prior remediation was rejected because `module_name_repetitions = "allow"` weakened package lint policy and `task_api.rs` exceeded the 250 pure-LOC ceiling.
+- Removing the allowance reproduced exactly 95 `module_name_repetitions` diagnostics. Responsibility-based logical module names reduced the production inventory to zero without renaming serialized types or adding lint exceptions; equivalent test-support module cleanup removed the remaining test-target diagnostics.
+- The first task API extraction placed support at `tests/task_api_support.rs`, which Cargo compiled as an unintended integration target. Moving it to `tests/task_api/support.rs` restored the intended private fixture boundary.
+
+## 2026-09-04 Rust 1.83 Clippy LOC Completion
+
+- Independent complete auditing found two touched test helpers above the hard ceiling: `mock_videnoa/recovery_support.rs` at 323 pure LOC and `task12/support.rs` at 360. The final NUL-safe audit also identified `src/main.rs` at 251.
+- The first Task 12 utility re-export passed Task 12 but failed strict all-target Clippy because aggregate targets did not consume every re-export. Root delegate functions replaced the re-export without changing any caller path.
+- No size blocker remains: the complete changed Controller Rust audit now has a maximum of 244 pure LOC.
