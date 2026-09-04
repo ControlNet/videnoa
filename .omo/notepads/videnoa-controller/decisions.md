@@ -240,3 +240,40 @@
 - Document stopped-service whole-data-root backup as the portable SQLite WAL
   procedure and require a pre-upgrade snapshot for rollback. Do not invent a
   database downgrade command.
+
+## 2026-09-04 F4-B2 Auth Focus Remediation
+
+- Use layout-synchronized focus for login and bootstrap recovery summaries, with `role="alert"`, `tabIndex={-1}`, and an explicit login-panel focus outline.
+- Represent failed login results as `invalid_credentials` or `recovery`; associate `aria-invalid` and `aria-describedby` with the password field only for invalid credentials.
+- Keep request-generation ownership in `LoginPage` and invalidate it during unmount so stale completions cannot mutate UI state or focus.
+- Stub `ResizeObserver` only in the full-shell auth test boundary; do not change task-table production behavior or global test setup for this remediation.
+
+## 2026-09-04 07:10:53 +10:00 F1-B1/F3-B1 Worker Health Remediation
+
+- Run `WorkerHealthService` beside `Orchestrator` in the production composition root and join both under the existing coordinated shutdown path.
+- Bound independent probes at eight, use persisted health cadence and retry settings, and skip disabled workers before creating remote clients.
+- Keep compatibility durable: cache only avoids redundant capability calls inside the service; scheduler eligibility continues to come from persisted worker capabilities.
+
+## 2026-09-04 F3-B2 Task Overflow Remediation
+
+- Render the hint, compact Lucide navigation, labeled focus stop, and keyboard behavior whenever the table's rendered box exceeds the frame's client width at any viewport; do not gate the affordance by CSS breakpoint.
+- Keep one-pixel content overflow actionable, but retain gutter-aware tolerance only for disabled left/right boundary state.
+- Preserve table-owned horizontal and vertical scrolling, dense tokenized styling, native title disclosure, and pagination outside the frame; do not change authentication or backend behavior.
+
+## 2026-09-04 Rust 1.83 Clippy Compatibility
+
+- Keep `all` and `pedantic` denied and add only `module_name_repetitions = "allow"` at the Controller package level. This neutralizes historical group-membership drift while retaining both toolchains' other strict diagnostics.
+- Preserve exported branded-ID and domain-value names because renaming them would create broad public API and test churn. Add `#[must_use]` to value-returning generated methods instead.
+- Align affected test fixtures with the production root-existence precondition rather than weakening `PathCapabilities::open`.
+
+## 2026-09-04 Rust 1.83 Clippy Compatibility Correction
+
+- Remove the rejected package lint allowance completely. Keep `all`, `pedantic`, and both `-D warnings` commands unchanged.
+- Preserve public crate paths such as `videnoa_controller::auth`, `config`, `lifecycle`, `operations`, `orchestration`, `persistence`, `recovery`, `remote`, `scheduler`, and `workers` as façade modules that re-export responsibility-named implementations.
+- Split `task_api.rs` into authentication, intake-contract, concurrency, and shared-support modules; each file remains independently below 250 pure LOC.
+
+## 2026-09-04 Rust 1.83 Clippy LOC Completion
+
+- Keep recovery fixture/bootstrap and task loading in `mock_videnoa/recovery_support.rs`; move remote lifecycle state synthesis into the private nested `recovery_support/state_builder.rs` module.
+- Keep Task 12 fixture/bootstrap, executor/client construction, and persistence lookup in `task12/support.rs`; move task progression into `support/task_lifecycle.rs` and artifact path/jitter utilities into `support/artifact_paths.rs`, retaining root delegate functions for all existing callers.
+- Move Controller runtime exit classification and shutdown-signal ownership from the 251-line binary entrypoint into private `termination.rs`; do not alter startup composition or the public module-topology façade.
