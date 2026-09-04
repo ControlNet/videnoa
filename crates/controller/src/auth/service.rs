@@ -12,8 +12,8 @@ use crate::config::AuthConfig;
 use crate::domain::{AuthMethod, LoginResponse, SecretString, SessionId, SessionResponse};
 use crate::persistence::{NewSession, PersistenceError, SessionRecord, Store};
 
-use super::limiter::LoginLimiter;
-use super::password::{digest, PasswordFile};
+use super::credentials::{digest, PasswordFile};
+use super::login_attempts::LoginLimiter;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AuthError {

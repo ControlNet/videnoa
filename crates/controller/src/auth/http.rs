@@ -15,7 +15,7 @@ use crate::domain::{
 };
 use crate::{app_router, FrontendAssets, StartupError};
 
-use super::service::{session_response, IssuedSession};
+use super::authentication_service::{session_response, IssuedSession};
 use super::{authenticate, authorize_mutation, AuthError, AuthService, RequestAuth};
 
 pub const SESSION_COOKIE: &str = "videnoa_session";
