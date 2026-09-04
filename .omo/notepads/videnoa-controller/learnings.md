@@ -418,3 +418,23 @@
 - Debug Controller process tests require `controller-web/dist` at runtime, while `build.rs` intentionally creates or validates that directory only for release builds. A clean hosted debug-test job must therefore build Controller web assets in the same job before launching the binary.
 - Child stderr is part of a process-test failure contract. Piping and reporting it on early exit distinguished the hosted `FrontendDirectoryMissing` startup error from bind and configuration failures without changing startup or shutdown timing.
 - Removing only `controller-web/dist` reproduced the hosted status-1 failure; restoring the unchanged directory toggled the authenticated SSE test back to listener closure at 0 ms and process exit between 8 and 21 ms across repeated Rust 1.83 runs.
+
+## 2026-09-04 Task 20 Hosted Contention Remediation
+
+- A process-local semaphore is insufficient when two Task 20 test binaries overlap: each process can still admit one fixture whose Tokio test runtime owns up to eight workers. A Task-20-only advisory file permit closes the cross-process oversubscription path without serializing unrelated test targets.
+- The mock `MidDownloadBody` checkpoint proves that a positive response chunk was emitted, not that the Controller task has already written it to `.part`. Keeping the checkpoint held while observing positive file length removes the scheduler-immediacy assumption without sleeps.
+- Completion timeout diagnostics that snapshot the durable task and attempt records plus remote route/job/file evidence identified the stalled hosted stage exactly: `Submitting` at task version 4 with no persisted remote job ID after one accepted run request.
+
+## 2026-09-04 Task 20 AttemptMismatch Correction
+
+- The first claimed double-process proof did not survive independent verification: one later overlapping CPU-0 process failed `verifying_cancellation_removes_verified_workspace` with an uncontextualized `AttemptMismatch`.
+- A red runtime toggle reproduced the exact stale pair at the test's manual `FinishDownload` operation: task version 7 remained `Downloading` while attempt version 8 was already `Verifying`. Releasing `DownloadVerified` before acquiring the pair allowed the checkpointed child transition to race the test's separate store reads.
+- Lifecycle CAS inputs in Task 20 tests must be acquired as task-before, current-attempt, task-after and accepted only when the task snapshot is stable, task and attempt statuses agree, and the operation's required status is present. The lifecycle operation itself is never retried.
+- Keeping `DownloadVerified` held through coherent `Downloading` acquisition, manual `FinishDownload`, coherent `Verifying` acquisition, and persisted cancellation intent preserves the intended crash boundary while preventing the old generation from advancing the pair concurrently.
+
+## 2026-09-04 Task 20 Remote Cleanup Crash Correction
+
+- `ControllerRuntime::crash` aborts and joins the top-level orchestrator, but aborting that parent drops its `JoinSet`; nested stage abort is initiated without a join barrier that proves every checkpoint-blocked future has stopped before the test continues.
+- Releasing a transfer checkpoint after the simulated crash can therefore wake the old generation and let it commit `FinishCleanup`. At `RemoteDeleteSucceeded`, that produces a durably `Completed` task with one delete instead of forcing restart recovery to issue the expected idempotent second delete.
+- A ten-second route-count diagnostic disproved delayed counter visibility: the mock increments `DeleteFile` at request acceptance, yet the task and attempt were already version 11/`Completed` with one delete and zero files. The correct fixture fix is to leave the abandoned gate closed after crash.
+- Removing the post-crash gate release passed 10 consecutive focused CPU-0 local matrices and two fresh overlapping CPU-0 Task 20 processes at 30/30 each.
