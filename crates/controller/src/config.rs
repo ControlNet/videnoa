@@ -6,7 +6,9 @@ use std::time::Duration;
 use figment::providers::{Env, Format, Serialized, Toml};
 use figment::Figment;
 
+#[path = "config/raw.rs"]
 mod raw;
+#[path = "config/validate.rs"]
 mod validate;
 use raw::RawControllerConfig;
 
