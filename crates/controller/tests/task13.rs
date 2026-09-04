@@ -18,5 +18,7 @@ mod publication;
 mod recovery;
 #[path = "task13/support.rs"]
 mod support;
+#[path = "task13/temp_cleanup_security.rs"]
+mod temp_cleanup_security;
 #[path = "task12/support.rs"]
 mod transfer_support;
