@@ -438,3 +438,49 @@
 - Releasing a transfer checkpoint after the simulated crash can therefore wake the old generation and let it commit `FinishCleanup`. At `RemoteDeleteSucceeded`, that produces a durably `Completed` task with one delete instead of forcing restart recovery to issue the expected idempotent second delete.
 - A ten-second route-count diagnostic disproved delayed counter visibility: the mock increments `DeleteFile` at request acceptance, yet the task and attempt were already version 11/`Completed` with one delete and zero files. The correct fixture fix is to leave the abandoned gate closed after crash.
 - Removing the post-crash gate release passed 10 consecutive focused CPU-0 local matrices and two fresh overlapping CPU-0 Task 20 processes at 30/30 each.
+
+## 2026-09-05 F2-B2 rustls-webpki Remediation
+
+- `cargo +1.83.0 update -p rustls-webpki@0.103.9 --precise 0.103.13` changed only the locked `rustls-webpki` version and checksum; `reqwest 0.12.27`, `hyper-rustls 0.27.7`, `rustls 0.23.36`, and every other locked package remained unchanged.
+- `0.103.13` is the minimal current patch that clears all four advisories reported on the Controller-reachable `0.103.9` node, including the requested wildcard constraint fix in `0.103.12` and the CRL parsing fix first available in `0.103.13`.
+- The resolved crate declares edition 2021 and Rust 1.71, and Cargo/Rust 1.83 compiled it through the unchanged reqwest/rustls graph. The existing HTTPS construction and URL contract plus `cargo deny` provide regression coverage without adding a direct webpki dependency or an overly narrow manifest pin.
+
+## 2026-09-05 F1-B1 Task Overflow Determinism Completion
+
+- Derived disabled state cannot represent durable user intent because geometry-changing scroll notifications may arrive before ResizeObserver. A separate right-edge intent ref survives that ordering.
+- Leftward movement must be evaluated before growth anchoring and without scrollbar-gutter tolerance; otherwise a small user movement or movement concurrent with layout growth snaps back to the edge.
+- Explicit `End` establishes intent even for a one-pixel rendered overflow whose nominal scroll range is entirely within the reserved gutter. Initial observer activity does not establish intent.
+- `scrollbar-gutter: stable` makes the browser's saturated `scrollLeft` the correct rendered-edge oracle; `scrollWidth - clientWidth` remains the nominal range used for boundary calculations.
+
+## 2026-09-05 F2-B1 Bearer Limiter Remediation
+
+- Password authentication policy belongs at the shared credential-verification boundary, not only the login handler. Login and Bearer guesses must record failures in the same `LoginLimiter` keyed by the actual connection peer IP.
+- Axum's `ConnectInfo<SocketAddr>` is available to handlers and middleware request extensions when the production router is served with `into_make_service_with_connect_info`; direct router tests must inject the same extension to model production requests accurately.
+- Parse Authorization before password verification so missing, non-UTF-8, non-Bearer, and malformed schemes do not invoke Argon2 or consume the failure budget. Cookie-session validation neither records nor clears password failures; successful password verification clears the peer state.
+
+## 2026-09-05 F2-B2 anyhow Remediation
+
+- `cargo +1.83.0 update -p anyhow@1.0.101 --precise 1.0.103` changed only the locked `anyhow` version and checksum relative to the shared worktree state; the independently remediated `rustls-webpki 0.103.13` resolution remained intact.
+- The installed `RUSTSEC-2026-0190` advisory requires `anyhow >=1.0.103`. The resolved crate declares edition 2021 and Rust 1.68, so the precise patch remains compatible with the Controller's Rust 1.83 contract.
+- Post-update `cargo deny check` contains neither `RUSTSEC-2026-0190` nor the four remediated webpki IDs. Package-scoped Controller normal/build resolution contains `anyhow 1.0.103` and excludes the remaining reported `h2`, `quick-xml`, `time`, GTK, and legacy Unicode nodes.
+
+## 2026-09-05 F2-B2 h2 Remediation
+
+- The earlier package-isolated tree conclusion was incorrect for security disposition. The combined workspace inverse tree resolves `h2 0.4.13` through `hyper 1.8.1` into both Controller Axum server/SSE paths and Controller Reqwest/Hyper-Rustls client paths.
+- The installed `RUSTSEC-2026-0258` advisory identifies `h2 >=0.4.16` as patched, and `cargo +1.83.0 info h2@0.4.16` reports `rust-version: 1.63`. The minimum patched release is therefore compatible with the Controller's Rust 1.83 contract.
+- `cargo +1.83.0 update -p h2@0.4.13 --precise 0.4.16` selected the intended patch. After rejecting Cargo 1.83's unrelated `windows-sys` reference rewrites, locked resolution and the full Rust 1.83 Controller gates passed with only the h2 version/checksum added to the previously approved anyhow/webpki lock delta.
+- Reachability must be checked with workspace feature unification: `cargo tree --locked --workspace --edges normal,build -p videnoa-controller -i h2@0.4.16` shows the patched Controller paths, while package-isolated Cargo 1.83 output omits the shared h2 feature edge and must not be used to dismiss `cargo deny` evidence.
+
+## 2026-09-05 Controller Logout Focus Ownership
+
+- The authenticated shell had two independent focus owners: the pathname-keyed `useLayoutEffect` always focused `main.shell-main`, while the logout error used a `useEffect` keyed only to `logoutError`. A route commit after the alert appeared could therefore synchronously steal focus without causing the alert effect to run again.
+- Recoverable shell errors have higher focus priority than route restoration. Resolving the route effect target as `logoutAlertRef.current ?? mainRef.current` and moving logout error focus to `useLayoutEffect` makes that priority explicit without timers, polling, or frame scheduling.
+- The exact logout regression now forces the competing transition by navigating to Workers while the failure alert remains mounted, asserts the alert still owns focus, then proves the Sign out retry succeeds and returns to login.
+- Final verification: exact focused regression 20/20; full Vitest 110/110 twice; task overflow Vitest 6/6; ESLint pass; production build pass; focused overflow Playwright 15/15 on the confirming run; full Playwright 47/47 including logout failure/retry, malformed login focus, reload/session focus, and accessibility coverage.
+
+## 2026-09-05 Task Overflow Pre-growth End Completion
+
+- The flaky browser path can press `End` after the loading table is focusable but before asynchronous task rows create rendered overflow. Explicit edge intent must therefore be representable as `pending`; deriving it from the current `hasOverflow` sample discards a valid key command.
+- Right-edge intent has three distinct states: `none`, `pending`, and `anchored`. Pending survives the initial no-overflow loading phase, anchored survives observer-owned geometry contraction/growth, and anchored clears when content overflow genuinely disappears so a later responsive overflow starts at the left boundary.
+- Browser-owned contraction can clamp `scrollLeft` by the same amount that the maximum contracts. That delta is layout movement, not user-left intent; only movement beyond the contracted edge or movement without contraction cancels anchoring.
+- Final verification: the deterministic pre-growth regression failed at `0` versus expected `420` before the final correction and passed afterward; full Vitest passed `112/112` twice; the exact reported Chromium command passed `30/30`; the focused scenario passed a fresh uninterrupted `60/60`; ESLint, TypeScript, production build, changed-file diagnostics, `git diff --check`, and the complete Playwright suite at `47/47` passed.

@@ -2,125 +2,146 @@
 
 Audit date: 2026-09-04
 
-Audited tip: `22f9656b797f5c3326ff003d11d812a6d212ed8b`
+Audited tip: `094d87833ebbc55c8f27857cd70d85fc5cc91afe`
 
-Prior rejected baseline: `b06567b6d9cc3ad0466dd56f04e2a3e5d60f6144`
+Prior audited tip: `22f9656b797f5c3326ff003d11d812a6d212ed8b`
 
-Repository state at audit start: `HEAD == origin/dev == 22f9656b797f5c3326ff003d11d812a6d212ed8b`, divergence `0 0`, clean worktree, empty stash.
+Hosted authority: [GitHub Actions run 33873102244](https://github.com/ControlNet/videnoa/actions/runs/33873102244)
 
-## Verdict
+## Decision
 
-**APPROVE**
+**REJECT**
 
-The complete plan, approved draft, Controller request/repository knowledge, 35-commit remediation range, production source, ignored local evidence, final preflight results, and all 13 fresh screenshots were re-reviewed. Every Task 1-25 responsibility and acceptance criterion remains represented, every success criterion is supported, and no Must-NOT-Have or unrelated scope expansion was found.
+The complete plan, approved draft, Controller request and repository knowledge, implementation history from Controller inception through the audited tip, current source, tests, task evidence, remediation evidence, packaging and documentation contracts, and exact-tip hosted run were reviewed. Product, lifecycle, security, packaging, documentation, and scope boundaries are substantively represented, but the required full Playwright gate is not independently reproducible at this exact tree. Task 19 and the dense accessible UI success criterion therefore do not currently satisfy their pass requirements.
 
-The two prior F1/F3 blockers are resolved. Production now owns worker health and capability discovery from runtime composition through durable persistence and scheduler wake, and API-created workers become schedulable without direct fixture/database health injection. The Tasks table now measures real overflow at every viewport, continuously exposes correctly disabled/enabled navigation, supports keyboard scrolling, and keeps long/CJK content inside a table-owned scroll region.
+The audited implementation is additive and separately named. Existing `videnoa`, `videnoa-desktop`, GPU image, web application, and legacy archive contracts remain present. `videnoa-controller` has an independent crate, frontend, image, archives, release names, and documentation, with no dependency or packaged-content path to `videnoa-core`, ONNX Runtime, CUDA, cuDNN, TensorRT, models, or GPU runtime.
 
-No plan or scope blocker remains at this SHA.
+One F1 blocker remains at this SHA: a fresh complete `npm run test:e2e` execution returned 46 passed and 1 failed. `task-overflow.spec.ts` observed the right-edge navigation control enabled and fully opaque after layout growth, when the native and computed unavailable states were required to remain disabled, `opacity: 0.65`, and `cursor: not-allowed`. A focused three-repeat rerun passed 9/9, establishing timing/layout sensitivity rather than disproving the full-suite failure. The exact-tip hosted pass is valid evidence, but it does not erase a fresh contradictory execution of the same required acceptance gate.
 
-## Resolved Prior Blockers
+## Blocking Finding
 
-### Worker onboarding and scheduling: resolved
+### F1-B1: Required browser overflow state is timing-sensitive
 
-- `crates/controller/src/main.rs` constructs `WorkerHealthService` from the production `Store`, scheduler runtime settings, payload limits, shared shutdown coordinator, and shared `EventHub`; `tokio::try_join!` owns it beside orchestration and propagates either runtime failure.
-- `crates/controller/src/workers/health.rs` scans only enabled due workers, bounds probes to eight, retains a shutdown stage permit through the durable write, and wakes on both cadence and the shared durable-change channel.
-- `crates/controller/src/workers/health/probe.rs` creates the typed `VidenoaClient`, requires healthy `/api/health`, invokes production capability discovery when the TTL cache has no live catalog, and classifies client/health/capability failures for invalidation.
-- Successful probes persist `online = true`, eligible workflows, refreshed/last-seen timestamps, cleared error/retry state, and the next health deadline. Failed probes persist `online = false`, bounded exponential backoff, and retained prior capability/last-seen evidence.
-- `WorkerRegistry::create` emits `DurableChange::Worker`, immediately waking the health service. `WorkerRegistry::refresh_health` emits the same durable change after the CAS write, waking orchestration so SQLite's online/compatible state drives reservation.
-- `crates/controller/tests/task20/worker_health.rs` proves API-only registration reaches online/compatible state and a queued task receives an attempt; it also proves disabled-worker skip, offline-peer independence, persisted backoff/recovery, capability-cache expiry/replacement, and clean shutdown.
-- `.omo/evidence/videnoa-controller/final/remediation-worker-health/verification.md` records the failing-first queued/zero-attempt reproduction and the corrected real-TCP production path without health fixture injection.
-- Final backend preflight passed all 368 Controller tests. The five worker-health tests passed in the aggregate suite and in three focused repetitions, 15/15 total.
+The complete local browser command required by the plan was executed against the audited tree:
 
-Disposition: prior Task 8, Task 10, and Task 11 failures are now PASS.
+```text
+cd controller-web && npm run test:e2e
+46 passed, 1 failed
+failed: tests/e2e/task-overflow.spec.ts:44
+```
 
-### Tasks table overflow and navigation: resolved
+The failing scenario first moved the task table to its effective right edge, then expanded the table geometry by 20 pixels. The implementation is intended to retain right-edge anchoring through `ResizeObserver`/`MutationObserver` callbacks. In the failed full-suite execution, the right control instead became available and had `opacity: 1` and `cursor: pointer`; the assertion required the native disabled state and unavailable styling.
 
-- `controller-web/src/tasks/TaskTable.tsx` measures table/frame geometry with resize, mutation, font-load, and scroll observation rather than inferring overflow from viewport width.
-- Navigation renders whenever measured content overflows. Left/right controls track actual scroll edges and expose native disabled states. The table frame becomes a labeled focus target only when overflow exists and supports `ArrowLeft`, `ArrowRight`, `Home`, and `End`.
-- `controller-web/src/tasks/tasks.css` keeps controls visible at desktop and narrow widths, adds a visible focus outline, and gives unavailable overflow/pagination controls distinct border, background, color, opacity, and `not-allowed` cursor treatment.
-- `controller-web/tests/e2e/task-overflow.spec.ts` proves the full state matrix at 1440, 1024, and 375 pixels, including control appearance/disappearance after measured geometry changes, keyboard scrolling, edge states, pagination visibility, no document-level overflow, long/CJK ellipsis, and no serious/critical Axe findings.
-- The 20,000-row browser fixture returns exactly one bounded 50-row page; runtime evidence records `limit=50`, offsets `0 -> 50 -> 0`, a 323-pixel frame, 2247-pixel table content, and successful internal horizontal scroll.
-- All 13 final-preflight screenshots were inspected directly. The left/right 1440 captures prove all optional right-side columns are reachable; the 1024 capture proves the same control state at intermediate width; the 375 CJK capture proves table-owned containment and right-edge reachability. Disabled overflow and pagination controls are visibly distinct.
+Focused repetition did not reproduce the failure:
 
-Disposition: prior desktop clipping/discoverability and keyboard-operability blocker is resolved; Tasks 16 and 19 remain PASS.
+```text
+npx playwright test tests/e2e/task-overflow.spec.ts --project=chromium --workers=1 --repeat-each=3
+9 passed
+```
+
+This is a determinism failure, not evidence that the complete gate passed. Task 19 acceptance explicitly requires Playwright to pass at desktop/narrow widths, and its QA explicitly covers responsive overflow/sticky controls. The dense accessible operational UI success criterion likewise requires Playwright and responsive checks to pass. Both remain blocked until the full suite is stable and green.
+
+## Exact-Tip Authority
+
+At audit start, `HEAD == origin/dev == 094d87833ebbc55c8f27857cd70d85fc5cc91afe`, branch divergence was `0 0`, the worktree contained no pre-existing product change, and the stash was empty. The only later observed worktree modification was a concurrent final-review edit to `F4-release-regression.md`; it was not modified or used as proof by this F1 audit.
+
+Run `33873102244` is authoritative because its `headSha` exactly equals the audited tip. It completed with conclusion `success`. All 14 jobs passed:
+
+| Hosted job | Result |
+|---|---|
+| Workflow contracts | PASS |
+| Web build check (Ubuntu) | PASS |
+| Web build check (Windows) | PASS |
+| Rust tests (Ubuntu) | PASS |
+| Rust tests (Windows) | PASS |
+| Controller Rust quality and tests | PASS |
+| Controller web quality and E2E | PASS |
+| Package smoke (Linux) | PASS |
+| Package smoke (Windows) | PASS |
+| Docker build smoke | PASS |
+| Controller fault and load suites | PASS |
+| Controller archive smoke (Linux) | PASS |
+| Controller archive smoke (Windows) | PASS |
+| Controller image and content smoke | PASS |
+
+The prior F1/F2/F3/F4 reports at `22f9656` are stale and do not transfer approval or rejection to this audit. Their material runtime findings are superseded by current source and exact-tip evidence: production SSE observes the shutdown coordinator, durable submission ownership prevents same-generation duplicate `/api/run` requests, restart takeover replays the same key, and the exact-tip hosted Controller Rust plus fault/load jobs pass the repaired Task 20 suite.
+
+The final contention commits `d4d6b97`, `d69bc64`, and `b390cde` change only `crates/controller/tests/task20/**`. They serialize process-heavy fixtures, strengthen coherent assertions and diagnostics, and prevent a crashed cleanup future from committing after restart. They do not alter production Controller, frontend, packaging, workflow, or legacy-product behavior. Commits `54d8b08` and `094d878` are notepad documentation only.
 
 ## Tasks 1-25 Compliance Map
 
-| Task | Result | Audit basis |
+| Task | Result | Exact-tip audit basis |
 |---:|---|---|
-| 1 | PASS | Separate `videnoa-controller` workspace package/binary and `controller-web` build/embed/debug assets remain isolated; existing `videnoa` and `videnoa-desktop` targets remain unchanged. |
-| 2 | PASS | Branded IDs, stable snake_case lifecycle/error/API DTOs, strict configuration, exact path/extension values, defaults, and typed invalid-bound/root/hash failures remain covered. |
-| 3 | PASS | SQLite migrations, WAL/foreign keys/busy timeout/bounded pool, repositories, indexes, CAS transitions, atomic reservation, stable bounded pages, and 20,000-row query plans pass. |
-| 4 | PASS | Single-admin Argon2id auth, digest-only sessions, Bearer/session boundaries, CSRF/same-origin checks, throttle/rotation/expiry/redaction, and retained path capabilities pass. Temp-root operations are now capability-owned and hostile replacement tests pass. |
-| 5 | PASS | Additive durable Videnoa `/api/run` idempotency preserves legacy callers and prevents duplicate jobs across replay/concurrency/restart; ambiguous lost worker evidence never authorizes blind resubmission. |
-| 6 | PASS | Mock Videnoa and deterministic fault controls remain test-only; production manifests/source contain no dummy worker or fixture path. |
-| 7 | PASS | Authenticated `POST/GET /api/tasks`, durable intake idempotency, exact rooted paths, no-clobber admission, bounded history/detail pages, filters/search/sorts, and duplicate races pass. |
-| 8 | PASS | Typed health/capability/run/job/file client, status taxonomy, bounded streams/JSON, workflow+preset compatibility, opaque remote paths, TLS/timeouts, and TTL invalidation cache are now exercised by production worker health. |
-| 9 | PASS | Exhaustive lifecycle/recovery/cancel tables, persist-before-side-effect commands, bounded retries, explicit processing attempts, downstream resume, immutable paths, and non-retryable ambiguity remain intact. |
-| 10 | PASS | Startup reconciliation and graceful shutdown cover every nonterminal task stage; production worker health now supplies general outage/backoff/recovery without blocking healthy peers or cancelling remote compute. |
-| 11 | PASS | Worker CRUD, normalized uniqueness, production health/capability refresh, atomic capacity, exact task/worker order, prefetch/idle-feed priority, pause/disable/delete rules, and independent pools pass. |
-| 12 | PASS | Root-confined upload, capability-owned temp download/evidence, length/hash verification, partial cleanup, retry-from-zero, independent limits, and no downstream compute replay pass hostile artifact replacement tests. |
-| 13 | PASS | Descriptor-rooted staging, expected hash/length evidence, no-replace publication, ambiguity preservation, capability-safe local cleanup, mandatory remote cleanup, 404 convergence, and restart retry pass. |
-| 14 | PASS | Authenticated worker/settings/control/readiness/count/SSE routes, optimistic versions, cancellation/retry policies, 64-entry bounded realtime, passive auth recheck, background worker deltas, and lag/refetch pass. |
-| 15 | PASS | Same-origin authenticated shell, login/logout/bootstrap, memory-only CSRF, protected routes, no browser credential storage, release SPA fallback, and corrected committed-alert focus pass. |
-| 16 | PASS | Dense server-paginated Tasks table, URL query state, counts, allowed filters/sorts/search, 20,000-row bounded behavior, active-row updates, and measured all-viewport overflow/navigation pass. |
-| 17 | PASS | Manual creation calls the same idempotent task endpoint with exact paths/source, compact creation UI, task detail/attempt/error/progress panes, and stage-aware cancel/retry guidance. |
-| 18 | PASS | Workers and Settings provide worker capacity/health/actions, pause/resume, transfer/prefetch/timeout/retry controls, optimistic conflict recovery, read-only roots/auth status, and no editable secrets. |
-| 19 | PASS | Frontend gates pass 108/108 Vitest and 45/45 Chromium scenarios; accessibility, focus, keyboard, reduced-motion, forced-color, responsive, CJK/long-value containment, dialogs, and storage checks are covered. |
-| 20 | PASS | Real Controller HTTP plus one/three mock workers proves full pipelines, API-only worker onboarding, crash/outage matrices, cancellation, retry, pause, cleanup, retained history, and one remote job per attempt identity. |
-| 21 | PASS | 20,000-row load, snapshot-consistent attempts, repeated intake/reservation/publication races, path/auth/CORS/SSE attacks, temp/publication replacement, independent pools, and secret/browser-state scans pass. |
-| 22 | PASS | Dedicated Debian image builds with Rust 1.83, runs as `10001:10001`, embeds the SPA, persists data/temp/NAS mounts, exposes health, and contains no legacy binary, GPU/model/core runtime, Node, or source assets. |
-| 23 | PASS | Linux and Windows Controller scripts retain exact names and four-file roots, enforce version/content contracts, and keep assets embedded. Linux deterministic/live smoke passes; native Windows remains the documented hosted boundary. |
-| 24 | PASS | CI/release graphs retain legacy Rust/web/package/GPU image jobs and assets while adding independent Controller Rust/web/fault/load/container/archive jobs, exact archives, and `controlnet/videnoa-controller:<version|latest>` with existing credentials. The legacy Linux archive helper remediation preserves root/name/volume conventions and fails closed on missing output/space/integrity. |
-| 25 | PASS | `README-controller.md`, `docs/controller.md`, root README, and `controller.example.toml` cover exact intake modes, auth/rotation, roots, workers/health, lifecycle, retry/cancel/ambiguity, persistence, backup/restore, migration/rollback, deployment, APIs/SSE, releases, non-goals, and troubleshooting. |
+| 1 | PASS | Separate workspace package/binary and `controller-web` build/embed/debug assets exist; existing application and desktop targets remain named and buildable. |
+| 2 | PASS | Branded IDs, stable snake_case lifecycle/error/API DTOs, exact paths/extensions, strict configuration, locked defaults, and typed invalid configuration failures are implemented and tested. |
+| 3 | PASS | Six SQLx migrations, WAL/foreign keys/busy timeout/bounded pool, repositories, indexes, CAS transitions, atomic reservation, stable bounded pages, and 20,000-row query plans pass. |
+| 4 | PASS | Single-admin Argon2id auth, digest-only sessions, Bearer/session boundaries, CSRF/same-origin checks, throttling, rotation/expiry, redaction, and descriptor-rooted path capabilities pass hostile tests. |
+| 5 | PASS | Additive Videnoa `/api/run` idempotency preserves unkeyed callers and converges sequential, concurrent, lost-response, and restart replay to one remote job per key. |
+| 6 | PASS | Real-TCP mock Videnoa, request journals, and deterministic fault controls are test-only; production dependency and content checks contain no fixture path or fake success behavior. |
+| 7 | PASS | Authenticated idempotent task creation plus bounded list/detail APIs preserve exact rooted paths, reject collisions, support allowlisted filters/search/sorts, and withstand duplicate races. |
+| 8 | PASS | Typed health/capability/job/file client, bounded JSON/streams, workflow and preset compatibility, opaque remote paths, status taxonomy, timeouts, TLS URLs, and TTL invalidation are implemented. |
+| 9 | PASS | Exhaustive lifecycle, recovery, cancellation, retry, persist-before-side-effect, attempt replacement, downstream resume, and ambiguity policies are represented by typed state transitions and tests. |
+| 10 | PASS | Startup reconciliation and coordinated shutdown cover every nonterminal stage; health outages retain assignments, back off, spare healthy peers, and never cancel unknown remote compute. |
+| 11 | PASS | Worker CRUD, production health refresh, capability persistence, exact task/worker order, atomic capacity, prefetch, idle-feed precedence, persisted pause, and independent transfer limits pass. |
+| 12 | PASS | Root-confined streamed upload/download, exact length/hash evidence, partial cleanup, retry from zero, independent pools, and no downstream compute replay pass transfer and replacement attacks. |
+| 13 | PASS | Hidden task-owned staging, expected hash/length, platform no-replace finalization, ambiguity preservation, local cleanup, remote cleanup, `404` convergence, and restart retry pass. |
+| 14 | PASS | Authenticated worker/settings/control/readiness/count/SSE routes, optimistic versions, cancellation/retry policy, bounded deltas, passive auth recheck, lag/refetch, and worker updates pass. |
+| 15 | PASS | Same-origin authenticated shell, login/logout/bootstrap, memory-only CSRF, protected routes, no browser credential storage, embedded SPA fallback, and focus behavior pass. |
+| 16 | FAIL | Dense server-paginated history and bounded behavior are implemented, but the fresh full browser suite observed a wrong right-edge navigation state after measured layout growth. |
+| 17 | PASS | Manual creation uses the same `POST /api/tasks` contract and durable idempotency as external intake; detail, attempt, progress, error, cancellation, and retry guidance are present. |
+| 18 | PASS | Workers and Settings expose capacity, health, actions, pause, transfer/prefetch/timeout/retry controls, optimistic conflict handling, and read-only roots/auth state without editable secrets. |
+| 19 | FAIL | Hosted Chromium passed, but a fresh complete local Playwright run returned 46/47; the required responsive overflow control state is timing-sensitive. |
+| 20 | PASS | Real Controller HTTP with one and three workers proves full pipelines, all required crash boundaries, outages, pause, cancellation, retry, cleanup, retained history, exact request counts, and one remote job per attempt key. |
+| 21 | PASS | 20,000-row load, snapshot consistency, repeated intake/reservation/publication races, filesystem attacks, auth/CORS/SSE attacks, resource isolation, and secret/storage scans pass. |
+| 22 | PASS | Dedicated non-root Debian image embeds the SPA, persists state, passes health/error smokes, and contains no legacy binary, source assets, Node, models, core, or GPU runtime. |
+| 23 | PASS | Linux and native Windows hosted packaging produce exact independently named four-file roots, enforce version/content contracts, and preserve existing package layouts. |
+| 24 | PASS | Exact-tip CI proves Controller and existing products. Release dry-run/contracts enumerate all legacy and Controller assets/tags, reject missing or forbidden outputs, preserve the existing credential scheme, and require complete publication before release success. |
+| 25 | PASS | Root README, archive guide, operations guide, and example configuration cover setup, intake, auth, roots, workers, lifecycle, recovery, backup/restore, upgrade/rollback, deployment, API/SSE, releases, non-goals, and troubleshooting. |
 
 ## Success Criteria
 
 | Criterion | Result | Evidence |
 |---|---|---|
-| GPU-free NAS configuration and one-or-more worker onboarding | PASS | API-created enabled workers are probed by production, gain durable compatibility, wake scheduling, and require no GPU libraries in Controller. |
-| Same durable manual/API intake and scalable retained history | PASS | Both paths use idempotent `POST /api/tasks`; SQLite/index and browser evidence prove bounded 20,000-row pages, filters, search, and sorts. |
-| Compatible bounded scheduling and durable pause | PASS | Reservation rechecks enabled/online/workflow/capacity and pause transactionally; priority, prefetch, idle-feed, and independent transfer limits pass. |
-| At-most-one remote job per compute attempt | PASS | Submission identity is persisted before calls; same-key replay converges to one remote job; contradiction/loss becomes actionable ambiguity. |
-| Stage-correct restart and no downstream compute replay | PASS | Task 20 fault matrix covers local/remote checkpoints, outages, transfers, publication, cleanup, cancellation, and explicit retry semantics. |
-| Exact path/extensions, immutable input, no partial/overwrite publication | PASS | Capability-rooted input/output/temp handling, verified hidden staging, platform no-replace, hash recovery, and ambiguity preservation pass. |
-| Cleanup before completion and permanent history | PASS | Local temp plus remote workspace cleanup converge durably before completed; task/attempt history stays queryable through bounded APIs. |
-| Auth, path, and secret boundaries | PASS | Rust security suites, browser storage evidence, CORS/SSE/auth tests, temp attacks, and current-diff secret scan pass. |
-| Dense accessible operational UI | PASS | 108 unit tests, 45 browser tests, focused overflow tests, and 13-image review cover Tasks, Workers, Settings, responsive/focus/CJK states. |
-| Independent delivery without legacy regression | PASS | Exact Controller archives/image are separate and GPU-free; legacy names/images/archive roots remain present and the repaired helper preserves their contract. |
+| GPU-free NAS setup and worker onboarding | PASS | Production health probes API-created workers, persists compatibility, wakes scheduling, and requires no Controller GPU library. |
+| Equivalent durable manual/API intake and scalable history | PASS | Both paths call idempotent `POST /api/tasks`; indexed SQLite and browser tests prove bounded retained history. |
+| Compatible bounded scheduling and durable pause | PASS | Reservation transactionally rechecks enabled/online/workflow/capacity/pause state; ordering and all configured limits pass. |
+| At most one remote job per compute attempt | PASS | Submission keys and ownership are durable before calls; replay converges to one job and ambiguous evidence never authorizes a new attempt. |
+| Correct restart stage with no downstream compute replay | PASS | Task 20 covers all specified local and remote crash boundaries, outages, cancellation, retry, and cleanup convergence. |
+| Exact immutable paths and no partial/overwrite publication | PASS | Capability-rooted input/output/temp handling, verified staging, no-replace finalization, and ambiguity preservation pass adversarial tests. |
+| Cleanup before completion and permanent queryable history | PASS | Local and remote task workspaces converge before `completed`; retained task/attempt pages remain bounded and indexed. |
+| Auth, path, CORS, SSE, and secret boundaries | PASS | Backend security suites, browser storage checks, content scans, and exact-tip hosted gates pass. |
+| Dense accessible operational UI | FAIL | Unit/build and hosted browser evidence pass, but the fresh complete Playwright gate failed the right-edge overflow state after layout growth. |
+| Independent archives/image without legacy regression | PASS | Linux/Windows archive and image smokes pass at the exact tip; release contracts preserve all existing names/layouts and add only separate Controller outputs. |
 
 ## Scope and Must-NOT-Have Audit
 
-| Constraint | Result | Evidence |
+| Constraint | Result | Audit basis |
 |---|---|---|
-| Preserve `videnoa` and `videnoa-desktop` | PASS | No remediation diff touches `crates/core`, `crates/app`, `crates/desktop`, legacy `web`, root `Dockerfile`, or legacy package builders. Legacy release names/tags remain. |
-| No Controller core/GPU/model dependency | PASS | `crates/controller/Cargo.toml` has no `videnoa-core`; `cargo tree -p videnoa-controller --edges normal,build --locked` has no core/ORT/CUDA/cuDNN/TensorRT/ndarray/half/model path. Image/archive scans agree. |
-| Exactly two intake modes | PASS | Manual UI and generic external API both use `POST /api/tasks`; `source` remains informational. |
-| No watchers/adapters/cron/rules/media expansion | PASS | Production scan found no watcher, directory polling, ANI-RSS/qBittorrent adapter, cron, rules engine, workflow deployment, media browser, or Jellyfin refresh implementation. ANI-RSS appears only as generic documentation/test metadata. |
-| No forbidden transport/storage/distributed scheduling | PASS | No SSH/SFTP/rsync/object storage/network-mount management, broker, Redis/PostgreSQL requirement, consensus, Kubernetes, GPU-ID/VRAM scheduling, or generic event sourcing was added. |
-| SQLite authority and bounded ephemeral realtime | PASS | Durable tasks/attempts/workers/settings/sessions/idempotency/retry state remain in SQLite; broadcasts wake loops or carry bounded deltas/refetch only. |
-| No permissive CORS/direct browser-worker calls/multi-user ACL | PASS | Browser is Controller same-origin only; security tests deny cross-origin authorization; one administrator model remains. |
-| No unsafe path/output behavior | PASS | Input/output/temp operations are capability-rooted; output is exact/no-clobber; downloads never target final media; ambiguity preserves files. |
-| No blind AI replay or automatic history deletion | PASS | Durable submission keys and stage-specific retry prevent blind compute replay; no history deletion API/job exists. |
-| No unrelated remediation scope | PASS | The 35 commits change Controller source/tests/UI/notepads plus a narrowly scoped legacy archive helper/workflow repair. No feature outside the locked plan was introduced. |
+| Preserve `videnoa`, `videnoa-desktop`, legacy web/image/archives | PASS | Existing workspace members, binaries, Dockerfile, package scripts, image tags, archive names, roots, and hosted regression jobs remain. |
+| No Controller core/GPU/model dependency or packaged content | PASS | Manifest/tree, archive linkage/content, and image inspections reject core, ORT, CUDA, cuDNN, TensorRT, NVIDIA, model, and cache paths. |
+| Exactly manual GUI and generic external API intake | PASS | Both use authenticated `POST /api/tasks`; `source` remains informational and no semantic adapter was added. |
+| No watchers, polling discovery, ANI-RSS/qBittorrent semantics, cron, rules, workflow deployment, media browser, or Jellyfin refresh | PASS | No such production subsystem exists; documentation mentions generic callers only. |
+| No SSH/SFTP/rsync, mount management, object storage, resumable protocol, external database, broker, consensus, Kubernetes, or GPU scheduling | PASS | Remote execution and files use Videnoa HTTP APIs; durable authority is local SQLite; scheduler models worker slots rather than GPUs. |
+| No multiple users, roles, accounts, or ACL | PASS | Authentication remains one administrator password with session and Bearer modes. |
+| No permissive CORS, browser-to-worker calls, unbounded history, card-heavy history, whole-table realtime, queue-wide pre-upload, or shared transfer semaphore | PASS | Same-origin Controller routes, bounded SQL pages, active deltas/refetch, dense table UI, bounded prefetch, and independent pools are tested. |
+| No guessed extension, input mutation, overwrite/rename fallback, final-path download, or deletion of ambiguous files | PASS | Exact extensions and paths persist; input is reopened read-only; download remains under temp; no-replace and ambiguity rules fail closed. |
+| No blind AI replay or automatic history deletion | PASS | Durable keys, ownership, remote ambiguity, and stage-specific retry prevent replay; completed task/attempt deletion is not implemented. |
+| No unrelated final remediation scope | PASS | Tip contention changes are Task 20 test-only; notepad commits are documentation-only; no unrelated feature was introduced. |
 
-## Verification and Evidence Reviewed
+## Evidence Boundaries and Residual Risk
 
-- Read `.omo/plans/videnoa-controller.md` in full, the approved draft, both required knowledge files, prior F1/F2/F3/F4 reports, remediation evidence, operator documentation, example configuration, manifests, container, packaging helpers, and workflows.
-- Inspected all 35 commits and the complete `b06567b..22f9656b` diff: 103 files, 3,383 insertions, 1,211 deletions; `git diff --check` passed.
-- Traced production worker health composition, probe/cache, health persistence, durable notification, scheduler wake, and shutdown with CodeGraph and direct diff/source inspection.
-- Traced measured Tasks overflow source, CSS, unit/browser tests, 20,000-row fixture/runtime metrics, keyboard interactions, edge-disabled states, and focused screenshots.
-- Directly inspected all 13 fresh final-preflight PNGs at 1440, 1024, and 375 pixels; no remaining clipping, focus, containment, CJK, dialog, or state-communication blocker was found.
-- Backend preflight: Rust 1.83 and current strict Clippy PASS; Controller 368/368 PASS; worker-health focused repetitions 15/15 PASS; temp security repetitions 24/24 PASS; Rustdoc and pure-LOC ceiling PASS.
-- Frontend preflight: lint/typecheck/build PASS; Vitest 108/108; focused overflow PASS; full Chromium 45/45; regenerated visual matrix and independent reviews PASS.
-- Packaging preflight: Controller Linux/Windows contracts, deterministic Linux archive/live smoke, dedicated container/content/runtime smoke, docs, workflow matrix, core/app/legacy web regressions, and current-diff secret scan PASS.
-- Exact-SHA GitHub Actions inspection found workflow contracts, Controller web, Windows legacy Rust/web, and other completed jobs passing. One aggregate Controller Rust job recorded a timing-sensitive Task 20 assertion of two idempotent `/api/run` requests instead of one while retaining exactly one remote job; the same all-target suite passed 368/368 locally and focused worker/multi-worker coverage passed independently. This is not a plan/scope failure because the locked invariant is one remote job per durable attempt under replay, which remained true. The run was still executing legacy hosted jobs at audit time.
+- Real GitHub Release creation and Docker Hub publication were not triggered by the `dev` push and are not claimed. Task 24 acceptance requires the release dry-run, complete asset/tag graph, negative mutation enforcement, and existing credential convention; those pass. The release workflow itself gates success on both Controller archives, both Controller image tags, preserved legacy outputs, GitHub asset upload, and post-publication verification.
+- Native Windows execution is proven by the exact-tip hosted Windows Rust and Controller archive jobs. The Linux review does not claim local PowerShell execution.
+- Migration 0006 has exact-tip fresh, migration-5 upgrade, idempotency, and atomic failure coverage. Backup/restore/rollback is intentionally an operator full-snapshot procedure rather than a down-migration; documentation requires restoring matched Controller and worker state and never running an older binary against a newer database.
+- Ignored local evidence supports diagnosis but is not treated as tracked product content. Findings rely on current source/tests, exact-tip hosted results, and explicit evidence provenance rather than stale final reports.
+- A fresh local Task 20 target did not finish inside a 600-second review timeout. This is not classified as a product failure because the exact-tip hosted Controller Rust and separately gated fault/load jobs both completed the full Task 20 target successfully, but local execution time remains a reproducibility risk.
 
-## Hosted and Platform Boundaries
+## Verification Reviewed
 
-- Native Windows Controller archive/executable execution is assigned to `windows-latest`; Linux review verified the PowerShell and workflow contracts without claiming native execution.
-- Real GitHub Release upload/download and Docker Hub push/pull were not triggered by this read-only F1 gate. Exact asset/tag wiring, credentials convention, prerequisite failure behavior, and post-publication verification are complete.
-- Hosted CI completion is not treated as equivalent to real release publication. No unavailable hosted/native side effect is used to manufacture approval; approval rests on complete source responsibility, locally executable evidence, exact workflow contracts, and direct visual review.
-- `.omo/evidence` contains ignored local runtime artifacts by repository policy. They were inspected as evidence and are not confused with tracked product/package content.
+- Read the complete plan, approved draft, both required knowledge files, task/final evidence, remediation records, notepads, manifests, source, tests, frontend, container, packaging scripts, workflows, documentation, and example configuration.
+- Traced intake through SQLite, durable notifications, orchestration, scheduler admission, upload, keyed submission ownership, polling, download, verification, publication, cleanup, cancellation, retry, and recovery.
+- Verified the complete implementation history and exact tip; the final Task 20 contention range changes only test infrastructure and scenarios.
+- Verified run `33873102244` directly: exact `headSha`, completed `success`, and all 14 jobs successful, including both Controller Task 20 executions and native Windows archive smoke.
+- Reconciled independent goal/compliance, implementation-quality, security-boundary, QA/evidence, and repository-context reviews. Implementation-quality, security, and repository-context lanes found no architecture or scope blocker. The evidence lane's credentialed-publication concern does not match Task 24's explicit dry-run acceptance and read-only audit boundary. The goal/compliance lane did, however, produce a concrete fresh full-suite Playwright failure; this report adopts that reproducible acceptance-gate conflict as blocking.
 
-VERDICT: APPROVE
+VERDICT: REJECT
