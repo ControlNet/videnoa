@@ -24,6 +24,9 @@ export function validateReleaseWorkflow(workflow) {
 	const legacy = {
 		"package-linux64": [
 			`videnoa-linux64-${expression("needs.version-gate.outputs.version")}.7z`,
+			"scripts/package_dist_archive.sh create",
+			"scripts/package_dist_archive.sh verify",
+			"$HOME/.cargo/registry",
 			"actions/upload-artifact@v4",
 		],
 		"package-win64": [

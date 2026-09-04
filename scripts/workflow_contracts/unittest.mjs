@@ -21,6 +21,10 @@ export function validateUnitWorkflow(workflow) {
 		"package-linux64-smoke": [
 			"scripts/package_dist.sh",
 			"scripts/check_linux_package_compat.sh",
+			"scripts/package_dist_archive.sh create",
+			"scripts/package_dist_archive.sh verify",
+			"scripts/tests/package_dist_archive_test.sh",
+			"$HOME/.cargo/registry",
 			"videnoa-linux64-smoke.7z",
 		],
 		"package-win64-smoke": [
