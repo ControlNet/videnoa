@@ -20,7 +20,12 @@ use videnoa_controller::scheduler::{
     Scheduler, TransferConfig, TransferExecutor, TransferResources,
 };
 use videnoa_controller::tasks::TaskService;
+use videnoa_controller::workers::WorkerHealthService;
 use videnoa_controller::{serve_controller_until, FrontendAssets, StartupError};
+
+mod termination;
+
+use termination::{shutdown_signal, RuntimeError, RuntimeExit};
 
 const RECOVERY_JSON_LIMIT: usize = 1024 * 1024;
 const RECOVERY_TRANSFER_CHUNK: usize = 64 * 1024;
@@ -67,6 +72,10 @@ async fn main() -> anyhow::Result<()> {
     if matches!(cli.command, Some(Command::HashPassword)) {
         return print_password_hash();
     }
+    run_controller(cli).await
+}
+
+async fn run_controller(cli: Cli) -> anyhow::Result<()> {
     let mut config = ControllerConfig::load(cli.config.as_deref())?;
     if let Some(host) = cli.host {
         config.server.host = host;
@@ -87,15 +96,27 @@ async fn main() -> anyhow::Result<()> {
     let payload_limits = recovery.payload_limits;
     let auth = AuthService::new(config.auth.clone(), store.clone())?;
     let events = EventHub::new();
-    let runtime = Orchestrator::new(
+    let orchestration = Orchestrator::new(
         store.clone(),
         scheduler.clone(),
         recovery.reconciler,
         recovery.transfers,
         shutdown.clone(),
         &events,
-    )
-    .run();
+    );
+    let worker_health = WorkerHealthService::new(
+        store.clone(),
+        scheduler.runtime_settings().clone(),
+        payload_limits,
+        shutdown.clone(),
+        &events,
+    );
+    let runtime = async move {
+        let orchestration = async { orchestration.run().await.map_err(RuntimeError::from) };
+        let worker_health = async { worker_health.run().await.map_err(RuntimeError::from) };
+        tokio::try_join!(orchestration, worker_health)?;
+        Ok::<(), RuntimeError>(())
+    };
     let operations = OperationsState::new(OperationsDependencies {
         auth: auth.clone(),
         store: store.clone(),
@@ -123,7 +144,7 @@ async fn main() -> anyhow::Result<()> {
     tokio::pin!(runtime);
     let exit = tokio::select! {
         result = &mut server => RuntimeExit::Server(result),
-        result = &mut runtime => RuntimeExit::Orchestration(result),
+        result = &mut runtime => RuntimeExit::Runtime(result),
         signal = shutdown_signal() => RuntimeExit::Signal(signal),
     };
     http_shutdown.cancel();
@@ -137,7 +158,7 @@ async fn main() -> anyhow::Result<()> {
             shutdown_result?;
             runtime_result?;
         }
-        RuntimeExit::Orchestration(primary) => {
+        RuntimeExit::Runtime(primary) => {
             let server_result = server.await;
             primary?;
             shutdown_result?;
@@ -196,7 +217,6 @@ async fn recovery_runtime(
             coordinator: scheduler.transfers().clone(),
         },
         TransferConfig {
-            temp_root: config.paths.temp_root.clone(),
             payload_limits,
             runtime_settings: scheduler.runtime_settings().clone(),
         },
@@ -204,7 +224,7 @@ async fn recovery_runtime(
     let reconciler = Reconciler::new(
         store.clone(),
         RecoveryConfig::new(
-            config.paths.temp_root.clone(),
+            paths.clone(),
             remote_timeouts,
             payload_limits,
             config.retry.initial,
@@ -220,24 +240,4 @@ async fn recovery_runtime(
         shutdown,
         payload_limits,
     })
-}
-
-enum RuntimeExit {
-    Server(Result<(), StartupError>),
-    Orchestration(Result<(), videnoa_controller::orchestration::OrchestrationError>),
-    Signal(Result<(), std::io::Error>),
-}
-
-#[cfg(unix)]
-async fn shutdown_signal() -> Result<(), std::io::Error> {
-    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    tokio::select! {
-        result = tokio::signal::ctrl_c() => result,
-        _ = terminate.recv() => Ok(()),
-    }
-}
-
-#[cfg(not(unix))]
-async fn shutdown_signal() -> Result<(), std::io::Error> {
-    tokio::signal::ctrl_c().await
 }

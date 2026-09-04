@@ -32,3 +32,5 @@ mod retry;
 mod shutdown;
 #[path = "task20/support/mod.rs"]
 mod support;
+#[path = "task20/worker_health.rs"]
+mod worker_health;
