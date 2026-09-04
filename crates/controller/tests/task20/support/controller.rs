@@ -16,6 +16,7 @@ use videnoa_controller::scheduler::TransferCheckpointObserver;
 
 use crate::mock_videnoa::server::MockVidenoa;
 
+use super::admission::FixturePermit;
 use super::http::{path_string, require_status};
 use super::runtime::{start_runtime, ControllerRuntime};
 
@@ -24,6 +25,7 @@ pub type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 const PASSWORD: &str = "task-20-test-only-password";
 
 pub struct ControllerFixture {
+    _fixture_permit: FixturePermit,
     directory: TempDir,
     pub store: Store,
     pub input_root: PathBuf,
@@ -46,6 +48,7 @@ impl ControllerFixture {
     pub async fn start_with_checkpoint_observer(
         checkpoint_observer: Option<Arc<dyn TransferCheckpointObserver>>,
     ) -> TestResult<Self> {
+        let fixture_permit = FixturePermit::acquire().await?;
         let directory = TempDir::new()?;
         let input_root = directory.path().join("input");
         let output_root = directory.path().join("output");
@@ -81,6 +84,7 @@ impl ControllerFixture {
         .await?;
         let base_url = format!("http://{}", runtime.address);
         Ok(Self {
+            _fixture_permit: fixture_permit,
             directory,
             store,
             input_root,
