@@ -3,6 +3,7 @@ mod actions;
 mod harness;
 mod http;
 mod proof;
+mod recovery;
 mod runtime;
 #[path = "checkpoint.rs"]
 mod synchronization;
