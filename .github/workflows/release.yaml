@@ -186,37 +186,16 @@ jobs:
       - name: Verify Linux runtime compatibility
         run: bash scripts/check_linux_package_compat.sh "$RUNNER_TEMP/dist-linux64/videnoa"
 
-      - name: Create split archive (2000MB volumes)
+      - name: Reclaim build cache for archive headroom
         run: |
-          dist_root="$RUNNER_TEMP/dist-linux64"
-          bundle_dir="$dist_root/videnoa"
-          archive_path="$RUNNER_TEMP/${{ env.ARCHIVE_NAME }}"
-          if [[ ! -d "$bundle_dir" ]]; then
-            echo "Expected bundle directory not found: $bundle_dir" >&2
-            exit 1
-          fi
-          rm -f "$archive_path" "$archive_path".*
-          (
-            cd "$dist_root"
-            7z a -t7z -v2000m "$archive_path" videnoa
-          )
+          rm -rf "$HOME/.cargo/registry" "$HOME/.cargo/git" "$HOME/.npm"
+          sudo apt-get clean
+
+      - name: Create split archive (2000MB volumes)
+        run: bash scripts/package_dist_archive.sh create "$RUNNER_TEMP/dist-linux64" "$RUNNER_TEMP/${{ env.ARCHIVE_NAME }}"
 
       - name: Validate archive root layout
-        run: |
-          archive_base="$RUNNER_TEMP/${{ env.ARCHIVE_NAME }}"
-          first_volume="$archive_base.001"
-          if [[ ! -f "$first_volume" ]]; then
-            if [[ -f "$archive_base" ]]; then
-              first_volume="$archive_base"
-            else
-              echo "Missing split archive output: $archive_base(.001)" >&2
-              exit 1
-            fi
-          fi
-          if ! 7z l "$first_volume" | grep -Eq 'videnoa[/\\]'; then
-            echo "Archive root layout validation failed: missing videnoa/ root" >&2
-            exit 1
-          fi
+        run: bash scripts/package_dist_archive.sh verify "$RUNNER_TEMP/${{ env.ARCHIVE_NAME }}"
 
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4

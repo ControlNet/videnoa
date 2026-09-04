@@ -108,6 +108,35 @@ console.log("[workflow-contracts][positive] complete CI/release matrix: PASS");
 	);
 }
 
+{
+	const workflow = structuredClone(loadWorkflow(unitPath));
+	const archiveStep = workflow.jobs["package-linux64-smoke"].steps.find(
+		(step) => step.name === "Create split archive (2000MB volumes)",
+	);
+	archiveStep.run = archiveStep.run.replace(
+		"scripts/package_dist_archive.sh create",
+		"7z a -t7z -v2000m",
+	);
+	expectContractFailure(
+		"legacy Linux archive helper bypassed",
+		() => validateUnitWorkflow(workflow),
+		/scripts\/package_dist_archive\.sh create/,
+	);
+}
+
+{
+	const workflow = structuredClone(loadWorkflow(releasePath));
+	const verifyStep = workflow.jobs["package-linux64"].steps.find(
+		(step) => step.name === "Validate archive root layout",
+	);
+	verifyStep.run = "7z l $RUNNER_TEMP/videnoa-linux64-release.7z";
+	expectContractFailure(
+		"release Linux archive helper bypassed",
+		() => validateReleaseWorkflow(workflow),
+		/scripts\/package_dist_archive\.sh verify/,
+	);
+}
+
 console.log(
 	"[workflow-contracts] all positive and negative workflow contracts passed",
 );
