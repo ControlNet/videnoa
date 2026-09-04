@@ -1,5 +1,5 @@
 import { ListTodo, LogOut, ServerCog, Settings } from "lucide-react"
-import { useEffect, useLayoutEffect, useRef, useState } from "react"
+import { useLayoutEffect, useRef, useState } from "react"
 import { Navigate, NavLink, Route, Routes, useLocation } from "react-router"
 
 import type { ApiClient } from "../api/client"
@@ -31,7 +31,8 @@ export function AppShell({ apiClient, logout }: AppShellProps) {
   useLayoutEffect(() => {
     const routeName = navigation.find(({ path }) => path === location.pathname)?.label ?? "Tasks"
     document.title = `${routeName} | Videnoa Controller`
-    mainRef.current?.focus()
+    const focusTarget = logoutAlertRef.current ?? mainRef.current
+    focusTarget?.focus()
   }, [location.pathname])
 
   async function handleLogout() {
@@ -45,7 +46,7 @@ export function AppShell({ apiClient, logout }: AppShellProps) {
     }
   }
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (logoutError !== null) logoutAlertRef.current?.focus()
   }, [logoutError])
 

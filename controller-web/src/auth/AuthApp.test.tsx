@@ -319,6 +319,7 @@ describe("authenticated Controller shell", () => {
         case "/api/auth/session": return Promise.resolve(response(session, 200, "proof"))
         case "/api/tasks": return Promise.resolve(response(emptyTaskPage))
         case "/api/status-counts": return Promise.resolve(response(emptyTaskCounts))
+        case "/api/workers": return Promise.resolve(response(emptyWorkerList))
         case "/api/auth/logout": {
           logoutAttempts += 1
           return logoutAttempts === 1
@@ -340,6 +341,9 @@ describe("authenticated Controller shell", () => {
     expect(alert).toHaveTextContent("Controller could not complete sign out. Try again.")
     expect(alert).toHaveFocus()
     expect(screen.getByRole("button", { name: "Sign out" })).toBeEnabled()
+    fireEvent.click(screen.getByRole("link", { name: "Workers" }))
+    expect(await screen.findByRole("heading", { name: "Workers" })).toBeVisible()
+    expect(alert).toHaveFocus()
     fireEvent.click(screen.getByRole("button", { name: "Sign out" }))
     expect(await screen.findByRole("heading", { name: "Sign in to Controller" })).toBeVisible()
   })
