@@ -1,4 +1,5 @@
 use std::error::Error;
+use std::path::Path;
 use std::time::Duration;
 
 use sqlx::migrate::Migrator;
@@ -51,23 +52,45 @@ async fn database_applies_migrations_and_effective_pragmas() -> TestResult {
     assert_eq!(pragma.try_get::<i64, _>("foreign_keys")?, 1);
     assert_eq!(pragma.try_get::<i64, _>("busy_timeout")?, 2_500);
     assert_eq!(database.pool().options().get_max_connections(), 4);
+    assert_eq!(
+        submission_owner_column(database.pool()).await?,
+        ("TEXT".to_owned(), 0)
+    );
     Ok(())
 }
 
 #[tokio::test]
 async fn existing_database_migrates_idempotently() -> TestResult {
-    // Given: a database that has already completed Controller migrations.
+    // Given: a database that completed the five migrations preceding submission ownership.
     let directory = TempDir::new()?;
     let path = directory.path().join("controller.sqlite3");
-    Database::open(DatabaseOptions::new(&path))
-        .await?
-        .close()
-        .await;
+    let migrations = directory.path().join("migrations");
+    std::fs::create_dir(&migrations)?;
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+    for name in [
+        "0001_controller_state.sql",
+        "0002_task_input_identity.sql",
+        "0003_worker_registry.sql",
+        "0004_task_input_content_identity.sql",
+        "0005_worker_scoped_remote_job.sql",
+    ] {
+        std::fs::copy(source.join(name), migrations.join(name))?;
+    }
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(&path)
+                .create_if_missing(true),
+        )
+        .await?;
+    Migrator::new(migrations).await?.run(&pool).await?;
+    pool.close().await;
 
-    // When: the same database is opened again.
+    // When: the current Controller opens the existing database.
     let database = Database::open(DatabaseOptions::new(&path)).await?;
 
-    // Then: SQLx records all migrations and preserves singleton and worker-scoped uniqueness.
+    // Then: migration 0006 adds ownership while preserving prior constraints.
     let migration_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations WHERE success = 1")
             .fetch_one(database.pool())
@@ -86,10 +109,14 @@ async fn existing_database_migrates_idempotently() -> TestResult {
     )
     .fetch_all(database.pool())
     .await?;
-    assert_eq!(migration_count, 5);
+    assert_eq!(migration_count, 6);
     assert_eq!(settings_count, 1);
     assert_eq!(index_flags, (1, 1));
     assert_eq!(index_columns, ["worker_id", "remote_job_id"]);
+    assert_eq!(
+        submission_owner_column(database.pool()).await?,
+        ("TEXT".to_owned(), 0)
+    );
     Ok(())
 }
 
@@ -131,4 +158,14 @@ async fn invalid_sqlx_migration_rolls_back_its_partial_schema() -> TestResult {
     assert_eq!(table_count, 0);
     assert_eq!(applied_count, 0);
     Ok(())
+}
+
+async fn submission_owner_column(pool: &sqlx::SqlitePool) -> TestResult<(String, i64)> {
+    let column = sqlx::query(
+        "SELECT type, \"notnull\" FROM pragma_table_info('task_attempts') \
+         WHERE name = 'submission_owner'",
+    )
+    .fetch_one(pool)
+    .await?;
+    Ok((column.try_get("type")?, column.try_get("notnull")?))
 }
