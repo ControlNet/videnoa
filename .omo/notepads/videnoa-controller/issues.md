@@ -342,3 +342,9 @@
 - The first restart-outage test paused the worker before journal recording, so aborting the client could cancel the first journal write. Synchronizing on the accepted request's journal entry removed that fixture race without sleeps or retries.
 - Final audit found cancellation used the ownership claim but lacked an exact same-generation `/api/run` count assertion, and the migration test did not represent a pre-0006 database. Focused regressions now cover both contracts.
 - The final F4 LOC audit found `task20/outage_matrix.rs` at 268 and `task20/support/controller.rs` at 253 pure lines. Wait helpers and reconciler fixture construction were split by responsibility; all F4-owned files now remain at or below 250.
+
+## 2026-09-04 F3 SSE Hosted Startup Remediation
+
+- GitHub job `100909271972` launched the debug Controller from a clean checkout without building ignored `controller-web/dist`. Startup returned `Controller frontend directory is missing` before listener bind, but the process test redirected stderr to null and exposed only exit status 1.
+- The Controller Rust job now installs and builds Controller web assets before Cargo gates, with a workflow mutation contract that rejects removal of that build. The process test now reports early child stderr and has a real-binary missing-config regression proving the diagnostic remains visible.
+- A forced competing listener produced a different wrong-listener/login-hang signature, not the hosted early-exit signature. The fixture's reserve/drop port pattern remains a separate residual harness risk requiring an inherited-listener or bound-address publication design, not retries or timing changes.

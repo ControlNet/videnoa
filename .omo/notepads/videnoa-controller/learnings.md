@@ -412,3 +412,9 @@
 - Submission ownership must be claimed after scheduler admission and immediately before the remote request. Claiming before admission strands paused work under the current generation.
 - Cancellation of a `Submitting` attempt cannot bypass uncertain-acceptance ownership. Reusing the same claim boundary proves the owning generation emits neither a second `/api/run` nor a cancellation request without durable remote evidence.
 - Migration upgrade coverage must construct a database at the prior migration boundary; reopening a fully current database proves idempotence but not that the new column is added to deployed state.
+
+## 2026-09-04 F3 SSE Hosted Startup Remediation
+
+- Debug Controller process tests require `controller-web/dist` at runtime, while `build.rs` intentionally creates or validates that directory only for release builds. A clean hosted debug-test job must therefore build Controller web assets in the same job before launching the binary.
+- Child stderr is part of a process-test failure contract. Piping and reporting it on early exit distinguished the hosted `FrontendDirectoryMissing` startup error from bind and configuration failures without changing startup or shutdown timing.
+- Removing only `controller-web/dist` reproduced the hosted status-1 failure; restoring the unchanged directory toggled the authenticated SSE test back to listener closure at 0 ms and process exit between 8 and 21 ms across repeated Rust 1.83 runs.
