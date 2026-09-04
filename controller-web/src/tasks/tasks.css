@@ -179,8 +179,13 @@
   background: var(--color-surface);
 }
 
+.task-table-frame:focus-visible {
+  outline: var(--space-1) solid var(--color-accent);
+  outline-offset: var(--space-1);
+}
+
 .task-table-scroll-controls {
-  display: none;
+  display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
@@ -369,6 +374,22 @@
   font-weight: 650;
 }
 
+.task-table-scroll-controls button {
+  display: grid;
+  inline-size: var(--control-compact);
+  padding: 0;
+  place-items: center;
+}
+
+.task-table-scroll-controls button:disabled,
+.task-pagination button:disabled {
+  border-color: var(--color-border-subtle);
+  background: var(--color-background-deep);
+  color: var(--color-text-quiet);
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
 .task-pagination {
   display: flex;
   align-items: center;
@@ -438,7 +459,4 @@
     max-inline-size: 18rem;
   }
 
-  .task-table-scroll-controls {
-    display: flex;
-  }
 }

@@ -1,4 +1,5 @@
-import { useRef } from "react"
+import { ChevronLeft, ChevronRight } from "lucide-react"
+import { type KeyboardEvent, useCallback, useLayoutEffect, useRef, useState } from "react"
 
 import type { TaskList } from "../api/taskSchemas"
 import { formatBytes, formatDate, formatDuration, formatStatus } from "./format"
@@ -14,9 +15,64 @@ type TaskTableProps = {
 }
 
 const loadingRowKeys = ["one", "two", "three", "four", "five", "six", "seven", "eight"] as const
+const scrollEdgeTolerance = 1
+
+type ScrollState = {
+  readonly hasOverflow: boolean
+  readonly canScrollLeft: boolean
+  readonly canScrollRight: boolean
+}
+
+const initialScrollState: ScrollState = {
+  hasOverflow: false,
+  canScrollLeft: false,
+  canScrollRight: false,
+}
 
 export function TaskTable({ page, columns, loading, selectedTaskId = null, onSelectTask }: TaskTableProps) {
+  const rendersTable = page === null ? loading : page.items.length > 0
   const frameRef = useRef<HTMLElement>(null)
+  const tableRef = useRef<HTMLTableElement>(null)
+  const [scrollState, setScrollState] = useState(initialScrollState)
+  const updateScrollState = useCallback(() => {
+    const frame = frameRef.current
+    const table = tableRef.current
+    if (frame === null || table === null) return
+    const contentOverflow = Math.max(0, table.offsetWidth - frame.clientWidth)
+    const maximumScroll = Math.max(0, frame.scrollWidth - frame.clientWidth)
+    const edgeTolerance = Math.max(scrollEdgeTolerance, frame.offsetWidth - frame.clientWidth)
+    const nextState = {
+      hasOverflow: contentOverflow > 0,
+      canScrollLeft: frame.scrollLeft > edgeTolerance,
+      canScrollRight: frame.scrollLeft < maximumScroll - edgeTolerance,
+    }
+    setScrollState((current) => current.hasOverflow === nextState.hasOverflow
+      && current.canScrollLeft === nextState.canScrollLeft
+      && current.canScrollRight === nextState.canScrollRight ? current : nextState)
+  }, [])
+
+  useLayoutEffect(() => {
+    if (!rendersTable) return
+    const frame = frameRef.current
+    const table = tableRef.current
+    if (frame === null || table === null) return
+    const observer = new ResizeObserver(updateScrollState)
+    const mutationObserver = new MutationObserver(updateScrollState)
+    observer.observe(frame)
+    observer.observe(table)
+    mutationObserver.observe(table, { childList: true, characterData: true, subtree: true })
+    frame.addEventListener("scroll", updateScrollState, { passive: true })
+    document.fonts?.addEventListener("loadingdone", updateScrollState)
+    void document.fonts?.ready.then(updateScrollState)
+    updateScrollState()
+    return () => {
+      observer.disconnect()
+      mutationObserver.disconnect()
+      frame.removeEventListener("scroll", updateScrollState)
+      document.fonts?.removeEventListener("loadingdone", updateScrollState)
+    }
+  }, [rendersTable, updateScrollState])
+
   if (page === null && !loading) return null
   if (page !== null && page.items.length === 0) {
     return (
@@ -29,21 +85,31 @@ export function TaskTable({ page, columns, loading, selectedTaskId = null, onSel
 
   return (
     <>
-      <nav className="task-table-scroll-controls" aria-label="Task table horizontal navigation">
-        <p className="task-table-hint" id="task-table-scroll-hint">
-          Scroll table to view more columns.
-        </p>
-        <div>
-          <button type="button" aria-label="Scroll task table left" onClick={() => frameRef.current?.scrollBy({ left: -240 })}>
-            Left
-          </button>
-          <button type="button" aria-label="Scroll task table right" onClick={() => frameRef.current?.scrollBy({ left: 240 })}>
-            Right
-          </button>
-        </div>
-      </nav>
-      <section ref={frameRef} className="task-table-frame" aria-label="Scrollable task results" aria-describedby="task-table-scroll-hint" aria-busy={loading}>
-        <table className="task-table">
+      {scrollState.hasOverflow ? (
+        <nav className="task-table-scroll-controls" aria-label="Task table horizontal navigation">
+          <p className="task-table-hint" id="task-table-scroll-hint">
+            Use the arrow keys or table navigation controls to view hidden columns.
+          </p>
+          <div>
+            <button type="button" title="Scroll task table left" aria-label="Scroll task table left" disabled={!scrollState.canScrollLeft} onClick={() => scrollTable(frameRef.current, "left", updateScrollState)}>
+              <ChevronLeft size={16} aria-hidden="true" />
+            </button>
+            <button type="button" title="Scroll task table right" aria-label="Scroll task table right" disabled={!scrollState.canScrollRight} onClick={() => scrollTable(frameRef.current, "right", updateScrollState)}>
+              <ChevronRight size={16} aria-hidden="true" />
+            </button>
+          </div>
+        </nav>
+      ) : null}
+      <section
+        ref={frameRef}
+        className="task-table-frame"
+        aria-label="Scrollable task results"
+        aria-describedby={scrollState.hasOverflow ? "task-table-scroll-hint" : undefined}
+        aria-busy={loading}
+        tabIndex={scrollState.hasOverflow ? 0 : -1}
+        onKeyDown={(event) => handleScrollKey(event, updateScrollState)}
+      >
+        <table ref={tableRef} className="task-table">
           <thead>
             <tr>
               <th scope="col">Status</th>
@@ -117,6 +183,37 @@ export function TaskTable({ page, columns, loading, selectedTaskId = null, onSel
       </section>
     </>
   )
+}
+
+function scrollTable(frame: HTMLElement | null, direction: "left" | "right", onScroll: () => void): void {
+  if (frame === null) return
+  frame.scrollBy({ left: frame.clientWidth * (direction === "left" ? -0.75 : 0.75) })
+  requestAnimationFrame(onScroll)
+}
+
+function handleScrollKey(event: KeyboardEvent<HTMLElement>, onScroll: () => void): void {
+  if (event.target !== event.currentTarget) return
+  const frame = event.currentTarget
+  switch (event.key) {
+    case "ArrowLeft":
+      event.preventDefault()
+      scrollTable(frame, "left", onScroll)
+      break
+    case "ArrowRight":
+      event.preventDefault()
+      scrollTable(frame, "right", onScroll)
+      break
+    case "Home":
+      event.preventDefault()
+      frame.scrollLeft = 0
+      onScroll()
+      break
+    case "End":
+      event.preventDefault()
+      frame.scrollLeft = frame.scrollWidth - frame.clientWidth
+      onScroll()
+      break
+  }
 }
 
 function OptionalCell({ column, task }: { readonly column: OptionalColumn; readonly task: TaskList["items"][number] }) {
