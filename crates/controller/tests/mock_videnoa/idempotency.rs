@@ -5,7 +5,7 @@ use reqwest::StatusCode;
 use serde_json::json;
 use tokio::task::JoinSet;
 
-use crate::mock_videnoa::client::MockClient;
+use crate::mock_videnoa::api::MockClient;
 use crate::mock_videnoa::journal::Route;
 use crate::mock_videnoa::server::MockVidenoa;
 

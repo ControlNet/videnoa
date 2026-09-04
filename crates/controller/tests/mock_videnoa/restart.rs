@@ -3,7 +3,7 @@ use std::error::Error;
 use reqwest::StatusCode;
 use serde_json::json;
 
-use crate::mock_videnoa::client::MockClient;
+use crate::mock_videnoa::api::MockClient;
 use crate::mock_videnoa::domain::JobStatus;
 use crate::mock_videnoa::faults::{RestartMode, RestartOutcome};
 use crate::mock_videnoa::server::MockVidenoa;
