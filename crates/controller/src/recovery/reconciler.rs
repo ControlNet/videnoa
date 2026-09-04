@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 
 use crate::domain::{FailureCode, FailureStage, TaskStatus};
 use crate::lifecycle::{AdvanceCommand, Lifecycle, LifecycleFailure, LifecycleService};
-use crate::persistence::{AttemptRecord, Store, TaskRecord};
+use crate::persistence::{AttemptRecord, Store, SubmissionOwner, TaskRecord};
 use crate::remote::VidenoaClient;
 
 use super::{
@@ -20,6 +20,7 @@ pub struct Reconciler {
     pub(super) config: RecoveryConfig,
     pub(super) shutdown: ShutdownCoordinator,
     pub(super) checkpoint_observer: Arc<dyn crate::scheduler::TransferCheckpointObserver>,
+    pub(super) submission_owner: SubmissionOwner,
 }
 
 impl Reconciler {
@@ -30,6 +31,7 @@ impl Reconciler {
             config,
             shutdown,
             checkpoint_observer: crate::scheduler::noop_observer(),
+            submission_owner: SubmissionOwner::random(),
         }
     }
 

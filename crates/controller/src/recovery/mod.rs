@@ -8,6 +8,7 @@ mod remote_failure;
 #[path = "error.rs"]
 mod restart_error;
 mod submission;
+mod submission_ownership;
 #[path = "shutdown.rs"]
 mod termination;
 mod worker;
