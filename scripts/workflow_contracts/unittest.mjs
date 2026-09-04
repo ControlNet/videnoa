@@ -50,6 +50,9 @@ export function validateUnitWorkflow(workflow) {
 		"validate_ci_release_workflows.test.mjs",
 	]);
 	requireText(requireJob(jobs, "controller-rust"), "controller-rust", [
+		'working-directory":"controller-web',
+		"npm ci --no-fund",
+		"npm run build",
 		"cargo fmt --all -- --check",
 		"cargo clippy -p videnoa-controller --all-targets --all-features -- -D warnings",
 		"cargo test -p videnoa-controller --all-targets",

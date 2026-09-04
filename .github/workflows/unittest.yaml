@@ -94,6 +94,12 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+      - name: Install Controller web dependencies
+        working-directory: controller-web
+        run: npm ci --no-fund
+      - name: Build Controller web assets
+        working-directory: controller-web
+        run: npm run build
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Run strict Controller Clippy

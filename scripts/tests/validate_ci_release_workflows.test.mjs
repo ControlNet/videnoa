@@ -59,6 +59,18 @@ console.log("[workflow-contracts][positive] complete CI/release matrix: PASS");
 }
 
 {
+	const workflow = structuredClone(loadWorkflow(unitPath));
+	workflow.jobs["controller-rust"].steps = workflow.jobs[
+		"controller-rust"
+	].steps.filter((step) => step.name !== "Build Controller web assets");
+	expectContractFailure(
+		"Controller Rust assets omitted",
+		() => validateUnitWorkflow(workflow),
+		/npm run build/,
+	);
+}
+
+{
 	const workflow = structuredClone(loadWorkflow(releasePath));
 	workflow.jobs["version-gate"].steps[1].run = workflow.jobs[
 		"version-gate"
