@@ -190,7 +190,7 @@ impl Reconciler {
         stage: &StagePermit,
         report: &mut RecoveryReport,
     ) -> Result<(), RecoveryError> {
-        crate::scheduler::remove_task_workspace(&self.config.temp_root, task.id)
+        crate::scheduler::remove_task_workspace(&self.config.paths, task.id)
             .await
             .map_err(RecoveryError::LocalCleanup)?;
         let workspace = FileApiPath::parse(&task.id.to_string())?;

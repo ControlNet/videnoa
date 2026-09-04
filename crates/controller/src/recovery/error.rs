@@ -13,7 +13,7 @@ pub enum RecoveryError {
     #[error(transparent)]
     Scheduler(#[from] crate::scheduler::SchedulerError),
     #[error("Controller-local cancellation cleanup failed")]
-    LocalCleanup(#[source] std::io::Error),
+    LocalCleanup(#[source] crate::paths::PathError),
     #[error("durable task is missing its current attempt")]
     MissingAttempt,
     #[error("durable task is missing its assigned worker")]

@@ -1,11 +1,8 @@
-use std::path::Path;
-
 use chrono::{DateTime, Utc};
 
 use crate::domain::{TaskId, TaskStatus};
 use crate::lifecycle::{AutomaticRetry, DownstreamFailure, JitterSample};
 
-use super::publication_artifact::sync_directory;
 use super::{
     PublicationOutcome, RetryResult, TransferCheckpointPoint, TransferError, TransferExecutor,
 };
@@ -31,7 +28,7 @@ impl TransferExecutor {
         Self::require_retry_due(&task, &attempt, now)?;
         self.checkpoint(TransferCheckpointPoint::BeforeLocalCleanup)
             .await;
-        if remove_task_workspace(&self.config.temp_root, task.id)
+        if remove_task_workspace(&self.resources.paths, task.id)
             .await
             .is_err()
         {
@@ -80,12 +77,11 @@ impl TransferExecutor {
 }
 
 pub(crate) async fn remove_task_workspace(
-    temp_root: &Path,
+    paths: &crate::paths::PathCapabilities,
     task_id: TaskId,
-) -> Result<(), std::io::Error> {
-    match tokio::fs::remove_dir_all(temp_root.join(task_id.to_string())).await {
-        Ok(()) => sync_directory(temp_root).await,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
+) -> Result<(), crate::paths::PathError> {
+    if let Some(workspace) = paths.temp_workspace(task_id, false)? {
+        workspace.remove_all().await?;
     }
+    Ok(())
 }
