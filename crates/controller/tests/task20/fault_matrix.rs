@@ -7,7 +7,8 @@ use crate::mock_videnoa::checkpoints::Checkpoint;
 use crate::mock_videnoa::journal::Route;
 use crate::mock_videnoa::server::MockVidenoa;
 use crate::support::{
-    assert_restarted_pipeline, complete_mock_job, CheckpointGate, ControllerFixture, TestResult,
+    assert_restarted_pipeline, complete_mock_job, wait_for_positive_download_partial,
+    CheckpointGate, ControllerFixture, TestResult,
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -214,11 +215,7 @@ async fn restart_mid_download() -> TestResult {
     assert_eq!(detail.attempts.len(), 1);
     assert_eq!(detail.attempts[0].status, TaskStatus::Downloading);
     assert_eq!(worker.counters().await.get(Route::Download), 1);
-    let part = fixture
-        .temp_root
-        .join(task.id.to_string())
-        .join("output.mp4.part");
-    assert!(tokio::fs::metadata(part).await?.len() > 0);
+    wait_for_positive_download_partial(&fixture, &worker, &task).await?;
     fixture.crash().await?;
     worker.release(download).await?;
     fixture.restart().await?;
