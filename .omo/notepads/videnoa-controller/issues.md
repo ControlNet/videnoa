@@ -411,3 +411,10 @@
 - The first contraction-aware candidate was incomplete: the formerly flaky scenario still failed once in 60 runs because `End` could be handled before rendered overflow existed. The deterministic component regression reproduced the same transition as `scrollLeft=0` instead of `420`.
 - Preserving a single boolean intent through all no-overflow states then regressed the existing responsive contract `10/10`: after overflow was deliberately removed and restored at 1024px, Right remained disabled instead of exposing the left boundary. Modeling pending versus anchored intent resolved both contracts without waits, retries, timeout changes, or weakened assertions.
 - No task-table overflow blocker remains after `112/112` Vitest tests passed twice, the exact reported Chromium command passed `30/30`, the final focused scenario passed `60/60`, and the complete Playwright suite passed `47/47`. Production builds retain only the unchanged non-fatal Rollup warnings for Zod dependency comments.
+
+## 2026-09-05 F3 Controller Shell Containment
+
+- Both rejected shell defects reproduced before the fix: desktop Settings wheel input left `.shell-main.scrollTop=0` with Sign out below the viewport, and the 375x812 fixed logout alert intersected enabled `Order` and `Rows` controls.
+- No shell product blocker remains after the focused red/green regression, `112/112` Vitest tests, ESLint, production build, `git diff --check`, all `48/48` Chromium scenarios, and fresh three-viewport manual QA passed.
+- Production builds retain the unchanged non-fatal Rollup warnings for Zod dependency comments. CSS diagnostics likewise retain three pre-existing reduced-motion `!important` warnings outside the changed selectors.
+- Browser QA used deterministic synthetic same-origin API responses matching the existing Playwright fixtures; no production credential, cookie, token, or external service was used. Independent delegated visual reviewers were not dispatched because the user explicitly prohibited subagents.
