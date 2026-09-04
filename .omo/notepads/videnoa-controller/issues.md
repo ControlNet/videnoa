@@ -348,3 +348,23 @@
 - GitHub job `100909271972` launched the debug Controller from a clean checkout without building ignored `controller-web/dist`. Startup returned `Controller frontend directory is missing` before listener bind, but the process test redirected stderr to null and exposed only exit status 1.
 - The Controller Rust job now installs and builds Controller web assets before Cargo gates, with a workflow mutation contract that rejects removal of that build. The process test now reports early child stderr and has a real-binary missing-config regression proving the diagnostic remains visible.
 - A forced competing listener produced a different wrong-listener/login-hang signature, not the hosted early-exit signature. The fixture's reserve/drop port pattern remains a separate residual harness risk requiring an inherited-listener or bound-address publication design, not retries or timing changes.
+
+## 2026-09-04 Task 20 Hosted Contention Remediation
+
+- The unchanged overlapping CPU-0 baseline failed both processes: one reported 26/30 and the other 27/30, reproducing bare download-part `NotFound`, opaque completion timeout, and additional scheduler-starvation failures.
+- An in-process fixture budget of one removed the bare partial-file failure but did not pass the cross-process proof; both processes still stalled in `Submitting`. Adding the Task-20-only Unix advisory permit toggled the same proof to 30/30 in both processes without timeout increases or retries.
+- No unresolved Task 20 infrastructure blocker remains after the final 30/30 target, overlapping CPU-0 proof, complete Controller all-target/all-feature suite, formatting, Rust 1.83 strict Clippy, and changed-file diagnostics passed.
+
+## 2026-09-04 Task 20 AttemptMismatch Correction
+
+- The prior statement that no Task 20 infrastructure blocker remained was premature. Independent verification produced process A 30/30 and process B 29/30, with `verifying_cancellation_removes_verified_workspace` returning `AttemptMismatch`.
+- Operation-rich red evidence identified `finish checkpointed download`, not `request_cancellation`, as the failing call. Its inputs were task version 7/status `Downloading` and attempt version 8/status `Verifying` after the checkpoint was released before separate snapshot reads completed.
+- The correction retains the Task-20-only admission guard and all cancellation assertions. It adds coherent snapshot acquisition only, holds the named checkpoint through cancellation-intent persistence, and reports operation, task/attempt IDs, versions, and statuses on lifecycle errors.
+- Corrected verification passed 12 consecutive focused CPU-0 runs, then a fresh final-source overlapping proof at 30/30 in both processes, normal Task 20 at 30/30, the complete Controller all-target/all-feature suite, formatting, Rust 1.83 strict Clippy, and changed-file LSP diagnostics.
+
+## 2026-09-04 Task 20 Remote Cleanup Crash Correction
+
+- Independent overlapping verification exposed a remaining `RemoteDeleteSucceeded` failure: durable completion sometimes occurred with one `DeleteFile` request when the matrix expected recovery to replay deletion.
+- Bounded diagnostics proved this was not a late mock counter or journal observation. After ten seconds, task and attempt were durably version 11/`Completed`, remote files were absent, and the delete counter remained one.
+- The local fault matrix released its checkpoint after `ControllerRuntime::crash`. Because nested stage cancellation had no joined completion barrier, the release could wake the old cleanup future and allow it to commit completion before restart recovery ran.
+- The correction removes only that post-crash release. Verification passed 10/10 focused CPU-0 matrices, two simultaneous CPU-0 Task 20 targets at 30/30 each, the complete Controller all-target/all-feature test suite, formatting, Rust 1.83 strict Clippy, no-excuse checks, `git diff --check`, and zero diagnostics across all 24 Task 20 Rust files.
