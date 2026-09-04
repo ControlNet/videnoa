@@ -1,39 +1,54 @@
 import { expect, type Locator } from "@playwright/test"
 
-type ControlStyle = {
-  readonly backgroundColor: string
-  readonly borderColor: string
-  readonly color: string
-  readonly cursor: string
-  readonly opacity: string
+type ControlContract = {
+  readonly unavailableDisabled: boolean
+  readonly availableEnabled: boolean
+  readonly unavailableCursor: string
+  readonly availableCursor: string
+  readonly unavailableOpacity: string
+  readonly opacityDiffers: boolean
+  readonly colorDiffers: boolean
+  readonly backgroundDiffers: boolean
+  readonly borderDiffers: boolean
 }
 
 export async function expectUnavailableControlStyle(unavailable: Locator, available: Locator): Promise<void> {
-  await expect(unavailable).toBeDisabled()
-  await expect(available).toBeEnabled()
-
-  const [unavailableStyle, availableStyle] = await Promise.all([
-    computedControlStyle(unavailable),
-    computedControlStyle(available),
-  ])
-
-  expect(unavailableStyle.cursor).toBe("not-allowed")
-  expect(availableStyle.cursor).toBe("pointer")
-  expect(unavailableStyle.color).not.toBe(availableStyle.color)
-  expect(unavailableStyle.backgroundColor).not.toBe(availableStyle.backgroundColor)
-  expect(unavailableStyle.borderColor).not.toBe(availableStyle.borderColor)
-  expect(unavailableStyle.opacity).not.toBe(availableStyle.opacity)
+  await expect.poll(() => computedControlContract(unavailable, available)).toEqual({
+    unavailableDisabled: true,
+    availableEnabled: true,
+    unavailableCursor: "not-allowed",
+    availableCursor: "pointer",
+    unavailableOpacity: "0.65",
+    opacityDiffers: true,
+    colorDiffers: true,
+    backgroundDiffers: true,
+    borderDiffers: true,
+  })
 }
 
-async function computedControlStyle(control: Locator): Promise<ControlStyle> {
-  return control.evaluate((element) => {
-    const style = getComputedStyle(element)
-    return {
-      backgroundColor: style.backgroundColor,
-      borderColor: style.borderColor,
-      color: style.color,
-      cursor: style.cursor,
-      opacity: style.opacity,
-    }
-  })
+async function computedControlContract(unavailable: Locator, available: Locator): Promise<ControlContract> {
+  const availableElement = await available.elementHandle()
+  if (availableElement === null) throw new TypeError("available control is missing")
+  try {
+    return await unavailable.evaluate((unavailableElement, availableControl) => {
+      if (!(unavailableElement instanceof HTMLButtonElement) || !(availableControl instanceof HTMLButtonElement)) {
+        throw new TypeError("control pair must contain buttons")
+      }
+      const unavailableStyle = getComputedStyle(unavailableElement)
+      const availableStyle = getComputedStyle(availableControl)
+      return {
+        unavailableDisabled: unavailableElement.disabled,
+        availableEnabled: !availableControl.disabled,
+        unavailableCursor: unavailableStyle.cursor,
+        availableCursor: availableStyle.cursor,
+        unavailableOpacity: unavailableStyle.opacity,
+        opacityDiffers: unavailableStyle.opacity !== availableStyle.opacity,
+        colorDiffers: unavailableStyle.color !== availableStyle.color,
+        backgroundDiffers: unavailableStyle.backgroundColor !== availableStyle.backgroundColor,
+        borderDiffers: unavailableStyle.borderColor !== availableStyle.borderColor,
+      }
+    }, availableElement)
+  } finally {
+    await availableElement.dispose()
+  }
 }
