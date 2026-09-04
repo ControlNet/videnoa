@@ -1,9 +1,13 @@
+#[path = "client.rs"]
+pub mod api;
 pub mod checkpoints;
-pub mod client;
 pub mod domain;
 pub mod faults;
 mod fingerprint;
-pub mod journal;
+#[path = "journal.rs"]
+pub mod request_log;
+
+pub use request_log as journal;
 mod persistence;
 mod routes;
 pub mod server;
