@@ -11,7 +11,7 @@ use crate::support::{ControllerFixture, TestResult};
 async fn explicit_processing_retry_creates_replacement_attempt_and_converges() -> TestResult {
     let mut worker = MockVidenoa::start_persistent().await?;
     worker.set_fault(Fault::AcceptThenDropRunResponse).await;
-    let fixture = ControllerFixture::start().await?;
+    let mut fixture = ControllerFixture::start().await?;
     let registered = fixture.register_worker(&worker, "worker-retry").await?;
     let task = fixture.create_task("worker-retry", b"input-video").await?;
     wait_for_job_count(&worker, 1).await?;
@@ -19,6 +19,8 @@ async fn explicit_processing_retry_creates_replacement_attempt_and_converges() -
         worker.restart(RestartMode::RetainState).await?,
         RestartOutcome::Retained
     );
+    fixture.crash().await?;
+    fixture.restart().await?;
     let failed = wait_for_status(&fixture, &task, TaskStatus::Failed).await?;
     assert_eq!(
         failed
