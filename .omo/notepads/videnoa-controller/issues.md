@@ -322,3 +322,23 @@
 - Independent complete auditing found two touched test helpers above the hard ceiling: `mock_videnoa/recovery_support.rs` at 323 pure LOC and `task12/support.rs` at 360. The final NUL-safe audit also identified `src/main.rs` at 251.
 - The first Task 12 utility re-export passed Task 12 but failed strict all-target Clippy because aggregate targets did not consume every re-export. Root delegate functions replaced the re-export without changing any caller path.
 - No size blocker remains: the complete changed Controller Rust audit now has a maximum of 244 pure LOC.
+
+## 2026-09-04 Final Wave F2 Task Overflow Determinism
+
+- F2 observed native `disabled=true` followed by computed opacity `1` in one isolated repetition. Runtime frame sampling confirmed late layout growth re-enabled the stable right button before the split style read.
+- The deterministic browser and component regressions failed before correction and now pass. No unresolved F2 product or evidence blocker remains after 30/30 focused Playwright executions and one exact 47/47 Chromium suite.
+- Existing non-fatal Zod Rollup annotation warnings remain unchanged and are not related to the overflow correction.
+
+## 2026-09-04 F3 SSE Shutdown Remediation
+
+- Before the fix, an authenticated idle `/api/events` client kept the Controller process alive after the listener closed and beyond the documented 30-second shutdown bound. The release-process regression now exits in 11 ms without client disconnect.
+- Strict Rust 1.83 Clippy is currently blocked by an `unnested_or_patterns` diagnostic in concurrently added `persistence/submission_claim.rs`; the corrected F3 files produce no Clippy diagnostic.
+- The full all-target run is currently blocked by concurrently modified Task 20 pause, retry, and transfer-outage scenarios. Focused Task 20 shutdown and worker-health shutdown tests pass, and F3 did not modify orchestration, submission, persistence, or Task 20 files.
+
+## 2026-09-04 F4 Duplicate Submission Remediation
+
+- The original F4 failure was a same-generation recovery replay after uncertain remote acceptance. Both requests carried the same durable key and created one remote job, but violated the exact one-request-per-attempt requirement.
+- Initial ownership placement before scheduler admission caused paused submissions to defer permanently in-process; moving the claim to the final pre-request boundary restored pause/resume behavior.
+- The first restart-outage test paused the worker before journal recording, so aborting the client could cancel the first journal write. Synchronizing on the accepted request's journal entry removed that fixture race without sleeps or retries.
+- Final audit found cancellation used the ownership claim but lacked an exact same-generation `/api/run` count assertion, and the migration test did not represent a pre-0006 database. Focused regressions now cover both contracts.
+- The final F4 LOC audit found `task20/outage_matrix.rs` at 268 and `task20/support/controller.rs` at 253 pure lines. Wait helpers and reconciler fixture construction were split by responsibility; all F4-owned files now remain at or below 250.
