@@ -496,11 +496,11 @@ Expected: the image starts without GPU flags/libraries; archives have the locked
 
 ## Final verification wave
 
-- [ ] F1. Plan compliance and scope-fidelity audit
+- [x] F1. Plan compliance and scope-fidelity audit
 
   Read this plan, approved draft, and both knowledge files; inspect the complete diff and evidence. Verify every responsibility/acceptance criterion and every Must-NOT-Have, the existing product remains `videnoa`, and Controller is GPU/core-free. Reject missing stages, intake modes, GUI capabilities, artifacts/docs, or unrelated scope. Save `.omo/evidence/videnoa-controller/final/F1-plan-compliance.md`.
 
-- [ ] F2. Code quality, security, and data-integrity review
+- [x] F2. Code quality, security, and data-integrity review
 
   Run formatting, clippy, Rust/frontend tests, dependency/content scans, migrations, secret/log scans, and path/auth attacks; inspect exhaustive transitions, typed errors, module size, indexes/CAS, and no-clobber primitives. Reject panic request paths, permissive CORS, plaintext secrets, unsafe paths, overwrite fallback, blind resubmit, or misleading success logs. Save `.omo/evidence/videnoa-controller/final/F2-quality-security.md`.
 
