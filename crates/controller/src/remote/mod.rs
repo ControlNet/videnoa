@@ -1,25 +1,29 @@
-mod cache;
+#[path = "cache.rs"]
+mod capability_store;
 mod catalog;
-mod client;
-mod compatibility;
 mod config;
+#[path = "client.rs"]
+mod connector;
 mod dto;
-mod error;
 mod jobs;
 mod paths;
+#[path = "error.rs"]
+mod request_failure;
 mod transfer;
 mod transport;
+#[path = "compatibility.rs"]
+mod workflow_eligibility;
 
-pub use cache::{
+pub use capability_store::{
     CacheInvalidation, CapabilityCache, CompatibilityEvidence, MonotonicClock, SystemClock,
 };
-pub use client::VidenoaClient;
-pub use compatibility::{Compatibility, CompatibilityCatalog, CompatibilityEntry};
 pub use config::{PayloadLimits, RemoteTimeouts};
+pub use connector::VidenoaClient;
 pub use dto::{
     DownloadReceipt, FileStat, Health, Job, JobProgress, JobStatus, Preset, PresetWorkflow,
     RunOutcome, RunReceipt, RunSubmission, UploadReceipt, Workflow, WorkflowInterface,
     WorkflowPort,
 };
-pub use error::{ClientConfigError, VidenoaClientError};
 pub use paths::{sibling_output_path, FileApiPath};
+pub use request_failure::{ClientConfigError, VidenoaClientError};
+pub use workflow_eligibility::{Compatibility, CompatibilityCatalog, CompatibilityEntry};
