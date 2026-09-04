@@ -1,7 +1,6 @@
 use std::sync::Arc;
-use std::time::Duration;
 
-use videnoa_controller::domain::{Task, TaskStatus};
+use videnoa_controller::domain::TaskStatus;
 use videnoa_controller::scheduler::{TransferCheckpointObserver, TransferCheckpointPoint};
 
 use crate::mock_videnoa::faults::{DeleteOutcome, Fault, OfflineMode, ResponseFault};
@@ -12,6 +11,14 @@ use crate::support::{
     ControllerFixture, TestResult,
 };
 
+#[path = "outage_matrix/waits.rs"]
+mod waits;
+
+use waits::{
+    wait_for_remote_job, wait_for_run_journal_entries, wait_for_run_requests,
+    wait_for_worker_offline,
+};
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn real_tcp_transfer_outages_retry_without_compute_replay() -> TestResult {
     run_fault(
@@ -20,12 +27,7 @@ async fn real_tcp_transfer_outages_retry_without_compute_replay() -> TestResult 
         Route::Upload,
     )
     .await?;
-    run_fault(
-        "submit-outage",
-        Fault::AcceptThenDropRunResponse,
-        Route::Run,
-    )
-    .await?;
+    run_submission_fault("submit-outage").await?;
     run_fault(
         "poll-outage",
         Fault::Response(ResponseFault {
@@ -115,27 +117,41 @@ async fn run_fault(name: &str, fault: Fault, route: Route) -> TestResult {
     assert_restarted_pipeline(&fixture, &worker, &task, b"enhanced-video").await?;
     let counters = worker.counters().await;
     assert!(counters.get(route) >= 1);
-    if route == Route::Run {
-        assert_eq!(counters.get(Route::Run), 2);
-        let keys = worker
-            .journal()
-            .await
-            .into_iter()
-            .filter(|entry| entry.route == Route::Run)
-            .filter_map(|entry| {
-                entry
-                    .headers
-                    .into_iter()
-                    .find_map(|header| (header.name == "idempotency-key").then_some(header.value))
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(keys.len(), 2);
-        assert!(matches!(
-            keys.as_slice(),
-            [HeaderValueSnapshot::Bytes(first), HeaderValueSnapshot::Bytes(second)] if first == second
-        ));
-        assert_eq!(worker.job_count().await, 1);
-    }
+    Ok(())
+}
+
+async fn run_submission_fault(name: &str) -> TestResult {
+    let worker = MockVidenoa::start_persistent().await?;
+    worker.set_fault(Fault::AcceptThenDropRunResponse).await;
+    let mut fixture = ControllerFixture::start().await?;
+    fixture.register_worker(&worker, name).await?;
+    let task = fixture.create_task(name, b"input-video").await?;
+    wait_for_run_journal_entries(&worker, 1).await?;
+    fixture.crash().await?;
+    fixture.restart().await?;
+    wait_for_run_requests(&worker, 2).await?;
+    complete_mock_job(&worker, &task, b"enhanced-video").await?;
+    assert_restarted_pipeline(&fixture, &worker, &task, b"enhanced-video").await?;
+    let counters = worker.counters().await;
+    assert_eq!(counters.get(Route::Run), 2);
+    let keys = worker
+        .journal()
+        .await
+        .into_iter()
+        .filter(|entry| entry.route == Route::Run)
+        .filter_map(|entry| {
+            entry
+                .headers
+                .into_iter()
+                .find_map(|header| (header.name == "idempotency-key").then_some(header.value))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(keys.len(), 2);
+    assert!(matches!(
+        keys.as_slice(),
+        [HeaderValueSnapshot::Bytes(first), HeaderValueSnapshot::Bytes(second)] if first == second
+    ));
+    assert_eq!(worker.job_count().await, 1);
     Ok(())
 }
 
@@ -189,56 +205,5 @@ async fn run_cleanup_outage(
         before_cleanup.get(Route::Download)
     );
     assert_eq!(after_cleanup.get(Route::DeleteFile), expected_deletes);
-    Ok(())
-}
-
-async fn wait_for_remote_job(worker: &MockVidenoa) -> TestResult {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while worker.job_count().await == 0 {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .map_err(|_| std::io::Error::other("remote job was not created"))?;
-    Ok(())
-}
-
-async fn wait_for_status(
-    fixture: &ControllerFixture,
-    task: &Task,
-    status: TaskStatus,
-) -> TestResult<videnoa_controller::domain::TaskDetailResponse> {
-    tokio::time::timeout(Duration::from_secs(15), async {
-        loop {
-            let detail = fixture.task(task).await?;
-            if detail.task.status == status {
-                return Ok::<_, Box<dyn std::error::Error + Send + Sync>>(detail);
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .map_err(|_| std::io::Error::other("task did not reach expected status"))?
-}
-
-async fn wait_for_worker_offline(
-    fixture: &ControllerFixture,
-    worker_id: videnoa_controller::domain::WorkerId,
-) -> TestResult {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            if fixture
-                .store
-                .worker(worker_id)
-                .await?
-                .is_some_and(|worker| !worker.online)
-            {
-                return Ok::<_, videnoa_controller::persistence::PersistenceError>(());
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .map_err(|_| std::io::Error::other("worker was not marked offline"))??;
     Ok(())
 }
