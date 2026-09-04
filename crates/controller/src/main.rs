@@ -7,7 +7,6 @@ use std::time::Duration;
 use std::path::Path;
 
 use clap::{Parser, Subcommand};
-use tokio_util::sync::CancellationToken;
 use videnoa_controller::auth::{hash_password, AuthService};
 use videnoa_controller::config::ControllerConfig;
 use videnoa_controller::operations::{EventHub, OperationsDependencies, OperationsState};
@@ -131,7 +130,7 @@ async fn run_controller(cli: Cli) -> anyhow::Result<()> {
         eprintln!("warning: session cookies are running without Secure; use only on trusted HTTP networks");
     }
     let assets = frontend_assets()?;
-    let http_shutdown = CancellationToken::new();
+    let http_shutdown = shutdown.cancellation_token();
     let server = serve_controller_until(
         address,
         &assets,

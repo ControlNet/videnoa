@@ -1,5 +1,5 @@
 use std::convert::Infallible;
-use std::future::ready;
+use std::future::{pending, ready};
 use std::sync::Arc;
 
 use axum::extract::State;
@@ -68,16 +68,25 @@ pub(super) async fn stream(
     let mut auth_recheck = interval(AUTH_RECHECK_INTERVAL);
     auth_recheck.set_missed_tick_behavior(MissedTickBehavior::Delay);
     auth_recheck.tick().await;
+    let shutdown = state.shutdown.clone();
     let updates = stream::unfold(
         (
             state.events.sender.subscribe(),
             state,
             headers,
             auth_recheck,
+            shutdown,
         ),
-        |(mut receiver, state, headers, mut auth_recheck)| async move {
+        |(mut receiver, state, headers, mut auth_recheck, shutdown)| async move {
             loop {
                 tokio::select! {
+                    biased;
+                    () = async {
+                        match &shutdown {
+                            Some(shutdown) => shutdown.cancelled().await,
+                            None => pending::<()>().await,
+                        }
+                    } => return None,
                     received = receiver.recv() => {
                         let event = match received {
                             Ok(LiveEvent::Delta(event)) => delta_event(&event),
@@ -87,7 +96,7 @@ pub(super) async fn stream(
                             Err(broadcast::error::RecvError::Lagged(_)) => refetch_event(),
                             Err(broadcast::error::RecvError::Closed) => return None,
                         };
-                        return Some((Ok(event), (receiver, state, headers, auth_recheck)));
+                        return Some((Ok(event), (receiver, state, headers, auth_recheck, shutdown)));
                     }
                     _ = auth_recheck.tick() => {
                         if authenticate_passive(&state.auth, &headers, chrono::Utc::now()).await.is_err() {
