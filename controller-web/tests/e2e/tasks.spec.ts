@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test"
 
+import { expectUnavailableControlStyle } from "./control-style-assertions"
 import { installOperationalReadRoutes } from "./operations-fixtures"
 import { appendEvidence, capture, dispatchTaskUpdate, installLiveApi, installPagedApi, requestJournal, task } from "./tasks-fixtures"
 
@@ -11,6 +12,9 @@ test("keeps 20,000 task history bounded through filters, sorting, paging, and na
   await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" })
   await page.goto("/tasks?columns=path,error,remote_job")
   await expect(page.getByRole("table").locator("tbody tr")).toHaveCount(50)
+  const previous = page.getByRole("button", { name: "Previous" })
+  const next = page.getByRole("button", { name: "Next" })
+  await expectUnavailableControlStyle(previous, next)
   expect(journal.tasks).toHaveLength(1)
   expect(journal.counts).toHaveLength(1)
 
@@ -77,6 +81,13 @@ test("keeps 20,000 task history bounded through filters, sorting, paging, and na
   })
   expect(await page.locator(".task-table-frame").evaluate((element) => element.scrollTop)).toBeGreaterThan(132)
   await capture(page, "narrow-pagination.png")
+
+  // When: the operator opens the final bounded server page directly.
+  await page.goto("/tasks?limit=50&offset=19950&columns=path,error,remote_job")
+  await expect(page.getByRole("table").locator("tbody tr")).toHaveCount(50)
+
+  // Then: pagination reverses its unavailable and available visual states.
+  await expectUnavailableControlStyle(next, previous)
 })
 
 test("ignores stale and equal SSE task versions without mutation or refetch", async ({ page }) => {
