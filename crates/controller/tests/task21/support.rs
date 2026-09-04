@@ -33,8 +33,11 @@ pub async fn fixture() -> TestResult<Fixture> {
     let directory = TempDir::new()?;
     let input_root = directory.path().join("input");
     let output_root = directory.path().join("output");
-    fs::create_dir(&input_root)?;
-    fs::create_dir(&output_root)?;
+    let data_root = directory.path().join("data");
+    let temp_root = directory.path().join("temp");
+    for root in [&input_root, &output_root, &data_root, &temp_root] {
+        fs::create_dir(root)?;
+    }
     let hash_file = directory.path().join("admin-password.phc");
     fs::write(&hash_file, hash_password(PASSWORD)?)?;
     let database = Database::open(
@@ -51,8 +54,8 @@ pub async fn fixture() -> TestResult<Fixture> {
     let path_config = PathConfig {
         input_roots: vec![input_root.clone()],
         output_roots: vec![output_root.clone()],
-        data_root: directory.path().join("data"),
-        temp_root: directory.path().join("temp"),
+        data_root,
+        temp_root,
     };
     let auth = AuthService::new(auth_config.clone(), store.clone())?;
     let paths = PathCapabilities::open(&path_config)?;
