@@ -1,8 +1,6 @@
-use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
-
 use cap_std::fs::File;
 use sha2::{Digest, Sha256};
+use std::io::{Read, Write};
 
 use crate::persistence::Sha256Digest;
 
@@ -22,13 +20,13 @@ pub(super) async fn matches_file(
 }
 
 pub(super) async fn copy_verified(
-    source: PathBuf,
+    source: File,
     staging: File,
     expected_size: u64,
     expected_sha256: Sha256Digest,
 ) -> Result<(), TransferError> {
     tokio::task::spawn_blocking(move || {
-        let mut source = std::fs::File::open(source)?;
+        let mut source = source;
         let mut staging = staging;
         let mut hasher = Sha256::new();
         let mut size = 0_u64;
@@ -62,27 +60,6 @@ pub(super) async fn copy_verified(
     .await
     .map_err(std::io::Error::other)??;
     Ok(())
-}
-
-#[cfg(unix)]
-pub(super) async fn sync_directory(path: &Path) -> Result<(), std::io::Error> {
-    let path = path.to_owned();
-    tokio::task::spawn_blocking(move || std::fs::File::open(path)?.sync_all())
-        .await
-        .map_err(std::io::Error::other)?
-}
-
-#[cfg(windows)]
-pub(super) async fn sync_directory(_path: &Path) -> Result<(), std::io::Error> {
-    Ok(())
-}
-
-#[cfg(not(any(unix, windows)))]
-pub(super) async fn sync_directory(_path: &Path) -> Result<(), std::io::Error> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "durable directory synchronization is unsupported on this platform",
-    ))
 }
 
 fn hash_reader(mut file: File) -> Result<(u64, Sha256Digest), std::io::Error> {

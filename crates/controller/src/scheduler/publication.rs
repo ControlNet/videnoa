@@ -65,11 +65,10 @@ impl TransferExecutor {
         let Some(expected) = publication_evidence(task) else {
             return self.fail_verification(task, attempt, now).await;
         };
-        let Ok(Some(artifact)) = recover_verified(
-            &self.config.temp_root.join(task.id.to_string()),
-            task.output_extension.as_str(),
-        )
-        .await
+        let Ok(Some(workspace)) = self.resources.paths.temp_workspace(task.id, false) else {
+            return self.fail_verification(task, attempt, now).await;
+        };
+        let Ok(Some(artifact)) = recover_verified(&workspace, task.output_extension.as_str()).await
         else {
             return self.fail_verification(task, attempt, now).await;
         };
@@ -177,16 +176,17 @@ impl TransferExecutor {
                 }
             }
             Ok(PublicationArtifact::Missing) => {
-                let artifact = match recover_verified(
-                    &self.config.temp_root.join(task.id.to_string()),
-                    task.output_extension.as_str(),
-                )
-                .await
-                {
-                    Ok(Some(artifact)) => artifact,
+                let workspace = match self.resources.paths.temp_workspace(task.id, false) {
+                    Ok(Some(workspace)) => workspace,
                     Ok(None) => return self.fail_ambiguous(task, attempt, now).await,
                     Err(_) => return self.fail_publication(task, attempt, now).await,
                 };
+                let artifact =
+                    match recover_verified(&workspace, task.output_extension.as_str()).await {
+                        Ok(Some(artifact)) => artifact,
+                        Ok(None) => return self.fail_ambiguous(task, attempt, now).await,
+                        Err(_) => return self.fail_publication(task, attempt, now).await,
+                    };
                 if artifact.size != expected.size || artifact.sha256 != expected.sha256 {
                     return self.fail_ambiguous(task, attempt, now).await;
                 }
@@ -201,7 +201,12 @@ impl TransferExecutor {
                         return self.fail_publication_path(task, attempt, error, now).await;
                     }
                 };
-                if copy_verified(artifact.path, staging, expected.size, expected.sha256)
+                let source = match artifact.source.open_read() {
+                    Ok(Some((source, _))) => source,
+                    Ok(None) => return self.fail_ambiguous(task, attempt, now).await,
+                    Err(_) => return self.fail_publication(task, attempt, now).await,
+                };
+                if copy_verified(source, staging, expected.size, expected.sha256)
                     .await
                     .is_err()
                 {
