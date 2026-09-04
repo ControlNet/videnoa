@@ -9,7 +9,7 @@ use crate::domain::{
     TaskStatusCountsResponse,
 };
 
-use super::error::OperationsError;
+use super::request_failure::OperationsError;
 use super::OperationsState;
 
 const TASK_STATUSES: [TaskStatus; 14] = [

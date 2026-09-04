@@ -1,5 +1,6 @@
-mod error;
 mod events;
+#[path = "error.rs"]
+mod request_failure;
 mod settings;
 mod status;
 mod tasks;
@@ -21,8 +22,8 @@ use crate::remote::PayloadLimits;
 use crate::scheduler::Scheduler;
 use crate::workers::WorkerRegistry;
 
-use error::OperationsError;
 pub use events::EventHub;
+use request_failure::OperationsError;
 
 #[derive(Clone)]
 pub struct OperationsDependencies {

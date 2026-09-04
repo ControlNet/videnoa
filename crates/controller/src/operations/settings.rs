@@ -6,7 +6,7 @@ use chrono::Utc;
 use crate::domain::{SettingsPaths, SettingsResponse, SettingsUpdateRequest, TaskActionRequest};
 use crate::persistence::{SettingsRecord, SettingsUpdate};
 
-use super::error::OperationsError;
+use super::request_failure::OperationsError;
 use super::OperationsState;
 
 const MAX_DURATION_SECONDS: u64 = 7 * 24 * 60 * 60;

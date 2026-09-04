@@ -12,7 +12,7 @@ use crate::lifecycle::{
 };
 use crate::remote::{FileApiPath, JobStatus, VidenoaClient, VidenoaClientError};
 
-use super::error::OperationsError;
+use super::request_failure::OperationsError;
 use super::OperationsState;
 
 pub(super) async fn cancel(
