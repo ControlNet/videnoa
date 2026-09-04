@@ -34,7 +34,7 @@ pub(super) async fn bind_submission(
 ) -> Result<u64, PersistenceError> {
     let occurred_at = timestamp(write.occurred_at);
     let result = sqlx::query(
-        "UPDATE task_attempts SET status = 'processing', remote_job_id = ?,
+        "UPDATE task_attempts SET status = 'processing', remote_job_id = ?, submission_owner = NULL,
             submitted_at_ms = ?, started_at_ms = ?, version = version + 1, updated_at_ms = ?
          WHERE id = ? AND status = 'submitting' AND version = ?
            AND remote_job_id IS NULL AND remote_input_path = ? AND remote_output_path = ?",
