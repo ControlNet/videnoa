@@ -21,6 +21,8 @@ const emptyTaskCounts = {
   total: 0,
 }
 const emptyWorkerList = { items: [], total: 0 }
+const initializedSetup = { initialized: true } as const
+const pendingSetup = { initialized: false } as const
 
 class FakeEventSource extends EventTarget {
   static latest: FakeEventSource | null = null
@@ -71,6 +73,7 @@ function pathFor(input: RequestInfo | URL): string {
 function authenticatedFetcher(): ReturnType<typeof vi.fn<typeof fetch>> {
   return vi.fn<typeof fetch>((input) => {
     switch (pathFor(input)) {
+      case "/api/auth/setup": return Promise.resolve(response(initializedSetup))
       case "/api/auth/session": return Promise.resolve(response(session, 200, "proof"))
       case "/api/tasks": return Promise.resolve(response(emptyTaskPage))
       case "/api/status-counts": return Promise.resolve(response(emptyTaskCounts))
@@ -111,7 +114,13 @@ describe("authenticated Controller shell", () => {
   it("protects a deep link and shows only the accessible login form", async () => {
     // Given: no valid cookie session on a protected route.
     window.history.replaceState({}, "", "/workers")
-    vi.stubGlobal("fetch", vi.fn<typeof fetch>().mockResolvedValue(response({ error: "unauthorized" }, 401)))
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>((input) => {
+      switch (pathFor(input)) {
+        case "/api/auth/setup": return Promise.resolve(response(initializedSetup))
+        case "/api/auth/session": return Promise.resolve(response({ error: "unauthorized" }, 401))
+        default: return Promise.resolve(response({ error: "internal" }, 500))
+      }
+    }))
 
     // When: the app bootstraps.
     render(<App />)
@@ -120,6 +129,122 @@ describe("authenticated Controller shell", () => {
     expect(await screen.findByRole("heading", { name: "Sign in to Controller" })).toBeVisible()
     expect(screen.queryByRole("navigation", { name: "Primary" })).not.toBeInTheDocument()
     await waitFor(() => expect(screen.getByLabelText("Controller password")).toHaveFocus())
+  })
+
+  it("checks initialization before session and offers first-run password setup", async () => {
+    // Given: a synthetic test-only Controller that has not been initialized.
+    const requestedPaths: string[] = []
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>((input) => {
+      const path = pathFor(input)
+      requestedPaths.push(path)
+      if (path === "/api/auth/setup") return Promise.resolve(response(pendingSetup))
+      return Promise.resolve(response({ error: "internal" }, 500))
+    }))
+
+    // When: the application bootstraps for the first time.
+    render(<App />)
+
+    // Then: setup is the only surface, setup ran before session, and focus reaches the new password.
+    expect(await screen.findByRole("heading", { name: "Set up Controller access" })).toBeVisible()
+    expect(requestedPaths).toEqual(["/api/auth/setup"])
+    expect(screen.queryByRole("heading", { name: "Sign in to Controller" })).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.getByLabelText("Create password")).toHaveFocus())
+  })
+
+  it.each([
+    ["undersized password", "short", "short", "Use at least 12 UTF-8 bytes.", "Create password"],
+    ["oversized multibyte password", "界".repeat(342), "界".repeat(342), "Use at most 1024 UTF-8 bytes.", "Create password"],
+    ["mismatched confirmation", "synthetic-passphrase", "different-passphrase", "Passwords do not match.", "Confirm password"],
+  ] as const)("rejects a locally %s", async (_case, passwordValue, confirmationValue, message, focusedLabel) => {
+    // Given: a synthetic test-only uninitialized Controller and one invalid setup pair.
+    const requests: Request[] = []
+    const fetcher = vi.fn<typeof fetch>(async (input, init) => {
+      const request = new Request(input, init)
+      requests.push(request)
+      return response(pendingSetup)
+    })
+    vi.stubGlobal("fetch", fetcher)
+    render(<App />)
+    const password = await screen.findByLabelText("Create password")
+    const confirmation = screen.getByLabelText("Confirm password")
+
+    // When: the invalid pair is submitted.
+    fireEvent.change(password, { target: { value: passwordValue } })
+    fireEvent.change(confirmation, { target: { value: confirmationValue } })
+    fireEvent.click(screen.getByRole("button", { name: "Create secure access" }))
+
+    // Then: the precise field error receives focus and transport never sees the secret.
+    expect(await screen.findByText(message)).toHaveAttribute("role", "alert")
+    expect(screen.getByLabelText(focusedLabel)).toHaveFocus()
+    expect(requests).toHaveLength(1)
+  })
+
+  it("authenticates setup without browser-stored secrets", async () => {
+    // Given: a synthetic test-only uninitialized Controller and a successful setup boundary.
+    const requests: Request[] = []
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input, init) => {
+      const request = new Request(input, init)
+      requests.push(request)
+      switch (new URL(request.url).pathname) {
+        case "/api/auth/setup": return request.method === "GET" ? response(pendingSetup) : response({ session }, 200, "setup-proof")
+        case "/api/tasks": return response(emptyTaskPage)
+        case "/api/status-counts": return response(emptyTaskCounts)
+        default: return response({ error: "internal" }, 500)
+      }
+    }))
+    render(<App />)
+    fireEvent.change(await screen.findByLabelText("Create password"), { target: { value: "synthetic-passphrase" } })
+    fireEvent.change(screen.getByLabelText("Confirm password"), { target: { value: "synthetic-passphrase" } })
+
+    // When: the valid setup pair is submitted.
+    fireEvent.click(screen.getByRole("button", { name: "Create secure access" }))
+
+    // Then: the exact request enters the authenticated shell and no browser storage is used.
+    expect(await screen.findByRole("heading", { name: "Tasks" })).toBeVisible()
+    const setupRequest = requests.find((request) => new URL(request.url).pathname === "/api/auth/setup" && request.method === "POST")
+    expect(await setupRequest?.json()).toEqual(Object.fromEntries([
+      ["password", "synthetic-passphrase"],
+      ["password_confirmation", "synthetic-passphrase"],
+    ]))
+    expect(localStorage).toHaveLength(0)
+    expect(sessionStorage).toHaveLength(0)
+  })
+
+  it("recovers an already-initialized setup race into normal sign-in", async () => {
+    // Given: another synthetic test-only client initializes the Controller before this form submits.
+    let setupChecks = 0
+    const requestedPaths: string[] = []
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>((input, init) => {
+      const request = new Request(input, init)
+      const path = new URL(request.url).pathname
+      requestedPaths.push(`${request.method} ${path}`)
+      if (path === "/api/auth/setup" && request.method === "GET") {
+        setupChecks += 1
+        return Promise.resolve(response({ initialized: setupChecks > 1 }))
+      }
+      if (path === "/api/auth/setup" && request.method === "POST") {
+        return Promise.resolve(response({ error: "conflict" }, 409))
+      }
+      if (path === "/api/auth/session") return Promise.resolve(response({ error: "unauthorized" }, 401))
+      return Promise.resolve(response({ error: "internal" }, 500))
+    }))
+    render(<App />)
+    fireEvent.change(await screen.findByLabelText("Create password"), { target: { value: "synthetic-passphrase" } })
+    fireEvent.change(screen.getByLabelText("Confirm password"), { target: { value: "synthetic-passphrase" } })
+
+    // When: this client submits after initialization completed elsewhere.
+    fireEvent.click(screen.getByRole("button", { name: "Create secure access" }))
+
+    // Then: setup and session are rechecked in order and the ordinary login surface is restored.
+    expect(await screen.findByRole("heading", { name: "Sign in to Controller" })).toBeVisible()
+    expect(screen.getByRole("status")).toHaveTextContent("Controller setup was completed elsewhere. Sign in with the administrator password.")
+    expect(requestedPaths).toEqual([
+      "GET /api/auth/setup",
+      "POST /api/auth/setup",
+      "GET /api/auth/setup",
+      "GET /api/auth/session",
+    ])
+    expect(screen.getByLabelText("Controller password")).toHaveFocus()
   })
 
   it("bootstraps an existing cookie session directly into the requested route", async () => {
@@ -155,6 +280,7 @@ describe("authenticated Controller shell", () => {
     // Given: an unauthenticated bootstrap followed by successful login and logout.
     const fetcher = vi.fn<typeof fetch>((input) => {
       switch (pathFor(input)) {
+        case "/api/auth/setup": return Promise.resolve(response(initializedSetup))
         case "/api/auth/session": return Promise.resolve(response({ error: "unauthorized" }, 401))
         case "/api/auth/login": return Promise.resolve(response({ session }, 200, "proof"))
         case "/api/tasks": return Promise.resolve(response(emptyTaskPage))
@@ -187,6 +313,7 @@ describe("authenticated Controller shell", () => {
   ])("shows a recoverable summary for %s", async (_name, loginResponse, message, passwordInvalid) => {
     // Given: login starts unauthenticated and the mutation fails recoverably.
     const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(response(initializedSetup))
       .mockResolvedValueOnce(response({ error: "unauthorized" }, 401))
       .mockResolvedValueOnce(loginResponse)
     vi.stubGlobal("fetch", fetcher)
@@ -216,6 +343,7 @@ describe("authenticated Controller shell", () => {
     let loginAttempts = 0
     const fetcher = vi.fn<typeof fetch>((input) => {
       switch (pathFor(input)) {
+        case "/api/auth/setup": return Promise.resolve(response(initializedSetup))
         case "/api/auth/session": return Promise.resolve(response({ error: "unauthorized" }, 401))
         case "/api/auth/login": {
           loginAttempts += 1
@@ -256,6 +384,7 @@ describe("authenticated Controller shell", () => {
     // Given: an in-flight login request and an unrelated focus target outside the app.
     const loginResponse = deferred<Response>()
     const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(response(initializedSetup))
       .mockResolvedValueOnce(response({ error: "unauthorized" }, 401))
       .mockReturnValueOnce(loginResponse.promise)
     vi.stubGlobal("fetch", fetcher)
@@ -280,13 +409,14 @@ describe("authenticated Controller shell", () => {
     // Given: Controller cannot be reached during bootstrap.
     const fetcher = vi.fn<typeof fetch>()
       .mockRejectedValueOnce(new TypeError("offline"))
+      .mockResolvedValueOnce(response(initializedSetup))
       .mockResolvedValueOnce(response({ error: "unauthorized" }, 401))
     vi.stubGlobal("fetch", fetcher)
     render(<App />)
 
     // When: the operator retries.
     expect(await screen.findByRole("alert")).toHaveTextContent("Controller could not be reached.")
-    fireEvent.click(screen.getByRole("button", { name: "Retry session check" }))
+    fireEvent.click(screen.getByRole("button", { name: "Retry Controller check" }))
 
     // Then: recovery returns to login rather than crashing.
     await waitFor(() => expect(screen.getByRole("heading", { name: "Sign in to Controller" })).toBeVisible())
@@ -296,6 +426,7 @@ describe("authenticated Controller shell", () => {
     // Given: session bootstrap returns malformed JSON before a retry reports no session.
     const fetcher = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(new Response("not-json", { status: 200, headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(response(initializedSetup))
       .mockResolvedValueOnce(response({ error: "unauthorized" }, 401))
     vi.stubGlobal("fetch", fetcher)
     render(<App />)
@@ -306,7 +437,7 @@ describe("authenticated Controller shell", () => {
     // Then: the summary owns focus before retry, and login restores normal initial field focus.
     expect(alert).toHaveTextContent("Controller returned an invalid response.")
     expect(alert).toHaveFocus()
-    fireEvent.click(screen.getByRole("button", { name: "Retry session check" }))
+    fireEvent.click(screen.getByRole("button", { name: "Retry Controller check" }))
     expect(await screen.findByRole("heading", { name: "Sign in to Controller" })).toBeVisible()
     expect(screen.getByLabelText("Controller password")).toHaveFocus()
   })
@@ -316,6 +447,7 @@ describe("authenticated Controller shell", () => {
     let logoutAttempts = 0
     const fetcher = vi.fn<typeof fetch>((input) => {
       switch (pathFor(input)) {
+        case "/api/auth/setup": return Promise.resolve(response(initializedSetup))
         case "/api/auth/session": return Promise.resolve(response(session, 200, "proof"))
         case "/api/tasks": return Promise.resolve(response(emptyTaskPage))
         case "/api/status-counts": return Promise.resolve(response(emptyTaskCounts))

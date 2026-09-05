@@ -5,14 +5,19 @@ import {
   loginResponseSchema,
   logoutResponseSchema,
   type Session,
+  type SetupRequest,
   sessionSchema,
+  setupStatusSchema,
 } from "../api/schemas"
 
 export type AuthState =
   | { readonly kind: "checking" }
-  | { readonly kind: "unauthenticated" }
+  | { readonly kind: "setup_required" }
+  | { readonly kind: "unauthenticated"; readonly notice: string | null }
   | { readonly kind: "authenticated"; readonly session: Session }
   | { readonly kind: "bootstrap_error"; readonly message: string }
+
+type SettledAuthState = Exclude<AuthState, { readonly kind: "checking" }>
 
 export type LoginResult =
   | { readonly ok: true }
@@ -26,11 +31,16 @@ export type LogoutResult =
   | { readonly ok: true }
   | { readonly ok: false; readonly message: string }
 
+export type SetupResult =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly message: string }
+
 export type SessionController = {
   readonly apiClient: ApiClient
   readonly login: (password: string) => Promise<LoginResult>
   readonly logout: () => Promise<LogoutResult>
   readonly retryBootstrap: () => void
+  readonly setup: (request: SetupRequest) => Promise<SetupResult>
   readonly state: AuthState
 }
 
@@ -40,27 +50,79 @@ export function useSessionController(): SessionController {
     () =>
       createApiClient({
         fetcher: globalThis.fetch,
-        onUnauthorized: () => setState({ kind: "unauthenticated" }),
+        onUnauthorized: () => setState({ kind: "unauthenticated", notice: null }),
       }),
     [],
   )
 
-  const checkSession = useCallback(async (): Promise<AuthState> => {
+  const checkSession = useCallback(async (): Promise<SettledAuthState> => {
     try {
       const session = await apiClient.request("api/auth/session", { schema: sessionSchema })
       return { kind: "authenticated", session }
     } catch (error) {
       if (!(error instanceof ApiClientError)) throw error
       if (error.code === "unauthorized") {
-        return { kind: "unauthenticated" }
+        return { kind: "unauthenticated", notice: null }
       }
       return { kind: "bootstrap_error", message: messageFor(error) }
     }
   }, [apiClient])
 
+  const checkBootstrap = useCallback(async (): Promise<SettledAuthState> => {
+    try {
+      const setupStatus = await apiClient.request("api/auth/setup", { schema: setupStatusSchema })
+      if (!setupStatus.initialized) return { kind: "setup_required" }
+      return checkSession()
+    } catch (error) {
+      if (!(error instanceof ApiClientError)) throw error
+      return { kind: "bootstrap_error", message: messageFor(error) }
+    }
+  }, [apiClient, checkSession])
+
   useEffect(() => {
-    void checkSession().then(setState)
-  }, [checkSession])
+    void checkBootstrap().then(setState)
+  }, [checkBootstrap])
+
+  const setup = useCallback(
+    async (request: SetupRequest): Promise<SetupResult> => {
+      try {
+        const response = await apiClient.request("api/auth/setup", {
+          json: request,
+          method: "POST",
+          schema: loginResponseSchema,
+        })
+        setState({ kind: "authenticated", session: response.session })
+        return { ok: true }
+      } catch (error) {
+        if (!(error instanceof ApiClientError)) throw error
+        if (error.status === 409) {
+          const nextState = await checkBootstrap()
+          switch (nextState.kind) {
+            case "authenticated":
+              setState(nextState)
+              return { ok: true }
+            case "unauthenticated": {
+              const message = "Controller setup was completed elsewhere. Sign in with the administrator password."
+              setState({ kind: "unauthenticated", notice: message })
+              return { ok: false, message }
+            }
+            case "setup_required":
+              setState(nextState)
+              return { ok: false, message: "Controller setup is still incomplete. Try again." }
+            case "bootstrap_error":
+              setState(nextState)
+              return { ok: false, message: nextState.message }
+            default: {
+              const unreachableState: never = nextState
+              return unreachableState
+            }
+          }
+        }
+        return { ok: false, message: messageFor(error) }
+      }
+    },
+    [apiClient, checkBootstrap],
+  )
 
   const login = useCallback(
     async (password: string): Promise<LoginResult> => {
@@ -93,7 +155,7 @@ export function useSessionController(): SessionController {
         schema: logoutResponseSchema,
       })
       apiClient.clearCsrfProof()
-      setState({ kind: "unauthenticated" })
+      setState({ kind: "unauthenticated", notice: null })
       return { ok: true }
     } catch (error) {
       if (error instanceof ApiClientError) {
@@ -109,8 +171,9 @@ export function useSessionController(): SessionController {
     logout,
     retryBootstrap: () => {
       setState({ kind: "checking" })
-      void checkSession().then(setState)
+      void checkBootstrap().then(setState)
     },
+    setup,
     state,
   }
 }
@@ -127,10 +190,11 @@ function messageFor(error: ApiClientError): string {
       return "Too many sign-in attempts. Try again shortly."
     case "forbidden":
       return "Controller rejected the request proof."
+    case "invalid_request":
+      return "Controller rejected the setup values."
     case "http_error":
     case "internal":
     case "internal_error":
-    case "invalid_request":
     case "not_found":
     case "conflict":
     case "publication_ambiguous":
