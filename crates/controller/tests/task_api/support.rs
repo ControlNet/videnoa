@@ -64,8 +64,6 @@ async fn fixture_with_busy_timeout_option(busy_timeout: Option<Duration>) -> Tes
     let output = output_root.join("result.mp4");
     fs::write(&input, b"video")?;
 
-    let hash_file = directory.path().join("admin-password.phc");
-    fs::write(&hash_file, hash_password(PASSWORD)?)?;
     let mut database_options = DatabaseOptions::new(directory.path().join("controller.sqlite3"));
     if let Some(busy_timeout) = busy_timeout {
         database_options = database_options
@@ -74,8 +72,10 @@ async fn fixture_with_busy_timeout_option(busy_timeout: Option<Duration>) -> Tes
     }
     let database = Database::open(database_options).await?;
     let store = Store::new(database);
+    store
+        .insert_administrator_credential(&hash_password(PASSWORD)?, chrono::Utc::now())
+        .await?;
     let auth_config = AuthConfig {
-        password_hash_file: hash_file,
         secure_cookie: false,
         session_absolute: Duration::from_secs(86_400),
         session_idle: Duration::from_secs(3_600),

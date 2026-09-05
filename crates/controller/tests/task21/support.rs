@@ -40,15 +40,15 @@ pub async fn fixture() -> TestResult<Fixture> {
     for root in [&input_root, &output_root, &data_root, &temp_root] {
         fs::create_dir(root)?;
     }
-    let hash_file = directory.path().join("admin-password.phc");
-    fs::write(&hash_file, hash_password(PASSWORD)?)?;
     let database = Database::open(
         DatabaseOptions::new(directory.path().join("controller.sqlite3")).with_max_connections(8),
     )
     .await?;
     let store = Store::new(database);
+    store
+        .insert_administrator_credential(&hash_password(PASSWORD)?, chrono::Utc::now())
+        .await?;
     let auth_config = AuthConfig {
-        password_hash_file: hash_file,
         secure_cookie: false,
         session_absolute: Duration::from_secs(86_400),
         session_idle: Duration::from_secs(3_600),
