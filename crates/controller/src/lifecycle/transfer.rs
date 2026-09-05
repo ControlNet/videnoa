@@ -19,19 +19,26 @@ pub struct DownloadEvidence {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PublicationIntent {
-    destination_staging_name: String,
+    legacy_destination_staging_name: Option<String>,
 }
 
 impl PublicationIntent {
     #[must_use]
-    pub fn new(destination_staging_name: impl Into<String>) -> Self {
+    pub const fn direct() -> Self {
         Self {
-            destination_staging_name: destination_staging_name.into(),
+            legacy_destination_staging_name: None,
         }
     }
 
-    pub(crate) fn destination_staging_name(&self) -> &str {
-        &self.destination_staging_name
+    #[must_use]
+    pub fn new(destination_staging_name: impl Into<String>) -> Self {
+        Self {
+            legacy_destination_staging_name: Some(destination_staging_name.into()),
+        }
+    }
+
+    pub(crate) fn destination_staging_name(&self) -> Option<&str> {
+        self.legacy_destination_staging_name.as_deref()
     }
 }
 

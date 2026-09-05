@@ -19,6 +19,10 @@ impl Root {
         &self.ambient_path
     }
 
+    pub(super) const fn device(&self) -> u64 {
+        self.identity.device
+    }
+
     pub(super) fn open(path: &Path) -> Result<Self, PathError> {
         let ambient_path = if path.is_absolute() {
             path.to_path_buf()

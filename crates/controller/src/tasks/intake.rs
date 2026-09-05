@@ -218,6 +218,9 @@ fn path_error(field: &'static str, error: &PathError) -> TaskApiError {
         PathError::OutputExists { .. } => "output must not already exist",
         PathError::InputNotRegular { .. } => "input must be an existing regular file",
         PathError::InputChanged { .. } => "input changed during task intake",
+        PathError::CrossFilesystemPublication { .. } => {
+            "temporary and output paths must use the same filesystem"
+        }
         PathError::OutsideRoots { .. }
         | PathError::InvalidPath { .. }
         | PathError::SymlinkComponent { .. }

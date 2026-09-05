@@ -121,6 +121,14 @@ impl TempArtifact {
         &self.display_path
     }
 
+    pub(super) fn publication_source(&self) -> Result<(Dir, PathBuf, PathBuf), PathError> {
+        Ok((
+            self.workspace.current_directory()?,
+            self.leaf.clone(),
+            self.workspace.display_path.clone(),
+        ))
+    }
+
     pub(crate) fn open_read(&self) -> Result<Option<(cap_std::fs::File, Metadata)>, PathError> {
         let directory = self.workspace.current_directory()?;
         let mut options = OpenOptions::new();

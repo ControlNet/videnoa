@@ -3,7 +3,7 @@ use std::io::Read;
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use crate::paths::{TempArtifact, TempWorkspace};
+use crate::paths::{PathError, TempArtifact, TempWorkspace};
 use crate::persistence::Sha256Digest;
 use crate::remote::{FileApiPath, VidenoaClient};
 
@@ -17,6 +17,12 @@ pub(super) struct DownloadArtifact<'a> {
     pub workspace: TempWorkspace,
     pub extension: &'a str,
     pub expected_size: u64,
+}
+
+pub(super) enum VerifiedArtifactInspection {
+    Missing,
+    Valid(Box<VerifiedArtifact>),
+    Invalid,
 }
 
 pub(super) async fn download_artifact(
@@ -85,6 +91,32 @@ pub(super) async fn recover_verified(
         sha256,
         source: verified,
     }))
+}
+
+pub(super) async fn inspect_verified(
+    workspace: &TempWorkspace,
+    extension: &str,
+    expected_size: u64,
+    expected_sha256: Sha256Digest,
+) -> Result<VerifiedArtifactInspection, TransferError> {
+    let verified = workspace.artifact(format!("output.{extension}.verified"))?;
+    let (file, metadata) = match verified.open_read() {
+        Ok(Some(artifact)) => artifact,
+        Ok(None) => return Ok(VerifiedArtifactInspection::Missing),
+        Err(PathError::InputNotRegular { .. } | PathError::SymlinkComponent { .. }) => {
+            return Ok(VerifiedArtifactInspection::Invalid);
+        }
+        Err(error) => return Err(error.into()),
+    };
+    if metadata.len() != expected_size || hash_file(file).await? != expected_sha256 {
+        return Ok(VerifiedArtifactInspection::Invalid);
+    }
+    Ok(VerifiedArtifactInspection::Valid(Box::new(VerifiedArtifact {
+        path: verified.display_path().to_path_buf(),
+        size: expected_size,
+        sha256: expected_sha256,
+        source: verified,
+    })))
 }
 
 async fn remove_invalid_verified(

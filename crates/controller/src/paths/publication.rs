@@ -5,7 +5,9 @@ use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt, OpenOptionsSyncEx
 use cap_std::fs::{Dir, File, OpenOptions};
 
 use super::{
+    publication_finalizer::sync_directory,
     identity, select_root, PathCapabilities, PathError, PublicationFinalizer, RootedOutput,
+    TempArtifact,
 };
 
 pub(crate) enum PublicationArtifact {
@@ -61,56 +63,31 @@ impl RootedOutput {
         self.open_existing(&self.leaf)
     }
 
-    /// Opens a hidden sibling without following a symbolic link.
-    ///
-    /// # Errors
-    /// Returns a typed path error when the name is unsafe or inspection fails.
-    pub(crate) fn open_staging(&self, name: &str) -> Result<PublicationArtifact, PathError> {
-        let leaf = staging_leaf(name, &self.display_path)?;
-        self.open_existing(&leaf)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn open_staging_with_checkpoint<F>(
+    pub(crate) fn open_legacy_staging(
         &self,
         name: &str,
-        checkpoint: F,
-    ) -> Result<PublicationArtifact, PathError>
-    where
-        F: FnOnce() -> Result<(), io::Error>,
-    {
-        let leaf = staging_leaf(name, &self.display_path)?;
-        self.open_existing_with(&leaf, checkpoint)
+    ) -> Result<PublicationArtifact, PathError> {
+        self.open_existing(&legacy_staging_leaf(name, &self.display_path)?)
     }
 
-    /// Creates a hidden sibling with no-clobber semantics.
-    ///
-    /// # Errors
-    /// Returns a typed path error when the boundary changed, name is unsafe, or leaf exists.
-    pub fn create_staging(&self, name: &str) -> Result<File, PathError> {
-        let leaf = staging_leaf(name, &self.display_path)?;
-        let staging_path = self.root.display_path().join(&self.parent).join(&leaf);
-        let directory = self.open_parent(true)?;
-        let mut options = OpenOptions::new();
-        options
-            .write(true)
-            .create_new(true)
-            .follow(FollowSymlinks::No);
-        directory
-            .open_with(&leaf, &options)
-            .map_err(|source| io_error(&staging_path, source))
-    }
-
-    pub(crate) fn prepare_finalization(
+    pub(crate) fn prepare_publication(
         &self,
-        name: &str,
+        source: &TempArtifact,
     ) -> Result<PublicationFinalizer, PathError> {
+        let (source_directory, source_leaf, source_parent) = source.publication_source()?;
         Ok(PublicationFinalizer::new(
-            self.open_parent(false)?,
-            staging_leaf(name, &self.display_path)?,
+            source_directory,
+            source_leaf,
+            source_parent,
+            self.open_parent(true)?,
             self.leaf.clone(),
             self.root.display_path().join(&self.parent),
         ))
+    }
+
+    pub(crate) fn sync_parent(&self) -> Result<(), PathError> {
+        sync_directory(&self.open_parent(false)?)
+            .map_err(|source| io_error(&self.display_path, source))
     }
 
     fn open_existing(&self, leaf: &Path) -> Result<PublicationArtifact, PathError> {
@@ -229,7 +206,7 @@ impl RootedOutput {
     }
 }
 
-fn staging_leaf(name: &str, output: &Path) -> Result<PathBuf, PathError> {
+fn legacy_staging_leaf(name: &str, output: &Path) -> Result<PathBuf, PathError> {
     let path = Path::new(name);
     let valid = name.starts_with(".videnoa-")
         && name.ends_with(".staging")
