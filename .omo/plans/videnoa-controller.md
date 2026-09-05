@@ -508,9 +508,9 @@ Expected: the image starts without GPU flags/libraries; archives have the locked
 
   Launch a production-like Controller with a test-only password hash, NAS roots, and multiple mock Videnoa instances. Use Playwright for login, workers/settings, manual/API tasks, live pipeline, 20,000-row filters, pause, cancel/retry, Controller/worker restarts, output, and cleanup. Capture desktop/narrow/CJK screenshots plus DB/filesystem/remote evidence. Reject a card-heavy/sparse/inaccessible UI, clipping, credential leakage, or divergence from API/DB truth. Save `.omo/evidence/videnoa-controller/final/F3-manual-visual.md`.
 
-- [~] F4. Packaging, release, regression, and repository-landing audit
+- [x] F4. Packaging, release, regression, and repository-landing audit
 
-  Landing blocker (2026-09-05): the concurrent-intake authentication executor-starvation fix is locally verified but uncommitted. Await explicit user authorization to commit and push intended source/test/evidence changes. After authorization, refresh affected final reviews and require a successful hosted run on the landing revision before marking F4 complete. Initial language acceptance is English and Chinese only; Korean is out of scope.
+  Blocker closure (2026-09-05): the source fix is committed at `30d9f25`, and the evidence state is committed at `9bdeb4d`. Exact-tip run `33949543240` completed successfully with 14/14 jobs, and the fresh F4 review approves the final release-readiness state. Initial language acceptance remains English and Chinese only; Korean is out of scope.
 
   Build/smoke the dedicated image and Linux/Windows archives; inspect linkage/content; run existing Videnoa workspace/web/package/GPU Docker/version checks; verify exact new names and unchanged old layouts. Test migration plus backup/rollback instructions. Reject GPU dependencies, existing regressions, incomplete release success, uncommitted/unpushed work, or branch not up-to-date. Save `.omo/evidence/videnoa-controller/final/F4-release-regression.md`.
 

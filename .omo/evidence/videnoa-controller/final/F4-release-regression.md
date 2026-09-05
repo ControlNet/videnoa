@@ -2,177 +2,159 @@
 
 Audit date: 2026-09-05
 
-Current repository tip: `e161e772744c48791f67cb21575c6ebef4ace13c`
+Audited landing tip: `9bdeb4dc3d14a1e32253534dbd9d04c840dcb8c8`
 
-Last product revision: `0fb4eb597acda9b571efc686c4701da333831675`
+Source fix: `30d9f25d19cf0ec1a88733483da7f95581e980ad` (`fix(controller): prevent auth executor starvation`)
 
-Current exact-tip hosted authority: [GitHub Actions run 33940048214](https://github.com/ControlNet/videnoa/actions/runs/33940048214)
+Evidence landing commit: `9bdeb4dc3d14a1e32253534dbd9d04c840dcb8c8` (`docs(controller): record final review gate state`)
 
-Last all-green product authority: [GitHub Actions run 33933923401](https://github.com/ControlNet/videnoa/actions/runs/33933923401)
+Exact-tip hosted authority: [GitHub Actions run 33949543240](https://github.com/ControlNet/videnoa/actions/runs/33949543240)
 
 ## Decision
 
-The former legacy Linux packaging rejection is closed. The resource-bounded archive helper is present, its focused local contract passes, and both the remediated product run `33933923401` and the current-tip run `33940048214` successfully created and verified the legacy Linux split archive. The current-tip legacy Windows package, legacy Docker image, Controller Linux archive, Controller Windows archive, and Controller image/content jobs also passed.
+**APPROVE**
 
-F4 nevertheless rejects the repository in its current landing state for two independent reasons:
+The final F4 gate is satisfied. The repository was clean and exactly aligned with the live `dev` branch at audit start, the source remediation is the direct parent of the evidence landing commit, committed F1-F3 reports all approve, and the literal landing tip has a completed successful push run with exactly 14 successful jobs.
 
-1. The literal current-tip `push` run `33940048214` is `failure`, with 13 of 14 jobs successful. `Controller fault and load suites` failed because `task_api::concurrency::concurrent_duplicate_intake_creates_exactly_one_task` received an unexpected `500 Internal Server Error`.
-2. The worktree was already dirty at audit start with uncommitted F1, F2, F3, knowledge, notepad, and plan edits. This audit adds the F4 report and appends the notepad as requested, but does not and cannot claim those results are committed or pushed.
+The three prior F4 blockers are closed: legacy Linux packaging succeeds with the resource-bounded helper, the formerly failing concurrent duplicate-intake regression passes in the hosted fault/load job on the remediated source tree, and the previously unlanded F1-F3 evidence state is committed and pushed. This is release-readiness and smoke evidence only; no production release, tag, archive upload, or container publication is claimed.
 
-The product tree outside `.omo/` is byte-for-byte identical between `0fb4eb5` and `e161e77`, and the current worktree has no product-source modification. That identity makes run `33933923401` valid evidence for the unchanged product revision, packaging remediation, and release contracts. It does not turn a successful run on `0fb4eb5` into a literal exact-tip successful run on `e161e77`, and it does not satisfy the plan's explicit clean-landing requirement.
+## Repository Provenance and Audit-Start Landing State
 
-## Current Repository Provenance and Landing State
+Before this reviewer modified any file, read-only Git inspection established:
 
-Read-only Git inspection established:
+- Current branch: `dev`.
+- `HEAD`: `9bdeb4dc3d14a1e32253534dbd9d04c840dcb8c8`.
+- Local tracking ref `origin/dev`: `9bdeb4dc3d14a1e32253534dbd9d04c840dcb8c8`.
+- Live remote `refs/heads/dev` from `git ls-remote`: `9bdeb4dc3d14a1e32253534dbd9d04c840dcb8c8`.
+- `HEAD...origin/dev`: `0 0`.
+- Audit-start worktree: clean; `git status --porcelain=v1 --branch` reported only `## dev...origin/dev`.
 
-- `HEAD`: `e161e772744c48791f67cb21575c6ebef4ace13c`.
-- Local tracking ref `origin/dev`: `e161e772744c48791f67cb21575c6ebef4ace13c`.
-- Actual remote `refs/heads/dev` from `git ls-remote`: `e161e772744c48791f67cb21575c6ebef4ace13c`.
-- `HEAD...origin/dev`: `0 0`; the committed branch is up to date with the remote.
-- Audit-start worktree: dirty, with six modified tracked paths:
-  - `.omo/evidence/videnoa-controller/final/F1-plan-compliance.md`;
-  - `.omo/evidence/videnoa-controller/final/F2-quality-security.md`;
-  - `.omo/evidence/videnoa-controller/final/F3-manual-visual.md`;
-  - `.omo/knowledges/videnoa-controller-f3-manual-visual.md`;
-  - `.omo/notepads/videnoa-controller/learnings.md`;
-  - `.omo/plans/videnoa-controller.md`.
-- No source, workflow, lockfile, manifest, packaging script, Dockerfile, or other product path was modified in the worktree.
-- No pull, push, commit, reset, restore, stash, clean, checkout, branch/remote change, workflow rerun, release creation, or registry write was performed.
+Commit ancestry and content are unambiguous:
 
-The branch tip is pushed and non-divergent, but the repository is not landed because required final evidence and plan state remain uncommitted.
+- `9bdeb4d` has parent `30d9f25`.
+- `30d9f25` changes nine Controller authentication/error/test paths and contains the executor-starvation remediation plus its deterministic concurrent-intake regression.
+- `9bdeb4d` changes only eight `.omo` review/evidence/plan paths. It changes no product source, test, workflow, package script, manifest, lockfile, Dockerfile, or release implementation.
+- `crates/controller` has the same tree at `30d9f25` and `9bdeb4d`: `0eb1068692b827c107ac5ba51692d38bed5ba03b`.
+- `controller-web` has the same tree at `30d9f25` and `9bdeb4d`: `1e21aa9ac5a1546ecafacf50473ef1c10afed070`.
 
-## Hosted CI Authority
+The F1, F2, and F3 reports are tracked in `9bdeb4d`, their latest commit is `9bdeb4d`, and each ends with `VERDICT: APPROVE`. F3 approves English and Chinese for the initial release and explicitly keeps Korean out of scope; this F4 decision does not add or imply a Korean-support requirement.
 
-### Run 33933923401 genuinely passed all 14 jobs
+Writing this F4 report and appending the required notepad entry necessarily makes those reviewer-owned files differ from `HEAD` after the audit. That post-audit reviewer output does not alter or contradict the independently observed clean audit-start state. No commit, push, pull, fetch, reset, restore, stash, clean, checkout, workflow rerun, release creation, or registry mutation was performed.
 
-GitHub CLI and the read-only Actions API independently report run `33933923401` as `completed/success`, event `push`, branch `dev`, head SHA exactly `0fb4eb597acda9b571efc686c4701da333831675`. The jobs API reports `total_count: 14`, and every job conclusion is `success`:
+## Exact-Tip Hosted CI Authority
+
+GitHub CLI and the read-only Actions API independently report run `33949543240` as:
+
+- workflow: `Unittest Workflow`;
+- event: `push`;
+- branch: `dev`;
+- head SHA: exactly `9bdeb4dc3d14a1e32253534dbd9d04c840dcb8c8`;
+- status/conclusion: `completed/success`;
+- jobs API count: exactly `14`.
+
+All 14 jobs are `completed/success` at the same head SHA:
 
 | Required job | Job ID | Result |
 |---|---:|---|
-| Rust tests (ubuntu-latest) | `101218025130` | PASS |
-| Controller web quality and E2E | `101218025156` | PASS |
-| Workflow contracts | `101218025195` | PASS |
-| Controller Rust quality and tests | `101218025206` | PASS |
-| Web build check (ubuntu-latest) | `101218025211` | PASS |
-| Web build check (windows-latest) | `101218025229` | PASS |
-| Rust tests (windows-latest) | `101218025284` | PASS |
-| Docker build smoke | `101218559007` | PASS |
-| Package smoke (Windows) | `101218559010` | PASS |
-| Package smoke (Linux) | `101218559087` | PASS |
-| Controller image and content smoke | `101219127700` | PASS |
-| Controller fault and load suites | `101219127705` | PASS |
-| Controller archive smoke (Linux) | `101219127760` | PASS |
-| Controller archive smoke (Windows) | `101219127763` | PASS |
+| Web build check (windows-latest) | `101261586290` | PASS |
+| Rust tests (ubuntu-latest) | `101261586363` | PASS |
+| Rust tests (windows-latest) | `101261586378` | PASS |
+| Controller web quality and E2E | `101261586380` | PASS |
+| Web build check (ubuntu-latest) | `101261586416` | PASS |
+| Workflow contracts | `101261586418` | PASS |
+| Controller Rust quality and tests | `101261586450` | PASS |
+| Docker build smoke | `101262050293` | PASS |
+| Package smoke (Windows) | `101262050298` | PASS |
+| Package smoke (Linux) | `101262050301` | PASS |
+| Controller fault and load suites | `101262828877` | PASS |
+| Controller archive smoke (Windows) | `101262828971` | PASS |
+| Controller image and content smoke | `101262828982` | PASS |
+| Controller archive smoke (Linux) | `101262829020` | PASS |
 
-This is the first verified hosted run after the legacy Linux p7zip resource fix and is valid all-green product-revision evidence.
+The fault/load log directly records:
 
-### Run 33940048214 is the literal current-tip authority
+- crash/outage suite: `31 passed; 0 failed`;
+- load suite: `7 passed; 0 failed`;
+- concurrency suite: `20 passed; 0 failed`;
+- filesystem suite: `22 passed; 0 failed`;
+- resource suite: `1 passed; 0 failed`;
+- security suite: `47 passed; 0 failed`.
 
-Run `33940048214` is `completed/failure`, event `push`, branch `dev`, head SHA exactly `e161e772744c48791f67cb21575c6ebef4ace13c`. Its jobs API reports 14 jobs: 13 `success` and one `failure`.
+Most importantly, the hosted log explicitly shows `task_api::concurrency::concurrent_duplicate_intake_creates_exactly_one_task ... ok`. Because `9bdeb4d` directly contains parent `30d9f25` and changes only `.omo` files above it, this is exact-landing-tip hosted coverage of the remediated source tree. The prior HTTP 500 signal is closed rather than bypassed or attributed to infrastructure.
 
-| Current-tip job | Job ID | Result |
-|---|---:|---|
-| Controller web quality and E2E | `101235547281` | PASS |
-| Web build check (ubuntu-latest) | `101235547307` | PASS |
-| Web build check (windows-latest) | `101235547308` | PASS |
-| Workflow contracts | `101235547321` | PASS |
-| Controller Rust quality and tests | `101235547342` | PASS |
-| Rust tests (ubuntu-latest) | `101235547346` | PASS |
-| Rust tests (windows-latest) | `101235547393` | PASS |
-| Package smoke (Linux) | `101236045217` | PASS |
-| Package smoke (Windows) | `101236045261` | PASS |
-| Docker build smoke | `101236045281` | PASS |
-| Controller archive smoke (Windows) | `101236772909` | PASS |
-| Controller archive smoke (Linux) | `101236772949` | PASS |
-| Controller image and content smoke | `101236772952` | PASS |
-| Controller fault and load suites | `101236772981` | **FAIL** |
+## Packaging and Image Acceptance
 
-The failed job first passed the complete crash/outage suite. In the load/concurrency/filesystem/resource/security step, the seven Task 21 load tests passed, including 20,000-row index/bounds coverage and the repeated mixed-intake race. Nineteen of twenty `task21_concurrency` tests then passed. `task_api::concurrency::concurrent_duplicate_intake_creates_exactly_one_task` failed after reporting `unexpected intake status: 500 Internal Server Error`; the step exited `101`. No rerun was requested or performed, so this hosted regression signal remains unresolved.
+### Fresh local contract confirmation
 
-## Product-Tree Identity Versus Exact-Tip CI
-
-The literal Git trees differ because `e161e77` adds `.omo` F3 evidence and knowledge. The product trees do not differ:
-
-- `git diff --quiet 0fb4eb5..e161e77 -- . ':(exclude).omo'` passed.
-- `git diff --name-status 0fb4eb5..e161e77` lists only `.omo/evidence/videnoa-controller/final/F3-manual-visual.md` and `.omo/knowledges/videnoa-controller-f3-manual-visual.md`.
-- The worktree is also clean outside `.omo/`.
-- The previously recorded Controller product identities remain unchanged: `controller-web` tree `1e21aa9ac5a1546ecafacf50473ef1c10afed070` and `crates/controller` tree `49f0a2f356e0ca9eb36c446a5a89679c9d242ebc`.
-
-Therefore:
-
-- Run `33933923401` is authoritative proof that the unchanged product revision passed all 14 jobs, including the packaging remediation.
-- Run `33940048214` is authoritative proof that the literal current repository tip did not complete an all-green required matrix.
-- Product-tree identity is relevant evidence against an intentional source regression, but it cannot erase a failed exact-tip required check or establish that the failing concurrency path is now reliable.
-
-## Packaging and Release Acceptance
-
-### Legacy Linux packaging remediation
-
-The old `d8830fa` F4 report correctly rejected its then-current run because p7zip failed before archive verification. That state is superseded:
-
-- `fd05465` introduced the resource-bounded helper path.
-- The helper preserves the `videnoa/` root, `videnoa-linux64-<version>.7z*` names, 2000 MiB split-volume convention, `.7z.001` verification entry, and unsplit fallback.
-- Historical real-bundle evidence records successful creation and verification of a roughly 5.33 GB bundle using `-mx=5 -md=16m -mmt=1`, with a 2,097,152,000-byte `.001` and a 151,790,351-byte `.002`. This audit inspected that existing evidence; it did not repeat the multi-gigabyte execution.
-- Run `33933923401` passed legacy Linux archive creation and verification on `0fb4eb5`.
-- Current-tip run `33940048214` again passed legacy Linux archive contracts, bundle construction, runtime compatibility, cache reclamation, split-archive creation, and layout/split-volume verification.
-
-Fresh local command:
+The following focused commands were run fresh against the clean landing tip and passed:
 
 ```bash
 bash scripts/tests/package_dist_archive_test.sh
+bash scripts/tests/package_controller_test.sh
+bash scripts/tests/package_controller_windows_static_test.sh
+bash scripts/tests/controller_archive_root_files_test.sh
+node --test scripts/tests/validate_ci_release_workflows.test.mjs
 ```
 
-Result: PASS. Split, single, resource-safe command, missing verification output, missing creation output, insufficient-space, and fatal-create propagation contracts passed.
+These checks confirm split/unsplit legacy archive handling, bounded p7zip invocation, missing-output and fatal-error propagation, deterministic Controller Linux packaging, static Windows packaging contracts, required root documents, and the complete positive and negative CI/release workflow matrix.
 
-### Controller archives and image
+### Legacy products
 
-Current-tip hosted jobs passed:
+The exact-tip hosted jobs confirm both legacy package smokes and the existing Docker smoke:
 
-- `videnoa-controller-v0.1.2-linux-x86_64.tar.gz` build and verification;
-- `videnoa-controller-v0.1.2-windows-x86_64.zip` native Windows build and verification;
-- `Dockerfile.controller` image build plus complete image/content smoke.
+- Linux builds the legacy bundle, checks runtime compatibility, reclaims build cache, creates the 2000 MiB split archive through `scripts/package_dist_archive.sh`, and verifies the archive through `.7z.001` or the unsplit fallback.
+- Windows builds the legacy bundle and verifies the split archive contains the unchanged `videnoa/` root.
+- Existing image names remain `controlnet/videnoa:<version>` and `controlnet/videnoa:latest`.
+- Existing archive names remain `videnoa-linux64-<version>.7z*` and `videnoa-win64-<version>.7z*`.
 
-The historical Task 22/23 and final-preflight evidence was inspected rather than re-executed locally. It records exact archive allowlists, deterministic Linux output, embedded SPA startup, numeric non-root `10001:10001`, persistent mounts, expected C runtime linkage, and rejection of legacy binaries, loose frontend assets, models, ORT, CUDA, cuDNN, TensorRT, NVIDIA runtime content, caches, keys, and certificates. Current hosted success is the native/current execution authority; this audit did not build a new local image, Linux production archive, or Windows archive.
+### Controller archives
 
-### Release graph and existing-product preservation
+The exact Controller release names are:
 
-Fresh local command:
+- `videnoa-controller-v0.1.2-linux-x86_64.tar.gz`;
+- `videnoa-controller-v0.1.2-windows-x86_64.zip`.
 
-```bash
-node scripts/tests/validate_ci_release_workflows.test.mjs
-```
+Each archive has one versioned root containing only `LICENSE`, `README-controller.md`, `controller.example.toml`, and the platform Controller binary. The scripts reject wrong names, versions, member order/layout, missing files, loose frontend assets, models, caches, keys/certificates, and ONNX Runtime/CUDA/cuDNN/TensorRT runtime content. The hosted Linux job builds and verifies the archive on Ubuntu 22.04; the hosted Windows job builds and verifies it natively on Windows.
 
-Result: PASS. The complete positive matrix and all negative mutations passed, including existing-product break detection, Controller Dockerfile/Rust asset/version/archive/tag checks, forbidden GPU-content validation, and helper-bypass rejection in both Linux smoke and release jobs.
+### Controller image
 
-The validated release graph retains separate outputs:
+The Controller image contract remains independent at:
 
-- Controller images: `controlnet/videnoa-controller:0.1.2` and `controlnet/videnoa-controller:latest`.
-- Controller archives: `videnoa-controller-v0.1.2-linux-x86_64.tar.gz` and `videnoa-controller-v0.1.2-windows-x86_64.zip`.
-- Existing images: `controlnet/videnoa:0.1.2` and `controlnet/videnoa:latest`.
-- Existing archives: `videnoa-linux64-0.1.2.7z*` and `videnoa-win64-0.1.2.7z*`, retaining the `videnoa/` layout.
+- `controlnet/videnoa-controller:0.1.2`;
+- `controlnet/videnoa-controller:latest`.
 
-The release version gate still compares the app, Controller, core, and desktop manifests. GitHub Release creation still depends on both legacy archives, both Controller archives, and both image publication paths. No new credential scheme is introduced.
+`Dockerfile.controller` uses an isolated frontend stage, Rust 1.83 builder, and `debian:bookworm-slim` runtime. The runtime entrypoint is `videnoa-controller`, runs as numeric user/group `10001:10001`, exposes the healthcheck and persistent/NAS mounts, and contains no legacy `videnoa` binary, model payload, Node/npm, ONNX Runtime, CUDA, cuDNN, TensorRT, NVIDIA package, or runtime cache. Run `33949543240` passed the full `scripts/check_controller_container.sh ... --all` image/content job.
 
-## Regression, Migration, Backup, and Rollback Coverage
+## Release Workflow and Publication Boundary
 
-- Current-tip hosted Rust, Web, legacy package, Docker, Controller Rust/Web/archive/image, and crash/outage jobs passed.
-- The current-tip fault/load job did not pass as a whole because of the duplicate-intake concurrency failure described above.
-- Existing exact-product evidence records successful fresh migration, migration-5 upgrade with data preservation, and injected migration rollback without partial schema or false success recording.
-- Existing documentation contracts cover full `data_root` plus WAL/SHM backup, matching worker `jobs.db` and workspaces, startup migration verification, health/readiness and retained-history checks, and rollback by restoring the complete pre-upgrade Controller/worker snapshots with the previous binary/image/configuration. No unsupported downgrade command is claimed.
-- No migration, backup/restore drill, production publication, or release rollback was newly executed by this audit. These findings rely on inspected existing evidence plus unchanged product trees and the current hosted Controller Rust job.
+The fresh workflow validator passed the complete release graph and every negative mutation. The release version gate compares app, Controller, core, and desktop versions. GitHub Release creation depends on the quality gate, both legacy packages, both Controller packages, and both legacy/Controller image publication jobs. Final verification requires both products' version and `latest` image tags plus all four archive products.
 
-## Scope and Freshness Limitations
+Run `33949543240` is a `dev` smoke/quality workflow, not the `master` release workflow. Its artifacts API reports `total_count: 0`. This audit did not create a release tag or GitHub Release, upload archives, or publish/pull Docker Hub images. Approval means the packaging and release contracts are ready and regression-tested, not that a production release has occurred.
 
-- No GitHub Release was created, no release tag was created, and no Docker Hub image was published or pulled by this audit. Both inspected `dev` runs are smoke/quality workflows, not production releases.
-- The Actions artifacts API reports `total_count: 0` for both runs. No retained downloadable package is claimed.
-- The multi-gigabyte local legacy archive, local Controller image, local production Controller archives, native Windows execution, migration drill, and backup/rollback drill were not repeated. Their historical evidence is explicitly attributed above.
-- The two required focused local contract suites were run fresh against the current worktree and passed.
-- The current worktree contains uncommitted approval/evidence changes. F1 and F2 are approvals of `0fb4eb5`; F3 separately bridges unchanged product trees to `e161e77`. None of those dirty reports is represented as committed repository state.
-- English and Chinese are the user-authorized initial language scope. This F4 audit makes no Korean-support claim.
+## Regression, Evidence, and Security Disposition
 
-## Remaining Landing Blockers
+- Existing Videnoa Rust tests pass on Linux and Windows.
+- Existing Web production builds pass on Linux and Windows.
+- Controller Rust formatting, strict Clippy, and tests pass under Rust 1.83.
+- Controller Web lint, unit tests, production build, and Chromium E2E pass.
+- Controller crash/outage and load/concurrency/filesystem/resource/security suites pass.
+- Both legacy packages, the legacy Docker image, both Controller archives, and the Controller image/content checks pass.
+- Migration and rollback evidence was inspected concretely: `.omo/evidence/videnoa-controller/task-3/atomic-failures.txt` records `12 passed, 0 failed`, including an invalid SQLx migration rolling back preceding DDL without a false successful migration record; `.omo/evidence/videnoa-controller/final/remediation-f4-duplicate-run/verification.md` records a real database stopped at migration `0005` upgrading through `0006` while preserving the prior unique index and data contract.
+- Backup/restore and upgrade/rollback instructions were inspected in `docs/controller.md` and `README-controller.md`. `.omo/evidence/videnoa-controller/task-25/docs-smoke.txt` records the documentation contract, example-config load, isolated startup, health/readiness, persisted SQLite, and clean shutdown passing; `scripts/tests/controller_docs_test.sh` requires the Backup/Restore and Upgrade/Rollback sections, durable `controller.sqlite3`/`jobs.db` evidence, exact artifact names, valid links, and no plaintext secret assignment.
+- No new destructive production migration, backup/restore drill, downgrade, or rollback was executed or claimed by this read-only audit. The exact-tip `Controller Rust quality and tests` job is the current source regression authority for the committed migration and documentation tests.
 
-1. Obtain an all-green required hosted run for the literal commit that is to be landed. At present the exact current-tip run `33940048214` is red because the duplicate-intake concurrency test returned HTTP 500.
-2. Commit and push the intended final F1/F2/F3/F4 reports, knowledge/notepad updates, and plan state as an intentional reviewable change, then verify `HEAD`, the actual remote tip, and the worktree are all clean and aligned. This audit was explicitly forbidden from performing that landing work.
+Secret Guard's tracked scan reported two known synthetic test literals: an intentionally rejected unknown `secret` field in a frontend schema test and a split-write `token=` redaction fixture in core logging tests. Direct inspection confirms neither is a real credential. The `.gitignore` audit retains 19 pre-existing generic sensitive-file coverage gaps; no tracked real secret or F4 evidence leak was found, and this audit does not modify `.gitignore`.
 
-VERDICT: REJECT
+## Prior Blocker Closure
+
+| Prior blocker | Final disposition |
+|---|---|
+| Legacy Linux p7zip/package failure | CLOSED: resource-bounded helper contracts pass locally and exact-tip Linux package smoke passes. |
+| Concurrent duplicate-intake HTTP 500 | CLOSED: `30d9f25` moves password-file/Argon2 work to `spawn_blocking`, and the exact-tip fault/load log shows the formerly failing test and its suite passing. |
+| Dirty, uncommitted, or unpushed final evidence | CLOSED: audit started clean with `HEAD == origin/dev == live remote dev == 9bdeb4d` and divergence `0 0`; F1-F3 and the prior gate records are committed. |
+
+## Remaining Blockers
+
+None.
+
+VERDICT: APPROVE

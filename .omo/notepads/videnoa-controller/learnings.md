@@ -548,3 +548,12 @@
 - The eight dirty tracked paths observed at audit start are all `.omo` reviewer outputs. They must be described separately from implementation/source dirtiness, which is absent.
 - English and Chinese are the complete initial language acceptance scope. Korean remains out of scope and unfixed; neither F1 approval nor the corrected F3 evidence is a Korean-support claim.
 - The stale F4 rejection records the pre-remediation SHA/run and is not an F1 blocker, but F1 does not infer or assert F4 approval. F1 verdict at the exact product tip is `APPROVE`.
+
+## 2026-09-05 F4 Final Fresh Landing Audit
+
+- Audit start was clean with `HEAD`, local `origin/dev`, and live remote `dev` all at `9bdeb4dc3d14a1e32253534dbd9d04c840dcb8c8`, with divergence `0 0`.
+- `9bdeb4d` is the evidence landing child of source fix `30d9f25`; it changes only `.omo` review state, while the Controller and frontend trees remain identical to the remediated source commit.
+- Exact-tip push run `33949543240` completed successfully with exactly 14 successful jobs. Its fault/load log explicitly records `concurrent_duplicate_intake_creates_exactly_one_task ... ok`, closing the prior HTTP 500 blocker.
+- Legacy Linux/Windows package smoke, legacy Docker, both Controller archives, Controller image/content, workflow contracts, Rust/Web, and all fault/load suites passed. Controller archives and image retain exact independent names and GPU-free content constraints.
+- The F4 report and this append-only learning necessarily modify the worktree after the clean audit-start observation; they are reviewer output, not product-source or audit-start dirtiness.
+- F4 is release-readiness approval only. No production release, tag, archive upload, or image publication was performed or claimed. Final verdict: `APPROVE`.
