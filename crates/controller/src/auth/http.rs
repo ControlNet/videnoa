@@ -15,7 +15,8 @@ use crate::domain::{
 };
 use crate::{app_router, FrontendAssets, StartupError};
 
-use super::authentication_service::{session_response, IssuedSession};
+use super::authentication_service::IssuedSession;
+use super::session::response as session_response;
 use super::{authenticate, authorize_mutation, AuthError, AuthService, RequestAuth};
 
 pub const SESSION_COOKIE: &str = "videnoa_session";
@@ -32,6 +33,10 @@ pub fn authenticated_app_router(assets: &FrontendAssets, auth: AuthService) -> R
 
 fn auth_routes(auth: AuthService, include_readiness: bool) -> Router {
     let routes = Router::new()
+        .route(
+            "/api/auth/setup",
+            get(super::setup_http::status).post(super::setup_http::create),
+        )
         .route("/api/auth/login", post(login))
         .route("/api/auth/session", get(session))
         .route("/api/auth/logout", post(logout));
@@ -202,7 +207,7 @@ async fn readiness(
     }
 }
 
-fn login_response(auth: &AuthService, issued: IssuedSession) -> Response {
+pub(super) fn login_response(auth: &AuthService, issued: IssuedSession) -> Response {
     let cookie = session_cookie(auth, &issued.token, false);
     let mut response = Json(issued.response).into_response();
     response
@@ -250,15 +255,16 @@ fn session_error_response(auth: &AuthService, error: &AuthError) -> Response {
     response
 }
 
-fn error_response(error: &AuthError) -> Response {
+pub(super) fn error_response(error: &AuthError) -> Response {
     let (status, code) = match error {
         AuthError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized"),
         AuthError::Forbidden => (StatusCode::FORBIDDEN, "forbidden"),
+        AuthError::InvalidRequest => (StatusCode::BAD_REQUEST, "invalid_request"),
+        AuthError::Conflict => (StatusCode::CONFLICT, "conflict"),
         AuthError::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
         AuthError::InvalidPasswordHash
         | AuthError::PasswordHashing
         | AuthError::PasswordVerification
-        | AuthError::PasswordFile { .. }
         | AuthError::InvalidLifetime
         | AuthError::Persistence(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
     };
