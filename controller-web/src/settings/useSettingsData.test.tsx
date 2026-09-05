@@ -4,9 +4,10 @@ import { describe, expect, it } from "vitest"
 import { createApiClient } from "../api/client"
 import { useSettingsData } from "./useSettingsData"
 
-const settings = {
+const testOnlySettings = {
   version: 3,
-  paths: { input_roots: ["/media/input"], output_roots: ["/media/output"], data_root: "/var/lib/videnoa", temp_root: "/var/tmp/videnoa", password_hash_file: "/run/secrets/password" },
+  paths: { workspace: "/synthetic/workspace", data_root: "/synthetic/data", config_file: "/synthetic/controller.toml" },
+  server: { host: "127.0.0.1", port: 3001 },
   secure_cookie: true,
   session_absolute_seconds: 86_400,
   session_idle_seconds: 3_600,
@@ -26,7 +27,7 @@ describe("settings data requests", () => {
         return Response.json({ error: { code: "conflict", message: "settings changed since they were read", retryable: false, field_errors: [] } }, { status: 409 })
       }
       if (new URL(request.url).pathname === "/api/readiness") return Response.json({ status: "ready", checks: [] })
-      return Response.json(settings)
+      return Response.json(testOnlySettings)
     }
     const apiClient = createApiClient({ fetcher, onUnauthorized: () => undefined })
     const { result } = renderHook(() => useSettingsData(apiClient))
@@ -39,5 +40,50 @@ describe("settings data requests", () => {
     await waitFor(() => expect(requests.filter((request) => request.method === "GET")).toHaveLength(4))
     expect(await requests.find((request) => request.method === "POST")?.json()).toEqual({ version: 3 })
     expect(result.current.actionError?.code).toBe("conflict")
+  })
+
+  it("refetches authoritative settings when a committed projection needs repair", async () => {
+    // Given: a save commits version four but reports a retryable projection failure.
+    const requests: Request[] = []
+    let settingsCommitted = false
+    const fetcher: typeof fetch = async (input, init) => {
+      const request = new Request(input, init)
+      requests.push(request)
+      if (request.method === "PUT") {
+        settingsCommitted = true
+        return Response.json({
+          error: {
+            code: "unavailable",
+            message: "settings committed and applied; configuration projection repair is pending",
+            retryable: true,
+            field_errors: [],
+          },
+        }, { status: 503 })
+      }
+      if (new URL(request.url).pathname === "/api/readiness") return Response.json({ status: "ready", checks: [] })
+      return Response.json(settingsCommitted
+        ? { ...testOnlySettings, version: 4, server: { ...testOnlySettings.server, port: 4555 } }
+        : testOnlySettings)
+    }
+    const apiClient = createApiClient({ fetcher, onUnauthorized: () => undefined })
+    const { result } = renderHook(() => useSettingsData(apiClient))
+    await waitFor(() => expect(result.current.settings?.version).toBe(3))
+
+    // When: the operator saves the new listener address.
+    await act(async () => result.current.save({
+      version: 3,
+      server: { host: "127.0.0.1", port: 4555 },
+      auth: { secure_cookie: true, session_absolute_seconds: 86_400, session_idle_seconds: 3_600 },
+      scheduler: testOnlySettings.scheduler,
+      timeouts: testOnlySettings.timeouts,
+      retry: testOnlySettings.retry,
+    }))
+
+    // Then: the committed version replaces the stale form while the degradation remains visible.
+    await waitFor(() => expect(result.current.settings?.version).toBe(4))
+    expect(result.current.settings?.server.port).toBe(4555)
+    expect(result.current.actionError?.code).toBe("unavailable")
+    expect(result.current.actionError?.retryable).toBe(true)
+    expect(requests.filter((request) => request.method === "GET")).toHaveLength(4)
   })
 })
