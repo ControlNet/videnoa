@@ -15,19 +15,18 @@ impl Reconciler {
         stage: &StagePermit,
         report: &mut RecoveryReport,
     ) -> Result<(), RecoveryError> {
-        if worker.health_retry_count >= self.config.health_max_attempts {
+        let (health_initial, health_maximum, health_max_attempts) = self.config.health_retry();
+        if worker.health_retry_count >= health_max_attempts {
             report.defer(task_id);
             return Ok(());
         }
         let retry_count = worker.health_retry_count + 1;
-        let exhausted = retry_count >= self.config.health_max_attempts;
+        let exhausted = retry_count >= health_max_attempts;
         let exponent = worker.health_retry_count;
         let multiplier = 1_u32.checked_shl(exponent).unwrap_or(u32::MAX);
-        let delay = self
-            .config
-            .health_initial
+        let delay = health_initial
             .saturating_mul(multiplier)
-            .min(self.config.health_maximum);
+            .min(health_maximum);
         let next_health_check_at = if exhausted {
             None
         } else {
