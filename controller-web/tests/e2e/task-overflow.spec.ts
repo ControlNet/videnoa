@@ -4,17 +4,9 @@ import AxeBuilder from "@axe-core/playwright"
 import { expect, type Locator, type Page, test } from "@playwright/test"
 
 import { expectUnavailableControlStyle } from "./control-style-assertions"
-import { fulfillJson, statuses, task } from "./tasks-fixtures"
+import { fulfillJson, installAuthenticatedSession, statuses, task } from "./tasks-fixtures"
 
 const evidenceDir = "../.omo/evidence/videnoa-controller/final/remediation-task-overflow"
-const session = {
-  id: "550e8400-e29b-41d4-a716-446655440000",
-  authenticated: true,
-  method: "session",
-  expires_at: "2030-01-01T00:00:00Z",
-  idle_expires_at: "2030-01-01T00:00:00Z",
-} as const
-
 test.beforeEach(async ({ page }) => {
   await rm(evidenceDir, { recursive: true, force: true })
   await mkdir(evidenceDir, { recursive: true })
@@ -143,7 +135,7 @@ test("keeps measured task overflow continuously discoverable and keyboard operab
 
 async function installOverflowApi(page: Page): Promise<void> {
   await page.addInitScript(() => Object.defineProperty(window, "EventSource", { configurable: true, value: undefined }))
-  await page.route("**/api/auth/session", async (route) => fulfillJson(route, session))
+  await installAuthenticatedSession(page)
   await page.route("**/api/status-counts", async (route) => fulfillJson(route, {
     items: statuses.map((status) => ({ status, count: status === "failed" ? 50 : 0 })),
     total: 50,

@@ -31,6 +31,7 @@ async function installApi(page: Page): Promise<void> {
   await page.route("**/api/events", async (route) => {
     await route.fulfill({ status: 200, contentType: "text/event-stream", body: "event: refetch\ndata: {\"reason\":\"snapshot_required\"}\n\n" })
   })
+  await page.route("**/api/auth/setup", async (route) => json(route, { initialized: true }))
   await page.route("**/api/auth/session", async (route) => {
     if (authenticated) await json(route, session, 200, { "x-csrf-token": "session-proof" })
     else await json(route, { error: "unauthorized" }, 401)
