@@ -49,7 +49,7 @@ create_archive() {
   rm -f "$archive_path" "$archive_path".*
   (
     cd "$dist_root"
-    7z a -t7z "-v${volume_size}" "$archive_path" videnoa
+    7z a -t7z -mx=5 -md=16m -mmt=1 "-v${volume_size}" "$archive_path" videnoa
   )
   if [[ ! -f "$archive_path.001" && ! -f "$archive_path" ]]; then
     die "Missing archive output: $archive_path(.001)"
