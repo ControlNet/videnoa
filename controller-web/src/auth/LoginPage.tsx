@@ -6,13 +6,14 @@ import "./auth.css"
 
 type LoginPageProps = {
   readonly login: (password: string) => Promise<LoginResult>
+  readonly notice: string | null
 }
 
 type LoginError = Extract<LoginResult, { readonly ok: false }> & { readonly generation: number }
 
 const loginErrorId = "login-error-summary"
 
-export function LoginPage({ login }: LoginPageProps) {
+export function LoginPage({ login, notice }: LoginPageProps) {
   const [password, setPassword] = useState("")
   const [error, setError] = useState<LoginError | null>(null)
   const [submitting, setSubmitting] = useState(false)
@@ -57,6 +58,7 @@ export function LoginPage({ login }: LoginPageProps) {
         </p>
 
         <form className="login-form" onSubmit={handleSubmit}>
+          {notice === null ? null : <output className="login-notice">{notice}</output>}
           {error === null ? null : (
             <div id={loginErrorId} className="error-summary" role="alert" tabIndex={-1} ref={alertRef}>
               {error.message}
