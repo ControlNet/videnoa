@@ -193,3 +193,15 @@ was 389.38 seconds with default libtest parallelism. This includes all
 Controller fault/recovery, capacity/prefetch, upload/download, cancellation,
 publication, authentication, load, and security suites. No global single-thread
 requirement or weaker authentication fixture was introduced.
+
+## Docker documentation preference follow-up
+
+The primary Docker examples in `README-controller.md` and `docs/controller.md`
+now use `-v "$PWD/data:/workspace/data"` and a separate media bind at `/media`.
+The user prefers `-v` and reliance on Dockerfile defaults (`WORKDIR /workspace`,
+`CMD ["--host", "0.0.0.0"]`). Do not add redundant flags to the primary example.
+Separate mounts remain subject to the documented EXDEV publication limitation;
+the common-mount alternative is retained for end-to-end processing.
+
+Documentation verification: `bash scripts/tests/controller_docs_test.sh` and
+`git diff --check` passed. No runtime or Dockerfile changes were needed.

@@ -197,47 +197,67 @@ worker snapshots, then start the previous version.
 
 ## Docker
 
-The image runs from `/workspace`, preserves default `USER 10001:10001`, and
-declares no config, secret, input, or output volumes. Bind a writable Controller
-workspace for private state. Running with the host
-user avoids root-owned files and does not require changing host ownership:
+The image defaults to working directory `/workspace` and startup arguments
+`--host 0.0.0.0`, so neither `--workdir` nor an explicit `--host` is needed.
+It runs as UID/GID `10001:10001` unless overridden. The `--user` option below
+maps file ownership to your host user.
+
+Mount private Controller data and media separately using `-v`. This example uses
+`$HOME/Videos` as the host media directory; replace it with your existing media
+directory:
 
 ```bash
-mkdir -p controller-workspace
+mkdir -p "$PWD/data"
 docker run -d --name videnoa-controller \
   --user "$(id -u):$(id -g)" \
   -p 127.0.0.1:3001:3001 \
-  --mount "type=bind,src=$(pwd)/controller-workspace,dst=/workspace" \
-  controlnet/videnoa-controller:<version> --host 0.0.0.0
+  -v "$PWD/data:/workspace/data" \
+  -v "$HOME/Videos:/media" \
+  controlnet/videnoa-controller:latest
 ```
 
-The explicit `--host 0.0.0.0` is required for container port forwarding and
-binds every container interface. Keep the published host port on loopback for
-trusted first setup, or protect it with firewalling and a same-origin HTTPS
-reverse proxy. Do not expose an uninitialized setup endpoint to an untrusted
-network.
+Open `http://localhost:3001` for first-access setup. Configuration and database
+files persist in `./data/controller.toml` and `./data/controller.sqlite3` on the
+host. `/workspace/data` is private and forbidden for task input/output. Use task
+paths such as `/media/input.mkv` and `/media/output.mp4`.
 
-Task paths inside Docker are container-visible paths. Mount required media into
-the container namespace; no Docker path translation exists and media need not
-live under `/workspace`. For an ANI-RSS path such as `/mnt/user/media/anime/E08.mkv`,
-mount the host path at the same container path. One common mount can give private
-Controller state and external media the required atomic rename relationship:
+**Publication limitation:** separate data and media bind mounts can return
+`EXDEV` when publishing the verified temporary artifact from private data to
+`/media`, even when both host directories are on the same disk. This layout
+supports configuration persistence and media access, but does not guarantee
+successful final publication. The Controller reports an explicit publication
+error; it never falls back to copying into the final filename or creating a
+visible staging file in the media directory.
+
+Keep the published host port on loopback for trusted first setup, or protect it
+with firewalling and a same-origin HTTPS reverse proxy. Do not expose an
+uninitialized setup endpoint to an untrusted network.
+
+Task paths inside Docker are container-visible paths. No Docker path translation
+exists and media need not live under `/workspace`. If another application sends
+`/mnt/user/media/anime/E08.mkv`, mount media at that same container path instead
+of `/media`.
+
+For end-to-end processing, a common bind mount can provide the required atomic
+rename relationship while keeping workspace and media in separate directories.
+For example, when your media is under `/mnt/user/media`:
 
 ```bash
 mkdir -p /mnt/user/controller-workspace
 docker run -d --name videnoa-controller \
   --user "$(id -u):$(id -g)" \
   -p 127.0.0.1:3001:3001 \
-  --mount type=bind,src=/mnt/user,dst=/mnt/user \
+  -v /mnt/user:/mnt/user \
   --workdir /mnt/user/controller-workspace \
-  controlnet/videnoa-controller:<version> --host 0.0.0.0
+  controlnet/videnoa-controller:latest
 ```
 
-The workspace above is separate from `/mnt/user/media`. Separate bind mounts for
-workspace and media can return `EXDEV` even on the same host disk; the Controller
-reports that publication limitation explicitly. Changing the Controller listener
-port in Docker also requires updating container port mapping, reverse proxy, and
-health-check configuration. Listener settings remain available normally.
+Only this alternative overrides the default working directory; private state
+then lives under `/mnt/user/controller-workspace/data`. Safe publication still
+requires a supported atomic rename relationship between private data and output.
+Changing the Controller listener port in Docker also requires updating container
+port mapping, reverse proxy, and health-check configuration. Listener settings
+remain available normally.
 
 No GPU flags, models, ONNX Runtime, CUDA, cuDNN, or TensorRT libraries belong in
 the Controller deployment.
