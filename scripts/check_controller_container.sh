@@ -97,9 +97,9 @@ port = 3001
 
 [paths]
 input_roots = ["/mnt/input"]
-output_roots = ["/mnt/output"]
+output_roots = ["/mnt/publication/output"]
 data_root = "/var/lib/videnoa-controller"
-temp_root = "/var/tmp/videnoa-controller"
+temp_root = "/mnt/publication/temp"
 
 [auth]
 password_hash_file = "/run/secrets/admin-password.phc"
@@ -149,9 +149,8 @@ start_controller() {
     -p 127.0.0.1::3001 \
     --mount "type=bind,src=$WORK_DIR/config,dst=/etc/videnoa-controller,readonly" \
     --mount "type=bind,src=$WORK_DIR/data,dst=/var/lib/videnoa-controller" \
-    --mount "type=bind,src=$WORK_DIR/temp,dst=/var/tmp/videnoa-controller" \
+    --mount "type=bind,src=$WORK_DIR/publication,dst=/mnt/publication" \
     --mount "type=bind,src=$WORK_DIR/input,dst=/mnt/input,readonly" \
-    --mount "type=bind,src=$WORK_DIR/output,dst=/mnt/output" \
     --mount "type=bind,src=$WORK_DIR/secrets/admin-password.phc,dst=/run/secrets/admin-password.phc,readonly" \
     "$IMAGE" >/dev/null
   wait_for_health
@@ -167,8 +166,8 @@ check_runtime_happy() {
   local index
 
   WORK_DIR="$(mktemp -d -t videnoa-controller-container-XXXXXX)"
-  mkdir -p "$WORK_DIR"/{config,data,temp,input,output,secrets}
-  chmod 0777 "$WORK_DIR/data" "$WORK_DIR/temp" "$WORK_DIR/output"
+  mkdir -p "$WORK_DIR"/{config,data,input,secrets,publication/temp,publication/output}
+  chmod 0777 "$WORK_DIR/data" "$WORK_DIR/publication/temp" "$WORK_DIR/publication/output"
   write_config "$WORK_DIR/config/controller.toml"
   local admin_secret
   admin_secret="$(tr -d '-' </proc/sys/kernel/random/uuid)$(tr -d '-' </proc/sys/kernel/random/uuid)"
@@ -190,8 +189,8 @@ check_runtime_happy() {
     || fail "health failed after persistent-data restart"
   docker run --rm --entrypoint /bin/sh \
     --mount "type=bind,src=$WORK_DIR/data,dst=/var/lib/videnoa-controller" \
-    --mount "type=bind,src=$WORK_DIR/temp,dst=/var/tmp/videnoa-controller" \
-    "$IMAGE" -c 'touch /var/lib/videnoa-controller/write-test /var/tmp/videnoa-controller/write-test'
+    --mount "type=bind,src=$WORK_DIR/publication,dst=/mnt/publication" \
+    "$IMAGE" -c 'touch /var/lib/videnoa-controller/write-test /mnt/publication/temp/write-test'
   log "runtime health, embedded SPA, writable mounts, and restart persistence: PASS"
 }
 
@@ -212,8 +211,8 @@ expect_failure() {
 
 check_runtime_errors() {
   WORK_DIR="$(mktemp -d -t videnoa-controller-errors-XXXXXX)"
-  mkdir -p "$WORK_DIR"/{config,data,temp,input,output,secrets,readonly-data}
-  chmod 0777 "$WORK_DIR/data" "$WORK_DIR/temp" "$WORK_DIR/output"
+  mkdir -p "$WORK_DIR"/{config,data,input,secrets,readonly-data,publication/temp,publication/output}
+  chmod 0777 "$WORK_DIR/data" "$WORK_DIR/publication/temp" "$WORK_DIR/publication/output"
   write_config "$WORK_DIR/config/controller.toml"
   local admin_secret
   admin_secret="$(tr -d '-' </proc/sys/kernel/random/uuid)$(tr -d '-' </proc/sys/kernel/random/uuid)"
@@ -224,15 +223,14 @@ check_runtime_errors() {
   expect_failure 'missing admin hash' 'password hash file is missing or invalid' docker run --rm \
     --mount "type=bind,src=$WORK_DIR/config,dst=/etc/videnoa-controller,readonly" \
     --mount "type=bind,src=$WORK_DIR/data,dst=/var/lib/videnoa-controller" \
-    --mount "type=bind,src=$WORK_DIR/temp,dst=/var/tmp/videnoa-controller" \
+    --mount "type=bind,src=$WORK_DIR/publication,dst=/mnt/publication" \
     --mount "type=bind,src=$WORK_DIR/input,dst=/mnt/input,readonly" \
-    --mount "type=bind,src=$WORK_DIR/output,dst=/mnt/output" "$IMAGE"
+    "$IMAGE"
   expect_failure 'unwritable data' 'unable to open database file' docker run --rm \
     --mount "type=bind,src=$WORK_DIR/config,dst=/etc/videnoa-controller,readonly" \
     --mount "type=bind,src=$WORK_DIR/readonly-data,dst=/var/lib/videnoa-controller,readonly" \
-    --mount "type=bind,src=$WORK_DIR/temp,dst=/var/tmp/videnoa-controller" \
+    --mount "type=bind,src=$WORK_DIR/publication,dst=/mnt/publication" \
     --mount "type=bind,src=$WORK_DIR/input,dst=/mnt/input,readonly" \
-    --mount "type=bind,src=$WORK_DIR/output,dst=/mnt/output" \
     --mount "type=bind,src=$WORK_DIR/secrets/admin-password.phc,dst=/run/secrets/admin-password.phc,readonly" "$IMAGE"
 
   start_controller
@@ -243,7 +241,7 @@ check_runtime_errors() {
     --header @"$WORK_DIR/auth-header" \
     --header 'Content-Type: application/json' \
     --header 'Idempotency-Key: container-outside-root' \
-    --data '{"input_path":"/etc/passwd.txt","output_path":"/mnt/output/out.mp4","workflow":"anime-2x","source":"api","source_reference":null,"priority":0}' \
+    --data '{"input_path":"/etc/passwd.txt","output_path":"/mnt/publication/output/out.mp4","workflow":"anime-2x","source":"api","source_reference":null,"priority":0}' \
     "http://127.0.0.1:$(container_port)/api/tasks")"
   [[ "$response" == *$'\n400' ]] || fail "outside-root request returned an unexpected status: $response"
   [[ "$response" == *'path is not available through configured roots'* ]] || fail "outside-root response was not explicit: $response"
