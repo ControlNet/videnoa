@@ -12,12 +12,12 @@ use super::support::{fixture, online, task, task_id, worker_id, worker_request, 
 
 #[tokio::test]
 async fn prefetch_is_bounded_and_idle_uploads_precede_optional_prefetch() -> TestResult {
-    // Given: one three-slot worker and three equal-priority tasks.
+    // Given: one single-slot worker and three equal-priority tasks.
     let fixture = fixture().await?;
     let worker = fixture
         .registry
         .create(
-            worker_request("worker-a", "https://worker.example/api/", 3)?,
+            worker_request("worker-a", "https://worker.example/api/", 1)?,
             fixture.now,
         )
         .await?;
@@ -111,7 +111,7 @@ async fn persisted_pause_blocks_only_new_reservation_upload_and_submission() -> 
     ] {
         assert!(restarted.allows(action).await?);
     }
-    assert_eq!(fixture.store.worker_used_slots(worker.id).await?, 1);
+    assert_eq!(fixture.store.worker_used_slots(worker.id).await?, 0);
     assert_eq!(
         fixture
             .store

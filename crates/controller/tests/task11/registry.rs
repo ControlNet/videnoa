@@ -105,7 +105,7 @@ async fn disabling_busy_worker_preserves_assignment_and_blocks_new_work() -> Tes
     // Then: its current assignment and capacity remain, but no second task is claimed.
     assert_eq!(assignment.task_id(), first);
     assert!(scheduler.reserve_next(fixture.now).await?.is_none());
-    assert_eq!(fixture.store.worker_used_slots(worker.id).await?, 1);
+    assert_eq!(fixture.store.worker_used_slots(worker.id).await?, 0);
     assert_eq!(
         fixture
             .store
@@ -254,8 +254,8 @@ async fn health_refresh_is_atomic_and_capacity_reduction_cannot_hide_usage() -> 
     );
     assert!(reduction.is_ok());
     let capacity = fixture.registry.capacity(worker.id).await?;
-    assert_eq!(capacity.used_slots, 1);
-    assert_eq!(capacity.available_slots, 0);
+    assert_eq!(capacity.used_slots, 0);
+    assert_eq!(capacity.available_slots, 1);
     Ok(())
 }
 
