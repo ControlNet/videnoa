@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type { TaskCreateRequest } from "../api/taskSchemas"
 import { beginSubmission, markSubmissionAmbiguous } from "./submissionIntent"
@@ -13,6 +13,22 @@ const request = {
 } as const satisfies TaskCreateRequest
 
 describe("manual task submission intent", () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it("creates UUIDv4 keys without the secure-context-only randomUUID API", () => {
+    // Given: the browser crypto surface available on a non-localhost HTTP origin.
+    vi.stubGlobal("crypto", { getRandomValues: crypto.getRandomValues.bind(crypto) })
+
+    // When: independent task submissions need keys without an injected generator.
+    const keys = Array.from({ length: 32 }, () => beginSubmission(null, request).key)
+
+    // Then: each intent has a distinct UUID with the required version and variant.
+    expect(new Set(keys).size).toBe(keys.length)
+    for (const key of keys) {
+      expect(key).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+    }
+  })
+
   it("reuses one UUID after a dropped response for the identical body", () => {
     // Given: one generated intent whose response became ambiguous.
     const randomUUID = vi.fn().mockReturnValue("550e8400-e29b-41d4-a716-446655440001")

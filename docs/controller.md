@@ -113,10 +113,16 @@ successful setup returns the existing `LoginResponse`, sets the session cookie,
 and returns `x-csrf-token`. A mismatched or shorter password returns 400, an
 origin mismatch returns 403, and an already initialized setup returns 409.
 
-Do not expose first setup to an untrusted network. Complete it through loopback
-or a protected same-origin HTTPS endpoint.
+Do not expose first setup to an untrusted network. Complete it through loopback,
+your trusted LAN over HTTP, or a protected same-origin HTTPS endpoint.
 
 ## Security
+
+Plain HTTP on a trusted LAN is a supported deployment, including a LAN IP
+address or hostname. Setup, login, task operations, Workers, Settings, and live
+updates work with the default `secure_cookie=false`. HTTPS and public Internet
+exposure are not prerequisites. Leave **Require secure session cookie** off for
+HTTP deployments; enabling it explicitly requires HTTPS for session use.
 
 Browser sessions use an HttpOnly, SameSite=Strict cookie and CSRF proof.
 `Secure` is present when `secure_cookie = true`. Cookie-authenticated mutations
@@ -137,9 +143,10 @@ old sessions; sign in again to receive a Secure cookie.
 cookie-session CSRF proof. `POST /api/auth/logout` revokes a cookie session and
 expires its cookie.
 
-Keep the listener on loopback unless remote access is required. For remote
-browsers, use a same-origin HTTPS reverse proxy and enable `secure_cookie`.
-Private routing alone does not provide browser-cookie confidentiality. Never
+Keep the listener on loopback unless remote access is required. Trusted LAN
+browsers can connect directly over HTTP. To add transport encryption, use a
+same-origin HTTPS reverse proxy and enable `secure_cookie`; HTTPS does not
+require exposing the service publicly. Never
 record passwords, Authorization values, cookies, CSRF values, or setup bodies in
 logs, configuration, URLs, or source control.
 

@@ -82,7 +82,7 @@ export function ManualTaskDialog({ apiClient, open, onClose, onCreated }: Manual
       source: "manual",
       source_reference: null,
     }
-    const nextIntent = beginSubmission(intent, body, () => crypto.randomUUID())
+    const nextIntent = beginSubmission(intent, body)
     setIntent(nextIntent)
     setSubmitting(true)
     setServerError(null)

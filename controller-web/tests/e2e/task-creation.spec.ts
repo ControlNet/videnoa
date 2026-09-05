@@ -2,6 +2,54 @@ import { expect, test } from "@playwright/test"
 
 import { fulfillJson, installPagedApi, requestJournal, task, taskDetail } from "./tasks-fixtures"
 
+test("creates and replays a task on plain HTTP without crypto.randomUUID", async ({ page, baseURL }) => {
+  // Given: a real insecure browser origin serving the app with synthetic test-only API data.
+  const origin = "http://controller-http.test"
+  await page.route(`${origin}/**`, async (route) => {
+    const url = new URL(route.request().url())
+    const target = new URL(url.pathname + url.search, baseURL)
+    target.hostname = "127.0.0.1"
+    const response = await route.fetch({ url: target.href })
+    await route.fulfill({ response })
+  })
+  await installPagedApi(page, requestJournal(), 1)
+  const errors: string[] = []
+  page.on("pageerror", (error) => errors.push(error.message))
+  const keys: string[] = []
+  const bodies: unknown[] = []
+  const createdTask = task(0)
+  await page.route(`**/api/tasks/${createdTask.id}?*`, async (route) => fulfillJson(route, taskDetail(createdTask)))
+  await page.route("**/api/tasks", async (route) => {
+    keys.push(route.request().headers()["idempotency-key"] ?? "")
+    bodies.push(route.request().postDataJSON())
+    if (keys.length === 1) await route.abort("connectionreset")
+    else await fulfillJson(route, createdTask)
+  })
+  await page.goto(`${origin}/tasks`)
+  expect(await page.evaluate(() => ({
+    secureContext: window.isSecureContext,
+    randomUUID: typeof crypto.randomUUID,
+    getRandomValues: typeof crypto.getRandomValues,
+  }))).toEqual({ secureContext: false, randomUUID: "undefined", getRandomValues: "function" })
+
+  // When: task creation loses its response and the operator retries unchanged.
+  await page.getByRole("button", { name: "Add Task" }).click()
+  await page.getByRole("textbox", { name: "Input Path", exact: true }).fill(createdTask.input_path)
+  await page.getByRole("textbox", { name: "Output Path", exact: true }).fill(createdTask.output_path)
+  await page.getByLabel("Workflow").last().fill(createdTask.workflow)
+  await page.getByRole("button", { name: "Create Task" }).click()
+  await page.getByRole("button", { name: "Retry Same Task" }).click()
+
+  // Then: the request reaches the API with a valid, stable UUID and no browser exception.
+  await expect(page.getByRole("dialog")).toHaveCount(0)
+  await expect(page.getByRole("region", { name: "Task Detail" })).toContainText(createdTask.input_path)
+  expect(keys).toHaveLength(2)
+  expect(keys[0]).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+  expect(keys[1]).toBe(keys[0])
+  expect(bodies[1]).toEqual(bodies[0])
+  expect(errors).toEqual([])
+})
+
 test("replays one manual creation intent after a dropped response", async ({ page }) => {
   // Given: the first create response drops after the server accepts the logical task.
   const journal = requestJournal()

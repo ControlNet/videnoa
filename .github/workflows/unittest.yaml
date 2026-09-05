@@ -160,6 +160,9 @@ jobs:
       - name: Run browser tests
         working-directory: controller-web
         run: npm run test:e2e
+      - name: Run browser tests on non-secure HTTP origin
+        working-directory: controller-web
+        run: npm run test:e2e:http
 
   controller-package-linux-smoke:
     name: Controller archive smoke (Linux)
@@ -216,6 +219,16 @@ jobs:
         run: docker build -f Dockerfile.controller -t videnoa-controller:ci .
       - name: Verify Controller image and content
         run: bash scripts/check_controller_container.sh videnoa-controller:ci --all
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install browser smoke dependencies
+        working-directory: controller-web
+        run: |
+          npm ci --no-fund
+          npx playwright install --with-deps chromium
+      - name: Verify real browser HTTP operation
+        run: node scripts/tests/controller_http_browser_smoke.mjs videnoa-controller:ci
 
   package-linux64-smoke:
     name: Package smoke (Linux)
