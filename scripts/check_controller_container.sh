@@ -95,6 +95,7 @@ start_controller() {
     --user "$(id -u):$(id -g)" \
     -p 127.0.0.1::3001 \
     --mount "type=bind,src=$WORK_DIR,dst=/workspace" \
+    --workdir "${1:-/workspace}" \
     "$IMAGE" >/dev/null
   mapping="$(docker port "$CONTAINER_NAME" 3001/tcp)"
   PORT="${mapping##*:}"
@@ -158,11 +159,30 @@ check_runtime_errors() {
   status="$(curl --silent --show-error --output "$WORK_DIR/task.response" --write-out '%{http_code}' \
     --cookie "$WORK_DIR/cookies" --header "x-csrf-token: $csrf" \
     --header "Origin: http://127.0.0.1:$PORT" --header 'Content-Type: application/json' \
-    --header 'Idempotency-Key: synthetic-container-outside-workspace' \
-    --data '{"input_path":"/etc/passwd","output_path":"/workspace/media/output/out.mp4","workflow":"synthetic-test-workflow","source":"api","source_reference":null,"priority":0}' \
+    --header 'Idempotency-Key: synthetic-container-private-state' \
+    --data '{"input_path":"/workspace/data/controller.toml","output_path":"/workspace/media/output/out.mp4","workflow":"synthetic-test-workflow","source":"api","source_reference":null,"priority":0}' \
     "http://127.0.0.1:$PORT/api/tasks")"
-  [[ "$status" == 400 ]] || fail "outside-workspace task returned HTTP $status"
-  log "read-only workspace and outside-workspace task rejection: PASS"
+  [[ "$status" == 400 ]] || fail "private-state task returned HTTP $status"
+  log "read-only workspace and private-state task rejection: PASS"
+}
+
+check_external_media() {
+  local status csrf
+  new_fixture
+  mkdir "$WORK_DIR/controller-workspace"
+  start_controller /workspace/controller-workspace
+  setup_admin
+  csrf="$(grep -i '^x-csrf-token:' "$WORK_DIR/setup.headers" | tr -d '\r' | cut -d' ' -f2-)"
+  status="$(curl --silent --show-error --output "$WORK_DIR/task.response" --write-out '%{http_code}' \
+    --cookie "$WORK_DIR/cookies" --header "x-csrf-token: $csrf" \
+    --header "Origin: http://127.0.0.1:$PORT" --header 'Content-Type: application/json' \
+    --header 'Idempotency-Key: synthetic-container-external-media' \
+    --data '{"input_path":"/workspace/media/input/sample.mkv","output_path":"/workspace/media/output/out.mp4","workflow":"synthetic-test-workflow","source":"api","source_reference":null,"priority":0}' \
+    "http://127.0.0.1:$PORT/api/tasks")"
+  [[ "$status" == 201 ]] || fail "external media task returned HTTP $status"
+  [[ ! -e "$WORK_DIR/media/output/out.mp4" ]] || fail "intake created an incomplete final"
+  [[ -s "$WORK_DIR/controller-workspace/data/controller.toml" ]] || fail "private configuration is missing"
+  log "container-visible absolute media outside Controller workspace: PASS"
 }
 
 trap cleanup EXIT
@@ -172,6 +192,6 @@ case "$MODE" in
   --image) check_source_contract; check_image_contract ;;
   --happy) check_source_contract; check_image_contract; check_runtime_happy ;;
   --errors) check_source_contract; check_runtime_errors ;;
-  --all) check_source_contract; check_image_contract; check_runtime_happy; cleanup; WORK_DIR=""; check_runtime_errors ;;
+  --all) check_source_contract; check_image_contract; check_runtime_happy; cleanup; WORK_DIR=""; check_runtime_errors; cleanup; WORK_DIR=""; check_external_media ;;
   *) fail "usage: $0 [image] [--source|--image|--happy|--errors|--all]" ;;
 esac

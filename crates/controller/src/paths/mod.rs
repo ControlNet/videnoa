@@ -25,7 +25,7 @@ pub(crate) use temp::{TempArtifact, TempWorkspace};
 pub enum PathError {
     #[error("path is not an unambiguous absolute path: {path}")]
     InvalidPath { path: PathBuf },
-    #[error("path is outside configured roots: {path}")]
+    #[error("path is in private Controller storage: {path}")]
     OutsideRoots { path: PathBuf },
     #[error("path contains a symbolic-link component: {path}")]
     SymlinkComponent { path: PathBuf },
@@ -124,15 +124,6 @@ impl PathCapabilities {
             .collect::<Result<_, _>>()?;
         let temp = Root::open(&config.temp_root)?;
         let data = Root::open(&config.data_root)?;
-        if let Some(output) = outputs
-            .iter()
-            .find(|output| output.device() != temp.device())
-        {
-            return Err(PathError::CrossFilesystemPublication {
-                source_path: temp.display_path().to_path_buf(),
-                destination: output.display_path().to_path_buf(),
-            });
-        }
         Ok(Self {
             inputs,
             outputs,
@@ -233,6 +224,12 @@ impl PathCapabilities {
         let metadata = directory
             .dir_metadata()
             .map_err(|source| io_error(path, source))?;
+        if identity(&metadata).device != self.temp.device() {
+            return Err(PathError::CrossFilesystemPublication {
+                source_path: self.temp.display_path().to_path_buf(),
+                destination: path.to_path_buf(),
+            });
+        }
         Ok(RootedOutput {
             root: root.clone(),
             parent,

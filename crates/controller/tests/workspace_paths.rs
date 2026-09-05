@@ -122,3 +122,117 @@ fn task_symlinks_cannot_expose_controller_data() -> TestResult {
     assert!(matches!(recovery, Err(PathError::SymlinkComponent { .. })));
     Ok(())
 }
+
+#[test]
+fn external_media_keeps_identity_collision_and_parent_checks() -> TestResult {
+    let workspace = Workspace::new()?;
+    let media = TempDir::new_in(std::env::current_dir()?)?;
+    let input_path = media.path().join("E08.mkv");
+    fs::write(&input_path, b"synthetic media")?;
+    let input = workspace.paths.open_input(&input_path)?;
+    assert_eq!(input.display_path(), input_path);
+    let output_path = media.path().join("E08.AI.mp4");
+    let output = workspace.paths.open_output(&output_path)?;
+    assert_eq!(output.display_path(), output_path);
+    output.revalidate_missing()?;
+    fs::write(&output_path, b"existing output")?;
+    assert!(matches!(
+        workspace.paths.open_output(&output_path),
+        Err(PathError::OutputExists { .. })
+    ));
+    assert!(matches!(
+        output.revalidate_missing(),
+        Err(PathError::OutputExists { .. })
+    ));
+    fs::write(&input_path, b"changed synthetic media")?;
+    assert!(matches!(
+        input.reopen_checked(),
+        Err(PathError::InputChanged { .. })
+    ));
+    assert!(matches!(
+        workspace.paths.open_input(media.path()),
+        Err(PathError::InputNotRegular { .. })
+    ));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn external_symlinks_and_replaced_parents_are_rejected() -> TestResult {
+    let workspace = Workspace::new()?;
+    let media = TempDir::new_in(std::env::current_dir()?)?;
+    fs::write(
+        workspace.data.join("private.mkv"),
+        b"private synthetic state",
+    )?;
+    std::os::unix::fs::symlink(&workspace.data, media.path().join("private-alias"))?;
+    assert!(matches!(
+        workspace
+            .paths
+            .open_input(media.path().join("private-alias/private.mkv")),
+        Err(PathError::SymlinkComponent { .. })
+    ));
+    assert!(matches!(
+        workspace
+            .paths
+            .open_output(media.path().join("private-alias/output.mp4")),
+        Err(PathError::SymlinkComponent { .. })
+    ));
+    let parent = media.path().join("season");
+    fs::create_dir(&parent)?;
+    let output = workspace.paths.open_output(parent.join("E08.mp4"))?;
+    fs::rename(&parent, media.path().join("moved"))?;
+    fs::create_dir(&parent)?;
+    assert!(matches!(
+        output.revalidate_missing(),
+        Err(PathError::OutputParentChanged { .. })
+    ));
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn different_filesystem_intake_returns_publication_error_without_media_artifacts() -> TestResult {
+    use std::os::unix::fs::MetadataExt;
+    let workspace = Workspace::new()?;
+    let media = TempDir::new_in("/dev/shm")?;
+    assert_ne!(
+        fs::metadata(workspace.directory.path())?.dev(),
+        fs::metadata(media.path())?.dev(),
+        "test requires separate filesystems"
+    );
+    let output = media.path().join("E08.mp4");
+    assert!(
+        matches!(workspace.paths.open_output(&output), Err(PathError::CrossFilesystemPublication { destination, .. }) if destination == output)
+    );
+    assert_eq!(fs::read_dir(media.path())?.count(), 0);
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn external_fifo_is_rejected_before_open_can_block() -> TestResult {
+    let workspace = Workspace::new()?;
+    let media = TempDir::new_in(std::env::current_dir()?)?;
+    let fifo = media.path().join("not-media.mkv");
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        &fifo,
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::RWXU,
+        rustix::fs::makedev(0, 0),
+    )?;
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let rejected = matches!(
+            workspace.paths.open_input(&fifo),
+            Err(PathError::InputNotRegular { .. })
+        );
+        let _ = sender.send(rejected);
+    });
+    assert!(
+        receiver.recv_timeout(std::time::Duration::from_secs(2))?,
+        "FIFO intake blocked or was accepted"
+    );
+    Ok(())
+}

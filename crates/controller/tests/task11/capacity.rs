@@ -27,7 +27,7 @@ async fn reservation_budget_covers_idle_compute_demand_plus_prefetch() -> TestRe
             .insert_task(&task(id, "anime-upscale", 10, fixture.now))
             .await?;
     }
-    let scheduler = Scheduler::load(fixture.store.clone()).await?;
+    let scheduler = Scheduler::load(fixture.store.clone())?;
 
     // When: reservation fills idle compute demand and the configured prefetch budget.
     let first = scheduler.reserve_next(fixture.now).await?;
@@ -70,7 +70,7 @@ async fn overcommitted_compute_preserves_nonnegative_prefetch_budget() -> TestRe
             .insert_task(&task(id, "anime-upscale", 10, fixture.now))
             .await?;
     }
-    let scheduler = Scheduler::load(fixture.store.clone()).await?;
+    let scheduler = Scheduler::load(fixture.store.clone())?;
 
     // When: reservation evaluates the overcommitted durable worker state.
     let prefetched = scheduler.reserve_next(fixture.now).await?;
@@ -193,11 +193,12 @@ async fn staged_submission_atomically_claims_compute_capacity_and_pause() -> Tes
         TaskStatus::Staged
     );
     set_status(&fixture, first_id, TaskStatus::RemoteCompleted).await?;
-    let settings = fixture.store.settings().await?;
+    let settings = fixture.store.config_manager().settings()?;
     let mut scheduler = settings.scheduler;
     scheduler.paused = true;
     fixture
         .store
+        .config_manager()
         .update_settings(&SettingsUpdate {
             expected_version: settings.version,
             scheduler,

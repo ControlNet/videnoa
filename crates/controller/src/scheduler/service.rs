@@ -5,7 +5,7 @@ use tokio::sync::{OwnedRwLockReadGuard, RwLock};
 
 use crate::domain::{AttemptId, SubmissionKey};
 use crate::lifecycle::{DurableAction, LifecycleErrorCode, LifecycleService, ReserveCommand};
-use crate::persistence::{CasOutcome, DurableChange, SettingsRecord, SettingsUpdate, Store};
+use crate::persistence::{CasOutcome, DurableChange, SettingsUpdate, Store};
 
 use super::{
     AssignmentClass, RuntimeSettings, ScheduledAssignment, SchedulerError, TransferCoordinator,
@@ -22,12 +22,12 @@ pub struct Scheduler {
 }
 
 impl Scheduler {
-    /// Loads persisted scheduler status and initializes ephemeral transfer guards.
+    /// Loads runtime scheduler status and initializes ephemeral transfer guards.
     ///
     /// # Errors
-    /// Returns an error when persisted settings cannot be loaded.
-    pub async fn load(store: Store) -> Result<Self, SchedulerError> {
-        let settings = store.settings().await?;
+    /// Returns an error when runtime settings cannot be loaded.
+    pub fn load(store: Store) -> Result<Self, SchedulerError> {
+        let settings = store.config_manager().settings()?;
         Ok(Self {
             lifecycle: LifecycleService::new(store.clone()),
             transfers: TransferCoordinator::from_status(&settings.scheduler),
@@ -108,16 +108,16 @@ impl Scheduler {
         Ok(candidates)
     }
 
-    /// Evaluates whether persisted pause permits a durable side effect.
+    /// Evaluates whether runtime pause permits a durable side effect.
     ///
     /// # Errors
-    /// Returns an error when persisted settings cannot be read.
+    /// Returns an error when runtime settings cannot be read.
     pub(crate) async fn admit(
         &self,
         action: DurableAction,
     ) -> Result<Option<OwnedRwLockReadGuard<()>>, SchedulerError> {
         let admission = Arc::clone(&self.submission_admission).read_owned().await;
-        let paused = self.store.settings().await?.scheduler.paused;
+        let paused = self.store.config_manager().settings()?.scheduler.paused;
         if !paused {
             return Ok(Some(admission));
         }
@@ -136,19 +136,23 @@ impl Scheduler {
     /// Returns a point-in-time pause decision without retaining admission.
     ///
     /// # Errors
-    /// Returns an error when persisted settings cannot be read.
+    /// Returns an error when runtime settings cannot be read.
     pub async fn allows(&self, action: DurableAction) -> Result<bool, SchedulerError> {
         Ok(self.admit(action).await?.is_some())
     }
 
-    /// Updates persisted scheduler settings and live transfer bounds.
+    /// Persists TOML scheduler settings and live transfer bounds.
     ///
     /// # Errors
     /// Returns a typed conflict when the settings snapshot is stale.
     pub async fn update_settings(&self, update: SettingsUpdate) -> Result<(), SchedulerError> {
         RuntimeSettings::new(&update.timeouts, &update.retry)?;
-        let _admission = Arc::clone(&self.submission_admission).write_owned().await;
-        match self.store.update_settings(&update).await? {
+        let _admission = self.lock_settings().await;
+        match self
+            .store
+            .config_manager()
+            .update_settings_locked(&update)?
+        {
             CasOutcome::Applied { .. } => {
                 self.transfers.reconfigure(&update.scheduler);
                 self.runtime_settings
@@ -176,8 +180,10 @@ impl Scheduler {
         Ok(())
     }
 
-    pub(crate) async fn settings(&self) -> Result<SettingsRecord, SchedulerError> {
-        self.store.settings().await.map_err(Into::into)
+    pub(crate) async fn pause_for_shutdown(&self) {
+        let _admission = self.lock_settings().await;
+        self.store.config_manager().pause_for_shutdown();
+        self.store.notify_change(DurableChange::Settings);
     }
 
     #[must_use]
@@ -212,12 +218,14 @@ mod tests {
         ))
         .await?;
         let store = Store::new(database);
-        let scheduler = Scheduler::load(store.clone()).await?;
+        let bootstrap = crate::config::ConfigBootstrap::open(directory.path())?;
+        bootstrap.initialize(&store)?;
+        let scheduler = Scheduler::load(store.clone())?;
         let admission = scheduler
             .admit(DurableAction::Submit)
             .await?
             .ok_or_else(|| std::io::Error::other("submit was not admitted"))?;
-        let settings = store.settings().await?;
+        let settings = store.config_manager().settings()?;
         let mut status = settings.scheduler;
         status.paused = true;
         let mut update = Box::pin(scheduler.update_settings(SettingsUpdate {
@@ -236,11 +244,23 @@ mod tests {
             pending,
             "pause committed before admitted submission completed"
         );
+        assert!(
+            !crate::config::ConfigBootstrap::open(directory.path())?
+                .config()
+                .scheduler
+                .paused
+        );
         drop(admission);
         update.await?;
 
         // Then: pause commits only after the admitted submission boundary closes.
-        assert!(store.settings().await?.scheduler.paused);
+        assert!(store.config_manager().settings()?.scheduler.paused);
+        assert!(
+            crate::config::ConfigBootstrap::open(directory.path())?
+                .config()
+                .scheduler
+                .paused
+        );
         Ok(())
     }
 }

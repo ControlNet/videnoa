@@ -44,7 +44,7 @@ pub(super) struct SessionClient {
 }
 
 impl SessionClient {
-    async fn login(router: &Router) -> TestResult<Self> {
+    pub async fn login(router: &Router, secure: bool) -> TestResult<Self> {
         let response = router
             .clone()
             .oneshot(request(
@@ -54,6 +54,15 @@ impl SessionClient {
             )?)
             .await?;
         assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::SET_COOKIE)
+                .ok_or("missing cookie")?
+                .to_str()?
+                .contains("; Secure"),
+            secure
+        );
         let cookie = response
             .headers()
             .get(header::SET_COOKIE)
@@ -159,21 +168,22 @@ async fn fixture_with_busy_timeout_option(busy_timeout: Option<Duration>) -> Tes
         session_idle: Duration::from_secs(3_600),
     };
     let path_config = PathConfig {
-        input_roots: vec![input_root],
-        output_roots: vec![output_root],
+        input_roots: vec![directory.path().to_path_buf()],
+        output_roots: vec![directory.path().to_path_buf()],
         data_root,
         temp_root,
     };
     let auth = AuthService::new(auth_config.clone(), store.clone())?;
     let paths = PathCapabilities::open(&path_config)?;
-    let scheduler = Scheduler::load(store.clone())
-        .await
-        .context("loading task API fixture scheduler")?;
+    let scheduler = Scheduler::load(store.clone()).context("loading task API fixture scheduler")?;
     let config = ControllerConfig {
         auth: auth_config,
         paths: path_config,
         ..ControllerConfig::default()
     };
+    store
+        .config_manager()
+        .initialize(config.clone(), Some(directory.path().to_path_buf()));
     let operations = OperationsState::new(OperationsDependencies {
         auth: auth.clone(),
         store: store.clone(),
@@ -185,7 +195,7 @@ async fn fixture_with_busy_timeout_option(busy_timeout: Option<Duration>) -> Tes
     });
     let tasks = TaskService::new(store, paths);
     let router = controller_app_router(&assets(directory.path())?, auth, tasks, operations);
-    let session = SessionClient::login(&router)
+    let session = SessionClient::login(&router, false)
         .await
         .map_err(|error| format!("logging in task API fixture session: {error}"))?;
     Ok(Fixture {

@@ -13,7 +13,10 @@ impl Store {
     pub async fn scheduler_candidate(
         &self,
     ) -> Result<Option<SchedulerCandidate>, PersistenceError> {
+        let policy = self.config_manager().scheduler();
         let row = sqlx::query(SCHEDULER_CANDIDATE_SQL)
+            .bind(policy.paused)
+            .bind(i64::from(policy.prefetch_per_worker))
             .fetch_optional(self.database.pool())
             .await?;
         row.as_ref().map(map_candidate).transpose()
@@ -28,6 +31,7 @@ impl Store {
         limit: u16,
     ) -> Result<Vec<UploadCandidateRecord>, PersistenceError> {
         let rows = sqlx::query(UPLOAD_CANDIDATES_SQL)
+            .bind(self.config_manager().scheduler().paused)
             .bind(i64::from(limit))
             .fetch_all(self.database.pool())
             .await?;
@@ -69,14 +73,13 @@ SELECT t.id AS task_id, t.version AS task_version, w.id AS worker_id,
 FROM tasks t
 JOIN workers w
 JOIN worker_load load ON load.id = w.id
-JOIN controller_settings settings ON settings.id = 1
-WHERE t.status = 'queued' AND settings.paused = 0
+WHERE t.status = 'queued' AND ? = 0
   AND w.enabled = 1 AND w.online = 1
   AND EXISTS (
       SELECT 1 FROM json_each(w.capabilities_json, '$.workflows') capability
       WHERE json_extract(capability.value, '$.name') = t.workflow
   )
-  AND load.pending_slots < MAX(w.compute_slots - load.active_compute, 0) + settings.prefetch_per_worker
+  AND load.pending_slots < MAX(w.compute_slots - load.active_compute, 0) + ?
 ORDER BY t.priority DESC, t.created_at_ms ASC, t.id ASC,
          load.active_compute ASC, load.pending_slots ASC, w.last_assigned_at_ms ASC, w.id ASC
 LIMIT 1";
@@ -98,7 +101,6 @@ const UPLOAD_CANDIDATES_SQL: &str = "SELECT t.id AS task_id, t.worker_id,
         ), 0)
         THEN 0 ELSE 1 END AS upload_rank
 FROM tasks t
-JOIN controller_settings settings ON settings.id = 1
-WHERE t.status = 'reserved' AND settings.paused = 0
+WHERE t.status = 'reserved' AND ? = 0
 ORDER BY upload_rank ASC, t.priority DESC, t.created_at_ms ASC, t.id ASC
 LIMIT ?";

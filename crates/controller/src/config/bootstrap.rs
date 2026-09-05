@@ -1,9 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use chrono::Utc;
-
-use super::{persistence, private, projection, ConfigError, ControllerConfig};
+use super::{atomic_file, private, ConfigError, ControllerConfig};
 use crate::persistence::Store;
 
 #[derive(Clone, Debug)]
@@ -19,7 +17,7 @@ impl ConfigBootstrap {
     ///
     /// # Errors
     /// Returns an error when the workspace cannot be canonicalized, the data directory or
-    /// configuration projection cannot be written, or the configuration document is invalid.
+    /// configuration file cannot be written, or the configuration document is invalid.
     pub fn open(workspace: &Path) -> Result<Self, ConfigError> {
         let workspace = fs::canonicalize(workspace).map_err(|source| ConfigError::Io {
             path: workspace.to_path_buf(),
@@ -43,7 +41,7 @@ impl ConfigBootstrap {
             Some(_) | None => {
                 let config = ControllerConfig::for_workspace(&workspace)?;
                 let source = config.to_toml()?;
-                projection::replace(&config_file, &source)?;
+                atomic_file::replace(&config_file, &source)?;
                 source
             }
         };
@@ -93,65 +91,36 @@ impl ConfigBootstrap {
         &self.source
     }
 
-    /// Atomically replaces the workspace-local configuration projection.
+    /// Atomically replaces the workspace-local configuration file.
     ///
     /// # Errors
-    /// Returns an error when the projection cannot be written or synchronized.
-    pub fn project(&self, source: &str) -> Result<(), ConfigError> {
-        projection::replace(&self.config_file, source)
+    /// Returns an error when the configuration cannot be written or synchronized.
+    pub fn persist(&self, source: &str) -> Result<(), ConfigError> {
+        atomic_file::replace(&self.config_file, source)
     }
 
-    /// Repairs the workspace-local configuration projection from durable content.
+    /// Repairs the workspace-local configuration file from durable content.
     ///
     /// # Errors
-    /// Returns an error when the data directory or projection cannot be written or synchronized.
-    pub fn repair_projection(workspace: &Path, source: &str) -> Result<(), ConfigError> {
+    /// Returns an error when the data directory or configuration cannot be written or synchronized.
+    pub fn persist_document(workspace: &Path, source: &str) -> Result<(), ConfigError> {
         let workspace = fs::canonicalize(workspace).map_err(|source| ConfigError::Io {
             path: workspace.to_path_buf(),
             source,
         })?;
         let data_root = private::prepare_data_root(&workspace)?;
-        projection::replace(&data_root.join("controller.toml"), source)
+        atomic_file::replace(&data_root.join("controller.toml"), source)
     }
 
-    /// Reconciles the local projection with the authoritative durable configuration.
+    /// Installs the startup TOML snapshot into the shared runtime manager.
+    /// `SQLite` is deliberately not read or written.
     ///
     /// # Errors
-    /// Returns an error when persistence, projection, or configuration parsing fails.
-    pub async fn reconcile(&self, store: &Store) -> Result<ControllerConfig, ConfigError> {
-        let record = store
-            .settings()
-            .await
-            .map_err(|error| persistence(&error))?;
-        if let Some(pending) = &record.pending_config_document {
-            self.project(pending)?;
-            store
-                .complete_config_projection(record.version)
-                .await
-                .map_err(|error| persistence(&error))?;
-            return ControllerConfig::from_toml_in(pending, &self.workspace);
-        }
-        if !record.configuration_initialized {
-            let update = self
-                .config
-                .settings_update(record.version, &self.source, Utc::now())?;
-            let initialized = store
-                .initialize_settings(&update)
-                .await
-                .map_err(|error| persistence(&error))?;
-            return ControllerConfig::from_record(&initialized, &self.workspace);
-        }
-        if record.config_document != self.source {
-            let update = self
-                .config
-                .settings_update(record.version, &self.source, Utc::now())?;
-            let imported = store
-                .import_settings(&update)
-                .await
-                .map_err(|error| persistence(&error))?;
-            return ControllerConfig::from_record(&imported, &self.workspace);
-        }
-        ControllerConfig::from_record(&record, &self.workspace)
+    /// Returns an error when the runtime configuration cannot be initialized.
+    pub fn initialize(&self, store: &Store) -> Result<ControllerConfig, ConfigError> {
+        store
+            .config_manager()
+            .initialize(self.config.clone(), Some(self.workspace.clone()));
+        Ok(self.config.clone())
     }
-
 }

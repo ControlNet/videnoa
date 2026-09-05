@@ -69,7 +69,7 @@ async fn graceful_shutdown_persists_pause_before_bounded_drain() -> TestResult {
     ))
     .await?;
     let store = Store::new(database);
-    let scheduler = Scheduler::load(store.clone()).await?;
+    let scheduler = Scheduler::load(store.clone())?;
     let coordinator = ShutdownCoordinator::new();
     let now = Utc
         .timestamp_opt(1_788_307_200, 0)
@@ -83,7 +83,7 @@ async fn graceful_shutdown_persists_pause_before_bounded_drain() -> TestResult {
 
     // Then: the durable pause is committed and no new stage work is admitted.
     assert_eq!(outcome, DrainOutcome::Drained);
-    assert!(store.settings().await?.scheduler.paused);
+    assert!(store.config_manager().settings()?.scheduler.paused);
     assert!(coordinator.begin_stage().is_none());
     Ok(())
 }

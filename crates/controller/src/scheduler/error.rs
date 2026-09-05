@@ -11,6 +11,8 @@ pub enum SchedulerErrorCode {
 
 #[derive(Debug, thiserror::Error)]
 pub enum SchedulerError {
+    #[error("runtime configuration failed")]
+    Config(#[from] crate::config::ConfigError),
     #[error("scheduler state changed since it was read")]
     Conflict,
     #[error("scheduler persistence failed")]
@@ -26,7 +28,7 @@ impl SchedulerError {
     pub const fn code(&self) -> SchedulerErrorCode {
         match self {
             Self::Conflict => SchedulerErrorCode::Conflict,
-            Self::Persistence(_) | Self::Lifecycle(_) | Self::ClientConfig(_) => {
+            Self::Config(_) | Self::Persistence(_) | Self::Lifecycle(_) | Self::ClientConfig(_) => {
                 SchedulerErrorCode::Internal
             }
         }

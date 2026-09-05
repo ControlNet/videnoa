@@ -10,7 +10,7 @@ use crate::scheduler::{SchedulerError, SchedulerErrorCode};
 use crate::workers::{WorkerRegistryError, WorkerRegistryErrorCode};
 
 const COMMITTED_DEGRADED_MESSAGE: &str =
-    "settings committed and applied; configuration projection repair is pending";
+    "settings persisted; HTTP listener stopped during handoff; restart loads the saved configuration";
 type ErrorResponseParts = (
     StatusCode,
     ApiErrorCode,

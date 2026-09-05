@@ -98,3 +98,101 @@ async fn create_rejects_missing_key_invalid_paths_and_existing_output() -> TestR
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn absolute_external_media_paths_are_persisted_without_rebasing() -> TestResult {
+    let fixture = fixture().await?;
+    let external = tempfile::TempDir::new()?;
+    let input = external.path().join("E08.mkv");
+    let output = external.path().join("E08.AI.mp4");
+    fs::write(&input, b"synthetic external media")?;
+    let body = task_request(&input, &output, 0);
+    let mut request = fixture.session.request("POST", "/api/tasks", Some(&body))?;
+    request
+        .headers_mut()
+        .insert("idempotency-key", "external-paths".parse()?);
+    let response = fixture.router.clone().oneshot(request).await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let created = json_body(response).await?;
+    assert_eq!(created["input_path"], json!(input));
+    assert_eq!(created["output_path"], json!(output));
+    assert_eq!(created["input_extension"], "mkv");
+    assert_eq!(created["output_extension"], "mp4");
+    assert!(!output.exists());
+    assert_eq!(fs::read_dir(external.path())?.count(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn https_session_can_enable_secure_cookies_then_requires_https_proof() -> TestResult {
+    use axum::http::header;
+    let fixture = fixture().await?;
+    let response = fixture
+        .router
+        .clone()
+        .oneshot(fixture.session.request("GET", "/api/settings", None)?)
+        .await?;
+    let settings = json_body(response).await?;
+    let mut body = json!({
+        "version": settings["version"], "server": settings["server"],
+        "auth": { "secure_cookie": true,
+            "session_absolute_seconds": settings["session_absolute_seconds"],
+            "session_idle_seconds": settings["session_idle_seconds"] },
+        "scheduler": settings["scheduler"], "timeouts": settings["timeouts"], "retry": settings["retry"]
+    });
+    let mut change = fixture
+        .session
+        .request("PUT", "/api/settings", Some(&body))?;
+    change
+        .headers_mut()
+        .insert(header::ORIGIN, "https://controller.test".parse()?);
+    let response = fixture.router.clone().oneshot(change).await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    body["version"] = json_body(response).await?["version"].clone();
+    // The existing security contract invalidates cookies issued under the old policy.
+    let old = fixture
+        .session
+        .request("PUT", "/api/settings", Some(&body))?;
+    assert_eq!(
+        fixture.router.clone().oneshot(old).await?.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let session = super::support::SessionClient::login(&fixture.router, true).await?;
+    let insecure = session.request("PUT", "/api/settings", Some(&body))?;
+    assert_eq!(
+        fixture.router.clone().oneshot(insecure).await?.status(),
+        StatusCode::FORBIDDEN
+    );
+    let mut secure = session.request("PUT", "/api/settings", Some(&body))?;
+    secure
+        .headers_mut()
+        .insert(header::ORIGIN, "https://controller.test".parse()?);
+    assert_eq!(
+        fixture.router.clone().oneshot(secure).await?.status(),
+        StatusCode::OK
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn relative_task_paths_persist_workspace_absolute_locations() -> TestResult {
+    let fixture = fixture().await?;
+    let body = task_request(
+        std::path::Path::new("input/source.MKV"),
+        std::path::Path::new("output/relative.mp4"),
+        0,
+    );
+    let mut request = fixture.session.request("POST", "/api/tasks", Some(&body))?;
+    request
+        .headers_mut()
+        .insert("idempotency-key", "relative-paths".parse()?);
+    let response = fixture.router.clone().oneshot(request).await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let created = json_body(response).await?;
+    assert_eq!(created["input_path"], json!(fixture.input));
+    assert_eq!(
+        created["output_path"],
+        json!(fixture.output.with_file_name("relative.mp4"))
+    );
+    Ok(())
+}

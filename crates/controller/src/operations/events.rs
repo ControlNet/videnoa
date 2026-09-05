@@ -141,7 +141,7 @@ async fn durable_change_event(state: &OperationsState, change: DurableChange) ->
             Ok(None) | Err(_) => refetch_event(),
         },
         DurableChange::WorkerDeleted => refetch_event(),
-        DurableChange::Settings => match state.store.settings().await {
+        DurableChange::Settings => match state.store.config_manager().settings() {
             Ok(settings) => delta_event(&SseEvent::SchedulerUpdated {
                 event_id: crate::domain::SseEventId::random(),
                 scheduler: settings.scheduler,

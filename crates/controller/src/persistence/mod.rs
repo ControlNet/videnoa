@@ -12,7 +12,6 @@ mod readiness;
 mod reservation;
 mod scheduler;
 mod session;
-mod settings;
 #[path = "database.rs"]
 mod sqlite;
 #[path = "error.rs"]
@@ -30,8 +29,8 @@ mod worker_registry;
 pub use credential::PasswordHashRecord;
 pub use models::{
     AttemptFailureUpdate, AttemptProgressUpdate, AttemptRecord, AttemptRemoteUpdate, AuthDigest,
-    CasOutcome, ConfigurationUpdate, IdempotencyRecord, InputContentIdentity, InputIdentity,
-    NewSession, NewTask, NewWorker, PageResult, PublicationUpdate, Reservation, ReservationOutcome,
+    CasOutcome, IdempotencyRecord, InputContentIdentity, InputIdentity, NewSession, NewTask,
+    NewWorker, PageResult, PolicyUpdate, PublicationUpdate, Reservation, ReservationOutcome,
     SchedulerCandidate, SessionRecord, SettingsRecord, SettingsUpdate, Sha256Digest,
     TaskFailureUpdate, TaskIngressOutcome, TaskProgressUpdate, TaskRecord, TaskRetryUpdate,
     UploadCandidateRecord, WorkerDeleteOutcome, WorkerHealthUpdate, WorkerIdentityConflict,
@@ -72,7 +71,7 @@ impl fmt::Debug for ChangeObserver {
 pub struct Store {
     database: Database,
     changes: Arc<OnceLock<ChangeObserver>>,
-    submission_admission: Arc<tokio::sync::RwLock<()>>,
+    config: crate::config::ConfigManager,
 }
 
 impl Store {
@@ -81,7 +80,7 @@ impl Store {
         Self {
             database,
             changes: Arc::new(OnceLock::new()),
-            submission_admission: Arc::new(tokio::sync::RwLock::new(())),
+            config: crate::config::ConfigManager::default(),
         }
     }
 
@@ -100,8 +99,13 @@ impl Store {
         }
     }
 
+    #[must_use]
+    pub const fn config_manager(&self) -> &crate::config::ConfigManager {
+        &self.config
+    }
+
     pub(crate) fn submission_admission(&self) -> Arc<tokio::sync::RwLock<()>> {
-        Arc::clone(&self.submission_admission)
+        self.config.admission()
     }
 }
 use std::fmt;

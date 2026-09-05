@@ -174,7 +174,7 @@ fn external_pending_projection_symlink_is_rejected_without_truncating_target() -
     )?;
 
     // When: durable configuration repair attempts an atomic projection.
-    let result = ConfigBootstrap::repair_projection(workspace.path(), "[server]\nport = 3001\n");
+    let result = ConfigBootstrap::persist_document(workspace.path(), "[server]\nport = 3001\n");
 
     // Then: projection fails without following or truncating the external target.
     assert!(result.is_err());

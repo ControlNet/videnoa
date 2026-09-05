@@ -200,3 +200,25 @@ async fn operational_auth_routes_remain_closed_before_setup() -> TestResult {
     assert!(!bearer.headers().contains_key(SESSION_COOKIE));
     Ok(())
 }
+
+#[tokio::test]
+async fn default_first_access_setup_accepts_https_reverse_proxy_origin() -> TestResult {
+    let fixture = Fixture::new().await?;
+    assert!(!fixture.auth.secure_cookie());
+    let mut status = request("GET", "/api/auth/setup", Body::empty())?;
+    status
+        .headers_mut()
+        .insert(header::ORIGIN, "https://controller.test".parse()?);
+    assert_eq!(
+        fixture.router().oneshot(status).await?.status(),
+        StatusCode::OK
+    );
+    let mut setup = setup_request(PASSWORD, PASSWORD)?;
+    setup
+        .headers_mut()
+        .insert(header::ORIGIN, "https://controller.test".parse()?);
+    let response = fixture.router().oneshot(setup).await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response.headers().contains_key(header::SET_COOKIE));
+    Ok(())
+}

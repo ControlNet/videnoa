@@ -2,7 +2,10 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-use cap_fs_ext::{ambient_authority, DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt};
+use cap_fs_ext::{
+    ambient_authority, DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt,
+    OpenOptionsSyncExt,
+};
 use cap_std::fs::{Dir, File, OpenOptions};
 
 use super::{Identity, PathError};
@@ -138,6 +141,13 @@ impl Root {
             Ok(metadata) if metadata.file_type().is_symlink() => {
                 return Err(PathError::SymlinkComponent { path: full_path });
             }
+            Ok(metadata) if !metadata.is_file() => {
+                return Err(if changed_is_distinct {
+                    PathError::InputChanged { path: full_path }
+                } else {
+                    PathError::InputNotRegular { path: full_path }
+                });
+            }
             Ok(_) => {}
             Err(source) if changed_is_distinct && source.kind() == io::ErrorKind::NotFound => {
                 return Err(PathError::InputChanged { path: full_path });
@@ -145,35 +155,55 @@ impl Root {
             Err(source) => return Err(io_error(&full_path, source)),
         }
         let mut options = OpenOptions::new();
-        options.read(true).follow(FollowSymlinks::No);
+        options.read(true).follow(FollowSymlinks::No).nonblock(true);
         directory
             .open_with(leaf, &options)
             .map_err(|source| io_error(&full_path, source))
     }
 }
 
-pub(super) fn select_root<'a>(
-    roots: &'a [Root],
-    path: &Path,
-) -> Result<(&'a Root, PathBuf), PathError> {
+pub(super) fn select_root(roots: &[Root], path: &Path) -> Result<(Root, PathBuf), PathError> {
     validate_absolute(path)?;
     for root in roots {
         if let Ok(relative) = path.strip_prefix(&root.ambient_path) {
             validate_relative(relative, path)?;
             root.ensure_current()?;
-            return Ok((root, relative.to_path_buf()));
+            return Ok((root.clone(), relative.to_path_buf()));
         }
     }
-    Err(PathError::OutsideRoots {
-        path: path.to_path_buf(),
-    })
+    // Absolute media paths use the process filesystem namespace. The filesystem
+    // anchor is only a descriptor capability; every descendant is opened no-follow.
+    let anchor: PathBuf = path
+        .components()
+        .take_while(|component| matches!(component, Component::Prefix(_) | Component::RootDir))
+        .collect();
+    let relative = path
+        .strip_prefix(&anchor)
+        .map_err(|_| PathError::InvalidPath {
+            path: path.to_path_buf(),
+        })?;
+    validate_relative(relative, path)?;
+    Ok((Root::open(&anchor)?, relative.to_path_buf()))
 }
 
 fn validate_absolute(path: &Path) -> Result<(), PathError> {
     #[cfg(not(windows))]
     let malformed = path.to_string_lossy().contains('\\');
     #[cfg(windows)]
-    let malformed = false;
+    let malformed = path.components().any(|component| match component {
+        Component::Prefix(prefix) => !matches!(
+            prefix.kind(),
+            std::path::Prefix::Disk(_)
+                | std::path::Prefix::VerbatimDisk(_)
+                | std::path::Prefix::UNC(_, _)
+                | std::path::Prefix::VerbatimUNC(_, _)
+        ),
+        Component::Normal(name) => {
+            let name = name.to_string_lossy();
+            name.ends_with(['.', ' ']) || name.contains(':')
+        }
+        _ => false,
+    });
     if !path.is_absolute() || malformed {
         return Err(PathError::InvalidPath {
             path: path.to_path_buf(),

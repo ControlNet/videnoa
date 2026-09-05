@@ -92,10 +92,11 @@ impl Fixture {
                 updated_at: now,
             })
             .await?;
-        let settings = store.settings().await?;
+        let settings = store.config_manager().settings()?;
         let mut scheduler = settings.scheduler;
         scheduler.prefetch_per_worker = u16::try_from(slots)?;
         store
+            .config_manager()
             .update_settings(&SettingsUpdate {
                 expected_version: settings.version,
                 scheduler,

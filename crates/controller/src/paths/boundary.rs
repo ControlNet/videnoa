@@ -4,6 +4,8 @@ use super::{PathCapabilities, PathError, Root};
 
 impl PathCapabilities {
     pub(super) fn media_path(&self, path: &Path, roots: &[Root]) -> Result<PathBuf, PathError> {
+        self.data.ensure_current()?;
+        self.temp.ensure_current()?;
         let path = if path.is_absolute() {
             path.to_path_buf()
         } else {
@@ -23,6 +25,7 @@ impl PathCapabilities {
             }
             root.display_path().join(path)
         };
+        let path: PathBuf = path.components().collect();
         if reserved(&path, self.data.display_path()) || reserved(&path, self.temp.display_path()) {
             return Err(PathError::OutsideRoots { path });
         }
@@ -37,14 +40,24 @@ fn reserved(path: &Path, boundary: &Path) -> bool {
     }
     #[cfg(windows)]
     {
-        let mut path_components = path.components();
-        boundary.components().all(|component| {
-            path_components.next().is_some_and(|candidate| {
-                candidate
-                    .as_os_str()
-                    .to_string_lossy()
-                    .eq_ignore_ascii_case(&component.as_os_str().to_string_lossy())
-            })
-        })
+        let path = windows_spelling(path);
+        let boundary = windows_spelling(boundary);
+        path == boundary
+            || path
+                .strip_prefix(&boundary)
+                .is_some_and(|suffix| suffix.starts_with('/'))
+    }
+}
+
+#[cfg(windows)]
+fn windows_spelling(path: &Path) -> String {
+    let spelling = path.to_string_lossy().replace('\\', "/").to_lowercase();
+    if let Some(unc) = spelling.strip_prefix("//?/unc/") {
+        format!("//{unc}")
+    } else {
+        spelling
+            .strip_prefix("//?/")
+            .unwrap_or(&spelling)
+            .to_owned()
     }
 }

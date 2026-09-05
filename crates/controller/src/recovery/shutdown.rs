@@ -5,7 +5,6 @@ use std::time::Duration;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-use crate::persistence::SettingsUpdate;
 use crate::scheduler::{Scheduler, SchedulerError};
 
 #[derive(Debug, thiserror::Error)]
@@ -128,34 +127,20 @@ impl ShutdownCoordinator {
         }
     }
 
-    /// Persists scheduler pause before closing stage intake and draining durable writes.
+    /// Pauses runtime admission before closing stage intake and draining durable writes.
+    /// Shutdown must not overwrite operator TOML edits or persist an implicit pause.
     ///
     /// # Errors
-    /// Returns an error when settings cannot be loaded or the pause cannot be committed.
+    /// Returns an error when outstanding durable work cannot drain within the bound.
     pub async fn shutdown(
         &self,
         scheduler: &Scheduler,
-        now: chrono::DateTime<chrono::Utc>,
+        _now: chrono::DateTime<chrono::Utc>,
         bound: Duration,
     ) -> Result<DrainOutcome, ShutdownError> {
-        let pause_result = async {
-            let settings = scheduler.settings().await?;
-            let mut status = settings.scheduler;
-            status.paused = true;
-            scheduler
-                .update_settings(SettingsUpdate {
-                    expected_version: settings.version,
-                    scheduler: status,
-                    timeouts: settings.timeouts,
-                    retry: settings.retry,
-                    updated_at: now,
-                })
-                .await
-        }
-        .await;
+        scheduler.pause_for_shutdown().await;
         self.stop_stage_intake();
         let outcome = self.drain(bound).await;
-        pause_result?;
         match outcome {
             DrainOutcome::Drained => Ok(DrainOutcome::Drained),
             DrainOutcome::TimedOut { outstanding_writes } => Err(ShutdownError::DrainTimedOut {

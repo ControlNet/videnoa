@@ -10,8 +10,16 @@ impl Store {
         &self,
         write: &PairedTransition,
     ) -> Result<CasOutcome, PersistenceError> {
+        // Submit's caller retains admission through remote acceptance. Upload intake
+        // acquires it here; downstream transitions remain available while paused.
+        let _admission = if write.to == crate::domain::TaskStatus::Uploading {
+            Some(self.submission_admission().read_owned().await)
+        } else {
+            None
+        };
+        let paused = self.config_manager().scheduler().paused;
         let mut transaction = self.database.pool().begin().await?;
-        if update_task_status(&mut transaction, write).await? != 1 {
+        if update_task_status(&mut transaction, write, paused).await? != 1 {
             transaction.rollback().await?;
             return Ok(CasOutcome::Conflict);
         }

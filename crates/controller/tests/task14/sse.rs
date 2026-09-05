@@ -109,7 +109,7 @@ async fn direct_scheduler_update_publishes_live_delta() -> TestResult {
         .await?;
     let mut stream = response.into_body().into_data_stream();
     let _initial = stream.next().await.ok_or("missing initial refetch")??;
-    let settings = fixture.store.settings().await?;
+    let settings = fixture.store.config_manager().settings()?;
     let mut scheduler = settings.scheduler;
     scheduler.paused = true;
 

@@ -48,7 +48,7 @@ pub(super) async fn start_runtime(
 ) -> TestResult<ControllerRuntime> {
     let auth = AuthService::new(auth_config.clone(), store.clone())?;
     let paths = PathCapabilities::open(path_config)?;
-    let scheduler = Scheduler::load(store.clone()).await?;
+    let scheduler = Scheduler::load(store.clone())?;
     let shutdown = ShutdownCoordinator::new();
     let config = ControllerConfig {
         server: videnoa_controller::config::ServerConfig {
@@ -59,7 +59,7 @@ pub(super) async fn start_runtime(
         auth: auth_config.clone(),
         ..ControllerConfig::default()
     };
-    let settings = store.settings().await?;
+    let settings = store.config_manager().settings()?;
     let mut runtime_timeouts = settings.timeouts;
     runtime_timeouts.health_seconds = 1;
     runtime_timeouts.poll_seconds = 1;

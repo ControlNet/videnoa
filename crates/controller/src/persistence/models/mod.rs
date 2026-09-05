@@ -28,6 +28,6 @@ pub use node_records::{
 };
 pub use node_records::{WorkerDeleteOutcome, WorkerIdentityConflict};
 pub use queue_records::{SchedulerCandidate, UploadCandidateRecord};
-pub use runtime_records::{ConfigurationUpdate, SettingsRecord, SettingsUpdate};
+pub use runtime_records::{PolicyUpdate, SettingsRecord, SettingsUpdate};
 pub(crate) use work_records::empty_progress;
 pub use work_records::{NewTask, PublicationEvidence, Reservation, TaskLifecycle, TaskRecord};

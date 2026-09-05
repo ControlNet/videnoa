@@ -48,7 +48,7 @@ impl ControllerFixture {
     }
 
     async fn set_scheduler_paused(&self, paused: bool) -> TestResult {
-        let settings = self.store.settings().await?;
+        let settings = self.store.config_manager().settings()?;
         let action = if paused { "pause" } else { "resume" };
         let response = self
             .client

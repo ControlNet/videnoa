@@ -1,5 +1,7 @@
 #[derive(Debug, thiserror::Error)]
 pub enum PersistenceError {
+    #[error("runtime configuration failed")]
+    Config(#[from] crate::config::ConfigError),
     #[error("database operation failed")]
     Database(#[from] sqlx::Error),
     #[error("database migration failed")]

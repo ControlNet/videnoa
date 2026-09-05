@@ -66,6 +66,8 @@ impl Store {
         &self,
         write: &ProcessingRetryWrite,
     ) -> Result<CasOutcome, PersistenceError> {
+        let _admission = self.submission_admission().read_owned().await;
+        let policy = self.config_manager().scheduler();
         let mut transaction = self.database.pool().begin().await?;
         let occurred_at = timestamp(write.occurred_at);
         let attempt_number = sqlx::query(
@@ -91,10 +93,9 @@ impl Store {
                         SELECT COUNT(*) FROM tasks active
                         WHERE active.worker_id = worker.id
                           AND active.status IN ('submitting', 'processing')
-                    ), 0) + settings.prefetch_per_worker
+                    ), 0) + ?
                 FROM workers worker
-                JOIN controller_settings settings ON settings.id = 1
-                WHERE worker.id = ? AND settings.paused = 0)
+                WHERE worker.id = ? AND ? = 0)
              RETURNING attempt_count",
         )
         .bind(write.worker_id.to_string())
@@ -108,7 +109,9 @@ impl Store {
         .bind(write.remote_job_id.to_string())
         .bind(write.worker_id.to_string())
         .bind(write.worker_id.to_string())
+        .bind(i64::from(policy.prefetch_per_worker))
         .bind(write.worker_id.to_string())
+        .bind(policy.paused)
         .fetch_optional(&mut *transaction)
         .await?;
         let Some(attempt_number) = attempt_number else {

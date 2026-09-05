@@ -3,16 +3,13 @@ use axum::extract::State;
 use axum::Json;
 use chrono::Utc;
 use std::net::SocketAddr;
-use std::time::Duration;
 
-use crate::config::{ConfigBootstrap, PreparedListener};
+use crate::config::PreparedListener;
 use crate::domain::{SettingsPaths, SettingsResponse, SettingsUpdateRequest, TaskActionRequest};
 use crate::persistence::{CasOutcome, SettingsRecord};
 
 use super::request_failure::OperationsError;
 use super::OperationsState;
-
-const PROJECTION_RETRY_DELAY: Duration = Duration::from_millis(250);
 
 #[path = "settings/validate.rs"]
 mod validate_request;
@@ -24,7 +21,7 @@ mod tests;
 pub(super) async fn get(
     State(state): State<OperationsState>,
 ) -> Result<Json<SettingsResponse>, OperationsError> {
-    current(&state).await.map(Json)
+    current(&state).map(Json)
 }
 
 pub(super) async fn update(
@@ -58,8 +55,8 @@ async fn set_paused(
     let Json(action) = payload.map_err(|_| OperationsError::InvalidRequest)?;
     let record = state
         .store
+        .config_manager()
         .settings()
-        .await
         .map_err(|_| OperationsError::Internal)?;
     let mut scheduler = record.scheduler;
     scheduler.paused = paused;
@@ -84,8 +81,8 @@ async fn apply(
     let _serialized = state.settings_lock.lock().await;
     let record = state
         .store
+        .config_manager()
         .settings()
-        .await
         .map_err(|_| OperationsError::Internal)?;
     if record.version != request.version {
         return Err(OperationsError::Conflict(
@@ -93,46 +90,49 @@ async fn apply(
         ));
     }
     let config = validate_request::build_config(&state.config.paths, &request)?;
-    let document = config.to_toml().map_err(|_| OperationsError::Internal)?;
     let prepared = prepare_listener(&record, &request, state.listener.is_some()).await?;
+    let handoff = match (prepared, &state.listener) {
+        (Some(prepared), Some(listener)) => Some(
+            listener
+                .prepare_handoff(prepared)
+                .await
+                .map_err(|_| OperationsError::InvalidField("server", "HTTP listener stopped"))?,
+        ),
+        _ => None,
+    };
     let update = config
-        .settings_update(request.version, &document, Utc::now())
+        .settings_update(request.version, Utc::now())
         .map_err(|_| OperationsError::InvalidRequest)?;
     let _admission = state.scheduler.lock_settings().await;
+    // All policy validation and listener binding precede the single durable write.
     match state
         .store
-        .update_configuration(&update)
-        .await
+        .config_manager()
+        .commit(config.clone(), request.version)
         .map_err(|_| OperationsError::Internal)?
     {
-        CasOutcome::Applied { new_version } => {
-            let projected = projection_complete(state, &document, new_version).await;
-            state
-                .scheduler
-                .apply_runtime(&update.scheduler, &update.timeouts, &update.retry)
-                .map_err(|error| OperationsError::from_scheduler(&error))?;
-            state
-                .auth
-                .reconfigure(config.auth.clone())
-                .map_err(|error| OperationsError::from_auth(&error))?;
-            if let (Some(prepared), Some(listener)) = (prepared, &state.listener) {
-                listener
-                    .handoff(prepared)
-                    .await
-                    .map_err(|_| OperationsError::Internal)?;
-            }
-            if !projected {
-                schedule_projection_repair(state, document, new_version);
-                return Err(OperationsError::CommittedDegraded);
-            }
-        }
         CasOutcome::Conflict => {
             return Err(OperationsError::Conflict(
                 "settings changed since they were read",
-            ));
+            ))
         }
+        CasOutcome::Applied { .. } => {}
     }
-    current(state).await.map(Json)
+    state
+        .scheduler
+        .apply_runtime(&update.scheduler, &update.timeouts, &update.retry)
+        .map_err(|error| OperationsError::from_scheduler(&error))?;
+    state
+        .auth
+        .reconfigure(config.auth)
+        .map_err(|error| OperationsError::from_auth(&error))?;
+    if let Some(handoff) = handoff {
+        handoff
+            .apply()
+            .await
+            .map_err(|_| OperationsError::CommittedDegraded)?;
+    }
+    current(state).map(Json)
 }
 
 async fn prepare_listener(
@@ -155,74 +155,11 @@ async fn prepare_listener(
         .map_err(|_| OperationsError::InvalidField("server", "address could not be bound"))
 }
 
-async fn projection_complete(state: &OperationsState, document: &str, version: u64) -> bool {
-    if ConfigBootstrap::repair_projection(&state.workspace, document).is_err() {
-        return false;
-    }
-    state
-        .store
-        .complete_config_projection(version)
-        .await
-        .is_ok_and(|completed| completed)
-}
-
-fn schedule_projection_repair(state: &OperationsState, document: String, version: u64) {
-    let store = state.store.clone();
-    let workspace = state.workspace.clone();
-    let settings_lock = state.settings_lock.clone();
-    let shutdown = state.shutdown.clone();
-    tokio::spawn(async move {
-        loop {
-            let repaired = {
-                let serialized = settings_lock.lock().await;
-                let Ok(record) = store.settings().await else {
-                    drop(serialized);
-                    if !wait_for_projection_retry(shutdown.as_ref()).await {
-                        return;
-                    }
-                    continue;
-                };
-                if record.version != version
-                    || record.pending_config_document.as_deref() != Some(document.as_str())
-                {
-                    return;
-                }
-                if ConfigBootstrap::repair_projection(&workspace, &document).is_err() {
-                    false
-                } else {
-                    store
-                        .complete_config_projection(version)
-                        .await
-                        .is_ok_and(|completed| completed)
-                }
-            };
-            if repaired {
-                return;
-            }
-            if !wait_for_projection_retry(shutdown.as_ref()).await {
-                return;
-            }
-        }
-    });
-}
-
-async fn wait_for_projection_retry(shutdown: Option<&tokio_util::sync::CancellationToken>) -> bool {
-    if let Some(token) = shutdown {
-        tokio::select! {
-            () = token.cancelled() => false,
-            () = tokio::time::sleep(PROJECTION_RETRY_DELAY) => true,
-        }
-    } else {
-        tokio::time::sleep(PROJECTION_RETRY_DELAY).await;
-        true
-    }
-}
-
-async fn current(state: &OperationsState) -> Result<SettingsResponse, OperationsError> {
+fn current(state: &OperationsState) -> Result<SettingsResponse, OperationsError> {
     let record = state
         .store
+        .config_manager()
         .settings()
-        .await
         .map_err(|_| OperationsError::Internal)?;
     Ok(response(state, record))
 }

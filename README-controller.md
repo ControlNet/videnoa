@@ -42,7 +42,7 @@ The setup API used by the Web UI is:
 - `GET /api/auth/setup` returns `{"initialized":false}` or
   `{"initialized":true}`.
 - `POST /api/auth/setup` accepts `password` and `password_confirmation`, requires
-  an exact `Origin` matching the request scheme and Host, and returns the normal
+  a valid same-host HTTP(S) `Origin` (HTTPS required with Secure cookies), and returns the normal
   login session cookie and CSRF response when successful.
 
 Check the public liveness endpoint without exposing credentials:
@@ -55,17 +55,33 @@ Expected response: `{"status":"ok"}`.
 
 ## Workspace and Media Paths
 
-Task `input_path` and `output_path` values define where media lives. Relative
-paths resolve from the directory where the binary was started. Absolute paths
-must still resolve within that workspace. The entire `./data` subtree is private
-Controller storage and cannot be used for task input or output.
+Task paths may refer to any safe filesystem location visible to the Controller
+process. Absolute paths retain their OS location, for example
+`/mnt/user/media/anime/Frieren/E08.mkv` and
+`/mnt/user/media/anime/Frieren/E08.AI.mp4`; they are never rebased under workspace.
+Relative paths resolve from the Controller workspace (the startup working
+directory). With workspace `/opt/videnoa-controller`, `media/E08.mkv` resolves to
+`/opt/videnoa-controller/media/E08.mkv`. Task records store normalized absolute
+paths. The workspace is only Controller's working location, not a media sandbox.
+The entire `<workspace>/data/**` subtree is private and forbidden for task input,
+output, and recovery capabilities, including indirect symlink paths.
 
-There are no fixed input or output directories and no media-path configuration.
-For example, an operator may place an input at `media/incoming/episode.mkv` and
-request `media/library/episode.mp4`; another task may choose different
-directories in the same workspace. Parent traversal, symlink escape, non-regular
-input, changed input identity, and an existing output fail closed. Publication
-never overwrites or auto-renames an existing destination.
+Input must be a regular file. Parent traversal, unsafe symlink components, changed
+input identity, and existing or racing output fail closed. Input and output
+extensions may differ.
+
+Downloaded bytes remain in private UUID task directories under `data` until
+verified. Final publication uses atomic no-replace rename. No `.videnoa-*`,
+`.partial`, `.staging`, or incomplete final file is created in the media/Jellyfin
+directory. An existing destination is never overwritten.
+
+Paths outside workspace are allowed. Safe publication still requires a supported
+atomic publication relationship between private temporary storage and output.
+Different devices are rejected at output intake with `CrossFilesystemPublication`;
+a rename that reports `EXDEV` (including separate mounts of one filesystem)
+returns the same typed publication capability error. There is no copy fallback,
+visible sibling staging, or destination rewriting. Preserve verified recovery
+evidence and arrange a supported mount layout before retrying publication.
 
 Register each credential-free Videnoa worker URL in the Web UI. A workflow is
 eligible only when the worker reports a workflow or preset with `Path` inputs
@@ -81,13 +97,40 @@ HTTP, 24-hour absolute sessions, one-hour idle sessions, one compute slot, one
 prefetched task, one upload, one download, health/poll/transfer timeouts of
 10/5/300 seconds, retry delays of 1 through 60 seconds, and five attempts.
 
-Web UI Settings persists every public field to SQLite and projects the current
-configuration back to `./data/controller.toml`. Server, cookie/session policy,
-scheduler, timeout, and retry changes are hot-applied. A server address change
-must be bindable before the update is accepted.
+`data/controller.toml` is the sole persisted Controller configuration source.
+The in-memory `ControllerConfig` is the active runtime configuration.
+`controller.sqlite3` holds durable operational/application state: tasks, attempts,
+workers, recovery evidence, idempotency, administrator credential, and sessions.
+Legacy SQLite settings columns remain unused; startup and Settings never read or
+update them, including the old configuration documents and projection journal.
+
+Web Settings validates policy and prebinds a changed listener, then writes a
+private temporary TOML file, fsyncs it, atomically replaces `controller.toml`, and
+fsyncs `data`. Only after persistence succeeds does it update runtime policy and
+hot-apply scheduler, independent transfer limits, auth, timeouts, retry, and the
+listener. Failed persistence leaves runtime unchanged. Stale Settings generations
+return conflict; the generation is in memory and resets on restart. A shared
+admission lock holds pause/config commits behind already admitted submissions
+and prevents new reservations, uploads, or submissions after pause commits.
+Processing and downstream work continue. Shutdown pauses admission in memory only,
+so it preserves manual TOML edits and does not persist an implicit operator pause.
+
+Manual TOML edits require Controller restart. There is no automatic TOML file
+watching, polling, or database reconciliation. A crash after the TOML replacement
+naturally loads the saved configuration on restart. `--host` and `--port` overrides
+persist directly to TOML at startup and remain effective on later starts.
+
+Same-origin proof compares parsed Host and Origin authorities, including ports
+and HTTP/HTTPS default ports. With `secure_cookie=false`, same-host HTTP and HTTPS
+are accepted. With `secure_cookie=true`, only same-host HTTPS is accepted.
+Malformed or foreign origins and missing required proof are rejected. Forwarded
+headers are not trusted. HTTPS reverse-proxy first-access setup works with defaults;
+an HTTPS session can enable Secure cookies in Settings, then subsequent mutations
+require HTTPS Origin plus CSRF proof. As before, changing Secure policy invalidates
+old sessions; sign in again to receive a Secure cookie.
 
 Keep the default loopback listener unless another network layer requires remote
-access. `secure_cookie = false` is for deliberate trusted HTTP use only. Use
+access. `secure_cookie = false` allows both HTTP and HTTPS. Use
 same-origin HTTPS and `secure_cookie = true` when browsers can reach Controller
 through an untrusted network. Browser sessions use an HttpOnly,
 SameSite=Strict cookie plus CSRF proof. Never put passwords, Authorization
@@ -100,7 +143,8 @@ script.
 
 ## Data and Backup
 
-SQLite is authoritative. Stop Controller cleanly before a simple filesystem
+SQLite is authoritative for operational state; TOML owns configuration.
+Stop Controller cleanly before a simple filesystem
 backup, then copy the complete `./data` directory. Include SQLite WAL sidecars
 and transient task directories when present. The administrator hash, settings,
 sessions, tasks, attempts, idempotency, retry state, and recovery evidence are
@@ -113,7 +157,7 @@ Controller has active work creates `remote_state_ambiguous`; Controller does not
 authorize blind resubmission.
 
 Restore only while Controller is stopped. Restore the full `./data` snapshot,
-matching media, and matching worker data into the same workspace layout. Start
+matching media at its recorded absolute paths, and matching worker data. Start
 the same or a compatible Controller version, then inspect health, authenticated
 readiness, Workers, and every nonterminal task before resuming scheduling.
 
@@ -154,8 +198,8 @@ worker snapshots, then start the previous version.
 ## Docker
 
 The image runs from `/workspace`, preserves default `USER 10001:10001`, and
-declares no config, secret, input, or output volumes. Bind one writable host
-workspace that is the common parent of media and `data`. Running with the host
+declares no config, secret, input, or output volumes. Bind a writable Controller
+workspace for private state. Running with the host
 user avoids root-owned files and does not require changing host ownership:
 
 ```bash
@@ -173,6 +217,28 @@ trusted first setup, or protect it with firewalling and a same-origin HTTPS
 reverse proxy. Do not expose an uninitialized setup endpoint to an untrusted
 network.
 
+Task paths inside Docker are container-visible paths. Mount required media into
+the container namespace; no Docker path translation exists and media need not
+live under `/workspace`. For an ANI-RSS path such as `/mnt/user/media/anime/E08.mkv`,
+mount the host path at the same container path. One common mount can give private
+Controller state and external media the required atomic rename relationship:
+
+```bash
+mkdir -p /mnt/user/controller-workspace
+docker run -d --name videnoa-controller \
+  --user "$(id -u):$(id -g)" \
+  -p 127.0.0.1:3001:3001 \
+  --mount type=bind,src=/mnt/user,dst=/mnt/user \
+  --workdir /mnt/user/controller-workspace \
+  controlnet/videnoa-controller:<version> --host 0.0.0.0
+```
+
+The workspace above is separate from `/mnt/user/media`. Separate bind mounts for
+workspace and media can return `EXDEV` even on the same host disk; the Controller
+reports that publication limitation explicitly. Changing the Controller listener
+port in Docker also requires updating container port mapping, reverse proxy, and
+health-check configuration. Listener settings remain available normally.
+
 No GPU flags, models, ONNX Runtime, CUDA, cuDNN, or TensorRT libraries belong in
 the Controller deployment.
 
@@ -187,13 +253,13 @@ Published images are `controlnet/videnoa-controller:<version>` and
 
 - Startup cannot create `./data`: confirm the current workspace is writable by
   the process or container user.
-- Setup returns `403`: send the exact same-origin scheme and Host in `Origin`.
+- Setup returns `403`: send a valid same-host `Origin`; Secure cookies require HTTPS.
 - Setup returns `400`: use matching password fields with at least 12 bytes.
 - Setup returns `409`: the administrator credential is already initialized; use
   login rather than trying to replace it through setup.
 - Health works but readiness fails: finish administrator setup, authenticate,
   and inspect readiness before admitting tasks.
-- A path is rejected: keep task media inside the workspace and outside `./data`,
+- A path is rejected: use process-accessible task media outside `./data`,
   remove traversal and symlink components, and preserve existing destinations.
 - A worker stays offline or incompatible: verify its credential-free HTTP(S)
   URL, Videnoa health, persistent data, and exact workflow interface.

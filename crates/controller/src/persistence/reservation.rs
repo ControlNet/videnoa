@@ -11,6 +11,8 @@ impl Store {
         &self,
         reservation: &Reservation,
     ) -> Result<ReservationOutcome, PersistenceError> {
+        let _admission = self.submission_admission().read_owned().await;
+        let policy = self.config_manager().scheduler();
         let mut transaction = self.database.pool().begin().await?;
         let attempt_no = sqlx::query(
             "UPDATE tasks SET status = 'reserved', worker_id = ?, version = version + 1,
@@ -18,9 +20,8 @@ impl Store {
              WHERE id = ? AND status = 'queued' AND version = ?
                AND EXISTS (
                    SELECT 1 FROM workers worker
-                   JOIN controller_settings settings ON settings.id = 1
                    WHERE worker.id = ? AND worker.enabled = 1 AND worker.online = 1
-                     AND settings.paused = 0
+                     AND ? = 0
                      AND EXISTS (
                          SELECT 1 FROM json_each(worker.capabilities_json, '$.workflows') capability
                          WHERE json_extract(capability.value, '$.name') = tasks.workflow
@@ -33,7 +34,7 @@ impl Store {
                              SELECT COUNT(*) FROM tasks active
                              WHERE active.worker_id = worker.id
                                AND active.status IN ('submitting', 'processing')
-                         ), 0) + settings.prefetch_per_worker
+                         ), 0) + ?
                )
              RETURNING attempt_count",
         )
@@ -46,6 +47,8 @@ impl Store {
             reservation.expected_task_version,
         )?)
         .bind(reservation.worker_id.to_string())
+        .bind(policy.paused)
+        .bind(i64::from(policy.prefetch_per_worker))
         .fetch_optional(&mut *transaction)
         .await?;
         let Some(attempt_no) = attempt_no else {

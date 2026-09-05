@@ -40,6 +40,28 @@ pub struct ListenerHandle {
     sender: mpsc::Sender<Rebind>,
 }
 
+pub struct PreparedHandoff {
+    permit: mpsc::OwnedPermit<Rebind>,
+    prepared: PreparedListener,
+}
+
+impl PreparedHandoff {
+    /// Publishes a preflighted listener handoff and waits for activation.
+    ///
+    /// # Errors
+    /// Returns an error if the HTTP server stops after preflight.
+    pub async fn apply(self) -> io::Result<()> {
+        let (applied, waiting) = oneshot::channel();
+        self.permit.send(Rebind {
+            prepared: self.prepared,
+            applied,
+        });
+        waiting
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "HTTP listener stopped"))
+    }
+}
+
 pub struct ListenerReceiver {
     receiver: mpsc::Receiver<Rebind>,
 }
@@ -51,19 +73,26 @@ pub fn listener_channel() -> (ListenerHandle, ListenerReceiver) {
 }
 
 impl ListenerHandle {
+    /// Reserves the live listener handoff channel before configuration persistence.
+    ///
+    /// # Errors
+    /// Returns an error if the HTTP listener loop has stopped.
+    pub async fn prepare_handoff(&self, prepared: PreparedListener) -> io::Result<PreparedHandoff> {
+        let permit = self
+            .sender
+            .clone()
+            .reserve_owned()
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "HTTP listener stopped"))?;
+        Ok(PreparedHandoff { permit, prepared })
+    }
+
     /// Hands a prebound listener to the running HTTP server generation.
     ///
     /// # Errors
     /// Returns an error when the HTTP listener loop has stopped.
     pub async fn handoff(&self, prepared: PreparedListener) -> io::Result<()> {
-        let (applied, waiting) = oneshot::channel();
-        self.sender
-            .send(Rebind { prepared, applied })
-            .await
-            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "HTTP listener stopped"))?;
-        waiting
-            .await
-            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "HTTP listener stopped"))
+        self.prepare_handoff(prepared).await?.apply().await
     }
 }
 
@@ -123,9 +152,13 @@ fn spawn_server(
                         == Some(&axum::http::HeaderValue::from_static("text/event-stream"))
                     {
                         let (parts, body) = response.into_parts();
-                        let stream = body.into_data_stream()
+                        let stream = body
+                            .into_data_stream()
                             .take_until(stream_shutdown.cancelled_owned());
-                        axum::response::Response::from_parts(parts, axum::body::Body::from_stream(stream))
+                        axum::response::Response::from_parts(
+                            parts,
+                            axum::body::Body::from_stream(stream),
+                        )
                     } else {
                         response
                     }

@@ -29,11 +29,12 @@ async fn atomic_reservation_rechecks_persisted_pause() -> TestResult {
         .task(task_id)
         .await?
         .ok_or_else(|| std::io::Error::other("task missing"))?;
-    let settings = fixture.store.settings().await?;
+    let settings = fixture.store.config_manager().settings()?;
     let mut scheduler = settings.scheduler;
     scheduler.paused = true;
     fixture
         .store
+        .config_manager()
         .update_settings(&SettingsUpdate {
             expected_version: settings.version,
             scheduler,

@@ -234,14 +234,16 @@ fn path_error(field: &'static str, error: &PathError) -> TaskApiError {
         PathError::InputNotRegular { .. } => "input must be an existing regular file",
         PathError::InputChanged { .. } => "input changed during task intake",
         PathError::CrossFilesystemPublication { .. } => {
-            "temporary and output paths must use the same filesystem"
+            "safe atomic publication is unavailable across these filesystems or mounts"
         }
         PathError::OutsideRoots { .. }
         | PathError::InvalidPath { .. }
         | PathError::SymlinkComponent { .. }
         | PathError::RootChanged { .. }
         | PathError::OutputParentChanged { .. }
-        | PathError::Io { .. } => "path is not available through configured roots",
+        | PathError::Io { .. } => {
+            "path is unsafe, private, or unavailable to the Controller process"
+        }
     };
     TaskApiError::invalid(field, FieldErrorCode::InvalidValue, message)
 }

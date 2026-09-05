@@ -32,7 +32,7 @@ async fn shutdown_drain_waits_for_in_flight_stage_lifetime() {
 async fn coordinated_shutdown_rejects_an_incomplete_drain() -> TestResult {
     // Given: a live stage remains admitted when coordinated shutdown begins.
     let fixture = ControllerFixture::start().await?;
-    let scheduler = Scheduler::load(fixture.store.clone()).await?;
+    let scheduler = Scheduler::load(fixture.store.clone())?;
     let coordinator = ShutdownCoordinator::new();
     let _stage = coordinator
         .begin_stage()
