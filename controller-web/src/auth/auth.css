@@ -2,3 +2,24 @@
   outline: 3px solid var(--color-accent);
   outline-offset: var(--space-1);
 }
+
+.login-panel .input-frame.invalid {
+  border-color: var(--color-danger);
+}
+
+.login-notice {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid color-mix(in oklch, var(--color-healthy), var(--color-border) 56%);
+  border-radius: var(--radius-control);
+  background: var(--color-healthy-wash);
+  color: var(--color-text);
+  font-size: var(--type-ui);
+  line-height: 1.5;
+}
+
+.setup-field-error {
+  margin-block: calc(var(--space-2) * -1) var(--space-2);
+  color: var(--color-danger);
+  font-size: var(--type-label);
+  line-height: 1.5;
+}

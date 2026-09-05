@@ -3,6 +3,7 @@ import { BrowserRouter } from "react-router"
 import { AppErrorBoundary } from "./AppErrorBoundary"
 import { BootstrapError } from "./auth/BootstrapError"
 import { LoginPage } from "./auth/LoginPage"
+import { SetupPage } from "./auth/SetupPage"
 import { type AuthState, useSessionController } from "./auth/useSessionController"
 import { AppShell } from "./shell/AppShell"
 
@@ -22,8 +23,10 @@ function AuthGate() {
   switch (controller.state.kind) {
     case "checking":
       return <LoadingSession />
+    case "setup_required":
+      return <SetupPage setup={controller.setup} />
     case "unauthenticated":
-      return <LoginPage login={controller.login} />
+      return <LoginPage login={controller.login} notice={controller.state.notice} />
     case "authenticated":
       return <AppShell apiClient={controller.apiClient} logout={controller.logout} />
     case "bootstrap_error":
