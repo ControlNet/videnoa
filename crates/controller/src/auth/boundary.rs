@@ -98,7 +98,7 @@ fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
         .find_map(|part| part.strip_prefix(name)?.strip_prefix('='))
 }
 
-fn same_origin(auth: &AuthService, headers: &HeaderMap) -> bool {
+pub(crate) fn same_origin(auth: &AuthService, headers: &HeaderMap) -> bool {
     let Some(host) = headers
         .get(header::HOST)
         .and_then(|value| value.to_str().ok())
