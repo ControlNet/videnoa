@@ -1,7 +1,10 @@
 import type { Page, Route } from "@playwright/test"
+import { z } from "zod"
 
 import { type SettingsResponse, settingsUpdateRequestSchema } from "../../src/api/settingsSchemas"
 import { type Worker, workerCreateRequestSchema, workerUpdateRequestSchema } from "../../src/api/workerSchemas"
+
+const settingsVersionRequestSchema = z.object({ version: z.number().int().nonnegative() }).strict()
 
 const session = {
   id: "550e8400-e29b-41d4-a716-446655440000",
@@ -40,12 +43,11 @@ const workerTemplate: Worker = {
 const settingsTemplate: SettingsResponse = {
   version: 7,
   paths: {
-    input_roots: ["/media/input"],
-    output_roots: ["/media/output"],
+    workspace: "/srv/videnoa/workspace",
     data_root: "/var/lib/videnoa",
-    temp_root: "/var/tmp/videnoa",
-    password_hash_file: "/run/secrets/controller-password",
+    config_file: "/var/lib/videnoa/controller.toml",
   },
+  server: { host: "127.0.0.1", port: 4173 },
   secure_cookie: true,
   session_absolute_seconds: 86_400,
   session_idle_seconds: 3_600,
@@ -75,6 +77,8 @@ async function json(route: Route, body: unknown, status = 200, headers: Record<s
 export type OperationalApi = {
   readonly journal: readonly string[]
   readonly allowNextWorkerDelete: () => void
+  readonly degradeNextSettingsSave: () => void
+  readonly holdNextSettingsRead: () => () => void
   readonly staleNextSettingsSave: () => void
   readonly staleNextWorkerUpdate: () => void
   readonly unauthenticateNextMutation: () => void
@@ -90,7 +94,9 @@ export async function installOperationalApi(page: Page): Promise<OperationalApi>
   const journal: string[] = []
   let workers = [workerTemplate]
   let settings = settingsTemplate
+  let settingsSaveIsDegraded = false
   let settingsSaveIsStale = false
+  const settingsReadGate: { promise: Promise<void> | null; resolve: (() => void) | null } = { promise: null, resolve: null }
   let workerUpdateIsStale = false
   let mutationIsUnauthorized = false
   let workerDeleteIsAllowed = false
@@ -98,6 +104,7 @@ export async function installOperationalApi(page: Page): Promise<OperationalApi>
   await page.route("**/api/events", async (route) => {
     await route.fulfill({ status: 200, contentType: "text/event-stream", body: "" })
   })
+  await page.route("**/api/auth/setup", async (route) => json(route, { initialized: true }))
   await page.route("**/api/auth/session", async (route) => json(route, session, 200, { "x-csrf-token": "session-proof" }))
   await page.route("**/api/readiness", async (route) => json(route, readiness))
   await page.route("**/api/workers", async (route) => {
@@ -177,6 +184,9 @@ export async function installOperationalApi(page: Page): Promise<OperationalApi>
   await page.route("**/api/settings", async (route) => {
     if (route.request().method() === "GET") {
       journal.push("settings:get")
+      const pendingRead = settingsReadGate.promise
+      settingsReadGate.promise = null
+      if (pendingRead !== null) await pendingRead
       await json(route, settings)
       return
     }
@@ -192,18 +202,48 @@ export async function installOperationalApi(page: Page): Promise<OperationalApi>
       await json(route, { error: { code: "conflict", message: "settings changed since they were read", retryable: false, field_errors: [] } }, 409)
       return
     }
-    settings = { ...settings, ...request, version: settings.version + 1 }
+    settings = {
+      ...settings,
+      version: settings.version + 1,
+      server: request.server,
+      secure_cookie: request.auth.secure_cookie,
+      session_absolute_seconds: request.auth.session_absolute_seconds,
+      session_idle_seconds: request.auth.session_idle_seconds,
+      scheduler: request.scheduler,
+      timeouts: request.timeouts,
+      retry: request.retry,
+    }
+    if (settingsSaveIsDegraded) {
+      settingsSaveIsDegraded = false
+      await json(route, { error: { code: "unavailable", message: "settings committed and applied; configuration projection repair is pending", retryable: true, field_errors: [] } }, 503)
+      return
+    }
     await json(route, settings)
   })
   await page.route("**/api/scheduler/**", async (route) => {
     const paused = new URL(route.request().url()).pathname.endsWith("/pause")
-    journal.push(paused ? "pause" : "resume")
+    const request = settingsVersionRequestSchema.parse(await route.request().postDataJSON())
+    journal.push(`${paused ? "pause" : "resume"}:v${String(request.version)}`)
+    if (request.version !== settings.version) {
+      await json(route, { error: { code: "conflict", message: "settings changed since they were read", retryable: false, field_errors: [] } }, 409)
+      return
+    }
     settings = { ...settings, version: settings.version + 1, scheduler: { ...settings.scheduler, paused } }
     await json(route, settings)
   })
   return {
     journal,
     allowNextWorkerDelete: () => { workerDeleteIsAllowed = true },
+    degradeNextSettingsSave: () => { settingsSaveIsDegraded = true },
+    holdNextSettingsRead: () => {
+      settingsReadGate.promise = new Promise((resolve) => { settingsReadGate.resolve = resolve })
+      return () => {
+        const resolve = settingsReadGate.resolve
+        settingsReadGate.promise = null
+        settingsReadGate.resolve = null
+        resolve?.()
+      }
+    },
     staleNextSettingsSave: () => { settingsSaveIsStale = true },
     staleNextWorkerUpdate: () => { workerUpdateIsStale = true },
     unauthenticateNextMutation: () => { mutationIsUnauthorized = true },
