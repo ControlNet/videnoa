@@ -9,8 +9,9 @@ use axum::http::{header, Request, StatusCode};
 use chrono::{Duration as ChronoDuration, Utc};
 use tempfile::TempDir;
 use tower::ServiceExt;
-use videnoa_controller::auth::{hash_password, AuthService, CSRF_HEADER, SESSION_COOKIE};
-use videnoa_controller::config::AuthConfig;
+use videnoa_controller::auth::{AuthService, CSRF_HEADER, SESSION_COOKIE};
+use videnoa_controller::config::ControllerConfig;
+use videnoa_controller::domain::SecretString;
 use videnoa_controller::persistence::{Database, DatabaseOptions, Store};
 use videnoa_controller::{authenticated_app_router, FrontendAssets};
 
@@ -19,7 +20,6 @@ const PASSWORD: &str = "test-only-admin-password";
 
 struct Fixture {
     _directory: TempDir,
-    hash_file: std::path::PathBuf,
     assets: FrontendAssets,
     auth: AuthService,
 }
@@ -27,25 +27,19 @@ struct Fixture {
 impl Fixture {
     async fn new() -> TestResult<Self> {
         let directory = TempDir::new()?;
-        let hash_file = directory.path().join("admin-password.phc");
-        fs::write(&hash_file, hash_password(PASSWORD)?)?;
         let database = Database::open(DatabaseOptions::new(
             directory.path().join("controller.sqlite3"),
         ))
         .await?;
-        let auth = AuthService::new(
-            AuthConfig {
-                password_hash_file: hash_file.clone(),
-                secure_cookie: false,
-                session_absolute: Duration::from_secs(86_400),
-                session_idle: Duration::from_secs(3_600),
-            },
-            Store::new(database),
-        )?;
+        let mut config = ControllerConfig::default().auth;
+        config.secure_cookie = false;
+        config.session_absolute = Duration::from_secs(86_400);
+        config.session_idle = Duration::from_secs(3_600);
+        let auth = AuthService::new(config, Store::new(database))?;
+        auth.setup(SecretString::new(PASSWORD), Utc::now()).await?;
         let assets = test_frontend_assets(directory.path())?;
         Ok(Self {
             _directory: directory,
-            hash_file,
             assets,
             auth,
         })
@@ -159,10 +153,14 @@ async fn protected_routes_reject_missing_auth_and_bearer_logout_is_csrf_exempt()
 
 #[tokio::test]
 async fn unauthorized_session_check_expires_the_existing_cookie() -> TestResult {
-    // Given: a cookie session invalidated by administrator credential rotation.
+    // Given: a cookie session revoked through the authentication service.
     let fixture = Fixture::new().await?;
     let (cookie, _) = login(&fixture, PASSWORD).await?;
-    fs::write(&fixture.hash_file, hash_password("rotated-test-password")?)?;
+    let token = cookie
+        .strip_prefix(&format!("{SESSION_COOKIE}="))
+        .ok_or_else(|| std::io::Error::other("unexpected cookie name"))?;
+    let record = fixture.auth.validate_session_at(token, Utc::now()).await?;
+    fixture.auth.logout(record.id, Utc::now()).await?;
     let mut session = request("GET", "/api/auth/session", Body::empty())?;
     session
         .headers_mut()
@@ -349,35 +347,27 @@ async fn login_and_bearer_share_the_direct_peer_failure_budget() -> TestResult {
 }
 
 #[tokio::test]
-async fn hash_rotation_invalidates_sessions_and_bearer_uses_current_password() -> TestResult {
-    // Given: a session issued under the original password hash.
+async fn live_policy_reconfiguration_updates_new_cookie_security_and_lifetime() -> TestResult {
+    // Given: an initialized service using local-development cookie policy.
     let fixture = Fixture::new().await?;
-    let (cookie, _) = login(&fixture, PASSWORD).await?;
-    let rotated_credential = "rotated-test-password";
-    fs::write(&fixture.hash_file, hash_password(rotated_credential)?)?;
+    let mut updated = ControllerConfig::default().auth;
+    updated.secure_cookie = true;
+    updated.session_absolute = Duration::from_secs(7_200);
+    updated.session_idle = Duration::from_secs(900);
 
-    // When: the old session, old bearer, and rotated bearer request readiness.
-    let mut session = request("GET", "/api/readiness", Body::empty())?;
-    session
-        .headers_mut()
-        .insert(header::COOKIE, cookie.parse()?);
-    let session = fixture.router().oneshot(session).await?;
-    let mut old_bearer = request("GET", "/api/readiness", Body::empty())?;
-    old_bearer
-        .headers_mut()
-        .insert(header::AUTHORIZATION, format!("Bearer {PASSWORD}").parse()?);
-    let old_bearer = fixture.router().oneshot(old_bearer).await?;
-    let mut current_bearer = request("GET", "/api/readiness", Body::empty())?;
-    current_bearer.headers_mut().insert(
-        header::AUTHORIZATION,
-        format!("Bearer {rotated_credential}").parse()?,
-    );
-    let current_bearer = fixture.router().oneshot(current_bearer).await?;
+    // When: the live auth policy changes and a subsequent login is issued.
+    fixture.auth.reconfigure(updated)?;
+    let body = serde_json::to_vec(&serde_json::json!({"password": PASSWORD}))?;
+    let response = fixture
+        .router()
+        .oneshot(request("POST", "/api/auth/login", Body::from(body))?)
+        .await?;
 
-    // Then: rotation closes both old authentication paths without restarting the service.
-    assert_eq!(session.status(), StatusCode::UNAUTHORIZED);
-    assert_eq!(old_bearer.status(), StatusCode::UNAUTHORIZED);
-    assert_eq!(current_bearer.status(), StatusCode::OK);
+    // Then: the next cookie immediately uses the new secure and absolute-lifetime policy.
+    assert_eq!(response.status(), StatusCode::OK);
+    let cookie = response.headers()[header::SET_COOKIE].to_str()?;
+    assert!(cookie.contains("Max-Age=7200"));
+    assert!(cookie.contains("; Secure"));
     Ok(())
 }
 
