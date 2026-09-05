@@ -2,7 +2,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 
-use crate::auth::AuthError;
+use crate::auth::{AuthError, MissingPeerMetadata};
 use crate::domain::{ApiError, ApiErrorCode, ApiErrorEnvelope, FieldError, FieldErrorCode};
 
 #[derive(Debug)]
@@ -45,6 +45,12 @@ impl TaskApiError {
             code,
             message,
         }
+    }
+}
+
+impl From<MissingPeerMetadata> for TaskApiError {
+    fn from(_: MissingPeerMetadata) -> Self {
+        Self::Internal
     }
 }
 

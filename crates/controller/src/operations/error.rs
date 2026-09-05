@@ -2,7 +2,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 
-use crate::auth::AuthError;
+use crate::auth::{AuthError, MissingPeerMetadata};
 use crate::domain::{ApiError, ApiErrorCode, ApiErrorEnvelope, FieldError, FieldErrorCode};
 use crate::lifecycle::{LifecycleError, LifecycleErrorCode};
 use crate::remote::VidenoaClientError;
@@ -96,6 +96,12 @@ impl OperationsError {
             | VidenoaClientError::InvalidFilePath
             | VidenoaClientError::EndpointUrl => Self::Internal,
         }
+    }
+}
+
+impl From<MissingPeerMetadata> for OperationsError {
+    fn from(_: MissingPeerMetadata) -> Self {
+        Self::Internal
     }
 }
 

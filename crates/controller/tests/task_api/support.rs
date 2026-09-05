@@ -115,6 +115,19 @@ pub(super) fn task_request(input: &Path, output: &Path, priority: i32) -> Value 
 }
 
 pub(super) fn request(method: &str, uri: &str, body: Option<&Value>) -> TestResult<Request<Body>> {
+    let mut request = request_without_peer(method, uri, body)?;
+    request.extensions_mut().insert(ConnectInfo(SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        40_000,
+    )));
+    Ok(request)
+}
+
+pub(super) fn request_without_peer(
+    method: &str,
+    uri: &str,
+    body: Option<&Value>,
+) -> TestResult<Request<Body>> {
     let mut builder = Request::builder()
         .method(method)
         .uri(uri)
@@ -126,12 +139,7 @@ pub(super) fn request(method: &str, uri: &str, body: Option<&Value>) -> TestResu
         }
         None => Body::empty(),
     };
-    let mut request = builder.body(body)?;
-    request.extensions_mut().insert(ConnectInfo(SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
-        40_000,
-    )));
-    Ok(request)
+    Ok(builder.body(body)?)
 }
 
 pub(super) async fn json_body(response: axum::response::Response) -> TestResult<Value> {
