@@ -1,9 +1,6 @@
-use std::fs;
 use std::num::{NonZeroU16, NonZeroU32};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
-
-use argon2::password_hash::PasswordHash;
 
 use super::raw::RawControllerConfig;
 use super::{
@@ -11,13 +8,10 @@ use super::{
     ServerConfig, TimeoutConfig,
 };
 
-pub(super) fn build_config(raw: RawControllerConfig) -> Result<ControllerConfig, ConfigError> {
-    validate_roots("paths.input_roots", &raw.paths.input_roots)?;
-    validate_roots("paths.output_roots", &raw.paths.output_roots)?;
-    validate_directory("paths.data_root", &raw.paths.data_root)?;
-    validate_directory("paths.temp_root", &raw.paths.temp_root)?;
-    validate_publication_roots(&raw.paths.temp_root, &raw.paths.output_roots)?;
-    validate_hash_file(&raw.auth.password_hash_file)?;
+pub(super) fn build_config(
+    raw: &RawControllerConfig,
+    workspace: &Path,
+) -> Result<ControllerConfig, ConfigError> {
     let session_absolute = positive_duration(
         "auth.session_absolute_seconds",
         raw.auth.session_absolute_seconds,
@@ -41,13 +35,12 @@ pub(super) fn build_config(raw: RawControllerConfig) -> Result<ControllerConfig,
             port: positive_u16("server.port", raw.server.port)?,
         },
         paths: PathConfig {
-            input_roots: raw.paths.input_roots,
-            output_roots: raw.paths.output_roots,
-            data_root: raw.paths.data_root,
-            temp_root: raw.paths.temp_root,
+            input_roots: vec![workspace.to_path_buf()],
+            output_roots: vec![workspace.to_path_buf()],
+            data_root: workspace.join("data"),
+            temp_root: workspace.join("data"),
         },
         auth: AuthConfig {
-            password_hash_file: raw.auth.password_hash_file,
             secure_cookie: raw.auth.secure_cookie,
             session_absolute,
             session_idle,
@@ -82,83 +75,6 @@ pub(super) fn build_config(raw: RawControllerConfig) -> Result<ControllerConfig,
             max_attempts: positive_nonzero_u32("retry.max_attempts", raw.retry.max_attempts)?,
         },
     })
-}
-
-fn validate_publication_roots(temp_root: &Path, output_roots: &[PathBuf]) -> Result<(), ConfigError> {
-    let canonical_temp = fs::canonicalize(temp_root).map_err(|_| ConfigError::InvalidRoot {
-        field: "paths.temp_root",
-        path: temp_root.to_path_buf(),
-        reason: "path could not be resolved",
-    })?;
-    for output_root in output_roots {
-        let canonical_output =
-            fs::canonicalize(output_root).map_err(|_| ConfigError::InvalidRoot {
-                field: "paths.output_roots",
-                path: output_root.clone(),
-                reason: "path could not be resolved",
-            })?;
-        if canonical_temp.starts_with(&canonical_output)
-            || canonical_output.starts_with(&canonical_temp)
-        {
-            return Err(ConfigError::OverlappingPublicationRoots {
-                temp_root: temp_root.to_path_buf(),
-                output_root: output_root.clone(),
-            });
-        }
-    }
-    Ok(())
-}
-
-fn validate_roots(field: &'static str, paths: &[PathBuf]) -> Result<(), ConfigError> {
-    if paths.is_empty() {
-        return Err(ConfigError::InvalidRoot {
-            field,
-            path: PathBuf::new(),
-            reason: "at least one root is required",
-        });
-    }
-    for path in paths {
-        validate_directory(field, path)?;
-    }
-    Ok(())
-}
-
-fn validate_directory(field: &'static str, path: &Path) -> Result<(), ConfigError> {
-    let metadata = fs::symlink_metadata(path).map_err(|_| ConfigError::InvalidRoot {
-        field,
-        path: path.to_path_buf(),
-        reason: "path does not exist",
-    })?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(ConfigError::InvalidRoot {
-            field,
-            path: path.to_path_buf(),
-            reason: "path must be a non-symlink directory",
-        });
-    }
-    Ok(())
-}
-
-fn validate_hash_file(path: &Path) -> Result<(), ConfigError> {
-    let valid = fs::symlink_metadata(path)
-        .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink());
-    if !valid {
-        return Err(ConfigError::MissingPasswordHashFile {
-            path: path.to_path_buf(),
-        });
-    }
-    let encoded = fs::read_to_string(path).map_err(|_| ConfigError::MissingPasswordHashFile {
-        path: path.to_path_buf(),
-    })?;
-    let hash = PasswordHash::new(encoded.trim()).map_err(|_| ConfigError::InvalidPasswordHash {
-        path: path.to_path_buf(),
-    })?;
-    if hash.algorithm.as_str() != "argon2id" {
-        return Err(ConfigError::InvalidPasswordHash {
-            path: path.to_path_buf(),
-        });
-    }
-    Ok(())
 }
 
 fn positive_duration(field: &'static str, value: u64) -> Result<Duration, ConfigError> {
