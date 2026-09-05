@@ -36,6 +36,7 @@ subtle.workspace = true
 thiserror = "2"
 tokio.workspace = true
 tokio-util = { workspace = true, features = ["io", "rt"] }
+toml.workspace = true
 url.workspace = true
 uuid.workspace = true
 
