@@ -88,6 +88,21 @@ impl TaskService {
             .map_err(|error| path_error("output_path", &error))?;
         let now = Utc::now();
         let task_id = TaskId::random();
+        let request = TaskCreateRequest {
+            input_path: crate::domain::InputPath::new(
+                input
+                    .display_path()
+                    .to_str()
+                    .ok_or(TaskApiError::Internal)?,
+            ),
+            output_path: crate::domain::OutputPath::new(
+                output
+                    .display_path()
+                    .to_str()
+                    .ok_or(TaskApiError::Internal)?,
+            ),
+            ..request
+        };
         let task = NewTask {
             id: task_id,
             request,
