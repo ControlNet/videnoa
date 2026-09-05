@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-IMAGE="${1:-videnoa-controller:qa}"
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DOCKERFILE="$REPO_ROOT/Dockerfile.controller"
-MODE="${2:---all}"
-CONTAINER_NAME="videnoa-controller-smoke-$$"
+readonly IMAGE="${1:-videnoa-controller:qa}"
+readonly REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+readonly DOCKERFILE="$REPO_ROOT/Dockerfile.controller"
+readonly MODE="${2:---all}"
+readonly CONTAINER_NAME="videnoa-controller-smoke-$$"
 WORK_DIR=""
+PORT=""
 
 log() {
   printf '[controller-container] %s\n' "$*"
@@ -25,118 +26,62 @@ cleanup() {
 }
 
 require_line() {
-  local pattern="$1"
-  local description="$2"
-  if ! grep -Eq "$pattern" "$DOCKERFILE"; then
-    fail "Dockerfile.controller is missing $description"
-  fi
+  grep -Eq "$1" "$DOCKERFILE" || fail "Dockerfile.controller is missing $2"
 }
 
 check_source_contract() {
   [[ -f "$DOCKERFILE" ]] || fail "missing Dockerfile.controller"
-  git -C "$REPO_ROOT" diff --quiet -- Dockerfile || fail "root GPU Dockerfile was modified"
-
   require_line '^FROM node:24-bookworm-slim AS controller-web$' 'the isolated frontend stage'
   require_line '^FROM rust:1\.83-bookworm AS controller-builder$' 'the Rust 1.83 builder stage'
   require_line '^FROM debian:bookworm-slim AS runtime$' 'the GPU-free runtime stage'
+  require_line '^WORKDIR /workspace$' 'the workspace working directory'
   require_line '^USER 10001:10001$' 'the numeric non-root user'
   require_line '^ENTRYPOINT \["videnoa-controller"\]$' 'the Controller entrypoint'
-  require_line '^VOLUME \["/etc/videnoa-controller", "/var/lib/videnoa-controller", "/var/tmp/videnoa-controller", "/mnt/input", "/mnt/output"\]$' 'the persistent and NAS mount points'
+  require_line '^CMD \["--host", "0\.0\.0\.0"\]$' 'the explicit container listener override'
   require_line '^HEALTHCHECK .*' 'the healthcheck'
-
-  if grep -Eiq 'videnoa-core|onnxruntime|tensor(rt)?|cuda|cudnn|/models' "$DOCKERFILE"; then
-    fail "Dockerfile.controller contains a prohibited core, GPU, or model dependency"
+  if grep -Eiq 'VOLUME|/etc/videnoa-controller|/var/lib/videnoa-controller|/mnt/input|/mnt/output|/run/secrets|videnoa-core|onnxruntime|tensor(rt)?|cuda|cudnn|/models' "$DOCKERFILE"; then
+    fail "Dockerfile.controller contains a prepared-root, secret, GPU, or model contract"
   fi
   log "source contract: PASS"
 }
 
 check_image_contract() {
-  local image_user
-  local image_entrypoint
-  local image_cmd
-  local image_volumes
-  local linked_libraries
-  local packages
-
+  local image_user image_entrypoint image_cmd image_workdir image_volumes linked_libraries packages
   image_user="$(docker image inspect --format '{{.Config.User}}' "$IMAGE")"
   [[ "$image_user" == '10001:10001' ]] || fail "image user is '$image_user'"
   image_entrypoint="$(docker image inspect --format '{{json .Config.Entrypoint}}' "$IMAGE")"
   [[ "$image_entrypoint" == '["videnoa-controller"]' ]] || fail "unexpected entrypoint: $image_entrypoint"
   image_cmd="$(docker image inspect --format '{{json .Config.Cmd}}' "$IMAGE")"
-  [[ "$image_cmd" == '["--config","/etc/videnoa-controller/controller.toml","--host","0.0.0.0"]' ]] || fail "unexpected command: $image_cmd"
+  [[ "$image_cmd" == '["--host","0.0.0.0"]' ]] || fail "unexpected command: $image_cmd"
+  image_workdir="$(docker image inspect --format '{{.Config.WorkingDir}}' "$IMAGE")"
+  [[ "$image_workdir" == '/workspace' ]] || fail "unexpected working directory: $image_workdir"
   image_volumes="$(docker image inspect --format '{{json .Config.Volumes}}' "$IMAGE")"
-  for volume in /etc/videnoa-controller /var/lib/videnoa-controller /var/tmp/videnoa-controller /mnt/input /mnt/output; do
-    [[ "$image_volumes" == *"\"$volume\""* ]] || fail "image is missing volume $volume"
-  done
-
+  [[ "$image_volumes" == 'null' ]] || fail "image declares legacy volumes: $image_volumes"
   docker run --rm --entrypoint /bin/sh "$IMAGE" -c \
-    'test "$(id -u)" = 10001 && test "$(id -g)" = 10001 && test ! -e /usr/local/bin/videnoa && test ! -e /app/models && ! command -v node && ! command -v npm' \
-    || fail "runtime identity or Node-free contract failed"
+    'test "$(id -u)" = 10001 && test "$(id -g)" = 10001 && test "$PWD" = /workspace && test ! -e /usr/local/bin/videnoa && ! command -v node && ! command -v npm' \
+    || fail "runtime identity or minimal-image contract failed"
   linked_libraries="$(docker run --rm --entrypoint /usr/bin/ldd "$IMAGE" /usr/local/bin/videnoa-controller)"
   packages="$(docker run --rm --entrypoint /usr/bin/dpkg-query "$IMAGE" -W -f='${binary:Package}\n')"
   if printf '%s\n%s\n' "$linked_libraries" "$packages" | grep -Eiq 'onnx|tensor(rt)?|cuda|cudnn|nvidia'; then
     fail "runtime links or installs a prohibited GPU library"
   fi
-  local content_container
-  content_container="$(docker create "$IMAGE" --help)"
-  if docker export "$content_container" | tar -tf - | grep -Eiq '(^|/)(models|trt_cache)(/|$)|onnxruntime|tensor(rt)?|cuda|cudnn|nvidia'; then
-    docker rm "$content_container" >/dev/null
-    fail "runtime filesystem contains a prohibited GPU or model artifact"
-  fi
-  docker rm "$content_container" >/dev/null
   docker run --rm "$IMAGE" --help >/dev/null
   log "image contract: PASS"
 }
 
-write_config() {
-  local path="$1"
-  cat >"$path" <<'EOF'
-[server]
-host = "127.0.0.1"
-port = 3001
-
-[paths]
-input_roots = ["/mnt/input"]
-output_roots = ["/mnt/publication/output"]
-data_root = "/var/lib/videnoa-controller"
-temp_root = "/mnt/publication/temp"
-
-[auth]
-password_hash_file = "/run/secrets/admin-password.phc"
-secure_cookie = false
-session_absolute_seconds = 86400
-session_idle_seconds = 3600
-
-[scheduler]
-paused = false
-default_compute_slots = 1
-prefetch_per_worker = 1
-max_concurrent_uploads = 1
-max_concurrent_downloads = 1
-
-[timeouts]
-health_seconds = 10
-poll_seconds = 5
-transfer_seconds = 300
-
-[retry]
-initial_seconds = 1
-maximum_seconds = 60
-max_attempts = 5
-EOF
+new_fixture() {
+  mkdir -p "$REPO_ROOT/data"
+  WORK_DIR="$(mktemp -d "$REPO_ROOT/data/controller-container-XXXXXX")"
+  mkdir -p "$WORK_DIR/media/input" "$WORK_DIR/media/output"
+  printf 'synthetic container smoke media\n' >"$WORK_DIR/media/input/sample.mkv"
 }
 
 wait_for_health() {
-  local attempt
-  local status
+  local attempt health
   for attempt in $(seq 1 30); do
-    status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$CONTAINER_NAME")"
-    if [[ "$status" == healthy ]]; then
-      return 0
-    fi
-    if [[ "$status" == unhealthy ]]; then
-      docker logs "$CONTAINER_NAME" >&2
-      fail "container became unhealthy"
+    if health="$(curl --fail --silent --show-error "http://127.0.0.1:$PORT/api/health" 2>/dev/null)"; then
+      [[ "$health" == '{"status":"ok"}' ]] || fail "unexpected health response: $health"
+      return
     fi
     sleep 1
   done
@@ -145,138 +90,88 @@ wait_for_health() {
 }
 
 start_controller() {
+  local mapping
   docker run -d --name "$CONTAINER_NAME" \
+    --user "$(id -u):$(id -g)" \
     -p 127.0.0.1::3001 \
-    --mount "type=bind,src=$WORK_DIR/config,dst=/etc/videnoa-controller,readonly" \
-    --mount "type=bind,src=$WORK_DIR/data,dst=/var/lib/videnoa-controller" \
-    --mount "type=bind,src=$WORK_DIR/publication,dst=/mnt/publication" \
-    --mount "type=bind,src=$WORK_DIR/input,dst=/mnt/input,readonly" \
-    --mount "type=bind,src=$WORK_DIR/secrets/admin-password.phc,dst=/run/secrets/admin-password.phc,readonly" \
+    --mount "type=bind,src=$WORK_DIR,dst=/workspace" \
     "$IMAGE" >/dev/null
+  mapping="$(docker port "$CONTAINER_NAME" 3001/tcp)"
+  PORT="${mapping##*:}"
   wait_for_health
 }
 
-container_port() {
-  docker port "$CONTAINER_NAME" 3001/tcp | sed 's/.*://'
+setup_admin() {
+  local password response status csrf
+  password="container-smoke-$(tr -d '-' </proc/sys/kernel/random/uuid)"
+  umask 077
+  printf '{"password":"%s","password_confirmation":"%s"}\n' "$password" "$password" >"$WORK_DIR/setup.json"
+  response="$(curl --silent --show-error --dump-header "$WORK_DIR/setup.headers" \
+    --cookie-jar "$WORK_DIR/cookies" --output "$WORK_DIR/setup.response" --write-out '%{http_code}' \
+    --header "Origin: http://127.0.0.1:$PORT" --header 'Content-Type: application/json' \
+    --data-binary @"$WORK_DIR/setup.json" "http://127.0.0.1:$PORT/api/auth/setup")"
+  status="$response"
+  [[ "$status" == 200 ]] || fail "administrator setup returned HTTP $status"
+  csrf="$(grep -i '^x-csrf-token:' "$WORK_DIR/setup.headers" | tr -d '\r' | cut -d' ' -f2-)"
+  [[ -n "$csrf" ]] || fail "administrator setup omitted CSRF proof"
+  [[ -s "$WORK_DIR/cookies" ]] || fail "administrator setup omitted session cookie"
+  rm -f "$WORK_DIR/setup.json"
+}
+
+assert_setup_status() {
+  local expected actual
+  expected="$1"
+  actual="$(curl --fail --silent --show-error "http://127.0.0.1:$PORT/api/auth/setup")"
+  [[ "$actual" == "{\"initialized\":$expected}" ]] || fail "unexpected setup status: $actual"
 }
 
 check_runtime_happy() {
-  local port
-  local health
-  local index
-
-  WORK_DIR="$(mktemp -d -t videnoa-controller-container-XXXXXX)"
-  mkdir -p "$WORK_DIR"/{config,data,input,secrets,publication/temp,publication/output}
-  chmod 0777 "$WORK_DIR/data" "$WORK_DIR/publication/temp" "$WORK_DIR/publication/output"
-  write_config "$WORK_DIR/config/controller.toml"
-  local admin_secret
-  admin_secret="$(tr -d '-' </proc/sys/kernel/random/uuid)$(tr -d '-' </proc/sys/kernel/random/uuid)"
-  printf '%s\n' "$admin_secret" | docker run --rm -i "$IMAGE" hash-password >"$WORK_DIR/secrets/admin-password.phc"
-  chmod 0644 "$WORK_DIR/secrets/admin-password.phc"
-
+  new_fixture
   start_controller
-  port="$(container_port)"
-  health="$(curl --fail --silent --show-error "http://127.0.0.1:$port/api/health")"
-  [[ "$health" == '{"status":"ok"}' ]] || fail "unexpected health response: $health"
-  index="$(curl --fail --silent --show-error "http://127.0.0.1:$port/tasks")"
-  [[ "$index" == *'<div id="root"></div>'* ]] || fail "embedded SPA was not served"
-  [[ -s "$WORK_DIR/data/controller.sqlite3" ]] || fail "Controller database was not persisted"
+  assert_setup_status false
+  setup_admin
+  assert_setup_status true
+  [[ -s "$WORK_DIR/data/controller.toml" ]] || fail "Controller config was not created"
+  [[ -s "$WORK_DIR/data/controller.sqlite3" ]] || fail "Controller database was not created"
+  [[ "$(find "$WORK_DIR" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | paste -sd, -)" == 'cookies,data,media,setup.headers,setup.response' ]] \
+    || fail "Controller created an unexpected workspace root entry"
   docker stop "$CONTAINER_NAME" >/dev/null
   docker rm "$CONTAINER_NAME" >/dev/null
-
   start_controller
-  [[ "$(curl --fail --silent --show-error "http://127.0.0.1:$(container_port)/api/health")" == '{"status":"ok"}' ]] \
-    || fail "health failed after persistent-data restart"
-  docker run --rm --entrypoint /bin/sh \
-    --mount "type=bind,src=$WORK_DIR/data,dst=/var/lib/videnoa-controller" \
-    --mount "type=bind,src=$WORK_DIR/publication,dst=/mnt/publication" \
-    "$IMAGE" -c 'touch /var/lib/videnoa-controller/write-test /mnt/publication/temp/write-test'
-  log "runtime health, embedded SPA, writable mounts, and restart persistence: PASS"
-}
-
-expect_failure() {
-  local name="$1"
-  local expected="$2"
-  shift 2
-  local output
-  if output="$("$@" 2>&1)"; then
-    fail "$name unexpectedly succeeded"
-  fi
-  [[ "$output" == *"$expected"* ]] || fail "$name did not report '$expected': $output"
-  if [[ -n "${admin_secret:-}" && "$output" == *"$admin_secret"* ]]; then
-    fail "$name leaked authentication material"
-  fi
-  log "$name: PASS ($expected)"
+  assert_setup_status true
+  curl --fail --silent --show-error --cookie "$WORK_DIR/cookies" \
+    "http://127.0.0.1:$PORT/api/auth/session" >/dev/null
+  log "zero-config setup, workspace files, session, and restart persistence: PASS"
 }
 
 check_runtime_errors() {
-  WORK_DIR="$(mktemp -d -t videnoa-controller-errors-XXXXXX)"
-  mkdir -p "$WORK_DIR"/{config,data,input,secrets,readonly-data,publication/temp,publication/output}
-  chmod 0777 "$WORK_DIR/data" "$WORK_DIR/publication/temp" "$WORK_DIR/publication/output"
-  write_config "$WORK_DIR/config/controller.toml"
-  local admin_secret
-  admin_secret="$(tr -d '-' </proc/sys/kernel/random/uuid)$(tr -d '-' </proc/sys/kernel/random/uuid)"
-  printf '%s\n' "$admin_secret" | docker run --rm -i "$IMAGE" hash-password >"$WORK_DIR/secrets/admin-password.phc"
-  chmod 0644 "$WORK_DIR/secrets/admin-password.phc"
-
-  expect_failure 'missing config' 'configuration file is missing' docker run --rm "$IMAGE"
-  expect_failure 'missing admin hash' 'password hash file is missing or invalid' docker run --rm \
-    --mount "type=bind,src=$WORK_DIR/config,dst=/etc/videnoa-controller,readonly" \
-    --mount "type=bind,src=$WORK_DIR/data,dst=/var/lib/videnoa-controller" \
-    --mount "type=bind,src=$WORK_DIR/publication,dst=/mnt/publication" \
-    --mount "type=bind,src=$WORK_DIR/input,dst=/mnt/input,readonly" \
-    "$IMAGE"
-  expect_failure 'unwritable data' 'unable to open database file' docker run --rm \
-    --mount "type=bind,src=$WORK_DIR/config,dst=/etc/videnoa-controller,readonly" \
-    --mount "type=bind,src=$WORK_DIR/readonly-data,dst=/var/lib/videnoa-controller,readonly" \
-    --mount "type=bind,src=$WORK_DIR/publication,dst=/mnt/publication" \
-    --mount "type=bind,src=$WORK_DIR/input,dst=/mnt/input,readonly" \
-    --mount "type=bind,src=$WORK_DIR/secrets/admin-password.phc,dst=/run/secrets/admin-password.phc,readonly" "$IMAGE"
-
+  local status csrf
+  new_fixture
+  mkdir "$WORK_DIR/readonly"
+  if docker run --rm --user "$(id -u):$(id -g)" \
+    --mount "type=bind,src=$WORK_DIR/readonly,dst=/workspace,readonly" "$IMAGE" >/dev/null 2>&1; then
+    fail "read-only workspace unexpectedly started"
+  fi
   start_controller
-  printf 'Authorization: Bearer %s\n' "$admin_secret" >"$WORK_DIR/auth-header"
-  chmod 0600 "$WORK_DIR/auth-header"
-  local response
-  response="$(curl --silent --show-error --write-out $'\n%{http_code}' \
-    --header @"$WORK_DIR/auth-header" \
-    --header 'Content-Type: application/json' \
-    --header 'Idempotency-Key: container-outside-root' \
-    --data '{"input_path":"/etc/passwd.txt","output_path":"/mnt/publication/output/out.mp4","workflow":"anime-2x","source":"api","source_reference":null,"priority":0}' \
-    "http://127.0.0.1:$(container_port)/api/tasks")"
-  [[ "$response" == *$'\n400' ]] || fail "outside-root request returned an unexpected status: $response"
-  [[ "$response" == *'path is not available through configured roots'* ]] || fail "outside-root response was not explicit: $response"
-  [[ "$response" != *"$admin_secret"* ]] || fail "outside-root response leaked authentication material"
-  log "outside-root task: PASS (HTTP 400, configured-root error)"
+  setup_admin
+  csrf="$(grep -i '^x-csrf-token:' "$WORK_DIR/setup.headers" | tr -d '\r' | cut -d' ' -f2-)"
+  status="$(curl --silent --show-error --output "$WORK_DIR/task.response" --write-out '%{http_code}' \
+    --cookie "$WORK_DIR/cookies" --header "x-csrf-token: $csrf" \
+    --header "Origin: http://127.0.0.1:$PORT" --header 'Content-Type: application/json' \
+    --header 'Idempotency-Key: synthetic-container-outside-workspace' \
+    --data '{"input_path":"/etc/passwd","output_path":"/workspace/media/output/out.mp4","workflow":"synthetic-test-workflow","source":"api","source_reference":null,"priority":0}' \
+    "http://127.0.0.1:$PORT/api/tasks")"
+  [[ "$status" == 400 ]] || fail "outside-workspace task returned HTTP $status"
+  log "read-only workspace and outside-workspace task rejection: PASS"
 }
 
 trap cleanup EXIT
 
 case "$MODE" in
-  --source)
-    check_source_contract
-    ;;
-  --image)
-    check_source_contract
-    check_image_contract
-    ;;
-  --happy)
-    check_source_contract
-    check_image_contract
-    check_runtime_happy
-    ;;
-  --errors)
-    check_source_contract
-    check_runtime_errors
-    ;;
-  --all)
-    check_source_contract
-    check_image_contract
-    check_runtime_happy
-    cleanup
-    WORK_DIR=""
-    check_runtime_errors
-    ;;
-  *)
-    fail "usage: $0 [image] [--source|--image|--happy|--errors|--all]"
-    ;;
+  --source) check_source_contract ;;
+  --image) check_source_contract; check_image_contract ;;
+  --happy) check_source_contract; check_image_contract; check_runtime_happy ;;
+  --errors) check_source_contract; check_runtime_errors ;;
+  --all) check_source_contract; check_image_contract; check_runtime_happy; cleanup; WORK_DIR=""; check_runtime_errors ;;
+  *) fail "usage: $0 [image] [--source|--image|--happy|--errors|--all]" ;;
 esac
