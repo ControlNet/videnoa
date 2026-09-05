@@ -6,81 +6,117 @@ use cap_std::fs::Dir;
 use super::PathError;
 
 pub(crate) struct PublicationFinalizer {
-    directory: Dir,
-    staging: PathBuf,
+    source_directory: Dir,
+    source: PathBuf,
+    display_source_parent: PathBuf,
+    destination_directory: Dir,
     destination: PathBuf,
-    display_parent: PathBuf,
+    display_destination_parent: PathBuf,
 }
 
 impl PublicationFinalizer {
     pub(super) fn new(
-        directory: Dir,
-        staging: PathBuf,
+        source_directory: Dir,
+        source: PathBuf,
+        display_source_parent: PathBuf,
+        destination_directory: Dir,
         destination: PathBuf,
-        display_parent: PathBuf,
+        display_destination_parent: PathBuf,
     ) -> Self {
         Self {
-            directory,
-            staging,
+            source_directory,
+            source,
+            display_source_parent,
+            destination_directory,
             destination,
-            display_parent,
+            display_destination_parent,
         }
     }
 
     pub(crate) fn rename_noreplace(&self) -> Result<(), PathError> {
         rename_relative(
-            &self.directory,
-            &self.staging,
+            &self.source_directory,
+            &self.source,
+            &self.display_source_parent,
+            &self.destination_directory,
             &self.destination,
-            &self.display_parent,
+            &self.display_destination_parent,
         )
     }
 
-    pub(crate) fn sync_parent(&self) -> Result<(), PathError> {
-        sync_directory(&self.directory).map_err(|source| io_error(&self.display_parent, source))
+    pub(crate) fn sync_parents(&self) -> Result<(), PathError> {
+        sync_directory(&self.destination_directory)
+            .map_err(|source| io_error(&self.display_destination_parent, source))?;
+        sync_directory(&self.source_directory)
+            .map_err(|source| io_error(&self.display_source_parent, source))
     }
 }
 
 #[cfg(target_os = "linux")]
 fn rename_relative(
-    directory: &Dir,
-    staging: &Path,
+    source_directory: &Dir,
+    source: &Path,
+    display_source_parent: &Path,
+    destination_directory: &Dir,
     destination: &Path,
-    display_parent: &Path,
+    display_destination_parent: &Path,
 ) -> Result<(), PathError> {
     rustix::fs::renameat_with(
-        directory,
-        staging,
-        directory,
+        source_directory,
+        source,
+        destination_directory,
         destination,
         rustix::fs::RenameFlags::NOREPLACE,
     )
-    .map_err(|source| io_error(display_parent, std::io::Error::from(source)))
+    .map_err(|error| {
+        if error == rustix::io::Errno::XDEV {
+            PathError::CrossFilesystemPublication {
+                source_path: display_source_parent.join(source),
+                destination: display_destination_parent.join(destination),
+            }
+        } else {
+            io_error(display_destination_parent, std::io::Error::from(error))
+        }
+    })
 }
 
 #[cfg(windows)]
 fn rename_relative(
-    _directory: &Dir,
-    staging: &Path,
+    _source_directory: &Dir,
+    source: &Path,
+    display_source_parent: &Path,
+    _destination_directory: &Dir,
     destination: &Path,
-    display_parent: &Path,
+    display_destination_parent: &Path,
 ) -> Result<(), PathError> {
+    const ERROR_NOT_SAME_DEVICE: i32 = 17;
     renamore::rename_exclusive(
-        display_parent.join(staging),
-        display_parent.join(destination),
+        display_source_parent.join(source),
+        display_destination_parent.join(destination),
     )
-    .map_err(|source| io_error(display_parent, source))
+    .map_err(|error| {
+        if error.raw_os_error() == Some(ERROR_NOT_SAME_DEVICE) {
+            PathError::CrossFilesystemPublication {
+                source_path: display_source_parent.join(source),
+                destination: display_destination_parent.join(destination),
+            }
+        } else {
+            io_error(display_destination_parent, error)
+        }
+    })
 }
 
 #[cfg(not(any(target_os = "linux", windows)))]
 fn rename_relative(
-    _directory: &Dir,
-    _staging: &Path,
+    _source_directory: &Dir,
+    _source: &Path,
+    _display_source_parent: &Path,
+    _destination_directory: &Dir,
     _destination: &Path,
-    display_parent: &Path,
+    display_destination_parent: &Path,
 ) -> Result<(), PathError> {
     Err(io_error(
-        display_parent,
+        display_destination_parent,
         io::Error::new(
             io::ErrorKind::Unsupported,
             "atomic no-replace publication is unsupported on this platform",
@@ -89,7 +125,7 @@ fn rename_relative(
 }
 
 #[cfg(unix)]
-fn sync_directory(directory: &Dir) -> Result<(), io::Error> {
+pub(super) fn sync_directory(directory: &Dir) -> Result<(), io::Error> {
     let sync_handle = rustix::fs::openat(
         directory,
         ".",
@@ -101,12 +137,12 @@ fn sync_directory(directory: &Dir) -> Result<(), io::Error> {
 }
 
 #[cfg(windows)]
-fn sync_directory(directory: &Dir) -> Result<(), io::Error> {
+pub(super) fn sync_directory(directory: &Dir) -> Result<(), io::Error> {
     directory.try_clone()?.into_std_file().sync_all()
 }
 
 #[cfg(not(any(unix, windows)))]
-fn sync_directory(_directory: &Dir) -> Result<(), io::Error> {
+pub(super) fn sync_directory(_directory: &Dir) -> Result<(), io::Error> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "durable directory synchronization is unsupported on this platform",

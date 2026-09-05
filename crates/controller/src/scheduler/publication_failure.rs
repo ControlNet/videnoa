@@ -37,9 +37,25 @@ impl TransferExecutor {
         &self,
         task: &TaskRecord,
         attempt: &AttemptRecord,
-        _error: PathError,
+        error: PathError,
         now: DateTime<Utc>,
     ) -> Result<bool, TransferError> {
+        if matches!(error, PathError::CrossFilesystemPublication { .. }) {
+            LifecycleService::new(self.resources.store.clone())
+                .fail(
+                    task,
+                    Some(attempt),
+                    LifecycleFailure::terminal(
+                        task.status,
+                        crate::domain::FailureStage::Publication,
+                        crate::domain::FailureCode::PublicationFailed,
+                        "atomic publication cannot cross filesystems",
+                    ),
+                    now,
+                )
+                .await?;
+            return Ok(false);
+        }
         if task.status == crate::domain::TaskStatus::Verifying {
             LifecycleService::new(self.resources.store.clone())
                 .fail(

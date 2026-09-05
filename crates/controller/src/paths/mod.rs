@@ -39,6 +39,11 @@ pub enum PathError {
     OutputExists { path: PathBuf },
     #[error("output parent changed after it was accepted: {path}")]
     OutputParentChanged { path: PathBuf },
+    #[error("atomic publication cannot cross filesystems from {source_path} to {destination}")]
+    CrossFilesystemPublication {
+        source_path: PathBuf,
+        destination: PathBuf,
+    },
     #[error("filesystem access failed for {path}")]
     Io {
         path: PathBuf,
@@ -106,18 +111,27 @@ impl PathCapabilities {
     /// # Errors
     /// Returns a typed path error when a root is missing, replaced, or symbolic.
     pub fn open(config: &PathConfig) -> Result<Self, PathError> {
-        Ok(Self {
-            inputs: config
+        let inputs = config
                 .input_roots
                 .iter()
                 .map(|path| Root::open(path))
-                .collect::<Result<_, _>>()?,
-            outputs: config
+                .collect::<Result<_, _>>()?;
+        let outputs: Vec<Root> = config
                 .output_roots
                 .iter()
                 .map(|path| Root::open(path))
-                .collect::<Result<_, _>>()?,
-            temp: Root::open(&config.temp_root)?,
+                .collect::<Result<_, _>>()?;
+        let temp = Root::open(&config.temp_root)?;
+        if let Some(output) = outputs.iter().find(|output| output.device() != temp.device()) {
+            return Err(PathError::CrossFilesystemPublication {
+                source_path: temp.display_path().to_path_buf(),
+                destination: output.display_path().to_path_buf(),
+            });
+        }
+        Ok(Self {
+            inputs,
+            outputs,
+            temp,
         })
     }
 

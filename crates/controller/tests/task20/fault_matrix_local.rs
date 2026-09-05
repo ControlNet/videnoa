@@ -18,8 +18,6 @@ async fn controller_restart_matrix_executes_every_local_boundary() -> TestResult
     for point in [
         TransferCheckpointPoint::DownloadVerified,
         TransferCheckpointPoint::BeforeDestinationStaging,
-        TransferCheckpointPoint::DestinationStaged,
-        TransferCheckpointPoint::StagingVerified,
         TransferCheckpointPoint::PublicationFinalized,
         TransferCheckpointPoint::BeforeLocalCleanup,
         TransferCheckpointPoint::LocalCleanupCompleted,
@@ -91,36 +89,24 @@ async fn assert_pre_crash_checkpoint(
         record.publication.expected_output_sha256,
         has_publication_evidence.then_some(expected_sha256)
     );
-    assert_eq!(
-        record.publication.destination_staging_name.is_some(),
-        has_publication_evidence
-    );
+    assert_eq!(record.publication.destination_staging_name, None);
 
     let temporary = fixture.temp_root.join(task.id.to_string());
     let verified = temporary.join("output.mp4.verified");
     let evidence = temporary.join("output.mp4.verified.evidence");
     let part = temporary.join("output.mp4.part");
     let output = PathBuf::from(task.output_path.as_str());
-    let output_parent = output
-        .parent()
-        .ok_or_else(|| std::io::Error::other("task output has no parent directory"))?;
-    let staging = record
-        .publication
-        .destination_staging_name
-        .as_ref()
-        .map(|name| output_parent.join(name));
+    let has_verified_source = matches!(
+        point,
+        TransferCheckpointPoint::DownloadVerified
+            | TransferCheckpointPoint::BeforeDestinationStaging
+    );
     let keeps_temporary = matches!(
         point,
         TransferCheckpointPoint::DownloadVerified
             | TransferCheckpointPoint::BeforeDestinationStaging
-            | TransferCheckpointPoint::DestinationStaged
-            | TransferCheckpointPoint::StagingVerified
             | TransferCheckpointPoint::PublicationFinalized
             | TransferCheckpointPoint::BeforeLocalCleanup
-    );
-    let has_staging = matches!(
-        point,
-        TransferCheckpointPoint::DestinationStaged | TransferCheckpointPoint::StagingVerified
     );
     let has_final = matches!(
         point,
@@ -134,12 +120,8 @@ async fn assert_pre_crash_checkpoint(
         !part.exists(),
         "partial download must never survive a checkpoint"
     );
-    assert_eq!(verified.exists(), keeps_temporary);
+    assert_eq!(verified.exists(), has_verified_source);
     assert_eq!(evidence.exists(), keeps_temporary);
-    assert_eq!(
-        staging.as_ref().is_some_and(|path| path.exists()),
-        has_staging
-    );
     assert_eq!(output.exists(), has_final);
     assert_eq!(temporary.exists(), keeps_temporary);
     assert_eq!(
@@ -159,8 +141,6 @@ fn checkpoint_status(point: TransferCheckpointPoint) -> TestResult<TaskStatus> {
     Ok(match point {
         TransferCheckpointPoint::DownloadVerified => TaskStatus::Downloading,
         TransferCheckpointPoint::BeforeDestinationStaging
-        | TransferCheckpointPoint::DestinationStaged
-        | TransferCheckpointPoint::StagingVerified
         | TransferCheckpointPoint::PublicationFinalized => TaskStatus::Publishing,
         TransferCheckpointPoint::BeforeLocalCleanup
         | TransferCheckpointPoint::LocalCleanupCompleted
@@ -168,7 +148,9 @@ fn checkpoint_status(point: TransferCheckpointPoint) -> TestResult<TaskStatus> {
         | TransferCheckpointPoint::RemoteDeleteSucceeded => TaskStatus::RemoteCleanup,
         TransferCheckpointPoint::UploadCompleted
         | TransferCheckpointPoint::BeforeRemoteSubmit
-        | TransferCheckpointPoint::RemoteCompletionPersisted => {
+        | TransferCheckpointPoint::RemoteCompletionPersisted
+        | TransferCheckpointPoint::DestinationStaged
+        | TransferCheckpointPoint::StagingVerified => {
             return Err(
                 std::io::Error::other("checkpoint is not a local recovery boundary").into(),
             );

@@ -7,10 +7,10 @@ use crate::lifecycle::{
 use crate::paths::{PathError, PublicationArtifact};
 use crate::persistence::{AttemptRecord, TaskRecord};
 
-use super::download_artifact::recover_verified;
-use super::publication_artifact::{copy_verified, matches_file};
+use super::download_artifact::{inspect_verified, recover_verified, VerifiedArtifactInspection};
+use super::publication_artifact::matches_file;
 use super::publication_failure::publication_evidence;
-use super::{PublicationOutcome, TransferCheckpointPoint, TransferError, TransferExecutor};
+use super::{PublicationOutcome, TransferError, TransferExecutor};
 
 impl TransferExecutor {
     /// Publishes verified output without replacing an existing destination, then converges cleanup.
@@ -103,16 +103,11 @@ impl TransferExecutor {
             }
             Err(error) => return self.fail_publication_path(task, attempt, error, now).await,
         }
-        let intent = PublicationIntent::new(format!(
-            ".videnoa-{}-{}.staging",
-            task.id,
-            uuid::Uuid::new_v4()
-        ));
         LifecycleService::new(self.resources.store.clone())
             .advance(
                 task,
                 attempt,
-                AdvanceCommand::FinishVerification(intent),
+                AdvanceCommand::FinishVerification(PublicationIntent::direct()),
                 now,
             )
             .await?;
@@ -126,9 +121,6 @@ impl TransferExecutor {
         now: DateTime<Utc>,
     ) -> Result<bool, TransferError> {
         let Some(expected) = publication_evidence(task) else {
-            return self.fail_ambiguous(task, attempt, now).await;
-        };
-        let Some(staging_name) = task.publication.destination_staging_name.as_deref() else {
             return self.fail_ambiguous(task, attempt, now).await;
         };
         let output = match self
@@ -148,14 +140,54 @@ impl TransferExecutor {
             }
             Err(error) => return self.fail_publication_path(task, attempt, error, now).await,
         };
+        if let Some(legacy_staging_name) = task.publication.destination_staging_name.as_deref() {
+            match output.open_legacy_staging(legacy_staging_name) {
+                Ok(PublicationArtifact::Missing) => {}
+                Ok(PublicationArtifact::Regular(_) | PublicationArtifact::NonRegular) | Err(_) => {
+                    return self.fail_ambiguous(task, attempt, now).await;
+                }
+            }
+        }
+        let Ok(workspace) = self.resources.paths.temp_workspace(task.id, false) else {
+            return self.fail_publication(task, attempt, now).await;
+        };
+        let artifact = match workspace.as_ref() {
+            Some(workspace) => {
+                match inspect_verified(
+                    workspace,
+                    task.output_extension.as_str(),
+                    expected.size,
+                    expected.sha256,
+                )
+                .await
+                {
+                    Ok(artifact) => artifact,
+                    Err(_) => return self.fail_publication(task, attempt, now).await,
+                }
+            }
+            None => VerifiedArtifactInspection::Missing,
+        };
         match output.open_final() {
             Ok(PublicationArtifact::Regular(final_file)) => {
+                if !matches!(artifact, VerifiedArtifactInspection::Missing) {
+                    return self.fail_ambiguous(task, attempt, now).await;
+                }
                 return match matches_file(final_file, expected.size, expected.sha256).await {
-                    Ok(true) => match output.open_staging(staging_name) {
-                        Ok(PublicationArtifact::Missing) => Ok(true),
-                        Ok(PublicationArtifact::Regular(_) | PublicationArtifact::NonRegular)
-                        | Err(_) => self.fail_ambiguous(task, attempt, now).await,
-                    },
+                    Ok(true) => {
+                        self.checkpoint(super::TransferCheckpointPoint::PublicationFinalized)
+                            .await;
+                        output.sync_parent()?;
+                        if let Some(workspace) = workspace.as_ref() {
+                            workspace
+                                .artifact(format!(
+                                    "output.{}.verified",
+                                    task.output_extension.as_str()
+                                ))?
+                                .sync_parent()
+                                .await?;
+                        }
+                        Ok(true)
+                    }
                     Ok(false) => self.fail_ambiguous(task, attempt, now).await,
                     Err(_) => self.fail_publication(task, attempt, now).await,
                 };
@@ -167,61 +199,22 @@ impl TransferExecutor {
             Err(PathError::Io { .. }) => return self.fail_publication(task, attempt, now).await,
             Err(_) => return self.fail_ambiguous(task, attempt, now).await,
         }
-        match output.open_staging(staging_name) {
-            Ok(PublicationArtifact::Regular(staging)) => {
-                match matches_file(staging, expected.size, expected.sha256).await {
-                    Ok(true) => {}
-                    Ok(false) => return self.fail_ambiguous(task, attempt, now).await,
-                    Err(_) => return self.fail_publication(task, attempt, now).await,
-                }
+        let artifact = match artifact {
+            VerifiedArtifactInspection::Valid(artifact)
+                if artifact.size == expected.size && artifact.sha256 == expected.sha256 =>
+            {
+                *artifact
             }
-            Ok(PublicationArtifact::Missing) => {
-                let workspace = match self.resources.paths.temp_workspace(task.id, false) {
-                    Ok(Some(workspace)) => workspace,
-                    Ok(None) => return self.fail_ambiguous(task, attempt, now).await,
-                    Err(_) => return self.fail_publication(task, attempt, now).await,
-                };
-                let artifact =
-                    match recover_verified(&workspace, task.output_extension.as_str()).await {
-                        Ok(Some(artifact)) => artifact,
-                        Ok(None) => return self.fail_ambiguous(task, attempt, now).await,
-                        Err(_) => return self.fail_publication(task, attempt, now).await,
-                    };
-                if artifact.size != expected.size || artifact.sha256 != expected.sha256 {
-                    return self.fail_ambiguous(task, attempt, now).await;
-                }
-                if let Err(error) = output.revalidate_missing() {
-                    return self.fail_publication_path(task, attempt, error, now).await;
-                }
-                self.checkpoint(TransferCheckpointPoint::BeforeDestinationStaging)
-                    .await;
-                let staging = match output.create_staging(staging_name) {
-                    Ok(staging) => staging,
-                    Err(error) => {
-                        return self.fail_publication_path(task, attempt, error, now).await;
-                    }
-                };
-                let source = match artifact.source.open_read() {
-                    Ok(Some((source, _))) => source,
-                    Ok(None) => return self.fail_ambiguous(task, attempt, now).await,
-                    Err(_) => return self.fail_publication(task, attempt, now).await,
-                };
-                if copy_verified(source, staging, expected.size, expected.sha256)
-                    .await
-                    .is_err()
-                {
-                    return self.fail_publication(task, attempt, now).await;
-                }
-                self.checkpoint(TransferCheckpointPoint::DestinationStaged)
-                    .await;
-            }
-            Ok(PublicationArtifact::NonRegular) => {
+            VerifiedArtifactInspection::Missing
+            | VerifiedArtifactInspection::Invalid
+            | VerifiedArtifactInspection::Valid(_) => {
                 return self.fail_ambiguous(task, attempt, now).await;
             }
-            Err(PathError::Io { .. }) => return self.fail_publication(task, attempt, now).await,
-            Err(_) => return self.fail_ambiguous(task, attempt, now).await,
+        };
+        if let Err(error) = output.revalidate_missing() {
+            return self.fail_publication_path(task, attempt, error, now).await;
         }
-        self.finalize(&output, staging_name, task, attempt, expected, now)
+        self.finalize(&output, &artifact.source, task, attempt, expected, now)
             .await
     }
 }

@@ -14,6 +14,12 @@ mod checkpoints;
 mod cleanup;
 #[path = "task13/publication.rs"]
 mod publication;
+#[path = "task13/publication_ambiguity.rs"]
+mod publication_ambiguity;
+#[path = "task13/publication_durability.rs"]
+mod publication_durability;
+#[path = "task13/publication_nonregular.rs"]
+mod publication_nonregular;
 #[path = "task13/recovery.rs"]
 mod recovery;
 #[path = "task13/support.rs"]

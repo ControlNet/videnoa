@@ -19,7 +19,7 @@ pub(super) async fn update_task_status(
         | TransitionEvidence::Publication(_) => None,
     };
     let staging_name = match &write.evidence {
-        TransitionEvidence::Publication(intent) => Some(intent.destination_staging_name()),
+        TransitionEvidence::Publication(intent) => intent.destination_staging_name(),
         TransitionEvidence::None
         | TransitionEvidence::Upload(_)
         | TransitionEvidence::Submission(_)
@@ -47,6 +47,13 @@ pub(super) async fn update_task_status(
             retry_count = CASE WHEN ? IN ('staged', 'verifying') THEN 0 ELSE retry_count END,
             next_retry_at_ms = CASE WHEN ? IN ('staged', 'verifying') THEN NULL ELSE next_retry_at_ms END
          WHERE (? != 'uploading' OR (SELECT paused FROM controller_settings WHERE id = 1) = 0)
+           AND (? != 'submitting' OR (
+               (SELECT paused FROM controller_settings WHERE id = 1) = 0
+               AND (SELECT COUNT(*) FROM tasks active
+                    WHERE active.worker_id = tasks.worker_id
+                      AND active.status IN ('submitting', 'processing')) <
+                   (SELECT compute_slots FROM workers worker WHERE worker.id = tasks.worker_id)
+           ))
            AND id = ? AND status = ? AND version = ?",
     )
     .bind(status).bind(occurred_at)
@@ -56,7 +63,7 @@ pub(super) async fn update_task_status(
     .bind(status).bind(occurred_at).bind(status).bind(occurred_at)
     .bind(status).bind(occurred_at).bind(status).bind(occurred_at)
     .bind(status).bind(expected_size).bind(status).bind(expected_sha)
-    .bind(status).bind(staging_name).bind(status).bind(status).bind(status)
+    .bind(status).bind(staging_name).bind(status).bind(status).bind(status).bind(status)
     .bind(write.task_id.to_string()).bind(task_status(write.from))
     .bind(sqlite_u64("task_version", write.task_version)?)
     .execute(&mut **transaction).await?;

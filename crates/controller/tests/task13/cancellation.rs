@@ -35,11 +35,11 @@ async fn verifying_cancellation_prevents_publication_effects() -> TestResult {
 
 #[tokio::test]
 async fn late_cancellation_cannot_interrupt_publishing() -> TestResult {
-    // Given: production publication has crossed into Publishing and verified staging.
+    // Given: production publication has crossed into Publishing and reached the final rename.
     let server = MockVidenoa::start().await?;
     let output = b"late publishing cancellation".repeat(1024);
     let (fixture, prepared) = verified_task(&server, &output).await?;
-    let gate = CheckpointGate::new(TransferCheckpointPoint::StagingVerified);
+    let gate = CheckpointGate::new(TransferCheckpointPoint::BeforeDestinationStaging);
     let executor = fixture.executor()?.with_checkpoint_observer(gate.clone());
     let task_id = prepared.task_id;
     let now = fixture.now;
