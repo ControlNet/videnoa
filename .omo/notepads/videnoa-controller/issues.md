@@ -465,3 +465,9 @@
 ## 2026-09-05T10:29:11+10:00 F4 Audit Cleanup Completion
 
 - Removed `/tmp/videnoa-f4-p7zip-audit`, killed tmux session `videnoa-f4-p7zip-qa`, removed the temporary debug journal and its clone-local exclude entry, and confirmed neither temporary path nor session remains. Final reruns of the shell contract, syntax gate, workflow validator, both shell diagnostics, and `git diff --check` all passed after cleanup.
+
+## 2026-09-05 Controller Duplicate Intake Authentication Contention
+
+- Hosted run `33940048214` failed only `task_api::concurrency::concurrent_duplicate_intake_creates_exactly_one_task` with HTTP 500. A constrained local reproduction identified `Database(PoolTimedOut)` in task idempotency preflight, before any write transaction or post-commit reload.
+- Runtime toggling confirmed the cause: synchronous Argon2 Bearer verification blocked Tokio executor progress under CPU contention. `PasswordFile::verify` now performs hash-file loading and Argon2 verification in `spawn_blocking`; login and Bearer callers await the typed result, and all HTTP error adapters exhaustively map join failure to internal error.
+- Green evidence includes the exact deterministic regression, 20 repeated exact runs, 20 CPU-saturated Task 21 concurrency runs, auth HTTP `8/8`, task API `6/6`, Rust 1.83 format/check/strict Clippy, and complete Controller all-target/all-feature tests with zero failures.

@@ -2,132 +2,111 @@
 
 QA date: 2026-09-05
 
-Runtime and product revision: `0fb4eb597acda9b571efc686c4701da333831675`
+Exact source tip under review: `30d9f25d19cf0ec1a88733483da7f95581e980ad`
 
-Repository tip at report completion: `0fb4eb597acda9b571efc686c4701da333831675`
+Prior full visual approval revision: `e161e772744c48791f67cb21575c6ebef4ace13c`
+
+Prior broad real-runtime evidence revision: `0fb4eb597acda9b571efc686c4701da333831675`
 
 ## Verdict
 
-**REJECT**
+**APPROVE**
 
-The exact-tip Controller passes production builds, all 31 Task 20 production-shaped tests, 112 Controller Web unit/component tests, 21 focused Chromium regressions, real release-binary authentication and persistence, restart recovery, CJK task intake and cancellation, worker onboarding and offline health, settings mutations, responsive overflow, keyboard/focus behavior, reduced motion, 20,000-row history, and logout failure recovery.
+The Videnoa Controller passes fresh F3 manual authentication QA and visual verification for the authorized initial release scope of English and Chinese at exact source tip `30d9f25`. No in-scope product, authentication, visual, responsive-layout, accessibility, or evidence blocker remains.
 
-Release approval remains blocked because a valid Korean worker name is unreadable in the production Workers table. The authoritative DOM and SQLite row retain `렌더-노드-서부-매우긴이름`, but Chromium renders the name as replacement-like block/line glyphs at desktop, tablet, and mobile widths. Chinese/Japanese strings render correctly in the same runtime. An operator therefore cannot reliably identify this worker through the supported visual surface.
+Korean is explicitly out of scope. This report does not claim Korean support or claim that the prior Korean rendering observation is fixed.
 
-## Blocking Finding
+## Source and CI Identity
 
-### F3-B1: Workers table does not reliably render Hangul worker names
+| Revision | `controller-web` tree | `crates/controller` tree | Attribution |
+|---|---|---|---|
+| `0fb4eb5` | `1e21aa9ac5a1546ecafacf50473ef1c10afed070` | `49f0a2f356e0ca9eb36c446a5a89679c9d242ebc` | Prior broad release-runtime evidence |
+| `e161e77` | `1e21aa9ac5a1546ecafacf50473ef1c10afed070` | `49f0a2f356e0ca9eb36c446a5a89679c9d242ebc` | Prior 31-capture English/Chinese visual approval |
+| `30d9f25` | `1e21aa9ac5a1546ecafacf50473ef1c10afed070` | `0eb1068692b827c107ac5ba51692d38bed5ba03b` | Fresh authentication runtime and targeted visual recheck |
 
-1. Registered `렌더-노드-서부-매우긴이름` through the real release UI alongside Latin and Chinese worker names.
-2. Confirmed the exact Korean string persisted in SQLite and remained present in the browser DOM.
-3. Observed unreadable replacement-like glyphs in `04-workers-cjk-offline-1440x900.png`, `05-workers-left-1024x900.png`, and `07-workers-left-375x812.png`.
-4. Confirmed Chinese `渲染節點-東`, Japanese task paths, and mixed CJK task names render legibly, isolating the defect to incomplete font fallback rather than corrupt persisted data.
-5. Audited the production CSS: the global stack is `Manrope, "Avenir Next", "Segoe UI", sans-serif`; explicit Korean/CJK fallback names exist only in task-detail CSS, not the Workers table/global application stack.
+`controller-web` is byte-identical between `e161e77` and `30d9f25`. The exact-tip commit changes nine Controller Rust authentication/error/test files and moves password-file loading plus Argon2 verification to `spawn_blocking`; it does not change the frontend tree.
 
-This is release-blocking for an operations UI that accepts Unicode worker identities: the stored value is correct but the primary visual identity is not readable. Provide a bundled or reliably available Hangul-capable fallback for operational surfaces and add a screenshot/browser regression using real Korean text.
+Read-only GitHub inspection verified hosted run `33946244764` at head SHA `30d9f25d19cf0ec1a88733483da7f95581e980ad`: status `completed`, conclusion `success`, all 14 jobs successful. The run includes Controller web lint/unit/build/Chromium, Controller Rust formatting/Clippy/tests, fault/load suites, Linux and Windows archives, images, legacy packages, and workflow contracts.
 
-## Environment and Method
+## Fresh Exact-Tip Runtime Method
 
-- Verified `HEAD == origin/dev == 0fb4eb597acda9b571efc686c4701da333831675` before the final report update.
-- Built the exact-tip production frontend and release Controller using the repository-required runtime environment.
-- Ran the release Controller at `http://127.0.0.1:43189/` with isolated SQLite, NAS roots, temp state, log, output, and ephemeral authentication under `/tmp/opencode/videnoa-f3-final`.
-- Used real Chromium at `1440x900`, `1024x900`, and `375x812` for login, errors, Tasks, task detail, dialogs, Workers, Settings, scrolling, keyboard navigation, reduced motion, and logout recovery.
-- Used synthetic unreachable worker endpoints and a synthetic logout `503` only as explicitly test-only fault fixtures; no product implementation used placeholders.
-- Correlated browser behavior with supported HTTP actions, the release Controller process, SQLite state, filesystem state, focused regressions, source audit, and 34 fresh screenshots.
-- Closed Chromium, stopped the Controller and credential bridge, and removed `/tmp/opencode/videnoa-f3-final` after collecting sanitized evidence.
+- Rebuilt `target/release/videnoa-controller` from the exact source tip with `cargo build --locked -p videnoa-controller --release`.
+- Started that release binary on loopback with isolated SQLite, temp, input, and output roots under `/tmp/opencode/videnoa-f3-30d9f25`.
+- Used an ephemeral generated password and Argon2id hash. A loopback-only no-log credential bridge supplied the password to Playwright without placing it in commands, browser logs, report text, captures, or storage.
+- Configured `secure_cookie = false` only for isolated loopback HTTP. The runtime emitted the expected trusted-HTTP warning and no other log entry.
+- Drove real Chromium against the release runtime. Only the first logout response was deliberately intercepted as `503` to verify recoverable logout behavior; the retry reached the real Controller.
+- Closed Chromium, stopped the bridge and Controller, and verified both ports and processes were gone.
 
-## Quality Gates
+## Fresh Authentication and Bearer Results
 
-| Command or authority | Result |
-|---|---|
-| `npm run build` | PASS, production frontend bundle built |
-| `cargo build --locked -p videnoa-controller --release` | PASS, release Controller built |
-| `cargo test --locked -p videnoa-controller --test task20` | PASS, 31/31 including real HTTP pipelines, retry, outage, restart matrices, cancellation, and cleanup |
-| `npm run lint` | PASS |
-| `npm run typecheck` | PASS |
-| `npm run test` | PASS, 20 files and 112 tests |
-| Focused Chromium shell, Task 19, Task 21, and overflow suites | PASS, 21/21 |
-| Exact-tip 20,000-task bounded backend load | PASS, 1/1 |
-| Exact-tip Chromium 20,000-row task scenario | PASS, 1/1 |
-| PNG signature/dimension validation | PASS, 34/34 valid non-empty PNGs at expected viewport dimensions |
-
-The production build emitted only the known non-fatal Rollup annotation warnings from Zod v4 `core/regexes.js` and `core/util.js`.
-
-## Functional Results
-
-| Scenario | Result | Evidence observed |
+| Scenario | Result | Fresh exact-tip observation |
 |---|---|---|
-| Wrong password | PASS | Login returned the expected failure and focused the visible error summary. |
-| Successful login and storage | PASS | Shell loaded; local/session storage stayed empty and the HttpOnly session was absent from `document.cookie`. |
-| Controller restart | PASS | Release process restarted, the existing session remained authenticated, and durable tasks/workers/settings reloaded. |
-| Manual CJK task intake | PASS | Real HTTP `201` created task `b13c86fd-d8ec-4a1d-b27b-39343fc157d3` with long Japanese/Chinese paths. |
-| Task filtering | PASS | Searching `劇場版` returned exactly one matching row and preserved URL query state. |
-| Cancellation | PASS | Confirmation focus containment, supported cancel action, SSE/refetch convergence, authoritative Cancelled state, and trigger focus restoration passed. |
-| Retry and fault recovery | PASS | Task 20 explicit processing retry and remote/local restart matrices passed in the exact-tip 31-test suite. |
-| Worker onboarding/health | PASS functionally | Three workers persisted through supported UI actions; unreachable fixtures remained explicitly offline with retained health errors. |
-| Worker identity rendering | **FAIL** | Korean worker identity persisted correctly but was unreadable in every captured Workers viewport. |
-| Settings mutation | PASS | Concurrent uploads persisted as `2`; pause/resume persisted and Settings remained normally scrollable at all widths. |
-| Task/worker overflow | PASS | Component-owned horizontal scrolling, controls, Home/End/arrow behavior, focus outline, and no document-level horizontal overflow passed. |
-| Task detail | PASS | Long CJK paths wrapped, narrow history bottom was reachable, and close restored focus to the originating task row. |
-| Reduced motion | PASS | Media query was active and visible transitions/animations collapsed to effectively zero duration. |
-| Accessibility | PASS in automated scope | Targeted axe route/detail checks reported no serious violations; keyboard/focus regressions passed. |
-| Logout failure/retry | PASS | Synthetic `503` preserved authentication, focused a fully visible alert, and retry reached login with password focus. |
+| Initial session bootstrap | PASS | Unauthenticated `/api/auth/session` returned `401` and the password field received focus. |
+| Wrong password | PASS | Login returned `401`; the visible error summary read `The password was not accepted.` and owned focus. |
+| Successful login | PASS | The authenticated shell loaded and the Tasks route rendered. |
+| Concurrent Bearer verification | PASS | Eight simultaneous Bearer-authenticated `/api/readiness` requests all returned `200` with all readiness checks ready. |
+| Bearer limiter | PASS | Six invalid Bearer requests returned `401, 401, 401, 401, 401, 429`. |
+| Bearer limiter reset | PASS | A successful Bearer request returned `200`; the next invalid Bearer request returned `401`. |
+| Authenticated cookie route | PASS | `/api/tasks?limit=25&offset=0` returned `200` with the empty isolated-runtime task page. |
+| Logout failure preservation | PASS | Deliberate one-shot `503` kept the authenticated Settings shell mounted, displayed the retryable alert, and focused it. |
+| Logout retry | PASS | The second Sign out reached the real Controller, returned `200`, removed the session cookie, and focused the login password field. |
+| Reauthentication | PASS | Login succeeded again after logout and authenticated route navigation remained functional. |
+| Final logout boundary | PASS | Cookie jar became empty and the protected Tasks API returned `401`. |
 
-## Durable and Filesystem Evidence
+The session cookie metadata observed before logout was `HttpOnly`, `SameSite=Strict`, `Path=/`, with a 43-character opaque value that was not recorded. It was non-Secure only because this isolated runtime deliberately used loopback HTTP.
 
-Before cleanup, isolated SQLite contained:
+## Security and Diagnostic Results
 
-- Cancelled manual task `b13c86fd-d8ec-4a1d-b27b-39343fc157d3`, version `1`, zero attempts, zero retries, and no failure code.
-- Queued API task `a8f0618d-4521-41c3-aabe-38688f8677db`, version `0`, zero attempts, and zero retries.
-- Three enabled/offline workers with one, two, and three compute slots; each retained `worker health check failed` after the unreachable test endpoint probes.
-- Settings version `3`, scheduler resumed, one default compute slot, one prefetch slot, two concurrent uploads, and one concurrent download.
-- Two authentication-session rows total and one active session after logout and reauthentication.
+- `localStorage` and `sessionStorage` remained empty before and after login/logout.
+- `document.cookie` remained empty while authenticated because the session cookie was HttpOnly.
+- The credential did not appear in rendered body text, input values after the authenticated shell mounted, browser storage, current-tip captures, Playwright artifacts, or the report.
+- Browser console errors were limited to expected deliberately exercised HTTP outcomes: unauthenticated session `401`, wrong login `401`, and intercepted logout `503`. Chromium also emitted its informational password-form username-field suggestion.
+- API request inventory exposed only method, URL, and status; no Authorization, cookie, CSRF, password, or hash value was exported.
 
-The CJK source file existed under the isolated input root. The cancelled zero-attempt task produced no output and the temp/output roots remained empty. The release log contained only the expected warning that this isolated HTTP runtime did not require Secure cookies.
+## Visual Evidence Attribution
 
-## Browser Diagnostics and Security
+### Prior full coverage, source-identical frontend
 
-- The final console export contained one expected `503` resource error from the deliberately intercepted logout request and no unexpected warning.
-- The session cookie was HttpOnly, SameSite Strict, and scoped to `/`; JavaScript storage exposed no authentication material.
-- The report and evidence omit the ephemeral password, password hash contents, cookie value, CSRF proof, request headers, and authorization material.
-- The temporary credential bridge was loopback-only, used only to transfer the ephemeral password into the automated browser without logging it, then stopped before cleanup.
+All 31 PNGs under `.omo/evidence/videnoa-controller/final/F3-english-chinese-recheck/captures/` were directly re-read and inspected in this review. They were captured at `e161e77`, not newly captured at `30d9f25`, and remain valid visual evidence because both revisions use the exact `controller-web` tree `1e21aa9ac5a1546ecafacf50473ef1c10afed070`.
 
-## Visual Review
+That 31-image set preserves complete desktop/tablet/mobile coverage for login; Tasks left/right, detail, and intake; Workers left/right and edit; Settings top/bottom; and logout failure at `1280x900`, `768x900`, and `375x812`. English and Chinese names, paths, labels, statuses, and errors remain readable without tofu, mojibake, clipping, baseline loss, or document-level horizontal overflow. Table overflow is intentionally component-owned and navigable.
 
-All 34 exact-tip captures under `.omo/evidence/videnoa-controller/final/F3-exact-tip/captures/` were validated and inspected. They cover login and error focus; empty, filtered, overflow, detail, cancellation, and CJK task states; worker onboarding, health, validation, and overflow; Settings running, paused, validation, top/bottom scrolling; logout failure; and all required viewports.
+The 34 captures under `.omo/evidence/videnoa-controller/final/F3-exact-tip/captures/` remain prior broad real-runtime evidence only. They are not represented as fresh `30d9f25` captures.
 
-Positive observations:
+### Fresh `30d9f25` targeted captures
 
-- The former desktop Settings scroll-containment defect is corrected: `.shell-main` reaches bottom content while the sidebar/footer and Sign out remain visible at 1440 and 1024 pixels.
-- The former narrow logout overlay defect is corrected: the focused alert occupies layout space and does not cover operational controls.
-- Task and worker horizontal overflow remains component-owned, keyboard-operable, visibly focused, and recoverable at all tested widths.
-- Japanese/Chinese filenames and paths render without mojibake or document widening; long values wrap inside their owning surfaces.
-- Dialogs fit their viewports, destructive actions are distinguished, status/error states include text, and focus restoration passed.
+The report itself is the sanitized exact-tip manifest for these 8 ignored evidence PNGs under `.omo/evidence/videnoa-controller/final/F3-30d9f25-auth-recheck/captures/`:
 
-Blocking observation:
+| Capture | Dimensions | SHA-256 | Purpose |
+|---|---:|---|---|
+| `login-error-desktop-1280x900.png` | `1280x900` | `57c5b3c658dbc20c7413cd245a292a7af9cec5c9708fd9c83e098a9d45afc8fd` | Fresh wrong-password error and focus |
+| `login-tablet-768x900.png` | `768x900` | `cdff8c16023bdbeea97f919480c66152063cfcf1e1af8e9d32a32daad1798ddb` | Fresh tablet login layout |
+| `login-mobile-375x812.png` | `375x812` | `a473960184eb39a051404717b4962ff06b374fdeeb667c118836632c169fd2f1` | Fresh mobile login layout |
+| `tasks-authenticated-tablet-768x900.png` | `768x900` | `31f693a5739d053c1251c8768266f7afb27187d61e1e35a33091b54510c3f75f` | Fresh authenticated route and tablet shell |
+| `settings-bottom-desktop-1280x900.png` | `1280x900` | `007c8f22d6e49c26dc9526ce3dd90e174864ef1a9abb7628a3d889295a9e43f0` | Fresh Chinese roots and desktop Settings reachability |
+| `settings-bottom-tablet-768x900.png` | `768x900` | `ac553a5b7c806fdc4a6dff8f97bc1d1b19266587e9a2351287590f298bd68c41` | Fresh Chinese roots and tablet Settings reachability |
+| `settings-bottom-mobile-375x812.png` | `375x812` | `b2ae882ccb81d715417849088b1c704f11dc59937f8376908d8861bf86274b30` | Fresh Chinese roots and mobile Settings reachability |
+| `logout-error-retry-mobile-375x812.png` | `375x812` | `384157dd12feb417a3b5eddb5933714c9d60c4978008e18b591da53c1d0a6cd3` | Fresh recoverable logout alert and focus |
 
-- The Korean worker name is replaced by unreadable glyph shapes on the Workers route at every captured width despite correct DOM and database text.
+All 8 files had valid PNG signatures and the stated dimensions. Browser measurements reported loaded fonts and no document-level horizontal overflow. The Settings DOM contained the Chinese input/output root names `输入` and `输出` at all three widths. Direct inspection found no English/Chinese glyph, wrapping, clipping, overlap, focus, dialog, shell, or reachability blocker.
 
-Non-blocking observations:
+## Prior Broad Runtime Evidence Preserved
 
-- Long task paths wrap densely at 1024 pixels but remain readable and available through titles/detail.
-- The compact Pause action stacks its icon and label; it remains fully operable and does not clip.
-- Sticky mobile navigation naturally covers already-scrolled-off preceding text at intermediate scroll positions; all controls and content remain reachable.
+The unchanged product areas do not need to be misrepresented as freshly rerun. Prior real release-runtime evidence at `0fb4eb5` remains authoritative for SQLite persistence, Controller restart and session recovery, task intake/cancellation, worker onboarding/health, Settings mutations, 20,000-row history, filesystem effects, and fault paths because those product trees match `e161e77`. Exact-tip hosted run `33946244764` supplies the current regression confirmation across those suites.
 
-## Independent Review
+## Independent Review Status
 
-Two independent read-only reviewers audited the exact-tip artifacts and relevant Controller Web source:
+- Fresh Chinese visual-precision reviewer: `PASS`, high confidence, all 39 required images enumerated and inspected, no product or evidence finding, no blocker.
+- Fresh design-system/functional and evidence-attribution reviewer: `PASS`, high confidence, all 39 required images inspected, all 8 exact-tip filenames/dimensions/SHA-256 values verified, exact tip/tree identity and run `33946244764` verified, no blocker.
 
-- Reviewer A returned `REJECT`, High/P1. It independently confirmed that captures 04, 05, and 07 show an unreadable Korean worker identity, traced the value through `WorkerTable.tsx`, and identified the missing global/operational Korean font fallback. It passed Settings containment, narrow shell behavior, logout alert, focus, and overflow.
-- Reviewer B returned `APPROVE` with residual Hangul risk, but stated that no Hangul-specific capture was found. That premise is contradicted by the authoritative SQLite/DOM value and the explicitly captured Korean row in 04, 05, and 07, so its approval does not clear F3-B1. It separately passed the shell, dialogs, reduced motion, accessibility, logout, and overflow implementation.
-
-The direct artifact inspection and Reviewer A agree on the blocking symptom. Reviewer B's positive findings support the non-Hangul passes but do not negate the unreadable captured identity.
+An earlier independent design-system pass returned evidence-only `REVISE` because the previous report still named `e161e77` as its completion tip and the 8 new captures lacked a sanitized exact-tip manifest. It found no product issue. This report corrected both points before the fresh final `PASS`; the stale verdict was not reused as approval.
 
 ## Audit Boundaries
 
-- No direct SQLite mutation created or changed the task, workers, settings, cancellation, login, logout, or restart result.
-- Unreachable worker endpoints, high-volume generated rows, and the intercepted logout failure were test-only fixtures and are not presented as product implementations.
-- No product source, test, lockfile, plan, or unrelated report was modified during F3.
-- Pre-existing F1 and F2 report edits were preserved and excluded from the F3 commit scope.
+- No product source, tests, lockfile, plan, F1, F2, or F4 report was modified during this F3 pass.
+- No direct SQLite mutation was used to manufacture authentication or UI success.
+- The one-shot logout `503` was a browser fault injection and is not presented as a real Controller failure.
+- Prior fixture visual evidence and prior real-runtime evidence are explicitly separated from fresh `30d9f25` release-runtime observations.
+- Korean support is neither approved nor rejected by this English/Chinese gate.
 
-VERDICT: REJECT
+VERDICT: APPROVE
