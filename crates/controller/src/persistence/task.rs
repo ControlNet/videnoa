@@ -1,9 +1,21 @@
 use sqlx::Row;
 
-use super::codec::{encode_json, sqlite_u64, task_source, timestamp};
+use super::codec::{encode_json, parse_brand, sqlite_u64, task_source, timestamp};
 use super::models::{empty_progress, NewTask, TaskRecord};
 use super::task_row::{map_task, TASK_COLUMNS};
 use super::{PersistenceError, Store};
+
+#[derive(Clone, Debug)]
+pub(crate) struct RecoveryScan {
+    after: Option<(i64, crate::domain::TaskId)>,
+    through: (i64, crate::domain::TaskId),
+}
+
+impl RecoveryScan {
+    pub(crate) fn advance(&mut self, task: &TaskRecord) {
+        self.after = Some((timestamp(task.updated_at), task.id));
+    }
+}
 
 impl Store {
     /// # Errors
@@ -31,14 +43,57 @@ impl Store {
 
     /// # Errors
     /// Returns an error when `SQLite` access or persisted decoding fails.
-    pub async fn recovery_tasks(&self, limit: u16) -> Result<Vec<TaskRecord>, PersistenceError> {
-        let sql = format!(
-            "SELECT {TASK_COLUMNS} FROM tasks
+    pub(crate) async fn begin_recovery_scan(
+        &self,
+    ) -> Result<Option<RecoveryScan>, PersistenceError> {
+        let row = sqlx::query(
+            "SELECT updated_at_ms, id FROM tasks
              WHERE status NOT IN ('completed', 'failed', 'cancelled')
-             ORDER BY updated_at_ms ASC, id ASC LIMIT ?"
-        );
-        let rows = sqlx::query(&sql)
-            .bind(i64::from(limit))
+             ORDER BY updated_at_ms DESC, id DESC LIMIT 1",
+        )
+        .fetch_optional(self.database.pool())
+        .await?;
+        row.map(|row| {
+            let updated_at_ms = row.try_get("updated_at_ms")?;
+            let id: String = row.try_get("id")?;
+            Ok(RecoveryScan {
+                after: None,
+                through: (updated_at_ms, parse_brand("id", &id)?),
+            })
+        })
+        .transpose()
+    }
+
+    /// # Errors
+    /// Returns an error when `SQLite` access or persisted decoding fails.
+    pub(crate) async fn recovery_tasks(
+        &self,
+        scan: &RecoveryScan,
+        limit: std::num::NonZeroU16,
+    ) -> Result<Vec<TaskRecord>, PersistenceError> {
+        let sql = match scan.after {
+            Some(_) => format!(
+                "SELECT {TASK_COLUMNS} FROM tasks
+                 WHERE status NOT IN ('completed', 'failed', 'cancelled')
+                   AND (updated_at_ms, id) > (?, ?)
+                   AND (updated_at_ms, id) <= (?, ?)
+                 ORDER BY updated_at_ms ASC, id ASC LIMIT ?"
+            ),
+            None => format!(
+                "SELECT {TASK_COLUMNS} FROM tasks
+                 WHERE status NOT IN ('completed', 'failed', 'cancelled')
+                   AND (updated_at_ms, id) <= (?, ?)
+                 ORDER BY updated_at_ms ASC, id ASC LIMIT ?"
+            ),
+        };
+        let mut query = sqlx::query(&sql);
+        if let Some((updated_at_ms, id)) = scan.after {
+            query = query.bind(updated_at_ms).bind(id.to_string());
+        }
+        let rows = query
+            .bind(scan.through.0)
+            .bind(scan.through.1.to_string())
+            .bind(i64::from(limit.get()))
             .fetch_all(self.database.pool())
             .await?;
         rows.iter().map(map_task).collect()
