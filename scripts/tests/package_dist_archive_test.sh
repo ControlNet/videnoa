@@ -34,6 +34,34 @@ single_archive="$test_root/out/videnoa-linux64-single.7z"
 require_file "$single_archive"
 "$archive_helper" verify "$single_archive"
 
+mkdir -p "$test_root/command-bin"
+cat > "$test_root/command-bin/7z" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$PACKAGE_ARCHIVE_7Z_ARGS"
+args=("$@")
+archive_index=$((${#args[@]} - 2))
+touch "${args[$archive_index]}.001"
+EOF
+chmod +x "$test_root/command-bin/7z"
+
+resource_archive="$test_root/out/resource-safe.7z"
+resource_args="$test_root/resource-safe.args"
+PACKAGE_ARCHIVE_7Z_ARGS="$resource_args" PATH="$test_root/command-bin:$PATH" \
+  "$archive_helper" create "$test_root/dist" "$resource_archive"
+expected_resource_args=(
+  a
+  -t7z
+  -mx=5
+  -md=16m
+  -mmt=1
+  -v2000m
+  "$resource_archive"
+  videnoa
+)
+mapfile -t actual_resource_args < "$resource_args"
+[[ "${actual_resource_args[*]}" == "${expected_resource_args[*]}" ]] ||
+  fail "archive creation did not use the exact bounded p7zip settings"
+
 if "$archive_helper" verify "$test_root/out/missing.7z" >"$test_root/missing.stdout" 2>"$test_root/missing.stderr"; then
   fail "missing archive verification unexpectedly succeeded"
 fi
@@ -78,9 +106,9 @@ exit 2
 EOF
 chmod +x "$test_root/fake-bin/7z"
 
-if PATH="$test_root/fake-bin:$PATH" "$archive_helper" create "$test_root/dist" "$test_root/out/fatal.7z" 1k >"$test_root/fatal.stdout" 2>"$test_root/fatal.stderr"; then
-  fail "7z fatal exit 2 was swallowed"
-fi
+fatal_status=0
+PATH="$test_root/fake-bin:$PATH" "$archive_helper" create "$test_root/dist" "$test_root/out/fatal.7z" 1k >"$test_root/fatal.stdout" 2>"$test_root/fatal.stderr" || fatal_status=$?
+[[ "$fatal_status" -eq 2 ]] || fail "7z fatal exit 2 changed to status $fatal_status"
 grep -Fq 'E_FAIL' "$test_root/fatal.stderr" || fail "7z fatal diagnostics were not preserved"
 
-printf '[package-dist-archive-test] split, single, missing-output, missing-create-output, insufficient-space, and fatal-create contracts passed\n'
+printf '[package-dist-archive-test] split, single, resource-safe command, missing-output, missing-create-output, insufficient-space, and fatal-create contracts passed\n'
