@@ -9,8 +9,8 @@ use tempfile::TempDir;
 use videnoa_controller::auth::hash_password;
 use videnoa_controller::config::{AuthConfig, PathConfig};
 use videnoa_controller::domain::{
-    ComputeSlots, InputPath, OutputPath, SourceReference, Task, TaskCreateRequest,
-    TaskDetailResponse, TaskSource, WorkerCreateRequest, WorkerSummary, WorkflowName,
+    InputPath, OutputPath, SourceReference, Task, TaskCreateRequest, TaskDetailResponse,
+    TaskSource, WorkerSummary, WorkflowName,
 };
 use videnoa_controller::persistence::{Database, DatabaseOptions, Store};
 use videnoa_controller::scheduler::TransferCheckpointObserver;
@@ -24,6 +24,9 @@ use super::runtime::{start_runtime, ControllerRuntime, RuntimeOptions};
 pub type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 
 const PASSWORD: &str = "task-20-test-only-password";
+
+#[path = "controller/capacity.rs"]
+mod capacity;
 
 pub struct ControllerFixture {
     _fixture_permit: FixturePermit,
@@ -176,7 +179,7 @@ impl ControllerFixture {
         enabled: bool,
     ) -> TestResult<WorkerSummary> {
         let worker = self
-            .register_worker_without_wait(server, name, enabled)
+            .register_worker_without_wait_with_slots(server, name, enabled, 1)
             .await?;
         if enabled {
             let worker_id = worker.id;
@@ -205,24 +208,8 @@ impl ControllerFixture {
         name: &str,
         enabled: bool,
     ) -> TestResult<WorkerSummary> {
-        let response = self
-            .client
-            .post(format!("{}/api/workers", self.base_url))
-            .bearer_auth(PASSWORD)
-            .json(&WorkerCreateRequest {
-                name: videnoa_controller::domain::WorkerName::new(name),
-                api_url: videnoa_controller::domain::WorkerApiUrl::parse(server.base_url())?,
-                enabled,
-                compute_slots: ComputeSlots::try_from(1_u64)?,
-            })
-            .send()
-            .await?;
-        require_status(
-            response.status(),
-            reqwest::StatusCode::CREATED,
-            "create worker",
-        )?;
-        Ok(response.json::<WorkerSummary>().await?)
+        self.register_worker_without_wait_with_slots(server, name, enabled, 1)
+            .await
     }
 
     pub async fn stop(mut self) -> TestResult {
