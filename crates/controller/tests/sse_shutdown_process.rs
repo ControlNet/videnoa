@@ -13,7 +13,6 @@ use tempfile::TempDir;
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
 use tokio::process::{Child, Command};
-use videnoa_controller::auth::hash_password;
 
 type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -21,7 +20,7 @@ const PROCESS_EXIT_BOUND: Duration = Duration::from_secs(30);
 const STARTUP_BOUND: Duration = Duration::from_secs(10);
 
 struct ProcessFixture {
-    _directory: TempDir,
+    directory: TempDir,
     address: SocketAddr,
     config_path: PathBuf,
     password: String,
@@ -29,35 +28,23 @@ struct ProcessFixture {
 
 impl ProcessFixture {
     fn new() -> TestResult<Self> {
-        let directory = TempDir::new()?;
-        let input_root = directory.path().join("input");
-        let output_root = directory.path().join("output");
+        let directory = TempDir::new_in(std::env::current_dir()?)?;
         let data_root = directory.path().join("data");
-        let temp_root = directory.path().join("temp");
-        for root in [&input_root, &output_root, &data_root, &temp_root] {
-            fs::create_dir(root)?;
-        }
+        fs::create_dir(&data_root)?;
         let password = uuid::Uuid::new_v4().to_string();
-        let hash_path = directory.path().join("admin-password.phc");
-        fs::write(&hash_path, hash_password(&password)?)?;
         let reservation = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
         let address = reservation.local_addr()?;
         drop(reservation);
-        let config_path = directory.path().join("controller.toml");
+        let config_path = data_root.join("controller.toml");
         fs::write(
             &config_path,
             format!(
-                "[server]\nhost = \"127.0.0.1\"\nport = {}\n\n[paths]\ninput_roots = [\"{}\"]\noutput_roots = [\"{}\"]\ndata_root = \"{}\"\ntemp_root = \"{}\"\n\n[auth]\npassword_hash_file = \"{}\"\nsecure_cookie = false\nsession_absolute_seconds = 86400\nsession_idle_seconds = 3600\n",
+                "[server]\nhost = \"127.0.0.1\"\nport = {}\n\n[auth]\nsecure_cookie = false\nsession_absolute_seconds = 86400\nsession_idle_seconds = 3600\n",
                 address.port(),
-                input_root.display(),
-                output_root.display(),
-                data_root.display(),
-                temp_root.display(),
-                hash_path.display(),
             ),
         )?;
         Ok(Self {
-            _directory: directory,
+            directory,
             address,
             config_path,
             password,
@@ -67,8 +54,7 @@ impl ProcessFixture {
     fn spawn(&self) -> TestResult<Child> {
         let mut command = Command::new(env!("CARGO_BIN_EXE_videnoa-controller"));
         command
-            .arg("--config")
-            .arg(&self.config_path)
+            .current_dir(self.directory.path())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -96,21 +82,21 @@ async fn sigterm_with_authenticated_sse_exits_inside_drain_bound() -> TestResult
 
 #[tokio::test]
 async fn early_controller_exit_reports_startup_stderr() -> TestResult {
-    // Given: a real Controller child whose owned configuration is unavailable at startup.
+    // Given: a real Controller child whose owned configuration is invalid at startup.
     let fixture = ProcessFixture::new()?;
-    fs::remove_file(&fixture.config_path)?;
+    fs::write(&fixture.config_path, "[server\ninvalid")?;
     let mut child = fixture.spawn()?;
 
     // When: startup exits before the listener can accept connections.
     let error = wait_for_listener(fixture.address, &mut child)
         .await
-        .expect_err("missing config must stop Controller startup");
+        .expect_err("malformed config must stop Controller startup");
 
     // Then: the process status and typed startup reason remain visible to the test failure.
     let message = error.to_string();
     assert!(message.contains("exit status: 1"), "{message}");
     assert!(
-        message.contains("configuration file is missing or invalid"),
+        message.contains("configuration schema is invalid"),
         "{message}"
     );
     Ok(())
@@ -123,8 +109,9 @@ async fn exercise_shutdown(fixture: &ProcessFixture, child: &mut Child) -> TestR
         .build()?;
     let base_url = format!("http://{}", fixture.address);
     let login = client
-        .post(format!("{base_url}/api/auth/login"))
-        .json(&serde_json::json!({"password": fixture.password}))
+        .post(format!("{base_url}/api/auth/setup"))
+        .header(header::ORIGIN, &base_url)
+        .json(&serde_json::json!({"password": fixture.password, "password_confirmation": fixture.password}))
         .send()
         .await?;
     if !login.status().is_success() {

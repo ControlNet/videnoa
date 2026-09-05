@@ -76,8 +76,6 @@ impl ControllerFixture {
         for path in [&input_root, &output_root, &data_root, &temp_root] {
             fs::create_dir_all(path)?;
         }
-        let hash_file = data_root.join("admin-password.phc");
-        fs::write(&hash_file, hash_password(PASSWORD)?)?;
         let path_config = PathConfig {
             input_roots: vec![input_root.clone()],
             output_roots: vec![output_root.clone()],
@@ -85,7 +83,6 @@ impl ControllerFixture {
             temp_root: temp_root.clone(),
         };
         let auth_config = AuthConfig {
-            password_hash_file: hash_file,
             secure_cookie: false,
             session_absolute: Duration::from_secs(86_400),
             session_idle: Duration::from_secs(3_600),
@@ -93,6 +90,9 @@ impl ControllerFixture {
         let database_path = data_root.join("controller.sqlite3");
         let database = Database::open(DatabaseOptions::new(database_path.clone())).await?;
         let store = Store::new(database);
+        store
+            .insert_administrator_credential(&hash_password(PASSWORD)?, chrono::Utc::now())
+            .await?;
         let runtime = start_runtime(
             directory.path(),
             &store,
