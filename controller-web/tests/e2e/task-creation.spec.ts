@@ -120,7 +120,7 @@ test("uses a new key after an ambiguous form changes and recovers a key collisio
   expect(keys[1]).not.toBe(keys[0])
 })
 
-test("focuses structured root and output collision errors and restores the add trigger", async ({ page }) => {
+test("focuses structured workspace and output collision errors and restores the add trigger", async ({ page }) => {
   // Given: the server reports real structured intake failures under a generic top-level message.
   const journal = requestJournal()
   await installPagedApi(page, journal, 1)
@@ -128,7 +128,7 @@ test("focuses structured root and output collision errors and restores the add t
   await page.route("**/api/tasks", async (route) => {
     creates += 1
     const fieldError = creates === 1
-      ? { field: "input_path", code: "invalid_value", message: "path is not available through configured roots" }
+      ? { field: "input_path", code: "invalid_value", message: "path is outside the Controller workspace" }
       : { field: "output_path", code: "invalid_value", message: "output must not already exist" }
     await fulfillJson(route, { error: { code: "invalid_request", message: "request validation failed", retryable: false, field_errors: [fieldError] } }, 400)
   })
@@ -138,9 +138,9 @@ test("focuses structured root and output collision errors and restores the add t
   await page.getByRole("textbox", { name: "Output Path", exact: true }).fill("/nas/output/existing.mp4")
   await page.getByLabel("Workflow").last().fill("anime-2x")
 
-  // When: root validation fails, then corrected input reaches no-clobber validation.
+  // When: workspace validation fails, then corrected input reaches no-clobber validation.
   await page.getByRole("button", { name: "Create Task" }).click()
-  await expect(page.getByRole("alert")).toContainText("outside the configured roots")
+  await expect(page.getByRole("alert")).toContainText("outside the Controller workspace")
   await expect(page.getByRole("textbox", { name: "Input Path" })).toBeFocused()
   await page.screenshot({
     path: "../.omo/evidence/videnoa-controller/task-19/playwright-report/screenshots/task-17/task-actions/manual-intake-root-focus.png",

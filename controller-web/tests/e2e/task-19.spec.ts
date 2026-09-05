@@ -4,7 +4,7 @@ import AxeBuilder from "@axe-core/playwright"
 import { expect, type Page, test } from "@playwright/test"
 
 import { installOperationalApi } from "./operations-fixtures"
-import { fulfillJson, statuses, task } from "./tasks-fixtures"
+import { fulfillJson, installAuthenticatedSession, statuses, task } from "./tasks-fixtures"
 
 const failureEvidenceDir = "../.omo/evidence/videnoa-controller/task-19/visual-failures"
 const session = {
@@ -19,6 +19,7 @@ test.beforeEach(async () => mkdir(failureEvidenceDir, { recursive: true }))
 
 test("has no serious accessibility violations on login and operational routes", async ({ page }) => {
   await disableEventSource(page)
+  await page.route("**/api/auth/setup", async (route) => fulfillJson(route, { initialized: true }))
   await page.route("**/api/auth/session", async (route) => fulfillJson(route, { error: "unauthorized" }, 401))
   await page.goto("/")
   await expect(page.getByRole("heading", { name: "Sign in to Controller" })).toBeVisible()
@@ -126,6 +127,7 @@ test("expires to a clean login surface without browser-stored credentials", asyn
   }])
   expect((await context.cookies()).map((cookie) => cookie.name)).toContain("videnoa_session")
   let authenticated = true
+  await page.route("**/api/auth/setup", async (route) => fulfillJson(route, { initialized: true }))
   await page.route("**/api/auth/session", async (route) => {
     if (authenticated) {
       await fulfillJson(route, session)
@@ -167,7 +169,7 @@ async function disableEventSource(page: Page): Promise<void> {
 
 async function installTaskRoutes(page: Page, failFirst: boolean, installSession = true): Promise<{ readonly count: () => number }> {
   let reads = 0
-  if (installSession) await page.route("**/api/auth/session", async (route) => fulfillJson(route, session))
+  if (installSession) await installAuthenticatedSession(page)
   await page.route("**/api/status-counts", async (route) => fulfillJson(route, {
     items: statuses.map((status) => ({ status, count: status === "failed" ? 1 : 0 })),
     total: 1,
