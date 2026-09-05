@@ -42,6 +42,7 @@ pub(crate) struct RuntimeState {
     pub next_sequence: u64,
     pub next_timestamp: u64,
     pub accepted_upload_bytes: u64,
+    pub peak_active_jobs: usize,
 }
 
 impl RuntimeState {
@@ -54,6 +55,7 @@ impl RuntimeState {
             next_sequence: 0,
             next_timestamp: 0,
             accepted_upload_bytes: 0,
+            peak_active_jobs: 0,
         }
     }
 
@@ -175,6 +177,21 @@ impl SharedState {
 
     pub async fn job_count(&self) -> usize {
         self.inner.lock().await.persistent.jobs.len()
+    }
+
+    pub async fn active_job_count(&self) -> usize {
+        self.inner
+            .lock()
+            .await
+            .persistent
+            .jobs
+            .values()
+            .filter(|job| job.response.status.is_active())
+            .count()
+    }
+
+    pub async fn peak_active_jobs(&self) -> usize {
+        self.inner.lock().await.peak_active_jobs
     }
 
     pub async fn file_count(&self) -> usize {

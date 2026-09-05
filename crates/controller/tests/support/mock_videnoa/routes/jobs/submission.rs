@@ -193,6 +193,14 @@ fn create_job(inner: &mut RuntimeState, prepared: &PreparedRun) -> (StatusCode, 
     };
     let creation = record.creation_response();
     inner.persistent.jobs.insert(id.clone(), record);
+    inner.peak_active_jobs = inner.peak_active_jobs.max(
+        inner
+            .persistent
+            .jobs
+            .values()
+            .filter(|job| job.response.status.is_active())
+            .count(),
+    );
     if let Some(key) = &prepared.key {
         inner.persistent.idempotency.insert(
             key.clone(),
