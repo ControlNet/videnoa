@@ -39,6 +39,20 @@ console.log("[workflow-contracts][positive] complete CI/release matrix: PASS");
 
 {
 	const workflow = structuredClone(loadWorkflow(unitPath));
+	workflow.jobs["controller-fault-load"].steps = workflow.jobs[
+		"controller-fault-load"
+	].steps.filter(
+		(step) => step.name !== "Run production Argon2 executor contention regression",
+	);
+	expectContractFailure(
+		"production Argon2 contention coverage omitted",
+		() => validateUnitWorkflow(workflow),
+		/auth_contention/,
+	);
+}
+
+{
+	const workflow = structuredClone(loadWorkflow(unitPath));
 	delete workflow.jobs["docker-build-smoke"];
 	expectContractFailure(
 		"existing package break",

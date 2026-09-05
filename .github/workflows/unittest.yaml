@@ -121,6 +121,8 @@ jobs:
           node-version: '20'
       - name: Run crash and outage suite
         run: cargo test -p videnoa-controller --test task20 -- --nocapture
+      - name: Run production Argon2 executor contention regression
+        run: cargo test --locked -p videnoa-controller --test auth_contention -- --ignored --nocapture
       - name: Run load, concurrency, filesystem, resource, and security suites
         run: |
           cargo test -p videnoa-controller \

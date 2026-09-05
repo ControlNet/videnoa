@@ -4,13 +4,13 @@ use axum::http::StatusCode;
 use serde_json::json;
 use tower::ServiceExt;
 
-use super::support::{fixture, json_body, request, task_request, TestResult};
+use super::support::{fixture, json_body, task_request, TestResult};
 
 #[tokio::test]
 async fn create_replay_conflict_history_and_detail_are_consistent() -> TestResult {
     let fixture = fixture().await?;
     let body = task_request(&fixture.input, &fixture.output, 7);
-    let mut create = request("POST", "/api/tasks", Some(&body))?;
+    let mut create = fixture.session.request("POST", "/api/tasks", Some(&body))?;
     create
         .headers_mut()
         .insert("idempotency-key", "stable-key".parse()?);
@@ -22,7 +22,7 @@ async fn create_replay_conflict_history_and_detail_are_consistent() -> TestResul
     assert_eq!(created["output_extension"], "mp4");
 
     fs::remove_file(&fixture.input)?;
-    let mut replay = request("POST", "/api/tasks", Some(&body))?;
+    let mut replay = fixture.session.request("POST", "/api/tasks", Some(&body))?;
     replay
         .headers_mut()
         .insert("idempotency-key", "stable-key".parse()?);
@@ -31,7 +31,9 @@ async fn create_replay_conflict_history_and_detail_are_consistent() -> TestResul
     assert_eq!(json_body(response).await?, created);
 
     let conflicting = task_request(&fixture.input, &fixture.output, 8);
-    let mut conflict = request("POST", "/api/tasks", Some(&conflicting))?;
+    let mut conflict = fixture
+        .session
+        .request("POST", "/api/tasks", Some(&conflicting))?;
     conflict
         .headers_mut()
         .insert("idempotency-key", "stable-key".parse()?);
@@ -42,7 +44,11 @@ async fn create_replay_conflict_history_and_detail_are_consistent() -> TestResul
     let response = fixture
         .router
         .clone()
-        .oneshot(request("GET", "/api/tasks?status=queued&limit=10", None)?)
+        .oneshot(
+            fixture
+                .session
+                .request("GET", "/api/tasks?status=queued&limit=10", None)?,
+        )
         .await?;
     assert_eq!(response.status(), StatusCode::OK);
     let page = json_body(response).await?;
@@ -52,7 +58,11 @@ async fn create_replay_conflict_history_and_detail_are_consistent() -> TestResul
     let response = fixture
         .router
         .clone()
-        .oneshot(request("GET", &format!("/api/tasks/{id}"), None)?)
+        .oneshot(
+            fixture
+                .session
+                .request("GET", &format!("/api/tasks/{id}"), None)?,
+        )
         .await?;
     assert_eq!(response.status(), StatusCode::OK);
     let detail = json_body(response).await?;
@@ -71,12 +81,12 @@ async fn create_rejects_missing_key_invalid_paths_and_existing_output() -> TestR
     let response = fixture
         .router
         .clone()
-        .oneshot(request("POST", "/api/tasks", Some(&body))?)
+        .oneshot(fixture.session.request("POST", "/api/tasks", Some(&body))?)
         .await?;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
     fs::write(&fixture.output, b"occupied")?;
-    let mut existing = request("POST", "/api/tasks", Some(&body))?;
+    let mut existing = fixture.session.request("POST", "/api/tasks", Some(&body))?;
     existing
         .headers_mut()
         .insert("idempotency-key", "output-exists".parse()?);

@@ -6,7 +6,7 @@ use axum::http::StatusCode;
 use tokio::sync::Barrier;
 use tower::ServiceExt;
 
-use super::support::{fixture_with_busy_timeout, json_body, request, task_request, TestResult};
+use super::support::{fixture_with_busy_timeout, json_body, task_request, TestResult};
 
 #[tokio::test]
 async fn concurrent_duplicate_intake_creates_exactly_one_task() -> TestResult {
@@ -17,10 +17,11 @@ async fn concurrent_duplicate_intake_creates_exactly_one_task() -> TestResult {
     for _ in 0..8 {
         let router = fixture.router.clone();
         let body = body.clone();
+        let session = fixture.session.clone();
         let barrier = Arc::clone(&barrier);
         submissions.spawn(async move {
             barrier.wait().await;
-            let mut request = request("POST", "/api/tasks", Some(&body))?;
+            let mut request = session.request("POST", "/api/tasks", Some(&body))?;
             request
                 .headers_mut()
                 .insert("idempotency-key", "concurrent-key".parse()?);
@@ -47,7 +48,7 @@ async fn concurrent_duplicate_intake_creates_exactly_one_task() -> TestResult {
 
     let response = fixture
         .router
-        .oneshot(request("GET", "/api/tasks", None)?)
+        .oneshot(fixture.session.request("GET", "/api/tasks", None)?)
         .await?;
     assert_eq!(json_body(response).await?["total"], 1);
     Ok(())
