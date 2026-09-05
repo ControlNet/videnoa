@@ -102,13 +102,13 @@ test("falls back from invalid URL query values without weakening request bounds"
   await installPagedApi(page, journal, 100)
 
   // When: unsupported URL values reach the query boundary.
-  await page.goto("/tasks?status=bogus&sort=nope&order=sideways&limit=999&offset=-4&columns=path,bogus,error")
+  await page.goto("/tasks?status=bogus&source=bogus&failure_stage=bogus&sort=nope&order=sideways&limit=999&offset=-4&columns=input_path,bogus,error")
   await expect(page.getByRole("table").locator("tbody tr")).toHaveCount(50)
 
   // Then: the API receives only canonical fallback values and supported columns render.
   const request = new URLSearchParams(journal.tasks[0])
   expect(Object.fromEntries(request)).toEqual({ limit: "50", offset: "0", sort: "priority", direction: "desc" })
-  await expect(page.getByRole("columnheader", { name: "path" })).toBeVisible()
+  await expect(page.getByRole("columnheader", { name: "Input Path", exact: true })).toBeVisible()
   await expect(page.getByRole("columnheader", { name: "error" })).toBeVisible()
   await appendEvidence("invalid URL fallback: unsupported status/sort/order/limit/offset omitted or reset; API limit=50 offset=0")
 })
@@ -119,7 +119,7 @@ test("contains long paths and errors inside table-owned overflow", async ({ page
   await installPagedApi(page, journal)
   await page.setViewportSize({ width: 375, height: 812 })
   await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" })
-  await page.goto("/tasks?status=failed&columns=path,error")
+  await page.goto("/tasks?status=failed&columns=input_path,error")
   await expect(page.getByRole("table").locator("tbody tr")).toHaveCount(50)
 
   // When: a keyboard user activates the visible control for clipped columns.
