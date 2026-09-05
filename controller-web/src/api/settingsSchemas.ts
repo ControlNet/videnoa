@@ -4,6 +4,25 @@ const unsignedIntegerSchema = z.number().int().nonnegative().max(Number.MAX_SAFE
 const positiveU16Schema = z.number().int().min(1).max(65_535)
 const durationSchema = z.number().int().min(1).max(604_800)
 
+export const serverSettingsSchema = z
+  .object({
+    host: z.union([z.ipv4(), z.ipv6()]),
+    port: positiveU16Schema,
+  })
+  .strict()
+
+export const authSettingsSchema = z
+  .object({
+    secure_cookie: z.boolean(),
+    session_absolute_seconds: durationSchema,
+    session_idle_seconds: durationSchema,
+  })
+  .strict()
+  .refine((auth) => auth.session_idle_seconds <= auth.session_absolute_seconds, {
+    message: "Idle lifetime must not exceed absolute lifetime.",
+    path: ["session_idle_seconds"],
+  })
+
 export const schedulerStatusSchema = z
   .object({
     paused: z.boolean(),
@@ -37,26 +56,31 @@ export const retrySettingsSchema = z
 export const settingsUpdateRequestSchema = z
   .object({
     version: unsignedIntegerSchema,
+    server: serverSettingsSchema,
+    auth: authSettingsSchema,
     scheduler: schedulerStatusSchema,
     timeouts: timeoutSettingsSchema,
     retry: retrySettingsSchema,
   })
   .strict()
 
-export const settingsResponseSchema = settingsUpdateRequestSchema
-  .extend({
+export const settingsResponseSchema = z
+  .object({
+    version: unsignedIntegerSchema,
     paths: z
       .object({
-        input_roots: z.array(z.string()),
-        output_roots: z.array(z.string()),
+        workspace: z.string(),
         data_root: z.string(),
-        temp_root: z.string(),
-        password_hash_file: z.string(),
+        config_file: z.string(),
       })
       .strict(),
+    server: serverSettingsSchema,
     secure_cookie: z.boolean(),
-    session_absolute_seconds: unsignedIntegerSchema,
-    session_idle_seconds: unsignedIntegerSchema,
+    session_absolute_seconds: durationSchema,
+    session_idle_seconds: durationSchema,
+    scheduler: schedulerStatusSchema,
+    timeouts: timeoutSettingsSchema,
+    retry: retrySettingsSchema,
   })
   .strict()
 
@@ -68,6 +92,7 @@ export const readinessSchema = z
   .strict()
 
 export type Readiness = z.infer<typeof readinessSchema>
+export type ServerSettings = z.infer<typeof serverSettingsSchema>
 export type SchedulerStatus = z.infer<typeof schedulerStatusSchema>
 export type SettingsResponse = z.infer<typeof settingsResponseSchema>
 export type SettingsUpdateRequest = z.infer<typeof settingsUpdateRequestSchema>
