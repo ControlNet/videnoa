@@ -107,6 +107,14 @@ impl MockVidenoa {
         self.state.job_count().await
     }
 
+    pub async fn active_job_count(&self) -> usize {
+        self.state.active_job_count().await
+    }
+
+    pub async fn peak_active_jobs(&self) -> usize {
+        self.state.peak_active_jobs().await
+    }
+
     pub async fn accepted_upload_bytes(&self) -> u64 {
         self.state.inner.lock().await.accepted_upload_bytes
     }

@@ -86,6 +86,8 @@ async fn complete_remote_lifecycle_preserves_contract_bytes_and_journal() -> Tes
     assert_eq!(counters.get(Route::Download), 1);
     assert_eq!(counters.get(Route::Stat), 1);
     assert_eq!(counters.get(Route::DeleteFile), 1);
+    assert_eq!(server.active_job_count().await, 0);
+    assert_eq!(server.peak_active_jobs().await, 1);
     let journal = server.journal().await;
     assert!(journal
         .windows(2)
