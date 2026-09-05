@@ -90,10 +90,7 @@ async fn timed_out_submission_waits_for_restart_before_replay() -> TestResult {
         .create_task("submission-owner", b"input-video")
         .await?;
     gate.wait().await?;
-    assert_eq!(
-        fixture.task(&task).await?.task.status,
-        TaskStatus::Submitting
-    );
+    assert_eq!(fixture.task(&task).await?.task.status, TaskStatus::Staged);
     fixture.crash().await?;
     gate.release();
     worker.set_fault(Fault::AcceptThenDropRunResponse).await;

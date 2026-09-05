@@ -46,7 +46,7 @@ async fn active_first_page_cannot_starve_later_durable_work() -> TestResult {
         .task(second_task.id)
         .await?
         .ok_or_else(|| std::io::Error::other("second task missing"))?;
-    assert_eq!(first.status, TaskStatus::Submitting);
+    assert_eq!(first.status, TaskStatus::Staged);
     assert_eq!(first.worker_id, Some(first_registered.id));
     assert_eq!(second.status, TaskStatus::Submitting);
     assert_eq!(second.worker_id, Some(second_registered.id));

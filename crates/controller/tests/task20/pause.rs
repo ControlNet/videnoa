@@ -38,10 +38,7 @@ async fn persisted_pause_blocks_submit_after_staging_then_resumes_same_attempt()
         worker.release(run_ticket).await?;
         return Err(std::io::Error::other("paused scheduler submitted remote work").into());
     }
-    assert_eq!(
-        fixture.task(&task).await?.task.status,
-        TaskStatus::Submitting
-    );
+    assert_eq!(fixture.task(&task).await?.task.status, TaskStatus::Staged);
 
     fixture.resume_scheduler().await?;
     worker.await_checkpoint(&run_ticket).await?;
