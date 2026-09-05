@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 
 use crate::domain::{FailureCode, FailureStage, TaskStatus};
 use crate::lifecycle::{
-    AdvanceCommand, DurableAction, LifecycleFailure, LifecycleService,
+    AdvanceCommand, DurableAction, LifecycleErrorCode, LifecycleFailure, LifecycleService,
     SubmissionCancellationReconciliation, SubmissionEvidence,
 };
 use crate::persistence::{AttemptRecord, TaskRecord};
@@ -23,12 +23,28 @@ impl Reconciler {
         report: &mut RecoveryReport,
     ) -> Result<(), RecoveryError> {
         let service = LifecycleService::new(self.store.clone());
+        let scheduler = crate::scheduler::Scheduler::load(self.store.clone()).await?;
+        let mut admission = None;
         if task.status == TaskStatus::Staged {
+            self.checkpoint(crate::scheduler::TransferCheckpointPoint::BeforeRemoteSubmit)
+                .await;
+            admission = scheduler.admit(DurableAction::Submit).await?;
+            if admission.is_none() {
+                report.defer(task.id);
+                return Ok(());
+            }
             let write = stage.begin_write();
-            service
+            let transition = service
                 .advance(&task, &attempt, AdvanceCommand::StartSubmission, now)
-                .await?;
+                .await;
             drop(write);
+            if let Err(error) = transition {
+                if error.code() == LifecycleErrorCode::Conflict {
+                    report.defer(task.id);
+                    return Ok(());
+                }
+                return Err(error.into());
+            }
             task = self
                 .store
                 .task(task.id)
@@ -39,14 +55,10 @@ impl Reconciler {
                 .current_attempt(task.id)
                 .await?
                 .ok_or(RecoveryError::MissingAttempt)?;
+        } else {
+            self.checkpoint(crate::scheduler::TransferCheckpointPoint::BeforeRemoteSubmit)
+                .await;
         }
-        self.checkpoint(crate::scheduler::TransferCheckpointPoint::BeforeRemoteSubmit)
-            .await;
-        let scheduler = crate::scheduler::Scheduler::load(self.store.clone()).await?;
-        let Some(_admission) = scheduler.admit(DurableAction::Submit).await? else {
-            report.defer(task.id);
-            return Ok(());
-        };
         if self.claim_submission(&mut attempt, now).await? == SubmissionOwnership::Owned {
             report.defer(task.id);
             return Ok(());
@@ -80,6 +92,7 @@ impl Reconciler {
                 now,
             )
             .await?;
+        drop(admission);
         report.push(task.id, RecoveryCommandKind::Poll);
         Ok(())
     }

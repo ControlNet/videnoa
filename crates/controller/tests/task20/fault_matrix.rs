@@ -129,9 +129,9 @@ async fn restart_before_submit() -> TestResult {
     let task = fixture.create_task("before-submit", b"input-video").await?;
     gate.wait().await?;
     let detail = fixture.task(&task).await?;
-    assert_eq!(detail.task.status, TaskStatus::Submitting);
+    assert_eq!(detail.task.status, TaskStatus::Staged);
     assert_eq!(detail.attempts.len(), 1);
-    assert_eq!(detail.attempts[0].status, TaskStatus::Submitting);
+    assert_eq!(detail.attempts[0].status, TaskStatus::Staged);
     let counters = worker.counters().await;
     assert_eq!(counters.get(Route::Upload), 1);
     assert_eq!(counters.get(Route::Run), 0);
