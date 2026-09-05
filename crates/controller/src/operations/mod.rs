@@ -15,7 +15,7 @@ use chrono::Utc;
 use tokio_util::sync::CancellationToken;
 
 use crate::auth::{authenticate, authorize_mutation, peer_ip, AuthService};
-use crate::config::ControllerConfig;
+use crate::config::{ControllerConfig, ListenerHandle};
 use crate::lifecycle::LifecycleService;
 use crate::paths::PathCapabilities;
 use crate::persistence::{ChangeObserver, Store};
@@ -48,6 +48,9 @@ pub struct OperationsState {
     lifecycle: LifecycleService,
     events: EventHub,
     payload_limits: PayloadLimits,
+    listener: Option<ListenerHandle>,
+    workspace: std::path::PathBuf,
+    settings_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
     shutdown: Option<CancellationToken>,
 }
 
@@ -55,6 +58,13 @@ impl OperationsState {
     #[must_use]
     pub fn new(dependencies: OperationsDependencies) -> Self {
         let events = dependencies.events.clone();
+        let workspace = dependencies
+            .config
+            .paths
+            .input_roots
+            .first()
+            .cloned()
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
         dependencies
             .store
             .observe_changes(ChangeObserver::new(move |change| {
@@ -70,12 +80,26 @@ impl OperationsState {
             paths: dependencies.paths,
             config: dependencies.config,
             payload_limits: dependencies.payload_limits,
+            workspace,
+            listener: None,
+            settings_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             shutdown: None,
         }
     }
 
     #[must_use]
-    pub(crate) fn with_shutdown(mut self, shutdown: CancellationToken) -> Self {
+    pub fn with_configuration_listener(
+        mut self,
+        listener: ListenerHandle,
+        workspace: std::path::PathBuf,
+    ) -> Self {
+        self.listener = Some(listener);
+        self.workspace = workspace;
+        self
+    }
+
+    #[must_use]
+    pub fn with_shutdown(mut self, shutdown: CancellationToken) -> Self {
         self.shutdown = Some(shutdown);
         self
     }

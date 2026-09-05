@@ -9,6 +9,16 @@ use crate::remote::VidenoaClientError;
 use crate::scheduler::{SchedulerError, SchedulerErrorCode};
 use crate::workers::{WorkerRegistryError, WorkerRegistryErrorCode};
 
+const COMMITTED_DEGRADED_MESSAGE: &str =
+    "settings committed and applied; configuration projection repair is pending";
+type ErrorResponseParts = (
+    StatusCode,
+    ApiErrorCode,
+    &'static str,
+    bool,
+    Vec<FieldError>,
+);
+
 #[derive(Debug)]
 pub(super) enum OperationsError {
     Unauthorized,
@@ -20,6 +30,7 @@ pub(super) enum OperationsError {
     Conflict(&'static str),
     RemoteStateAmbiguous,
     PublicationAmbiguous,
+    CommittedDegraded,
     Unavailable,
     Internal,
 }
@@ -31,9 +42,10 @@ impl OperationsError {
             AuthError::RateLimited => Self::RateLimited,
             AuthError::Forbidden => Self::Forbidden,
             AuthError::InvalidPasswordHash
+            | AuthError::InvalidRequest
+            | AuthError::Conflict
             | AuthError::PasswordHashing
             | AuthError::PasswordVerification
-            | AuthError::PasswordFile { .. }
             | AuthError::InvalidLifetime
             | AuthError::Persistence(_) => Self::Internal,
         }
@@ -108,35 +120,40 @@ impl From<MissingPeerMetadata> for OperationsError {
 
 impl IntoResponse for OperationsError {
     fn into_response(self) -> Response {
-        let (status, code, message, fields) = match self {
+        api_error_response(match self {
             Self::Unauthorized => (
                 StatusCode::UNAUTHORIZED,
                 ApiErrorCode::Unauthorized,
                 "authentication required",
+                false,
                 Vec::new(),
             ),
             Self::RateLimited => (
                 StatusCode::TOO_MANY_REQUESTS,
                 ApiErrorCode::RateLimited,
                 "too many authentication attempts",
+                false,
                 Vec::new(),
             ),
             Self::Forbidden => (
                 StatusCode::FORBIDDEN,
                 ApiErrorCode::Forbidden,
                 "request proof is invalid",
+                false,
                 Vec::new(),
             ),
             Self::InvalidRequest => (
                 StatusCode::BAD_REQUEST,
                 ApiErrorCode::InvalidRequest,
                 "request is invalid",
+                false,
                 Vec::new(),
             ),
             Self::InvalidField(field, message) => (
                 StatusCode::BAD_REQUEST,
                 ApiErrorCode::InvalidRequest,
                 "request validation failed",
+                false,
                 vec![FieldError {
                     field: field.to_owned(),
                     code: FieldErrorCode::InvalidValue,
@@ -147,50 +164,66 @@ impl IntoResponse for OperationsError {
                 StatusCode::NOT_FOUND,
                 ApiErrorCode::NotFound,
                 message,
+                false,
                 Vec::new(),
             ),
             Self::Conflict(message) => (
                 StatusCode::CONFLICT,
                 ApiErrorCode::Conflict,
                 message,
+                false,
                 Vec::new(),
             ),
             Self::RemoteStateAmbiguous => (
                 StatusCode::CONFLICT,
                 ApiErrorCode::RemoteStateAmbiguous,
                 "remote state is ambiguous",
+                false,
                 Vec::new(),
             ),
             Self::PublicationAmbiguous => (
                 StatusCode::CONFLICT,
                 ApiErrorCode::PublicationAmbiguous,
                 "publication state is ambiguous",
+                false,
+                Vec::new(),
+            ),
+            Self::CommittedDegraded => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                ApiErrorCode::Unavailable,
+                COMMITTED_DEGRADED_MESSAGE,
+                true,
                 Vec::new(),
             ),
             Self::Unavailable => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 ApiErrorCode::Unavailable,
                 "remote worker is unavailable",
+                false,
                 Vec::new(),
             ),
             Self::Internal => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 ApiErrorCode::InternalError,
                 "internal error",
+                false,
                 Vec::new(),
             ),
-        };
-        (
-            status,
-            Json(ApiErrorEnvelope {
-                error: ApiError {
-                    code,
-                    message: message.to_owned(),
-                    retryable: false,
-                    field_errors: fields,
-                },
-            }),
-        )
-            .into_response()
+        })
     }
+}
+
+fn api_error_response((status, code, message, retryable, fields): ErrorResponseParts) -> Response {
+    (
+        status,
+        Json(ApiErrorEnvelope {
+            error: ApiError {
+                code,
+                message: message.to_owned(),
+                retryable,
+                field_errors: fields,
+            },
+        }),
+    )
+        .into_response()
 }

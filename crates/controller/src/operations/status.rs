@@ -61,28 +61,23 @@ pub(super) async fn readiness(
     ConnectInfo(address): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Result<Response, OperationsError> {
-    let authentication = match crate::auth::authenticate(
-        &state.auth,
-        address.ip(),
-        &headers,
-        Utc::now(),
-    )
-    .await
-    {
-        Ok(_) => state.auth.check_ready().is_ok(),
-        Err(crate::auth::AuthError::Unauthorized | crate::auth::AuthError::Forbidden) => {
-            return Err(OperationsError::Unauthorized);
-        }
-        Err(crate::auth::AuthError::RateLimited) => return Err(OperationsError::RateLimited),
-        Err(
-            crate::auth::AuthError::InvalidPasswordHash
-            | crate::auth::AuthError::PasswordHashing
-            | crate::auth::AuthError::PasswordVerification
-            | crate::auth::AuthError::PasswordFile { .. }
-            | crate::auth::AuthError::InvalidLifetime
-            | crate::auth::AuthError::Persistence(_),
-        ) => false,
-    };
+    let authentication =
+        match crate::auth::authenticate(&state.auth, address.ip(), &headers, Utc::now()).await {
+            Ok(_) => state.auth.check_ready().await.is_ok(),
+            Err(crate::auth::AuthError::Unauthorized | crate::auth::AuthError::Forbidden) => {
+                return Err(OperationsError::Unauthorized);
+            }
+            Err(crate::auth::AuthError::RateLimited) => return Err(OperationsError::RateLimited),
+            Err(
+                crate::auth::AuthError::InvalidPasswordHash
+                | crate::auth::AuthError::InvalidRequest
+                | crate::auth::AuthError::Conflict
+                | crate::auth::AuthError::PasswordHashing
+                | crate::auth::AuthError::PasswordVerification
+                | crate::auth::AuthError::InvalidLifetime
+                | crate::auth::AuthError::Persistence(_),
+            ) => false,
+        };
     let database = state.store.check_ready().await;
     let roots = state.paths.check_ready();
     let checks = vec![
