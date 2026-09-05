@@ -1,3 +1,4 @@
+use std::num::NonZeroU16;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
@@ -12,7 +13,12 @@ use super::{
     ShutdownCoordinator, StagePermit,
 };
 
-const RECOVERY_SCAN_LIMIT: u16 = u16::MAX;
+mod startup;
+
+const RECOVERY_PAGE_SIZE: NonZeroU16 = match NonZeroU16::new(256) {
+    Some(value) => value,
+    None => NonZeroU16::MIN,
+};
 
 #[derive(Clone)]
 pub struct Reconciler {
@@ -21,6 +27,7 @@ pub struct Reconciler {
     pub(super) shutdown: ShutdownCoordinator,
     pub(super) checkpoint_observer: Arc<dyn crate::scheduler::TransferCheckpointObserver>,
     pub(super) submission_owner: SubmissionOwner,
+    recovery_page_size: NonZeroU16,
 }
 
 impl Reconciler {
@@ -32,7 +39,14 @@ impl Reconciler {
             shutdown,
             checkpoint_observer: crate::scheduler::noop_observer(),
             submission_owner: SubmissionOwner::random(),
+            recovery_page_size: RECOVERY_PAGE_SIZE,
         }
+    }
+
+    #[must_use]
+    pub fn with_recovery_page_size(mut self, page_size: NonZeroU16) -> Self {
+        self.recovery_page_size = page_size;
+        self
     }
 
     #[must_use]
@@ -46,26 +60,6 @@ impl Reconciler {
 
     pub(super) async fn checkpoint(&self, point: crate::scheduler::TransferCheckpointPoint) {
         self.checkpoint_observer.checkpoint(point).await;
-    }
-
-    /// Reconciles every durable nonterminal task independently of future scheduling.
-    ///
-    /// # Errors
-    /// Returns a typed error when durable state cannot be loaded or committed.
-    pub async fn reconcile_startup(
-        &self,
-        now: DateTime<Utc>,
-    ) -> Result<RecoveryReport, RecoveryError> {
-        let tasks = self.store.recovery_tasks(RECOVERY_SCAN_LIMIT).await?;
-        let mut report = RecoveryReport::default();
-        for task in tasks {
-            let Some(stage) = self.shutdown.begin_stage() else {
-                report.defer(task.id);
-                continue;
-            };
-            self.reconcile_task(task, now, &stage, &mut report).await?;
-        }
-        Ok(report)
     }
 
     /// Reconciles one durable task after an in-process stage advances.
