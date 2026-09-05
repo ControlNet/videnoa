@@ -1,6 +1,7 @@
 mod attempt;
 mod attempt_query;
 mod codec;
+mod credential;
 mod idempotency;
 mod lifecycle_evidence;
 mod lifecycle_retry;
@@ -26,14 +27,15 @@ mod worker;
 mod worker_query;
 mod worker_registry;
 
+pub use credential::PasswordHashRecord;
 pub use models::{
     AttemptFailureUpdate, AttemptProgressUpdate, AttemptRecord, AttemptRemoteUpdate, AuthDigest,
-    CasOutcome, IdempotencyRecord, InputContentIdentity, InputIdentity, NewSession, NewTask,
-    NewWorker, PageResult, PublicationUpdate, Reservation, ReservationOutcome, SchedulerCandidate,
-    SessionRecord, SettingsRecord, SettingsUpdate, Sha256Digest, TaskFailureUpdate,
-    TaskIngressOutcome, TaskProgressUpdate, TaskRecord, TaskRetryUpdate, UploadCandidateRecord,
-    WorkerDeleteOutcome, WorkerHealthUpdate, WorkerIdentityConflict, WorkerRecord, WorkerUpdate,
-    WorkerUpdateOutcome,
+    CasOutcome, ConfigurationUpdate, IdempotencyRecord, InputContentIdentity, InputIdentity,
+    NewSession, NewTask, NewWorker, PageResult, PublicationUpdate, Reservation, ReservationOutcome,
+    SchedulerCandidate, SessionRecord, SettingsRecord, SettingsUpdate, Sha256Digest,
+    TaskFailureUpdate, TaskIngressOutcome, TaskProgressUpdate, TaskRecord, TaskRetryUpdate,
+    UploadCandidateRecord, WorkerDeleteOutcome, WorkerHealthUpdate, WorkerIdentityConflict,
+    WorkerRecord, WorkerUpdate, WorkerUpdateOutcome,
 };
 pub(crate) use models::{SubmissionClaim, SubmissionClaimOutcome, SubmissionOwner};
 pub use sqlite::{Database, DatabaseOptions};
