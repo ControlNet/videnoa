@@ -44,6 +44,14 @@ fn assets(_: &Path) -> TestResult<FrontendAssets> {
 }
 
 pub(super) async fn fixture() -> TestResult<Fixture> {
+    fixture_with_busy_timeout_option(None).await
+}
+
+pub(super) async fn fixture_with_busy_timeout(busy_timeout: Duration) -> TestResult<Fixture> {
+    fixture_with_busy_timeout_option(Some(busy_timeout)).await
+}
+
+async fn fixture_with_busy_timeout_option(busy_timeout: Option<Duration>) -> TestResult<Fixture> {
     let directory = TempDir::new()?;
     let input_root = directory.path().join("input");
     let output_root = directory.path().join("output");
@@ -58,10 +66,13 @@ pub(super) async fn fixture() -> TestResult<Fixture> {
 
     let hash_file = directory.path().join("admin-password.phc");
     fs::write(&hash_file, hash_password(PASSWORD)?)?;
-    let database = Database::open(DatabaseOptions::new(
-        directory.path().join("controller.sqlite3"),
-    ))
-    .await?;
+    let mut database_options = DatabaseOptions::new(directory.path().join("controller.sqlite3"));
+    if let Some(busy_timeout) = busy_timeout {
+        database_options = database_options
+            .with_busy_timeout(busy_timeout)
+            .with_max_connections(1);
+    }
+    let database = Database::open(database_options).await?;
     let store = Store::new(database);
     let auth_config = AuthConfig {
         password_hash_file: hash_file,

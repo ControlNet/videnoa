@@ -44,6 +44,24 @@ impl PasswordFile {
             encoded,
         })
     }
+
+    /// Loads and verifies a password outside the asynchronous executor.
+    ///
+    /// # Errors
+    /// Returns an authentication error when loading or verification work fails.
+    pub async fn verify(
+        &self,
+        password: SecretString,
+    ) -> Result<(LoadedPasswordHash, bool), AuthError> {
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            let loaded = Self { path }.load()?;
+            let password_matches = loaded.verify(&password);
+            Ok::<_, AuthError>((loaded, password_matches))
+        })
+        .await
+        .map_err(|_| AuthError::PasswordVerification)?
+    }
 }
 
 impl LoadedPasswordHash {

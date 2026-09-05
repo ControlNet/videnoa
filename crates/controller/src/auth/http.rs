@@ -257,6 +257,7 @@ fn error_response(error: &AuthError) -> Response {
         AuthError::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
         AuthError::InvalidPasswordHash
         | AuthError::PasswordHashing
+        | AuthError::PasswordVerification
         | AuthError::PasswordFile { .. }
         | AuthError::InvalidLifetime
         | AuthError::Persistence(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),

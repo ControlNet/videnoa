@@ -36,7 +36,7 @@ pub(crate) async fn authenticate(
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
     {
-        auth.authenticate_bearer(address, password, now)?;
+        auth.authenticate_bearer(address, password, now).await?;
         return Ok(RequestAuth::Bearer);
     }
     let token = cookie(headers, super::SESSION_COOKIE).ok_or(AuthError::Unauthorized)?;
@@ -56,7 +56,7 @@ pub(crate) async fn authenticate_passive(
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
     {
-        auth.authenticate_bearer(address, password, now)?;
+        auth.authenticate_bearer(address, password, now).await?;
         return Ok(RequestAuth::Bearer);
     }
     let token = cookie(headers, super::SESSION_COOKIE).ok_or(AuthError::Unauthorized)?;
