@@ -2,131 +2,137 @@
 
 Audit date: 2026-09-05
 
-Audited implementation tip: `67620f5b45d54205b44861e3cc5d59e88724e998`
+Audited implementation tip: `d8830fa55cf54d504eafbc768747e57f3d2dcadf`
 
-Comparison baseline only: `094d87833ebbc55c8f27857cd70d85fc5cc91afe`
+Comparison baseline: `67620f5b45d54205b44861e3cc5d59e88724e998`
 
-Hosted authority: [GitHub Actions run 33910972161](https://github.com/ControlNet/videnoa/actions/runs/33910972161)
+Hosted authority: [GitHub Actions run 33919997302](https://github.com/ControlNet/videnoa/actions/runs/33919997302)
 
 ## Decision
 
-The exact pushed tip passes the complete hosted regression and packaging-smoke graph. This decision was made independently from the prior `094d878` approval: run `33910972161` is a completed `success` push run on `dev` whose head SHA exactly equals `67620f5b45d54205b44861e3cc5d59e88724e998`, and every one of its 14 jobs succeeded.
+The exact current pushed tip is rejected for F4. Run `33919997302` is the correct completed `push` run for `dev` at head SHA `d8830fa55cf54d504eafbc768747e57f3d2dcadf`, but its conclusion is `failure`: 13 of 14 jobs succeeded and the required legacy `Package smoke (Linux)` job failed while creating the split archive.
 
-The remediation range changes Controller UI behavior, authentication throttling, tests, evidence, and three patch-level lockfile resolutions. It does not change release workflows, Dockerfiles, packaging scripts, artifact names, or publication wiring. Exact-tip Controller, legacy Videnoa, archive, image, Windows, Linux, browser, fault, load, and security checks all pass. No F4 blocker remains.
+The Controller Linux archive, native Windows archive, Controller image/content, Controller Rust, Controller Web, fault/load/security, legacy Windows package, legacy Docker, and cross-platform existing-product Rust/Web jobs all passed. Local contract checks also passed. Those successes cannot override an exact-tip required hosted job failure. Run `33910972161` is historical evidence for `67620f5` only and is not used as current authority.
+
+## Audit-Start Provenance and Landing State
+
+Before replacing this report:
+
+- `git status --porcelain=v1 --branch` reported `## dev...origin/dev` with no changed paths.
+- `HEAD` and the local `origin/dev` tracking ref both resolved to `d8830fa55cf54d504eafbc768747e57f3d2dcadf`.
+- `git rev-list --left-right --count HEAD...origin/dev` reported `0 0`.
+- read-only `git ls-remote origin refs/heads/dev` independently reported `d8830fa55cf54d504eafbc768747e57f3d2dcadf`.
+- no pull, push, commit, stash, reset, restore, checkout, workflow rerun, release action, or registry write was performed by this audit.
+
+The branch was therefore clean, pushed, and up to date at audit start. The rejection is caused by exact-tip CI, not repository provenance.
 
 ## Exact-Tip Hosted Regression
 
-Run `33910972161` completed with conclusion `success` for push event `dev` at exact head SHA `67620f5b45d54205b44861e3cc5d59e88724e998`.
+Run `33919997302` completed with conclusion `failure` for a `push` event at exact head SHA `d8830fa55cf54d504eafbc768747e57f3d2dcadf`.
 
 | Required job | Job ID | Result |
 |---|---:|---|
-| Workflow contracts | `101147034790` | PASS |
-| Rust tests (Ubuntu) | `101147034911` | PASS |
-| Rust tests (Windows) | `101147034916` | PASS |
-| Web build check (Ubuntu) | `101147035017` | PASS |
-| Controller web quality and E2E | `101147035048` | PASS |
-| Controller Rust quality and tests | `101147035062` | PASS |
-| Web build check (Windows) | `101147035080` | PASS |
-| Docker build smoke | `101148113738` | PASS |
-| Package smoke (Linux) | `101148113756` | PASS |
-| Package smoke (Windows) | `101148113781` | PASS |
-| Controller image and content smoke | `101149593261` | PASS |
-| Controller archive smoke (Windows) | `101149593325` | PASS |
-| Controller archive smoke (Linux) | `101149593387` | PASS |
-| Controller fault and load suites | `101149593732` | PASS |
+| Workflow contracts | `101175899842` | PASS |
+| Web build check (Ubuntu) | `101175899980` | PASS |
+| Rust tests (Ubuntu) | `101175900036` | PASS |
+| Controller web quality and E2E | `101175900048` | PASS |
+| Controller Rust quality and tests | `101175900066` | PASS |
+| Web build check (Windows) | `101175900074` | PASS |
+| Rust tests (Windows) | `101175900102` | PASS |
+| Package smoke (Windows) | `101176805366` | PASS |
+| Docker build smoke | `101176805442` | PASS |
+| Package smoke (Linux) | `101176805555` | **FAIL** |
+| Controller fault and load suites | `101178383467` | PASS |
+| Controller archive smoke (Linux) | `101178383474` | PASS |
+| Controller archive smoke (Windows) | `101178383529` | PASS |
+| Controller image and content smoke | `101178383579` | PASS |
 
-The Controller Rust job passed frontend embedding, formatting, strict Clippy, and all Controller test targets. The separately gated fault/load job passed the crash/outage target and the load, concurrency, filesystem, resource, and security targets. The Controller web job passed lint, unit tests, production build, Chromium installation, and browser E2E tests. Both legacy Rust and web matrices passed on Ubuntu and Windows.
+The failing Linux job passed checkout, toolchain setup, dependency installation, the legacy archive contract suite, real legacy bundle construction, Linux runtime compatibility, and cache reclamation. The `Create split archive (2000MB volumes)` step then scanned 5 folders, 38 files, and `5,335,491,267` bytes, started creating `videnoa-linux64-smoke.7z`, and terminated with p7zip 16.02 `System ERROR: E_FAIL`, exit code `2`. Archive verification did not run. Available space was reported as `84,695,440 KiB`, above the helper's `5,276,028 KiB` preflight requirement, so this exact run does not establish a successful legacy Linux archive output.
 
-## Remediation Range and Regression Risk
+GitHub's artifacts API reports `total_count: 0` for this push run. No retained downloadable package is claimed.
 
-The five remediation commits after the comparison baseline are:
+## Post-Baseline Commit Audit
 
-- `52b7b5991b5354f7d52214a51ec3d9951527b4fd`: frontend table navigation.
-- `b00a3c12a06eaa846b1934a120c0777fffc68cd8`: recoverable error focus.
-- `d4859fd7ef8734cd93f897e6da083c65b241f7ea`: Bearer-auth throttling.
-- `e1be5fa5f4fe3372f6c9c17592eeec0b236e2e93`: lockfile security patches.
-- `67620f5b45d54205b44861e3cc5d59e88724e998`: final evidence and notepad updates.
+The commits after `67620f5` are:
 
-The aggregate `094d878..67620f5b` diff contains no change under `.github/workflows`, no Dockerfile change, and no change to the legacy or Controller packaging scripts. `git diff --check` passes for the range. `Cargo.lock` changes only `anyhow 1.0.101 -> 1.0.103`, `h2 0.4.13 -> 0.4.16`, and `rustls-webpki 0.103.9 -> 0.103.13`; exact-tip hosted Rust, Controller, archive, image, and legacy jobs exercise those resolutions.
+- `90561edafb7df40af084c3ffe8a19bebf909c3c9`: shell CSS and Playwright containment regression coverage.
+- `6c952af399ec7952d17272839b53e3abb97e1428`: shell-remediation notepad evidence.
+- `590d79ce0fb5f8fedf9cbb345dcfbc8bd234cfa3`: Final Wave report refresh.
+- `d8830fa55cf54d504eafbc768747e57f3d2dcadf`: Final Wave plan checkbox updates.
 
-## Dedicated Controller Image
+The shell change fixes a fixed-height application frame, makes desktop Settings wheel scrolling remain within `.shell-main`, and moves narrow logout alerts into a dedicated grid row so they do not cover enabled controls. Its test change adds only browser assertions for those behaviors.
 
-The hosted image job built `Dockerfile.controller` and successfully ran the full image/content verification. The contract requires:
+`git diff --name-only 67620f5..HEAD` contains only the CSS/test pair plus F1/F2/F4 evidence, two notepads, and the plan. A protected-path `git diff --quiet` passed for `.github/workflows`, both Dockerfiles, Controller and legacy packaging scripts, `Cargo.toml`, `Cargo.lock`, Controller/package manifests, and both Web package manifests. `git diff --check 67620f5..HEAD` passed. Therefore these four commits do not change workflows, Dockerfiles, packaging scripts, artifact names, image tags, versions, dependencies, or legacy product layouts.
 
-- isolated Node frontend and Rust 1.83 builder stages;
-- Debian bookworm-slim runtime;
-- numeric non-root identity `10001:10001`;
-- `videnoa-controller` entrypoint and documented config/data/temp/input/output mounts;
-- embedded SPA, liveness healthcheck, writable persistent mounts, and restart persistence;
-- explicit startup failures for missing config, missing password hash, and unwritable data;
-- configured-root rejection for an outside-root task;
-- no legacy `videnoa` binary, Node/npm, models, ONNX Runtime, CUDA, cuDNN, TensorRT, or NVIDIA runtime content.
+## Dedicated Controller Delivery Contracts
 
-`crates/controller/Cargo.toml` has no dependency on `videnoa-core`, `ort`, or a GPU/model runtime. A fresh local normal-dependency tree check also found none of those crates.
+The successful exact-tip Controller image job built `Dockerfile.controller` and ran `scripts/check_controller_container.sh --all`. The source and hosted image checks require an isolated Node frontend stage, Rust 1.83 builder, Debian bookworm-slim runtime, numeric non-root `10001:10001`, `videnoa-controller` entrypoint, embedded SPA, healthcheck, persistent/NAS mounts, restart persistence, explicit startup failures, configured-root rejection, and no legacy binary, Node/npm, models, ONNX Runtime, CUDA, cuDNN, TensorRT, or NVIDIA runtime content.
 
-## Controller Archives
+The successful exact-tip Linux Controller archive job built and verified:
 
-The successful hosted Linux archive job used Rust 1.83 and `scripts/package_controller.sh` to build and verify `videnoa-controller-v0.1.2-linux-x86_64.tar.gz`. The script enforces an ELF x86-64 executable, exact `videnoa-controller 0.1.2` output, no forbidden GPU/runtime linkage, deterministic metadata, and one versioned root containing only `LICENSE`, `README-controller.md`, `controller.example.toml`, and `videnoa-controller`.
+- `videnoa-controller-v0.1.2-linux-x86_64.tar.gz`;
+- one root named `videnoa-controller-v0.1.2-linux-x86_64`;
+- exactly `LICENSE`, `README-controller.md`, `controller.example.toml`, and `videnoa-controller`.
 
-The successful hosted native Windows job used Rust 1.83 and `scripts/package_controller.ps1` to build and verify `videnoa-controller-v0.1.2-windows-x86_64.zip`. The script enforces a PE executable, native `--version` proof, deterministic ZIP timestamps and ordering, no forbidden GPU/runtime DLL reference, and the same exact root files with `videnoa-controller.exe`.
+The successful exact-tip native Windows Controller archive job built and verified:
 
-Fresh local checks passed deterministic Linux archive equality, filename/version/layout gates, missing-file failure, forbidden-content failure, Windows packaging static contracts, and archive root-file completeness. The Linux local archive test intentionally uses a compiled test-fixture executable to exercise packaging determinism and rejection behavior; production binary authority remains the successful hosted Linux and native Windows jobs.
+- `videnoa-controller-v0.1.2-windows-x86_64.zip`;
+- one root named `videnoa-controller-v0.1.2-windows-x86_64`;
+- exactly `LICENSE`, `README-controller.md`, `controller.example.toml`, and `videnoa-controller.exe`.
 
-## Release Graph and Existing Product Preservation
+The scripts enforce platform binary shape, exact `videnoa-controller 0.1.2` version output, deterministic archive metadata/order, exact member allowlists, and GPU/runtime/secret exclusions. `crates/controller/Cargo.toml` has no `videnoa-core`, ORT, CUDA, cuDNN, TensorRT, or model dependency, and the fresh normal/build dependency-tree rejection check passed.
 
-The release graph keeps Controller outputs independent:
+## Release Graph, Names, and Existing Product Preservation
+
+The release workflow still defines independent Controller outputs:
 
 - `controlnet/videnoa-controller:0.1.2` and `controlnet/videnoa-controller:latest`;
 - `videnoa-controller-v0.1.2-linux-x86_64.tar.gz`;
 - `videnoa-controller-v0.1.2-windows-x86_64.zip`.
 
-Existing outputs remain separate and unchanged:
+Legacy outputs remain separate and unchanged:
 
 - `controlnet/videnoa:0.1.2` and `controlnet/videnoa:latest`;
 - `videnoa-linux64-0.1.2.7z*`;
 - `videnoa-win64-0.1.2.7z*`;
-- the existing `videnoa` binary and archive-root layout.
+- archive root `videnoa/` with the existing `videnoa`, `videnoa-desktop`, `lib`, `bin`, `models`, `presets`, `README.md`, and `LICENSE` layout.
 
-Publication is gated by a common version check across all crates and the reusable full quality workflow with packaging checks enabled. GitHub Release creation requires both legacy archives, both Controller archives, and both Docker publication jobs. The subsequent verification job requires the GitHub Release and both image publication jobs, checks all expected release asset names, and pulls both products' version and `latest` image tags.
+The release version gate requires matching app, Controller, core, and desktop versions. The reusable quality gate enables packaging checks. GitHub Release creation depends on both legacy archives, both Controller archives, and both Docker publication jobs. Release verification checks all expected archive names and pulls version plus `latest` tags for both images.
 
-The exact-tip local workflow validator passed the positive graph and all mutation-negative cases, including removal of a legacy package job, Controller Dockerfile use, embedded frontend build, Controller version gate, Controller release archive, Controller version image tag, GPU-content check, and legacy Linux archive helper use.
+Run `33919997302` is a `dev` push smoke workflow. It did not publish a GitHub Release, create a release tag, or push Docker Hub images. Actual publication remains gated to the release workflow on `master` or an eligible manual dispatch with `publish == true`. This audit makes no claim that production publication occurred.
 
 ## Migration, Backup, Restore, Upgrade, and Rollback
 
-The Controller has six ordered SQLx migrations. Migration `0006_submission_ownership.sql` additively introduces nullable `task_attempts.submission_owner`; it does not remove or rewrite persisted data. A fresh exact-tip local `cargo test --locked -p videnoa-controller --test persistence_migrations` run passed all three cases:
+Controller startup applies the ordered SQLx migrations automatically in WAL mode. The fresh exact-tip migration test passed all three cases:
 
-- fresh database applies all migrations and effective SQLite pragmas;
-- an existing migration-5 database upgrades idempotently while preserving settings and worker/remote-job uniqueness;
-- an invalid migration transaction rolls back partial schema and records no success.
+- fresh database migration and effective SQLite pragmas;
+- migration-5 to current upgrade preserving settings and uniqueness contracts;
+- invalid migration rollback without partial schema or false success recording.
 
-The operator procedures match the implementation boundary: pause scheduling, reach known task states, stop cleanly, and preserve the full Controller `data_root`, WAL/SHM files when present, configuration, protected password hash, temp state, NAS roots, and matching worker `jobs.db` plus workspaces. Upgrade applies pending migrations at startup and requires health, authenticated readiness, worker, retained-history, and reconciliation checks before resume.
-
-Rollback correctly requires the complete pre-upgrade Controller and matching worker snapshots plus the previous binary/image and configuration. It explicitly forbids running an older binary on the migrated database and makes no unsupported claim of migration downgrade support.
+Migration `0006_submission_ownership.sql` is additive. The operator guides require pausing and cleanly stopping Controller, preserving the full `data_root` including WAL/SHM files, configuration and protected hash, persistent temp/recovery state, NAS roots, and matching worker `jobs.db` plus workspaces. Upgrade applies migrations at startup and requires health, authenticated readiness, worker, retained-history, and reconciliation checks. Rollback requires restoring the complete pre-upgrade Controller and worker snapshots with the previous binary/image/configuration and explicitly forbids pointing an older binary at the migrated database. No unsupported downgrade command is claimed.
 
 ## Independent Local Verification
 
-The following exact-tip checks passed:
+The following fresh exact-tip checks passed:
 
-- `node scripts/tests/validate_ci_release_workflows.test.mjs`;
-- `node scripts/validate_ci_release_workflows.mjs`;
-- `bash scripts/tests/package_controller_test.sh`;
-- `bash scripts/tests/package_controller_windows_static_test.sh`;
-- `bash scripts/tests/controller_archive_root_files_test.sh`;
+- positive and mutation-negative CI/release workflow contracts;
+- direct workflow validation;
+- deterministic Linux Controller archive, filename/version/layout, missing-file, wrong-version, and forbidden-content contracts;
+- Windows Controller packaging static target/name/layout/determinism/version/GPU-isolation contracts;
+- Controller archive root documentation/config completeness and secret-pattern checks;
+- legacy split/single archive, missing-output, insufficient-space, and fatal-p7zip propagation contracts;
+- Controller documentation contract checks;
+- Controller container source contract;
 - `cargo test --locked -p videnoa-controller --test persistence_migrations` (`3 passed; 0 failed`);
-- normal dependency-tree rejection of `videnoa-core`, ORT, ONNX Runtime, CUDA, cuDNN, and TensorRT crates;
-- `VIDENOA_CONTROLLER_WEB_PREBUILT=1 cargo +1.83 check --locked -p videnoa-controller` with `rustc 1.83.0`.
+- Controller normal/build dependency isolation from `videnoa-core`, ORT, ONNX Runtime, CUDA, cuDNN, and TensorRT;
+- protected-path range comparison and `git diff --check`.
 
-## Repository Landing and Audit Boundaries
+The Linux Controller archive test uses a compiled test-fixture executable to exercise deterministic packaging and rejection behavior; production binary authority is the successful hosted Linux Controller archive job. Native Windows production authority is the successful hosted Windows job.
 
-Before report replacement:
+Secret Guard's tracked scan reported only the two known pre-existing fixture/redaction literals in `controller-web/src/api/workerSchemas.test.ts` and `crates/core/src/logging.rs`; neither file changed in `67620f5..HEAD`, and no evidence or package artifact was flagged. The repository still has the previously documented generic key-file `.gitignore` coverage gaps. No new durable notepad finding was added because this exact p7zip `E_FAIL` mode and the Secret Guard observations are already recorded.
 
-- `HEAD == origin/dev == 67620f5b45d54205b44861e3cc5d59e88724e998`;
-- branch divergence was `0 0`;
-- the worktree was clean;
-- `git diff --check 094d878..67620f5b` passed.
+## Rejection Basis
 
-GitHub's artifacts API reports `total_count: 0` for run `33910972161`. No retained downloadable archive is claimed. Approval relies on exact-tip hosted build, execution, packaging, and verification jobs plus independent static/local contract checks.
+F4 requires every required job in the exact current-HEAD push run to pass. `Package smoke (Linux)` failed and did not verify the legacy Linux archive. Local fixture success, unchanged packaging topology, and the other 13 hosted successes do not satisfy that gate. The branch provenance and landing state are correct, Controller delivery contracts pass, and no GPU/runtime leakage or legacy naming/layout change was found, but exact-tip CI is not green.
 
-The `dev` push did not execute real GitHub Release or Docker Hub publication, and this audit performed no registry write, tag, release, workflow, issue, commit, or push. Publication approval is therefore limited to the validated workflow graph and successful non-publishing package/image smokes, not a claim that production publication was exercised.
-
-VERDICT: APPROVE
+VERDICT: REJECT
