@@ -1,14 +1,14 @@
-use std::io::{BufRead, IsTerminal};
 use std::net::{IpAddr, SocketAddr};
-use std::path::PathBuf;
+use std::num::NonZeroU16;
+use std::path::Path;
 use std::time::Duration;
 
-#[cfg(debug_assertions)]
-use std::path::Path;
-
-use clap::{Parser, Subcommand};
-use videnoa_controller::auth::{hash_password, AuthService};
-use videnoa_controller::config::ControllerConfig;
+use clap::Parser;
+use videnoa_controller::auth::AuthService;
+use videnoa_controller::config::{
+    listener_channel, serve_reconfigurable, ConfigBootstrap, ControllerConfig, PreparedListener,
+    ServerOverride,
+};
 use videnoa_controller::operations::{EventHub, OperationsDependencies, OperationsState};
 use videnoa_controller::orchestration::Orchestrator;
 use videnoa_controller::paths::PathCapabilities;
@@ -20,7 +20,7 @@ use videnoa_controller::scheduler::{
 };
 use videnoa_controller::tasks::TaskService;
 use videnoa_controller::workers::WorkerHealthService;
-use videnoa_controller::{serve_controller_until, FrontendAssets, StartupError};
+use videnoa_controller::{controller_app_router, FrontendAssets, StartupError};
 
 mod termination;
 
@@ -38,18 +38,9 @@ const SHUTDOWN_DRAIN_BOUND: Duration = Duration::from_secs(30);
 )]
 struct Cli {
     #[arg(long)]
-    config: Option<PathBuf>,
-    #[arg(long)]
     host: Option<IpAddr>,
     #[arg(long)]
-    port: Option<u16>,
-    #[command(subcommand)]
-    command: Option<Command>,
-}
-
-#[derive(Debug, Subcommand)]
-enum Command {
-    HashPassword,
+    port: Option<NonZeroU16>,
 }
 
 fn frontend_assets() -> Result<FrontendAssets, StartupError> {
@@ -68,27 +59,18 @@ fn frontend_assets() -> Result<FrontendAssets, StartupError> {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    if matches!(cli.command, Some(Command::HashPassword)) {
-        return print_password_hash();
-    }
-    run_controller(cli).await
+    Box::pin(run_controller(cli)).await
 }
 
 async fn run_controller(cli: Cli) -> anyhow::Result<()> {
-    let mut config = ControllerConfig::load(cli.config.as_deref())?;
-    if let Some(host) = cli.host {
-        config.server.host = host;
-    }
-    if let Some(port) = cli.port {
-        config.server.port = port;
-    }
+    let workspace = std::env::current_dir()?.canonicalize()?;
+    let data_root = ConfigBootstrap::prepare_data_root(&workspace)?;
+    let database =
+        Database::open(DatabaseOptions::new(data_root.join("controller.sqlite3"))).await?;
+    let store = Store::new(database);
+    let config = load_configuration(&workspace, &store, &cli).await?;
     let address = SocketAddr::new(config.server.host, config.server.port);
     let paths = PathCapabilities::open(&config.paths)?;
-    let database = Database::open(DatabaseOptions::new(
-        config.paths.data_root.join("controller.sqlite3"),
-    ))
-    .await?;
-    let store = Store::new(database);
     let recovery = recovery_runtime(&config, &store, &paths).await?;
     let scheduler = recovery.scheduler;
     let shutdown = recovery.shutdown;
@@ -116,6 +98,11 @@ async fn run_controller(cli: Cli) -> anyhow::Result<()> {
         tokio::try_join!(orchestration, worker_health)?;
         Ok::<(), RuntimeError>(())
     };
+    let tasks = TaskService::with_events(store.clone(), paths.clone(), events.clone());
+    warn_runtime_config(&config);
+    let assets = frontend_assets()?;
+    let http_shutdown = shutdown.cancellation_token();
+    let (listener, rebinds) = listener_channel();
     let operations = OperationsState::new(OperationsDependencies {
         auth: auth.clone(),
         store: store.clone(),
@@ -124,21 +111,22 @@ async fn run_controller(cli: Cli) -> anyhow::Result<()> {
         config: config.clone(),
         events: events.clone(),
         payload_limits,
-    });
-    let tasks = TaskService::with_events(store.clone(), paths, events);
-    if !config.auth.secure_cookie {
-        eprintln!("warning: session cookies are running without Secure; use only on trusted HTTP networks");
-    }
-    let assets = frontend_assets()?;
-    let http_shutdown = shutdown.cancellation_token();
-    let server = serve_controller_until(
-        address,
+    })
+    .with_configuration_listener(listener, workspace);
+    let router = controller_app_router(
         &assets,
         auth,
         tasks,
-        operations,
-        http_shutdown.child_token(),
+        operations.with_shutdown(http_shutdown.child_token()),
     );
+    let prepared = PreparedListener::bind(address)
+        .await
+        .map_err(|source| StartupError::Bind { address, source })?;
+    let server = async {
+        serve_reconfigurable(prepared, router, rebinds, http_shutdown.child_token())
+            .await
+            .map_err(StartupError::Serve)
+    };
     tokio::pin!(server);
     tokio::pin!(runtime);
     let exit = tokio::select! {
@@ -174,18 +162,38 @@ async fn run_controller(cli: Cli) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn print_password_hash() -> anyhow::Result<()> {
-    let password = if std::io::stdin().is_terminal() {
-        eprint!("Password: ");
-        rpassword::read_password()?
-    } else {
-        let mut password = String::new();
-        std::io::stdin().lock().read_line(&mut password)?;
-        password.truncate(password.trim_end_matches(['\r', '\n']).len());
-        password
-    };
-    println!("{}", hash_password(&password)?);
-    Ok(())
+async fn load_configuration(
+    workspace: &Path,
+    store: &Store,
+    cli: &Cli,
+) -> anyhow::Result<ControllerConfig> {
+    let settings = store.settings().await?;
+    if let Some(document) = settings.pending_config_document {
+        ConfigBootstrap::repair_projection(workspace, &document)?;
+        store.complete_config_projection(settings.version).await?;
+    }
+    let bootstrap = ConfigBootstrap::open(workspace)?;
+    bootstrap
+        .reconcile_with_server_override(
+            store,
+            &ServerOverride {
+                host: cli.host,
+                port: cli.port,
+            },
+        )
+        .await
+        .map_err(Into::into)
+}
+
+fn warn_runtime_config(config: &ControllerConfig) {
+    if !config.auth.secure_cookie {
+        eprintln!("warning: session cookies are running without Secure; use only on trusted HTTP networks");
+    }
+    if !config.server.host.is_loopback() {
+        eprintln!(
+            "warning: Controller is exposed beyond localhost; the first administrator setup request claims instance ownership"
+        );
+    }
 }
 
 struct RecoveryRuntime {
@@ -229,7 +237,8 @@ async fn recovery_runtime(
             config.retry.initial,
             config.retry.maximum,
             config.retry.max_attempts.get(),
-        ),
+        )
+        .with_runtime_settings(scheduler.runtime_settings().clone()),
         shutdown.clone(),
     );
     Ok(RecoveryRuntime {
