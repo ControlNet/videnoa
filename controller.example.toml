@@ -8,6 +8,7 @@ port = 3001
 input_roots = ["/srv/media/incoming"]
 output_roots = ["/srv/media/library"]
 data_root = "/var/lib/videnoa-controller"
+# Must be disjoint from output_roots and on the same filesystem as every output root.
 temp_root = "/var/lib/videnoa-controller/temp"
 
 [auth]

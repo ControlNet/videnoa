@@ -17,7 +17,8 @@ The NAS provides the configured input and output roots. `input_path` is an
 existing regular file under an input root and is never modified. `output_path`
 is an exact caller-selected, non-existing path under an output root. Input and
 output extensions can differ. Downloaded bytes first enter Controller-owned
-`temp_root`; final publication uses no-clobber semantics.
+`temp_root`; final publication is one atomic no-replace rename into the exact
+output path. Controller never writes an intermediate file under an output root.
 
 The existing `videnoa` service remains the GPU application. A Controller worker
 record names one remote Videnoa HTTP(S) service and its compute slot capacity.
@@ -58,6 +59,10 @@ already exist. An explicit config is clearer for operations.
 Start from [`controller.example.toml`](../controller.example.toml). Unknown TOML
 keys are rejected. Every configured root and data/temp directory must exist and
 must be a non-symlink directory. At least one input and output root is required.
+`temp_root` must not equal, contain, or be contained by an output root, and it
+must be on the same filesystem as every output root so publication can remain
+atomic. A nested mount discovered only at publication is rejected without a
+copy fallback.
 The password hash path must name a readable regular, non-symlink file containing
 an Argon2id PHC string.
 
@@ -101,7 +106,7 @@ The config sections are:
 | Section | Fields | Rules |
 |---|---|---|
 | `server` | `host`, `port` | IP address and port 1 through 65535 |
-| `paths` | `input_roots`, `output_roots`, `data_root`, `temp_root` | Existing non-symlink directories |
+| `paths` | `input_roots`, `output_roots`, `data_root`, `temp_root` | Existing non-symlink directories; temp is disjoint from and on the same filesystem as every output root |
 | `auth` | `password_hash_file`, `secure_cookie`, `session_absolute_seconds`, `session_idle_seconds` | Positive lifetimes; idle must not exceed absolute |
 | `scheduler` | `paused`, `default_compute_slots`, `prefetch_per_worker`, `max_concurrent_uploads`, `max_concurrent_downloads` | Slots and concurrency are positive; prefetch may be zero |
 | `timeouts` | `health_seconds`, `poll_seconds`, `transfer_seconds` | Positive seconds |
@@ -217,11 +222,29 @@ records `remote_state_ambiguous` and never guesses that compute can be repeated.
 ## Scheduling and Lifecycle
 
 Queued tasks are selected by `priority DESC, created_at ASC, id ASC`. Eligible
-workers are enabled, online, compatible, and below capacity. Selection favors
-lower used slots, then older assignment time, then worker ID. Controller allows
-at most one active upload per worker, bounds optional prefetch, and uses separate
-global upload and download limits. Uploads that feed an idle worker outrank
-optional prefetch.
+workers are enabled, online, compatible, and have stage-in budget. Selection
+favors lower compute occupancy, then lower stage-in occupancy, older assignment
+time, and worker ID.
+
+| Resource | Occupying states | Limit |
+|---|---|---|
+| Compute | `submitting`, `processing` | `compute_slots` |
+| Stage-in | `reserved`, `uploading`, `staged` | Unfilled compute demand plus `prefetch_per_worker` |
+| Stage-out | `remote_completed`, `downloading`, `verifying`, `publishing`, `remote_cleanup` | Neither compute nor stage-in slots |
+
+Reservation is admitted only when stage-in occupancy is below
+`max(compute_slots - compute_occupancy, 0) + prefetch_per_worker`. The later
+`staged -> submitting` transition separately claims compute in a SQLite-atomic
+update that checks both current compute occupancy and persisted pause. Concurrent
+staged tasks cannot claim the same final free compute slot.
+
+Thus `compute_slots=1, prefetch_per_worker=1` allows one downloading task, one
+processing task, and one uploading or staged task on the same worker. Controller
+still permits at most one active upload per worker and uses independent global
+upload and download limits. Uploads feeding unfilled compute demand outrank
+optional prefetch. Worker `used_slots` counts only submitting and processing;
+`assigned_tasks` counts every assigned nonterminal task. Reducing compute slots
+is rejected only when it would be below actual compute occupancy.
 
 Scheduler pause is durable. `POST /api/scheduler/pause` with the current settings
 version blocks new reservation, prefetch/upload admission, and compute submission.
@@ -254,16 +277,22 @@ publication or cleanup must converge.
 ## No-Clobber and Ambiguity
 
 Task intake requires the exact output leaf not to exist. Before publication,
-Controller rechecks the output capability and creates a task-owned hidden file
-in the destination directory. It syncs that file and finalizes with platform
-no-replace semantics. Existing or racing output is never overwritten or
-auto-renamed. To use a different destination, create a new task.
+Controller rechecks the output capability, re-hashes the verified file under
+`temp_root`, and atomically renames it directly to the exact final path with
+platform no-replace semantics. Existing or racing output is never overwritten,
+auto-renamed, or used as a reason to copy. The source and destination directory
+entries are durably synced before lifecycle completion. To use a different
+destination, create a new task.
 
-On publication recovery, Controller accepts a final file only when its durable
-length and SHA-256 match and no contradictory staging evidence remains. A valid
-task-owned staging file can resume finalization. Unknown ownership, mismatch,
-non-regular files, or contradictory final/staging evidence becomes
-`publication_ambiguous`. Controller preserves every file.
+On publication recovery, a verified temp file with no final retries the same
+direct rename. A final with no verified temp file converges only when its length
+and SHA-256 match durable evidence. Mismatch, non-regular files, or simultaneous
+temp and final files become `publication_ambiguous`; Controller preserves the
+unknown final and does not overwrite either path. A non-null destination staging
+name persisted by an older Controller is inspected conservatively: if that
+legacy file is absent, direct temp/final recovery proceeds; if it exists or
+cannot be safely inspected, recovery records `publication_ambiguous` and leaves
+the legacy artifact untouched.
 
 Operator response to `remote_state_ambiguous`:
 
@@ -277,7 +306,8 @@ Operator response to `remote_state_ambiguous`:
 
 Operator response to `publication_ambiguous`:
 
-1. Pause scheduling and preserve the final path and hidden staging artifact.
+1. Pause scheduling and preserve the final path, verified temp artifact, and any
+   legacy hidden staging artifact named by durable evidence.
 2. Compare regular-file type, length, and SHA-256 with durable evidence.
 3. Don't delete, rename, overwrite, or force retry either artifact. Preserve the
    task record for audit and perform any manual media decision outside Controller.
@@ -456,7 +486,8 @@ Diagnosis order:
 3. Check that NAS roots still name the same real directories and permissions.
 4. Check remote Videnoa health, `jobs.db`, matching job identity, and task
    workspace without deleting anything.
-5. For publication, preserve and hash the exact final and hidden staging files.
+5. For publication, preserve and hash the exact final, verified temp artifact,
+   and any legacy staging file named by durable evidence.
 
 Common failures:
 
@@ -567,28 +598,36 @@ Container mounts:
 |---|---|
 | `/etc/videnoa-controller` | Read-only configuration |
 | `/var/lib/videnoa-controller` | Read-write SQLite data |
-| `/var/tmp/videnoa-controller` | Read-write transfer/recovery temp |
 | `/mnt/input` | Read-only NAS input root |
-| `/mnt/output` | Read-write NAS output root |
+| `/mnt/publication` | One read-write parent mount containing separate `temp` and `library` directories |
 | `/run/secrets/admin-password.phc` | Separate read-only hash file |
 
 A root-owned mode-0600 bind mount isn't readable by UID 10001. Use host
 ownership/group/mode or a secret mechanism that permits read access while
 keeping the mount read-only. Never bake the hash into an image layer.
 
-Example container config uses `/mnt/input`, `/mnt/output`,
-`/var/lib/videnoa-controller`, `/var/tmp/videnoa-controller`, and
-`/run/secrets/admin-password.phc`. Start the pinned image with matching mounts
-and no GPU flag.
+Set the container config to `input_roots = ["/mnt/input"]`,
+`output_roots = ["/mnt/publication/library"]`,
+`temp_root = "/mnt/publication/temp"`,
+`data_root = "/var/lib/videnoa-controller"`, and the hash file above.
+Create `/srv/media/temp` and `/srv/media/library` on the same filesystem;
+only `library` belongs to the Jellyfin library, never the common parent or temp.
+Grant UID/GID 10001 write access to both directories.
+
+Do not bind-mount temp and output separately: Linux can reject a rename between
+different mount points with `EXDEV` even when their host directories have the
+same device ID. Mount their common parent once, as below, and avoid nested
+mounts between them. Cross-filesystem publication fails explicitly; Controller
+never falls back to copying or creating a hidden output-side staging file.
+Start the pinned image with matching mounts and no GPU flag.
 
 ```bash
 docker run -d --name videnoa-controller \
   -p 127.0.0.1:3001:3001 \
   --mount type=bind,src=/etc/videnoa-controller,dst=/etc/videnoa-controller,readonly \
   --mount type=bind,src=/var/lib/videnoa-controller,dst=/var/lib/videnoa-controller \
-  --mount type=bind,src=/var/tmp/videnoa-controller,dst=/var/tmp/videnoa-controller \
   --mount type=bind,src=/srv/media/incoming,dst=/mnt/input,readonly \
-  --mount type=bind,src=/srv/media/library,dst=/mnt/output \
+  --mount type=bind,src=/srv/media,dst=/mnt/publication \
   --mount type=bind,src=/run/secrets/admin-password.phc,dst=/run/secrets/admin-password.phc,readonly \
   controlnet/videnoa-controller:<version>
 ```

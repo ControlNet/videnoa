@@ -85,6 +85,9 @@ stop the Controller cleanly before a simple file backup, then copy the whole
 `controller.sqlite3-shm` when present. Also preserve the config and password
 hash file. `temp_root` contains restart-recovery artifacts and should remain
 persistent during normal operation, but it is not a substitute for the database.
+It must be disjoint from every output root and on the same filesystem as each
+one; Controller publishes by atomic no-replace rename and never copies through
+an output-root staging file.
 
 Every remote Videnoa service must persist its own data directory, especially
 `jobs.db` and the task workspaces under `workspace/`. That evidence is required
@@ -102,8 +105,8 @@ work.
 SQLite is authoritative. SSE and the Web UI are views of API state, not recovery
 evidence. On restart, Controller scans nonterminal rows and resumes the durable
 stage. Don't delete `controller.sqlite3`, Videnoa `jobs.db`, temp artifacts,
-destination staging files, final outputs, attempts, or remote workspaces to make
-a task move.
+legacy destination staging files named by durable evidence, final outputs,
+attempts, or remote workspaces to make a task move.
 
 For `remote_state_ambiguous`, disable the affected worker to stop new assignment.
 Preserve the Controller database, the worker's `jobs.db`, workspace, logs, task
@@ -111,10 +114,11 @@ ID, attempt ID, remote job ID, and exact workflow parameters. Compare that
 evidence before any manual action. Don't retry or create a replacement task that
 could repeat unknown compute.
 
-For `publication_ambiguous`, pause scheduling and preserve both the requested
-final path and any hidden Controller staging file. Compare their length and
-SHA-256 against durable task evidence. Don't delete, rename, overwrite, or force
-retry either file. Existing and racing destinations are never replaced.
+For `publication_ambiguous`, pause scheduling and preserve the requested final
+path, the verified artifact under `temp_root`, and any legacy hidden staging
+file named by durable evidence. Compare their length and SHA-256 against the
+task record. Don't delete, rename, overwrite, or force retry any artifact.
+Existing and racing destinations are never replaced.
 
 Cancellation is available from queued through verifying. Publishing,
 remote-cleanup, completed, failed, and cancelled tasks reject cancellation.
