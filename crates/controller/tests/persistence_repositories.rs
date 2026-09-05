@@ -170,7 +170,7 @@ async fn worker_and_settings_updates_reject_stale_versions() -> TestResult {
         compute_slots: ComputeSlots::try_from(3_u64)?,
         updated_at: now,
     };
-    let settings = store.settings().await?;
+    let settings = store.config_manager().settings()?;
     let settings_update = SettingsUpdate {
         expected_version: settings.version,
         scheduler: SchedulerStatus {
@@ -203,11 +203,17 @@ async fn worker_and_settings_updates_reject_stale_versions() -> TestResult {
         WorkerUpdateOutcome::Conflict
     );
     assert_eq!(
-        store.update_settings(&settings_update).await?,
+        store
+            .config_manager()
+            .update_settings(&settings_update)
+            .await?,
         CasOutcome::Applied { new_version: 1 }
     );
     assert_eq!(
-        store.update_settings(&settings_update).await?,
+        store
+            .config_manager()
+            .update_settings(&settings_update)
+            .await?,
         CasOutcome::Conflict
     );
 
@@ -221,7 +227,7 @@ async fn worker_and_settings_updates_reject_stale_versions() -> TestResult {
             .as_str(),
         "worker-renamed"
     );
-    assert!(store.settings().await?.scheduler.paused);
+    assert!(store.config_manager().settings()?.scheduler.paused);
     Ok(())
 }
 

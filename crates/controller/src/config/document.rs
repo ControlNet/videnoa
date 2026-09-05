@@ -6,11 +6,11 @@ use figment::providers::{Format, Serialized, Toml};
 use figment::Figment;
 
 use super::raw::RawControllerConfig;
+use super::PolicyUpdate;
 use super::{raw, validate, ConfigError, ControllerConfig};
 use crate::domain::{
     AuthSettingsDto, RetrySettingsDto, SchedulerStatus, ServerSettingsDto, TimeoutSettingsDto,
 };
-use crate::persistence::{ConfigurationUpdate, SettingsRecord};
 
 impl ControllerConfig {
     /// Builds the default controller configuration for a workspace.
@@ -101,10 +101,9 @@ impl ControllerConfig {
     pub fn settings_update(
         &self,
         expected_version: u64,
-        config_document: &str,
         updated_at: DateTime<Utc>,
-    ) -> Result<ConfigurationUpdate, ConfigError> {
-        Ok(ConfigurationUpdate {
+    ) -> Result<PolicyUpdate, ConfigError> {
+        Ok(PolicyUpdate {
             expected_version,
             server: ServerSettingsDto {
                 host: self.server.host,
@@ -142,16 +141,7 @@ impl ControllerConfig {
                 max_attempts: self.retry.max_attempts.get(),
             },
             updated_at,
-            config_document: config_document.to_owned(),
         })
-    }
-
-    /// Reconstructs typed configuration from a durable settings record.
-    ///
-    /// # Errors
-    /// Returns an error when the record's configuration document is invalid.
-    pub fn from_record(record: &SettingsRecord, workspace: &Path) -> Result<Self, ConfigError> {
-        Self::from_toml_in(&record.config_document, workspace)
     }
 }
 

@@ -120,11 +120,12 @@ async fn paused_scheduler_cannot_commit_upload_admission() -> TestResult {
     let server = MockVidenoa::start().await?;
     let fixture = Fixture::new(&server, 1, 1).await?;
     let prepared = fixture.reserved_task(vec![17_u8; 12_000]).await?;
-    let settings = fixture.store.settings().await?;
+    let settings = fixture.store.config_manager().settings()?;
     let mut scheduler = settings.scheduler;
     scheduler.paused = true;
     fixture
         .store
+        .config_manager()
         .update_settings(&SettingsUpdate {
             expected_version: settings.version,
             scheduler,

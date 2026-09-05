@@ -84,7 +84,7 @@ async fn scheduler_selects_exact_task_and_worker_order_with_compatibility() -> T
         .store
         .insert_task(&task(lower, "anime-upscale", 10, oldest))
         .await?;
-    let scheduler = Scheduler::load(fixture.store.clone()).await?;
+    let scheduler = Scheduler::load(fixture.store.clone())?;
 
     // When: two assignments are selected.
     let first = scheduler
@@ -128,7 +128,7 @@ async fn concurrent_scheduler_claims_reservation_budget_without_duplicate_attemp
             .insert_task(&task(id, "anime-upscale", 10, fixture.now))
             .await?;
     }
-    let scheduler = Arc::new(Scheduler::load(fixture.store.clone()).await?);
+    let scheduler = Arc::new(Scheduler::load(fixture.store.clone())?);
     let reservation_time = timestamp(1_788_307_200)?;
 
     // When: eight writers race deterministic selection and atomic reservation.

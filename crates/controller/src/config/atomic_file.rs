@@ -17,7 +17,7 @@ pub(super) fn replace(path: &Path, contents: &str) -> Result<(), ConfigError> {
     let temporary = parent.join(".controller.toml.pending");
     match fs::symlink_metadata(&temporary) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
-            return Err(redirected("config_projection", &temporary));
+            return Err(redirected("config_temporary", &temporary));
         }
         Ok(metadata) if metadata.is_file() => {
             fs::remove_file(&temporary).map_err(|source| ConfigError::Io {
@@ -27,7 +27,7 @@ pub(super) fn replace(path: &Path, contents: &str) -> Result<(), ConfigError> {
         }
         Ok(_) => {
             return Err(ConfigError::InvalidRoot {
-                field: "config_projection",
+                field: "config_temporary",
                 path: temporary,
                 reason: "path is not a regular file",
             });

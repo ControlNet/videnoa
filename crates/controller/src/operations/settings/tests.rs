@@ -26,7 +26,14 @@ async fn assert_hot_runtime(
     recovery_config: &RecoveryConfig,
     new_port: u16,
 ) -> TestResult {
-    assert!(store.settings().await?.pending_config_document.is_none());
+    assert!(store.config_manager().settings()?.scheduler.paused);
+    let legacy: (i64, i64, i64, i64, i64, String, Option<String>) = sqlx::query_as(
+        "SELECT version, server_port, secure_cookie, prefetch_per_worker, poll_seconds,
+         config_document, pending_config_document FROM controller_settings",
+    )
+    .fetch_one(store.database().pool())
+    .await?;
+    assert_eq!(legacy, (0, 3001, 0, 1, 5, String::new(), None));
     let projected = std::fs::read_to_string(workspace.path().join("data/controller.toml"))?;
     assert!(projected.contains(&format!("port = {new_port}")));
     assert!(auth.secure_cookie());
@@ -58,7 +65,7 @@ async fn assert_hot_runtime(
 }
 
 #[tokio::test]
-async fn settings_update_persists_projects_and_hot_applies_every_public_field() -> TestResult {
+async fn settings_update_persists_toml_and_hot_applies_every_public_field() -> TestResult {
     // Given: a fully bootstrapped runtime and an authenticated-settings state coordinator.
     let workspace = TempDir::new()?;
     let bootstrap = ConfigBootstrap::open(workspace.path())?;
@@ -67,9 +74,9 @@ async fn settings_update_persists_projects_and_hot_applies_every_public_field() 
     ))
     .await?;
     let store = Store::new(database);
-    let config = bootstrap.reconcile(&store).await?;
+    let config = bootstrap.initialize(&store)?;
     let paths = PathCapabilities::open(&config.paths)?;
-    let scheduler = Scheduler::load(store.clone()).await?;
+    let scheduler = Scheduler::load(store.clone())?;
     let auth = AuthService::new(config.auth.clone(), store.clone())?;
     let recovery_config = RecoveryConfig::new(
         paths.clone(),
@@ -100,7 +107,7 @@ async fn settings_update_persists_projects_and_hot_applies_every_public_field() 
         payload_limits: PayloadLimits::new(1024 * 1024, 64 * 1024)?,
     })
     .with_configuration_listener(listener, workspace.path().to_path_buf());
-    let current = store.settings().await?;
+    let current = store.config_manager().settings()?;
     let reservation = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
     let new_port = reservation.local_addr()?.port();
     drop(reservation);
@@ -134,7 +141,7 @@ async fn settings_update_persists_projects_and_hot_applies_every_public_field() 
         .map_err(|error| std::io::Error::other(format!("settings update failed: {error:?}")))?
         .0;
 
-    // Then: SQLite, TOML, auth, scheduler, and the live listener converge before success.
+    // Then: TOML, auth, scheduler, and the live listener converge before success.
     assert_eq!(response.server.port, new_port);
     assert!(response.secure_cookie);
     assert_eq!(response.scheduler.prefetch_per_worker, 3);
@@ -155,8 +162,8 @@ async fn settings_update_persists_projects_and_hot_applies_every_public_field() 
 }
 
 #[tokio::test]
-async fn committed_projection_failure_keeps_runtime_live_and_repairs_automatically() -> TestResult {
-    // Given: a runtime whose projection staging path is blocked after initialization.
+async fn toml_failure_changes_neither_runtime_nor_generation() -> TestResult {
+    // Given: a runtime whose temporary TOML path is blocked after initialization.
     let workspace = TempDir::new()?;
     let bootstrap = ConfigBootstrap::open(workspace.path())?;
     let database = Database::open(DatabaseOptions::new(
@@ -164,9 +171,9 @@ async fn committed_projection_failure_keeps_runtime_live_and_repairs_automatical
     ))
     .await?;
     let store = Store::new(database);
-    let config = bootstrap.reconcile(&store).await?;
+    let config = bootstrap.initialize(&store)?;
     let paths = PathCapabilities::open(&config.paths)?;
-    let scheduler = Scheduler::load(store.clone()).await?;
+    let scheduler = Scheduler::load(store.clone())?;
     let auth = AuthService::new(config.auth.clone(), store.clone())?;
     let state = OperationsState::new(OperationsDependencies {
         auth: auth.clone(),
@@ -177,7 +184,7 @@ async fn committed_projection_failure_keeps_runtime_live_and_repairs_automatical
         events: EventHub::new(),
         payload_limits: PayloadLimits::new(1024 * 1024, 64 * 1024)?,
     });
-    let current = store.settings().await?;
+    let current = store.config_manager().settings()?;
     let mut request = SettingsUpdateRequest {
         version: current.version,
         server: current.server,
@@ -190,27 +197,22 @@ async fn committed_projection_failure_keeps_runtime_live_and_repairs_automatical
     request.timeouts.poll_seconds = 12;
     std::fs::create_dir(workspace.path().join("data/.controller.toml.pending"))?;
 
-    // When: SQLite commits but the first TOML projection attempt fails.
+    // When: atomic TOML persistence is blocked.
+    let before = store.config_manager().config();
+    let document = std::fs::read_to_string(bootstrap.config_file())?;
     let result = apply(&state, request).await;
 
-    // Then: the committed runtime is live, failure is explicit, and repair completes automatically.
-    assert!(matches!(result, Err(OperationsError::CommittedDegraded)));
-    assert!(auth.secure_cookie());
+    // Then: no runtime policy, generation, or saved document changes.
+    assert!(matches!(result, Err(OperationsError::Internal)));
+    assert!(!auth.secure_cookie());
     assert_eq!(
         scheduler.runtime_settings().timeout_settings().poll_seconds,
-        12
+        5
     );
-    assert!(store.settings().await?.pending_config_document.is_some());
-    std::fs::remove_dir(workspace.path().join("data/.controller.toml.pending"))?;
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        loop {
-            if store.settings().await?.pending_config_document.is_none() {
-                return TestResult::Ok(());
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await??;
+    assert_eq!(store.config_manager().config(), before);
+    assert_eq!(store.config_manager().settings()?.version, current.version);
+    assert_eq!(std::fs::read_to_string(bootstrap.config_file())?, document);
+
     Ok(())
 }
 
@@ -224,9 +226,9 @@ async fn server_change_without_listener_capability_is_rejected_before_commit() -
     ))
     .await?;
     let store = Store::new(database);
-    let config = bootstrap.reconcile(&store).await?;
+    let config = bootstrap.initialize(&store)?;
     let paths = PathCapabilities::open(&config.paths)?;
-    let scheduler = Scheduler::load(store.clone()).await?;
+    let scheduler = Scheduler::load(store.clone())?;
     let auth = AuthService::new(config.auth.clone(), store.clone())?;
     let state = OperationsState::new(OperationsDependencies {
         auth,
@@ -237,7 +239,7 @@ async fn server_change_without_listener_capability_is_rejected_before_commit() -
         events: EventHub::new(),
         payload_limits: PayloadLimits::new(1024 * 1024, 64 * 1024)?,
     });
-    let current = store.settings().await?;
+    let current = store.config_manager().settings()?;
     let current_server = current.server.clone();
     let reservation = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
     let mut request = SettingsUpdateRequest {
@@ -259,7 +261,7 @@ async fn server_change_without_listener_capability_is_rejected_before_commit() -
         result,
         Err(OperationsError::InvalidField("server", _))
     ));
-    let unchanged = store.settings().await?;
+    let unchanged = store.config_manager().settings()?;
     assert_eq!(unchanged.version, current.version);
     assert_eq!(unchanged.server, current_server);
     Ok(())

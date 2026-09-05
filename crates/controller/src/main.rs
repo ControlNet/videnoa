@@ -68,10 +68,10 @@ async fn run_controller(cli: Cli) -> anyhow::Result<()> {
     let database =
         Database::open(DatabaseOptions::new(data_root.join("controller.sqlite3"))).await?;
     let store = Store::new(database);
-    let config = load_configuration(&workspace, &store, &cli).await?;
+    let config = load_configuration(&workspace, &store, &cli)?;
     let address = SocketAddr::new(config.server.host, config.server.port);
     let paths = PathCapabilities::open(&config.paths)?;
-    let recovery = recovery_runtime(&config, &store, &paths).await?;
+    let recovery = recovery_runtime(&config, &store, &paths)?;
     let scheduler = recovery.scheduler;
     let shutdown = recovery.shutdown;
     let payload_limits = recovery.payload_limits;
@@ -162,26 +162,20 @@ async fn run_controller(cli: Cli) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn load_configuration(
+fn load_configuration(
     workspace: &Path,
     store: &Store,
     cli: &Cli,
 ) -> anyhow::Result<ControllerConfig> {
-    let settings = store.settings().await?;
-    if let Some(document) = settings.pending_config_document {
-        ConfigBootstrap::repair_projection(workspace, &document)?;
-        store.complete_config_projection(settings.version).await?;
-    }
     let bootstrap = ConfigBootstrap::open(workspace)?;
     bootstrap
-        .reconcile_with_server_override(
+        .initialize_with_server_override(
             store,
             &ServerOverride {
                 host: cli.host,
                 port: cli.port,
             },
         )
-        .await
         .map_err(Into::into)
 }
 
@@ -204,7 +198,7 @@ struct RecoveryRuntime {
     payload_limits: PayloadLimits,
 }
 
-async fn recovery_runtime(
+fn recovery_runtime(
     config: &ControllerConfig,
     store: &Store,
     paths: &PathCapabilities,
@@ -216,7 +210,7 @@ async fn recovery_runtime(
         config.timeouts.transfer,
     )?;
     let payload_limits = PayloadLimits::new(RECOVERY_JSON_LIMIT, RECOVERY_TRANSFER_CHUNK)?;
-    let scheduler = Scheduler::load(store.clone()).await?;
+    let scheduler = Scheduler::load(store.clone())?;
     let transfers = TransferExecutor::new(
         TransferResources {
             store: store.clone(),

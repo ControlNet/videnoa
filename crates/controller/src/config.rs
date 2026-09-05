@@ -3,12 +3,12 @@ use std::num::{NonZeroU16, NonZeroU32};
 use std::path::PathBuf;
 use std::time::Duration;
 
+#[path = "config/atomic_file.rs"]
+mod atomic_file;
 #[path = "config/document.rs"]
 mod document;
 #[path = "config/bootstrap.rs"]
 mod local;
-#[path = "config/projection.rs"]
-mod projection;
 #[path = "config/private.rs"]
 mod private;
 #[path = "config/raw.rs"]
@@ -20,7 +20,13 @@ mod serving;
 #[path = "config/validate.rs"]
 mod validate;
 
+#[path = "config/settings.rs"]
+mod policy_dto;
+#[path = "config/manager.rs"]
+mod runtime_owner;
 pub use local::ConfigBootstrap;
+pub use policy_dto::{PolicyUpdate, SettingsRecord, SettingsUpdate};
+pub use runtime_owner::ConfigManager;
 pub use serving::{
     listener_channel, serve_reconfigurable, ListenerHandle, ListenerReceiver, PreparedListener,
 };
@@ -29,12 +35,6 @@ pub use serving::{
 pub struct ServerOverride {
     pub host: Option<IpAddr>,
     pub port: Option<NonZeroU16>,
-}
-
-fn persistence(error: &crate::persistence::PersistenceError) -> ConfigError {
-    ConfigError::Schema {
-        detail: error.to_string(),
-    }
 }
 
 const DEFAULT_MAX_ATTEMPTS: NonZeroU32 = NonZeroU32::MIN.saturating_add(4);

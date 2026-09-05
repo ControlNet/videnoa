@@ -28,7 +28,11 @@ async fn prefetch_is_bounded_and_idle_uploads_precede_optional_prefetch() -> Tes
             .insert_task(&task(id, "anime-upscale", 10, fixture.now))
             .await?;
     }
-    let scheduler = Scheduler::load(fixture.store.clone()).await?;
+    // Legacy database policy must not affect candidate SQL, reservations, or upload selection.
+    sqlx::query("UPDATE controller_settings SET paused = 1, prefetch_per_worker = 99")
+        .execute(fixture.store.database().pool())
+        .await?;
+    let scheduler = Scheduler::load(fixture.store.clone())?;
 
     // When: the scheduler fills one idle feed plus the configured single prefetch.
     let first = scheduler
@@ -76,12 +80,12 @@ async fn persisted_pause_blocks_only_new_reservation_upload_and_submission() -> 
         .store
         .insert_task(&task(queued, "anime-upscale", 10, fixture.now))
         .await?;
-    let scheduler = Scheduler::load(fixture.store.clone()).await?;
+    let scheduler = Scheduler::load(fixture.store.clone())?;
     scheduler
         .reserve_next(fixture.now)
         .await?
         .ok_or_else(|| std::io::Error::other("existing reservation missing"))?;
-    let settings = fixture.store.settings().await?;
+    let settings = fixture.store.config_manager().settings()?;
     let mut paused_status = settings.scheduler.clone();
     paused_status.paused = true;
 
@@ -95,7 +99,7 @@ async fn persisted_pause_blocks_only_new_reservation_upload_and_submission() -> 
             updated_at: fixture.now,
         })
         .await?;
-    let restarted = Scheduler::load(fixture.store.clone()).await?;
+    let restarted = Scheduler::load(fixture.store.clone())?;
 
     // Then: ambiguous/staged ownership remains while only forward-safe stages continue.
     assert!(restarted.reserve_next(fixture.now).await?.is_none());
@@ -169,8 +173,8 @@ async fn scheduler_settings_update_has_typed_stale_conflict_and_reconfigures_lim
 {
     // Given: one loaded scheduler and a settings snapshot.
     let fixture = fixture().await?;
-    let scheduler = Scheduler::load(fixture.store.clone()).await?;
-    let settings = fixture.store.settings().await?;
+    let scheduler = Scheduler::load(fixture.store.clone())?;
+    let settings = fixture.store.config_manager().settings()?;
     let update = SettingsUpdate {
         expected_version: settings.version,
         scheduler: SchedulerStatus {
@@ -225,8 +229,8 @@ async fn scheduler_settings_update_has_typed_stale_conflict_and_reconfigures_lim
 #[tokio::test]
 async fn invalid_runtime_settings_are_rejected_before_persistence() -> TestResult {
     let fixture = fixture().await?;
-    let scheduler = Scheduler::load(fixture.store.clone()).await?;
-    let settings = fixture.store.settings().await?;
+    let scheduler = Scheduler::load(fixture.store.clone())?;
+    let settings = fixture.store.config_manager().settings()?;
     let mut invalid = settings.clone();
     invalid.timeouts.health_seconds = 0;
 
@@ -242,6 +246,6 @@ async fn invalid_runtime_settings_are_rejected_before_persistence() -> TestResul
         .expect_err("zero timeout must be rejected");
 
     assert_eq!(error.code(), SchedulerErrorCode::Internal);
-    assert_eq!(fixture.store.settings().await?, settings);
+    assert_eq!(fixture.store.config_manager().settings()?, settings);
     Ok(())
 }

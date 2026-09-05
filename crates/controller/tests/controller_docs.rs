@@ -11,7 +11,7 @@ fn example_config_loads_without_operator_path_or_password_preparation(
     // When: Controller resolves the config for that workspace.
     let config = ControllerConfig::from_toml_in(&source, workspace.path())?;
 
-    // Then: media access is workspace-scoped and durable state stays under data.
+    // Then: relative media paths use workspace and durable state stays under data.
     assert_eq!(
         config.paths.input_roots,
         vec![workspace.path().to_path_buf()]
@@ -41,7 +41,7 @@ fn example_config_exposes_only_public_runtime_sections() -> Result<(), Box<dyn s
         .collect::<Vec<_>>();
     keys.sort_unstable();
 
-    // Then: only settings supported by the Web UI and persisted projection are present.
+    // Then: only settings supported by the Web UI and persisted TOML are present.
     assert_eq!(keys, ["auth", "retry", "scheduler", "server", "timeouts"]);
     assert!(!source.contains("password_hash_file"));
     assert!(!source.contains("[paths]"));

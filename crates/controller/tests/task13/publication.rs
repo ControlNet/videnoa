@@ -184,7 +184,7 @@ async fn crash_after_rename_recovers_without_ai_replay() -> TestResult {
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
-async fn cross_filesystem_roots_are_rejected_without_copy_fallback() -> TestResult {
+async fn cross_filesystem_output_is_rejected_without_copy_fallback() -> TestResult {
     // Given: temp and output roots are on different mounted filesystems.
     let server = MockVidenoa::start().await?;
     let output_directory = tempfile::TempDir::new_in("/dev/shm")?;
@@ -194,19 +194,18 @@ async fn cross_filesystem_roots_are_rejected_without_copy_fallback() -> TestResu
         std::fs::metadata(output_directory.path())?.dev()
     );
 
-    // When: publication path capabilities are opened.
-    let result = Fixture::new_with_output_directory(&server, 1, 1, output_directory).await;
+    // When: Controller starts normally, then evaluates an output on another filesystem.
+    let fixture = Fixture::new_with_output_directory(&server, 1, 1, output_directory).await?;
+    let result = fixture
+        .paths
+        .open_output(fixture.output_root.join("result.mp4"));
 
-    // Then: startup rejects the topology instead of installing a copy fallback.
-    let error = result.err().ok_or_else(|| {
-        std::io::Error::other("cross-filesystem path capabilities unexpectedly opened")
-    })?;
-    assert!(error
-        .downcast_ref::<videnoa_controller::paths::PathError>()
-        .is_some_and(|error| matches!(
-            error,
-            videnoa_controller::paths::PathError::CrossFilesystemPublication { .. }
-        )));
+    // Then: the task gets a typed capability error without a copy or visible staging file.
+    assert!(matches!(
+        result,
+        Err(videnoa_controller::paths::PathError::CrossFilesystemPublication { .. })
+    ));
+    assert_eq!(std::fs::read_dir(&fixture.output_root)?.count(), 0);
     Ok(())
 }
 
@@ -228,5 +227,58 @@ async fn destination_permission_denial_preserves_verified_bytes() -> TestResult 
     assert_eq!(outcome, PublicationOutcome::Failed);
     assert!(!output_path(&fixture, &prepared).await?.exists());
     assert!(verified_path(&fixture.temp_root, prepared.task_id).exists());
+    Ok(())
+}
+
+#[tokio::test]
+async fn external_output_crash_after_rename_recovers_without_ai_replay() -> TestResult {
+    // Given: publication reaches the post-rename checkpoint before lifecycle CAS.
+    let server = MockVidenoa::start().await?;
+    let output = b"crash recovered publication".repeat(1024);
+    let media = tempfile::TempDir::new()?;
+    let mut fixture = Fixture::new_with_output_directory(&server, 1, 1, media).await?;
+    fixture.paths = videnoa_controller::paths::PathCapabilities::open(
+        &videnoa_controller::config::PathConfig {
+            input_roots: vec![fixture.directory.path().to_path_buf()],
+            output_roots: vec![fixture.directory.path().to_path_buf()],
+            data_root: fixture.directory.path().join("data"),
+            temp_root: fixture.temp_root.clone(),
+        },
+    )?;
+    assert!(!fixture.output_root.starts_with(fixture.directory.path()));
+    let prepared = fixture.remote_completed(&server, &output).await?;
+    assert!(matches!(
+        fixture
+            .executor()?
+            .download(prepared.task_id, fixture.now, zero_jitter()?)
+            .await?,
+        videnoa_controller::scheduler::DownloadOutcome::Verified(_)
+    ));
+    assert_eq!(std::fs::read_dir(&fixture.output_root)?.count(), 0);
+    let gate = CheckpointGate::new(TransferCheckpointPoint::PublicationFinalized);
+    let executor = fixture.executor()?.with_checkpoint_observer(gate.clone());
+    let task_id = prepared.task_id;
+    let now = fixture.now;
+    let publication = tokio::spawn(async move {
+        let outcome = executor.publish(task_id, now, zero_jitter()?).await?;
+        TestResult::Ok(outcome)
+    });
+    gate.wait().await?;
+    let destination = output_path(&fixture, &prepared).await?;
+    let run_requests = server.counters().await.get(Route::Run);
+    assert_eq!(tokio::fs::read(&destination).await?, output);
+    assert_eq!(std::fs::read_dir(&fixture.output_root)?.count(), 1);
+    publication.abort();
+    let _ = publication.await;
+
+    // When: a fresh executor reconciles the matching final with no verified source.
+    let outcome = publish(&fixture, &prepared).await?;
+
+    // Then: cleanup completes without another remote compute request.
+    assert_eq!(outcome, PublicationOutcome::Completed);
+    assert_eq!(server.counters().await.get(Route::Run), run_requests);
+    assert_eq!(tokio::fs::read(&destination).await?, output);
+    assert_eq!(std::fs::read_dir(&fixture.output_root)?.count(), 1);
+    assert_status(&fixture, &prepared, TaskStatus::Completed).await?;
     Ok(())
 }

@@ -61,7 +61,7 @@ pub async fn fixture() -> TestResult<Fixture> {
     };
     let auth = AuthService::new(auth_config.clone(), store.clone())?;
     let paths = PathCapabilities::open(&path_config)?;
-    let scheduler = Scheduler::load(store.clone()).await?;
+    let scheduler = Scheduler::load(store.clone())?;
     let operations = OperationsState::new(OperationsDependencies {
         auth: auth.clone(),
         store: store.clone(),

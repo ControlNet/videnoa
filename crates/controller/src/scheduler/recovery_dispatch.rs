@@ -88,7 +88,7 @@ impl TransferExecutor {
     }
 
     async fn upload_deferred_by_pause(&self, task_id: TaskId) -> Result<bool, TransferError> {
-        let paused = self.resources.store.settings().await?.scheduler.paused;
+        let paused = self.resources.store.config_manager().scheduler().paused;
         let task = self
             .resources
             .store

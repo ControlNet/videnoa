@@ -75,7 +75,7 @@ async fn disabling_busy_worker_preserves_assignment_and_blocks_new_work() -> Tes
         )
         .await?;
     online(&fixture, worker.id, worker.version, &["anime-upscale"]).await?;
-    let scheduler = videnoa_controller::scheduler::Scheduler::load(fixture.store.clone()).await?;
+    let scheduler = videnoa_controller::scheduler::Scheduler::load(fixture.store.clone())?;
     let first = task_id(101);
     let second = task_id(102);
     fixture
@@ -148,7 +148,7 @@ async fn deletion_conflicts_for_active_and_historical_references() -> TestResult
         .store
         .insert_task(&task(task_id, "anime-upscale", 10, fixture.now))
         .await?;
-    let scheduler = videnoa_controller::scheduler::Scheduler::load(fixture.store.clone()).await?;
+    let scheduler = videnoa_controller::scheduler::Scheduler::load(fixture.store.clone())?;
     scheduler
         .reserve_next(fixture.now)
         .await?
@@ -218,7 +218,7 @@ async fn health_refresh_is_atomic_and_capacity_reduction_cannot_hide_usage() -> 
         .store
         .insert_task(&task(task_id, "anime-upscale", 10, fixture.now))
         .await?;
-    let scheduler = videnoa_controller::scheduler::Scheduler::load(fixture.store.clone()).await?;
+    let scheduler = videnoa_controller::scheduler::Scheduler::load(fixture.store.clone())?;
     scheduler
         .reserve_next(fixture.now)
         .await?

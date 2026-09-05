@@ -54,7 +54,7 @@ impl Fixture {
         ))
         .await?;
         let store = Store::new(database);
-        let config = bootstrap.reconcile(&store).await?;
+        let config = bootstrap.initialize(&store)?;
         let password_hash = hash_password(PASSWORD)?;
         if !store
             .insert_administrator_credential(&password_hash, Utc::now())
@@ -64,7 +64,7 @@ impl Fixture {
         }
         let auth = AuthService::new(config.auth.clone(), store.clone())?;
         let paths = PathCapabilities::open(&config.paths)?;
-        let scheduler = Scheduler::load(store.clone()).await?;
+        let scheduler = Scheduler::load(store.clone())?;
         let events = EventHub::new();
         let operations = OperationsState::new(OperationsDependencies {
             auth: auth.clone(),

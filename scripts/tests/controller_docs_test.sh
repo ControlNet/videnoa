@@ -105,6 +105,15 @@ if grep -Eiq '\[paths\]|password_hash_file|hash-password|admin-password\.phc|/ru
   fail 'documentation contains the obsolete prepared-root or password-file contract'
 fi
 
+for file in "$GUIDE" "$ARCHIVE_GUIDE"; do
+  for text in 'sole persisted Controller configuration source' 'Manual TOML edits require Controller restart' 'EXDEV' 'never rebased under workspace' 'container-visible paths'; do
+    require_text "$file" "$text"
+  done
+  if grep -Eiq 'SQLite is authoritative for settings|persists every public field to SQLite|must still resolve within|keep (task )?media inside the workspace' "$file"; then
+    fail 'documentation contains the obsolete configuration authority or media sandbox contract'
+  fi
+done
+
 while IFS= read -r link; do
   target="${link%%#*}"
   [[ -z "$target" || "$target" == http://* || "$target" == https://* || "$target" == mailto:* ]] && continue

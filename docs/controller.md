@@ -6,12 +6,11 @@ for `videnoa-controller`. Archive users receive the self-contained
 
 ## Architecture and Boundaries
 
-Controller is a GPU-free coordination service run from the common workspace
-that contains operator-selected media paths. It serves the Web UI, validates
+Controller is a GPU-free coordination service with a private working location. It serves the Web UI, validates
 task paths, stores task and attempt history, schedules remote work, streams
 transfers, and reconciles restarts.
 
-SQLite is authoritative for settings, the administrator credential, sessions,
+SQLite is authoritative for operational state: the administrator credential, sessions,
 tasks, attempts, assignments, idempotency, retry state, and recovery. Runtime
 channels and SSE only prompt work or client refetches. They are not a second
 queue or history store.
@@ -55,8 +54,7 @@ videnoa-controller --version
 ```
 
 Use [`controller.example.toml`](../controller.example.toml) as a field reference,
-not as a required installation step. The generated config is the active
-projection. Raw TOML accepts exactly these sections:
+not as a required installation step. Raw TOML accepts exactly these sections:
 
 | Section | Fields |
 |---|---|
@@ -70,6 +68,29 @@ Unknown fields are rejected. Defaults are loopback port 3001, non-Secure
 cookies, 24-hour absolute sessions, one-hour idle sessions, one compute slot,
 one prefetched task, one upload, one download, health/poll/transfer timeouts of
 10/5/300 seconds, retry delays of 1 through 60 seconds, and five attempts.
+
+`data/controller.toml` is the sole persisted Controller configuration source.
+The in-memory `ControllerConfig` is the active runtime configuration.
+`controller.sqlite3` holds durable operational/application state: tasks, attempts,
+workers, recovery evidence, idempotency, administrator credential, and sessions.
+Legacy SQLite settings columns remain unused; startup and Settings never read or
+update them, including the old configuration documents and projection journal.
+
+Web Settings validates policy and prebinds a changed listener, then writes a
+private temporary TOML file, fsyncs it, atomically replaces `controller.toml`, and
+fsyncs `data`. Only after persistence succeeds does it update runtime policy and
+hot-apply scheduler, independent transfer limits, auth, timeouts, retry, and the
+listener. Failed persistence leaves runtime unchanged. Stale Settings generations
+return conflict; the generation is in memory and resets on restart. A shared
+admission lock holds pause/config commits behind already admitted submissions
+and prevents new reservations, uploads, or submissions after pause commits.
+Processing and downstream work continue. Shutdown pauses admission in memory only,
+so it preserves manual TOML edits and does not persist an implicit operator pause.
+
+Manual TOML edits require Controller restart. There is no automatic TOML file
+watching, polling, or database reconciliation. A crash after the TOML replacement
+naturally loads the saved configuration on restart. `--host` and `--port` overrides
+persist directly to TOML at startup and remain effective on later starts.
 
 ## First Administrator Setup
 
@@ -87,7 +108,7 @@ accepts this exact shape:
 }
 ```
 
-The POST requires an exact `Origin` matching the request scheme and Host. A
+The POST requires valid same-host Origin proof under the transport policy below. A
 successful setup returns the existing `LoginResponse`, sets the session cookie,
 and returns `x-csrf-token`. A mismatched or shorter password returns 400, an
 origin mismatch returns 403, and an already initialized setup returns 409.
@@ -99,8 +120,17 @@ or a protected same-origin HTTPS endpoint.
 
 Browser sessions use an HttpOnly, SameSite=Strict cookie and CSRF proof.
 `Secure` is present when `secure_cookie = true`. Cookie-authenticated mutations
-require both `x-csrf-token` and an exact same-origin `Origin`. Bearer requests are
+require both `x-csrf-token` and a valid same-origin `Origin`. Bearer requests are
 CSRF exempt. Controller does not enable permissive CORS.
+
+Same-origin proof compares parsed Host and Origin authorities, including ports
+and HTTP/HTTPS default ports. With `secure_cookie=false`, same-host HTTP and HTTPS
+are accepted. With `secure_cookie=true`, only same-host HTTPS is accepted.
+Malformed or foreign origins and missing required proof are rejected. Forwarded
+headers are not trusted. HTTPS reverse-proxy first-access setup works with defaults;
+an HTTPS session can enable Secure cookies in Settings, then subsequent mutations
+require HTTPS Origin plus CSRF proof. As before, changing Secure policy invalidates
+old sessions; sign in again to receive a Secure cookie.
 
 `POST /api/auth/login` accepts `{"password":"..."}` after setup.
 `GET /api/auth/session` returns current session metadata and rotates the
@@ -115,20 +145,34 @@ logs, configuration, URLs, or source control.
 
 ## Workspace and Paths
 
-Every task supplies its own `input_path` and `output_path`. Relative paths
-resolve from the startup working directory. Absolute paths are accepted only
-when they resolve inside that workspace. Controller-private `./data` is excluded
-from all task input, output, and recovery capabilities.
+Task paths may refer to any safe filesystem location visible to the Controller
+process. Absolute paths retain their OS location, for example
+`/mnt/user/media/anime/Frieren/E08.mkv` and
+`/mnt/user/media/anime/Frieren/E08.AI.mp4`; they are never rebased under workspace.
+Relative paths resolve from the Controller workspace (the startup working
+directory). With workspace `/opt/videnoa-controller`, `media/E08.mkv` resolves to
+`/opt/videnoa-controller/media/E08.mkv`. Task records store normalized absolute
+paths. The workspace is only Controller's working location, not a media sandbox.
+The entire `<workspace>/data/**` subtree is private and forbidden for task input,
+output, and recovery capabilities, including indirect symlink paths.
 
 Input must be an existing regular file with an extension. Output is an exact,
 caller-selected missing leaf with an extension. Parent traversal, symlink
 components, changed file identity/content, non-regular input, and existing or
 racing output fail closed. Controller never overwrites or auto-renames output.
 
-Downloaded bytes use a transient UUID task directory under `./data`. Final
-publication is an atomic no-replace rename to the requested path. Keeping media
-and `data` below one common workspace mount preserves same-filesystem rename
-semantics without fixed input/output directories.
+Downloaded bytes remain in private UUID task directories under `data` until
+verified. Final publication uses atomic no-replace rename. No `.videnoa-*`,
+`.partial`, `.staging`, or incomplete final file is created in the media/Jellyfin
+directory. An existing destination is never overwritten.
+
+Paths outside workspace are allowed. Safe publication still requires a supported
+atomic publication relationship between private temporary storage and output.
+Different devices are rejected at output intake with `CrossFilesystemPublication`;
+a rename that reports `EXDEV` (including separate mounts of one filesystem)
+returns the same typed publication capability error. There is no copy fallback,
+visible sibling staging, or destination rewriting. Preserve verified recovery
+evidence and arrange a supported mount layout before retrying publication.
 
 ## Register Workers and Workflows
 
@@ -215,7 +259,7 @@ counts, SSE, and logout require session or Bearer authentication after setup.
 | `GET` | `/api/health` | `200 {"status":"ok"}` |
 | `GET` | `/api/readiness` | Authenticated readiness checks |
 | `GET` | `/api/auth/setup` | `{"initialized":bool}` |
-| `POST` | `/api/auth/setup` | First credential plus login response; exact Origin required |
+| `POST` | `/api/auth/setup` | First credential plus login response; valid Origin required |
 | `POST` | `/api/auth/login` | Session cookie, CSRF header, and session JSON |
 | `GET` | `/api/auth/session` | Current session metadata |
 | `POST` | `/api/auth/logout` | `{"logged_out":true}` |
@@ -227,8 +271,8 @@ visible ASCII bytes. Request fields are:
 
 | Field | Rule |
 |---|---|
-| `input_path` | Existing regular media file in workspace, outside `data` |
-| `output_path` | Missing output leaf in workspace, outside `data` |
+| `input_path` | Existing regular process-visible media file, outside private `data` |
+| `output_path` | Missing process-visible output leaf, outside private `data` |
 | `workflow` | Non-empty UTF-8 name, maximum 128 bytes |
 | `priority` | Integer from -100 through 100 |
 | `source` | `manual` or `api` |
@@ -291,8 +335,8 @@ For a source-accurate filesystem backup:
 5. Record Controller and worker versions without recording credentials.
 
 Restore only while Controller and affected workers are stopped. Restore the
-matching Controller data, media layout, and worker data under the same workspace
-root. Start Controller, check health and authenticated readiness, inspect every
+matching Controller data and worker data, and media at its recorded absolute
+paths. Start Controller, check health and authenticated readiness, inspect every
 nonterminal task and worker, then resume scheduling.
 
 ## Upgrade and Rollback
@@ -316,11 +360,11 @@ curl --fail http://127.0.0.1:3001/api/health
   container user.
 - Setup 400: password and `password_confirmation` must match and contain at least
   12 bytes.
-- Setup 403: `Origin` must exactly match request scheme and Host.
+- Setup 403: `Origin` must match Host; Secure cookies require HTTPS.
 - Setup 409: setup already completed; use login.
 - `401`: credential is missing, expired, revoked, or invalid.
-- `403` mutation: exact Origin or current CSRF proof is missing.
-- Path rejection: keep media inside the workspace and outside `data`; remove
+- `403` mutation: valid Origin or current CSRF proof is missing.
+- Path rejection: use accessible media outside private `data`; remove
   traversal and symlink components.
 - Worker offline: verify network/TLS, Videnoa health, persistent data, and
   workflow compatibility.
@@ -341,7 +385,7 @@ preserves default UID/GID `10001:10001`, exposes port 3001, and uses
 `videnoa-controller` as entrypoint. It declares no named config, credential,
 input, or output volumes.
 
-Use one writable common-parent workspace bind. The `--user` override maps writes
+Use a writable Controller workspace bind for private state. The `--user` override maps writes
 to the invoking host user, avoiding host root ownership requirements:
 
 ```bash
@@ -357,6 +401,28 @@ The explicit `--host 0.0.0.0` enables container port forwarding but listens on
 every container interface. Keep the host publication on loopback during trusted
 first setup, or protect it with firewalling and same-origin HTTPS. Do not expose
 an uninitialized Controller directly to an untrusted network.
+
+Task paths inside Docker are container-visible paths. Mount required media into
+the container namespace; no Docker path translation exists and media need not
+live under `/workspace`. For an ANI-RSS path such as `/mnt/user/media/anime/E08.mkv`,
+mount the host path at the same container path. One common mount can give private
+Controller state and external media the required atomic rename relationship:
+
+```bash
+mkdir -p /mnt/user/controller-workspace
+docker run -d --name videnoa-controller \
+  --user "$(id -u):$(id -g)" \
+  -p 127.0.0.1:3001:3001 \
+  --mount type=bind,src=/mnt/user,dst=/mnt/user \
+  --workdir /mnt/user/controller-workspace \
+  controlnet/videnoa-controller:<version> --host 0.0.0.0
+```
+
+The workspace above is separate from `/mnt/user/media`. Separate bind mounts for
+workspace and media can return `EXDEV` even on the same host disk; the Controller
+reports that publication limitation explicitly. Changing the Controller listener
+port in Docker also requires updating container port mapping, reverse proxy, and
+health-check configuration. Listener settings remain available normally.
 
 Archives are:
 

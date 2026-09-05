@@ -23,7 +23,7 @@ impl Reconciler {
         report: &mut RecoveryReport,
     ) -> Result<(), RecoveryError> {
         let service = LifecycleService::new(self.store.clone());
-        let scheduler = crate::scheduler::Scheduler::load(self.store.clone()).await?;
+        let scheduler = crate::scheduler::Scheduler::load(self.store.clone())?;
         let mut admission = None;
         if task.status == TaskStatus::Staged {
             self.checkpoint(crate::scheduler::TransferCheckpointPoint::BeforeRemoteSubmit)

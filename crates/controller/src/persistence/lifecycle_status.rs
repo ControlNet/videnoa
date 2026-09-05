@@ -8,6 +8,7 @@ use super::PersistenceError;
 pub(super) async fn update_task_status(
     transaction: &mut Transaction<'_, Sqlite>,
     write: &PairedTransition,
+    paused: bool,
 ) -> Result<u64, PersistenceError> {
     let occurred_at = timestamp(write.occurred_at);
     let status = task_status(write.to);
@@ -46,9 +47,9 @@ pub(super) async fn update_task_status(
             destination_staging_name = CASE WHEN ? = 'publishing' THEN ? ELSE destination_staging_name END,
             retry_count = CASE WHEN ? IN ('staged', 'verifying') THEN 0 ELSE retry_count END,
             next_retry_at_ms = CASE WHEN ? IN ('staged', 'verifying') THEN NULL ELSE next_retry_at_ms END
-         WHERE (? != 'uploading' OR (SELECT paused FROM controller_settings WHERE id = 1) = 0)
+         WHERE (? != 'uploading' OR ? = 0)
            AND (? != 'submitting' OR (
-               (SELECT paused FROM controller_settings WHERE id = 1) = 0
+               ? = 0
                AND (SELECT COUNT(*) FROM tasks active
                     WHERE active.worker_id = tasks.worker_id
                       AND active.status IN ('submitting', 'processing')) <
@@ -63,7 +64,7 @@ pub(super) async fn update_task_status(
     .bind(status).bind(occurred_at).bind(status).bind(occurred_at)
     .bind(status).bind(occurred_at).bind(status).bind(occurred_at)
     .bind(status).bind(expected_size).bind(status).bind(expected_sha)
-    .bind(status).bind(staging_name).bind(status).bind(status).bind(status).bind(status)
+    .bind(status).bind(staging_name).bind(status).bind(status).bind(status).bind(paused).bind(status).bind(paused)
     .bind(write.task_id.to_string()).bind(task_status(write.from))
     .bind(sqlite_u64("task_version", write.task_version)?)
     .execute(&mut **transaction).await?;

@@ -93,3 +93,47 @@ fn durability_sync_uses_retained_source_and_destination_directories(
     );
     Ok(())
 }
+
+#[test]
+fn external_output_publication_has_only_complete_final_entry(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new()?;
+    let media = TempDir::new()?;
+    let destination = media.path().join("E08.AI.mp4");
+    let output = fixture.capabilities.open_output(&destination)?;
+    let source = fixture.source()?;
+    let finalizer = output.prepare_publication(&source)?;
+    assert_eq!(std::fs::read_dir(media.path())?.count(), 0);
+    finalizer.rename_noreplace()?;
+    finalizer.sync_parents()?;
+    assert_eq!(std::fs::read(&destination)?, b"durable bytes");
+    assert_eq!(std::fs::read_dir(media.path())?.count(), 1);
+    // A competing final destination is never replaced, even after preparation.
+    let second = fixture.source()?;
+    assert!(fixture
+        .capabilities
+        .reopen_output(&destination)?
+        .prepare_publication(&second)?
+        .rename_noreplace()
+        .is_err());
+    assert_eq!(std::fs::read(&destination)?, b"durable bytes");
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn cross_filesystem_rename_is_typed_and_leaves_media_empty(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new()?;
+    let media = TempDir::new_in("/dev/shm")?;
+    let destination = media.path().join("E08.AI.mp4");
+    // Recovery can reach finalization even if a mount relationship changed since intake.
+    let output = fixture.capabilities.reopen_output(&destination)?;
+    let source = fixture.source()?;
+    let finalizer = output.prepare_publication(&source)?;
+    assert!(
+        matches!(finalizer.rename_noreplace(), Err(super::PathError::CrossFilesystemPublication { destination: actual, .. }) if actual == destination)
+    );
+    assert_eq!(std::fs::read_dir(media.path())?.count(), 0);
+    Ok(())
+}

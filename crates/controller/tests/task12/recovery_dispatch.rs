@@ -17,11 +17,12 @@ async fn recovery_dispatch_defers_persisted_pause_without_losing_reservation() -
     let server = MockVidenoa::start().await?;
     let fixture = Fixture::new(&server, 1, 1).await?;
     let prepared = fixture.reserved_task(vec![67_u8; 20_000]).await?;
-    let settings = fixture.store.settings().await?;
+    let settings = fixture.store.config_manager().settings()?;
     let mut scheduler = settings.scheduler;
     scheduler.paused = true;
     fixture
         .store
+        .config_manager()
         .update_settings(&SettingsUpdate {
             expected_version: settings.version,
             scheduler,
