@@ -160,6 +160,22 @@ impl Scheduler {
         }
     }
 
+    pub(crate) async fn lock_settings(&self) -> tokio::sync::OwnedRwLockWriteGuard<()> {
+        Arc::clone(&self.submission_admission).write_owned().await
+    }
+
+    pub(crate) fn apply_runtime(
+        &self,
+        scheduler: &crate::domain::SchedulerStatus,
+        timeouts: &crate::domain::TimeoutSettingsDto,
+        retry: &crate::domain::RetrySettingsDto,
+    ) -> Result<(), SchedulerError> {
+        self.transfers.reconfigure(scheduler);
+        self.runtime_settings.reconfigure(timeouts, retry)?;
+        self.store.notify_change(DurableChange::Settings);
+        Ok(())
+    }
+
     pub(crate) async fn settings(&self) -> Result<SettingsRecord, SchedulerError> {
         self.store.settings().await.map_err(Into::into)
     }
