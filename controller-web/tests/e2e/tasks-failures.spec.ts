@@ -4,25 +4,19 @@ import {
   appendEvidence,
   capture,
   fulfillJson,
+  installAuthenticatedSession,
   installPagedApi,
   requestJournal,
   statuses,
   task,
 } from "./tasks-fixtures"
 
-const session = {
-  id: "550e8400-e29b-41d4-a716-446655440000",
-  authenticated: true,
-  method: "session",
-  expires_at: "2030-01-01T00:00:00Z",
-  idle_expires_at: "2030-01-01T00:00:00Z",
-} as const
 const emptyCounts = { items: statuses.map((status) => ({ status, count: 0 })), total: 0 }
 
 test("suppresses prior rows when a changed query fails", async ({ page }) => {
   // Given: a successful initial page and a failing changed-query request.
   await page.addInitScript(() => Object.defineProperty(window, "EventSource", { value: undefined }))
-  await page.route("**/api/auth/session", async (route) => fulfillJson(route, session))
+  await installAuthenticatedSession(page)
   await page.route("**/api/status-counts", async (route) => fulfillJson(route, emptyCounts))
   await page.route("**/api/tasks?*", async (route) => {
     const url = new URL(route.request().url())
@@ -51,7 +45,7 @@ test("shows bounded loading state until a slow page resolves", async ({ page }) 
   let releaseRequest = (): void => undefined
   const gate = new Promise<void>((resolve) => { releaseRequest = resolve })
   await page.addInitScript(() => Object.defineProperty(window, "EventSource", { value: undefined }))
-  await page.route("**/api/auth/session", async (route) => fulfillJson(route, session))
+  await installAuthenticatedSession(page)
   await page.route("**/api/status-counts", async (route) => fulfillJson(route, emptyCounts))
   await page.route("**/api/tasks?*", async (route) => {
     await gate
@@ -73,7 +67,7 @@ test("recovers a failed call through Retry", async ({ page }) => {
   // Given: the first bounded task request fails and the second succeeds.
   let taskRequests = 0
   await page.addInitScript(() => Object.defineProperty(window, "EventSource", { value: undefined }))
-  await page.route("**/api/auth/session", async (route) => fulfillJson(route, session))
+  await installAuthenticatedSession(page)
   await page.route("**/api/status-counts", async (route) => fulfillJson(route, emptyCounts))
   await page.route("**/api/tasks?*", async (route) => {
     taskRequests += 1
@@ -159,7 +153,7 @@ test("does not correct contradictory empty-page metadata or loop", async ({ page
   // Given: a server contradicts the requested deep offset in its empty response metadata.
   const journal = requestJournal()
   await page.addInitScript(() => Object.defineProperty(window, "EventSource", { value: undefined }))
-  await page.route("**/api/auth/session", async (route) => fulfillJson(route, session))
+  await installAuthenticatedSession(page)
   await page.route("**/api/status-counts", async (route) => {
     journal.counts.push(route.request().url())
     await fulfillJson(route, emptyCounts)
