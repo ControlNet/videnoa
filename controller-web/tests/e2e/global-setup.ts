@@ -6,6 +6,7 @@ const directories = [
   "../.omo/evidence/videnoa-controller/task-19/playwright-report/screenshots/task-17/task-actions",
   "../.omo/evidence/videnoa-controller/task-19/playwright-report/screenshots/task-18/workers-settings",
   "../.omo/evidence/videnoa-controller/task-19/visual-failures",
+  "../.omo/evidence/videnoa-controller/controller-local-bootstrap",
 ] as const
 
 export default async function globalSetup(): Promise<void> {
