@@ -77,7 +77,9 @@ async fn startup_scans_durable_tasks_and_dispatches_recovery_commands() -> TestR
         let state = fixture.task_at(status).await?;
         expected.insert(state.task_id, kind);
     }
-    let reconciler = reconciler(&fixture);
+    let page_size = std::num::NonZeroU16::new(2)
+        .ok_or_else(|| std::io::Error::other("recovery page size must be nonzero"))?;
+    let reconciler = reconciler(&fixture).with_recovery_page_size(page_size);
 
     // When: startup reconciliation scans SQLite rather than an in-memory queue.
     let report = reconciler.reconcile_startup(fixture.now).await?;
