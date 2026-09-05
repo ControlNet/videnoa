@@ -13,13 +13,13 @@ export function BootstrapError({ message, retry }: BootstrapErrorProps) {
   return (
     <main className="login-page">
       <section className="login-panel compact-panel" aria-labelledby="unavailable-title">
-        <p className="technical-label">SESSION CHECK</p>
+        <p className="technical-label">CONTROLLER CHECK</p>
         <h1 id="unavailable-title">Controller unavailable</h1>
         <div className="error-summary" role="alert" tabIndex={-1} ref={alertRef}>
           {message}
         </div>
         <button className="primary-button" type="button" onClick={retry}>
-          Retry session check
+          Retry Controller check
         </button>
       </section>
     </main>
