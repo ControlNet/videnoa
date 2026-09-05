@@ -20,6 +20,8 @@ mod fault_matrix_upload;
 mod multi_worker;
 #[path = "task20/one_worker.rs"]
 mod one_worker;
+#[path = "task20/orchestration.rs"]
+mod orchestration;
 #[path = "task20/outage_matrix.rs"]
 mod outage_matrix;
 #[path = "task20/pause.rs"]

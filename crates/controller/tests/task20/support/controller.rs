@@ -1,5 +1,6 @@
 use std::error::Error;
 use std::fs;
+use std::num::NonZeroU16;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,7 +19,7 @@ use crate::mock_videnoa::server::MockVidenoa;
 
 use super::admission::FixturePermit;
 use super::http::{path_string, require_status};
-use super::runtime::{start_runtime, ControllerRuntime};
+use super::runtime::{start_runtime, ControllerRuntime, RuntimeOptions};
 
 pub type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -38,15 +39,30 @@ pub struct ControllerFixture {
     pub(super) client: reqwest::Client,
     runtime: Option<ControllerRuntime>,
     checkpoint_observer: Option<Arc<dyn TransferCheckpointObserver>>,
+    recovery_page_size: Option<NonZeroU16>,
 }
 
 impl ControllerFixture {
     pub async fn start() -> TestResult<Self> {
-        Self::start_with_checkpoint_observer(None).await
+        Self::start_with_options(None, None).await
     }
 
     pub async fn start_with_checkpoint_observer(
         checkpoint_observer: Option<Arc<dyn TransferCheckpointObserver>>,
+    ) -> TestResult<Self> {
+        Self::start_with_options(checkpoint_observer, None).await
+    }
+
+    pub async fn start_with_recovery_page_size_and_checkpoint(
+        recovery_page_size: NonZeroU16,
+        checkpoint_observer: Arc<dyn TransferCheckpointObserver>,
+    ) -> TestResult<Self> {
+        Self::start_with_options(Some(checkpoint_observer), Some(recovery_page_size)).await
+    }
+
+    async fn start_with_options(
+        checkpoint_observer: Option<Arc<dyn TransferCheckpointObserver>>,
+        recovery_page_size: Option<NonZeroU16>,
     ) -> TestResult<Self> {
         let fixture_permit = FixturePermit::acquire().await?;
         let directory = TempDir::new()?;
@@ -79,7 +95,10 @@ impl ControllerFixture {
             &store,
             &path_config,
             &auth_config,
-            checkpoint_observer.clone(),
+            RuntimeOptions {
+                checkpoint_observer: checkpoint_observer.clone(),
+                recovery_page_size,
+            },
         )
         .await?;
         let base_url = format!("http://{}", runtime.address);
@@ -97,6 +116,7 @@ impl ControllerFixture {
             client: reqwest::Client::new(),
             runtime: Some(runtime),
             checkpoint_observer,
+            recovery_page_size,
         })
     }
 
@@ -120,7 +140,10 @@ impl ControllerFixture {
             &self.store,
             &self.path_config,
             &self.auth_config,
-            self.checkpoint_observer.clone(),
+            RuntimeOptions {
+                checkpoint_observer: self.checkpoint_observer.clone(),
+                recovery_page_size: self.recovery_page_size,
+            },
         )
         .await?;
         self.base_url = format!("http://{}", runtime.address);

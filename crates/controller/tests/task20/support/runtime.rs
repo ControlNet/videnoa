@@ -1,5 +1,6 @@
 use std::fs;
 use std::net::{Ipv4Addr, SocketAddr};
+use std::num::NonZeroU16;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -22,6 +23,11 @@ use videnoa_controller::{controller_app_router, FrontendAssets};
 
 use super::TestResult;
 
+pub(super) struct RuntimeOptions {
+    pub(super) checkpoint_observer: Option<Arc<dyn TransferCheckpointObserver>>,
+    pub(super) recovery_page_size: Option<NonZeroU16>,
+}
+
 pub(super) struct ControllerRuntime {
     pub(super) address: SocketAddr,
     shutdown: Option<oneshot::Sender<()>>,
@@ -38,7 +44,7 @@ pub(super) async fn start_runtime(
     store: &Store,
     path_config: &PathConfig,
     auth_config: &AuthConfig,
-    checkpoint_observer: Option<Arc<dyn TransferCheckpointObserver>>,
+    options: RuntimeOptions,
 ) -> TestResult<ControllerRuntime> {
     let auth = AuthService::new(auth_config.clone(), store.clone())?;
     let paths = PathCapabilities::open(path_config)?;
@@ -84,7 +90,7 @@ pub(super) async fn start_runtime(
             runtime_settings: scheduler.runtime_settings().clone(),
         },
     );
-    if let Some(observer) = checkpoint_observer.clone() {
+    if let Some(observer) = options.checkpoint_observer.clone() {
         transfers = transfers.with_checkpoint_observer(observer);
     }
     let mut reconciler = Reconciler::new(
@@ -99,10 +105,10 @@ pub(super) async fn start_runtime(
         ),
         shutdown.clone(),
     );
-    if let Some(observer) = checkpoint_observer {
+    if let Some(observer) = options.checkpoint_observer {
         reconciler = reconciler.with_checkpoint_observer(observer);
     }
-    let orchestrator = Orchestrator::new(
+    let mut orchestrator = Orchestrator::new(
         store.clone(),
         scheduler.clone(),
         reconciler,
@@ -110,6 +116,9 @@ pub(super) async fn start_runtime(
         shutdown.clone(),
         &events,
     );
+    if let Some(page_size) = options.recovery_page_size {
+        orchestrator = orchestrator.with_recovery_page_size(page_size);
+    }
     let worker_health = WorkerHealthService::new(
         store.clone(),
         scheduler.runtime_settings().clone(),
