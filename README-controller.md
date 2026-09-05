@@ -97,6 +97,12 @@ HTTP, 24-hour absolute sessions, one-hour idle sessions, one compute slot, one
 prefetched task, one upload, one download, health/poll/transfer timeouts of
 10/5/300 seconds, retry delays of 1 through 60 seconds, and five attempts.
 
+Plain HTTP on a trusted LAN is a supported deployment, including access through
+a LAN IP address or hostname. Setup, login, task operations, Workers, Settings,
+and live updates work with the default `secure_cookie=false`; HTTPS and public
+Internet exposure are not required. Leave **Require secure session cookie** off
+for HTTP deployments. That option explicitly requires HTTPS for session use.
+
 `data/controller.toml` is the sole persisted Controller configuration source.
 The in-memory `ControllerConfig` is the active runtime configuration.
 `controller.sqlite3` holds durable operational/application state: tasks, attempts,

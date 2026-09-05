@@ -187,7 +187,7 @@ test("coalesces repeated activation and deduplicates overlapping history", async
   expect(historyRequests).toBe(1)
 })
 
-test("preserves accessible desktop and narrow detail layouts without browser secrets", async ({ page, context }) => {
+test("preserves accessible desktop and narrow detail layouts without browser secrets", async ({ page, context, baseURL }) => {
   // Given: long CJK and technical history is rendered through the production preview.
   const journal = requestJournal()
   const historyGate = createGate()
@@ -203,7 +203,7 @@ test("preserves accessible desktop and narrow detail layouts without browser sec
   })
   const older = attempt(selectedTask, 1)
   let historyRequests = 0
-  await context.addCookies([{ name: "videnoa_session", value: crypto.randomUUID(), url: "http://127.0.0.1:4181", httpOnly: true, sameSite: "Strict" }])
+  await context.addCookies([{ name: "videnoa_session", value: crypto.randomUUID(), url: new URL("/", baseURL).href, httpOnly: true, sameSite: "Strict" }])
   await installPagedApi(page, journal, 1)
   await page.route(`**/api/tasks/${selectedTask.id}?*`, async (route) => {
     const offset = Number(new URL(route.request().url()).searchParams.get("offset"))
@@ -286,7 +286,7 @@ test("preserves accessible desktop and narrow detail layouts without browser sec
   await expect(page.getByRole("region", { name: "Task Detail" })).toContainText("超高解像度")
   expect((await new AxeBuilder({ page }).include(".task-detail-pane").analyze()).violations).toEqual([])
   expect(await page.evaluate(async () => ({
-    caches: await caches.keys(),
+    caches: typeof caches === "undefined" ? [] : await caches.keys(),
     indexedDatabases: await indexedDB.databases(),
     localStorage: Object.keys(localStorage),
     sessionStorage: Object.keys(sessionStorage),

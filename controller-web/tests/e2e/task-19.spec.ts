@@ -116,12 +116,12 @@ test("preserves visible focus and instant feedback in forced colors and reduced 
   await page.screenshot({ path: `${failureEvidenceDir}/forced-colors-reduced-motion.png`, animations: "disabled", fullPage: false, scale: "css" })
 })
 
-test("expires to a clean login surface without browser-stored credentials", async ({ page, context }) => {
+test("expires to a clean login surface without browser-stored credentials", async ({ page, context, baseURL }) => {
   await disableEventSource(page)
   await context.addCookies([{
     name: "videnoa_session",
     value: crypto.randomUUID(),
-    url: "http://127.0.0.1:4173",
+    url: new URL("/", baseURL).href,
     httpOnly: true,
     sameSite: "Strict",
   }])
@@ -149,7 +149,7 @@ test("expires to a clean login surface without browser-stored credentials", asyn
   await expect(page.getByRole("heading", { name: "Sign in to Controller" })).toBeVisible()
   await expect(page.getByLabel("Controller password")).toBeFocused()
   expect(await page.evaluate(async () => ({
-    cacheKeys: await caches.keys(),
+    cacheKeys: typeof caches === "undefined" ? [] : await caches.keys(),
     indexedDatabases: await indexedDB.databases(),
     local: Object.keys(localStorage),
     session: Object.keys(sessionStorage),
