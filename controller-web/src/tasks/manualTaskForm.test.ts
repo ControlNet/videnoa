@@ -4,17 +4,18 @@ import { ApiClientError } from "../api/client"
 import { manualTaskErrorMessage, manualTaskFieldErrors } from "./manualTaskForm"
 
 describe("manual task server guidance", () => {
-  it("derives outside-root guidance from structured field evidence", () => {
-    // Given: Rust's generic top-level message and precise input field error.
+  it("derives workspace guidance from structured field evidence", () => {
+    // Given: the generic top-level message and precise synthetic test-only workspace error.
     const error = new ApiClientError("invalid_request", 400, "request validation failed", false, [
-      { field: "input_path", code: "invalid_value", message: "path is not available through configured roots" },
+      { field: "input_path", code: "invalid_value", message: "path is outside the task workspace" },
     ])
 
     // When: operator guidance is derived.
     const message = manualTaskErrorMessage(error)
 
-    // Then: the path/root recovery path is explicit.
-    expect(message).toContain("outside the configured roots")
+    // Then: recovery uses the workspace model without exposing fixed media roots.
+    expect(message).toContain("outside the Controller workspace")
+    expect(message).not.toContain("configured roots")
   })
 
   it("derives no-clobber guidance from structured field evidence", () => {
