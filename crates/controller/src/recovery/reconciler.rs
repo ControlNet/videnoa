@@ -140,7 +140,7 @@ impl Reconciler {
         };
         let client = VidenoaClient::new(
             worker.api_url.clone(),
-            self.config.timeouts,
+            self.config.remote_timeouts(),
             self.config.limits,
         )?;
         match client.health().await {
