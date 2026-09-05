@@ -31,6 +31,11 @@ export async function fulfillJson(route: Route, body: unknown, status = 200): Pr
   await route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) })
 }
 
+export async function installAuthenticatedSession(page: Page): Promise<void> {
+  await page.route("**/api/auth/setup", async (route) => fulfillJson(route, { initialized: true }))
+  await page.route("**/api/auth/session", async (route) => fulfillJson(route, session))
+}
+
 export function task(index: number, overrides: Partial<Task> = {}): Task {
   const status = statusFor(index)
   const completed = status === "completed" || status === "failed" || status === "cancelled"
@@ -108,7 +113,7 @@ export async function installLiveApi(page: Page, journal: RequestJournal, initia
     }
     Object.defineProperty(window, "EventSource", { value: TestEventSource })
   })
-  await page.route("**/api/auth/session", async (route) => fulfillJson(route, session))
+  await installAuthenticatedSession(page)
   await page.route("**/api/status-counts", async (route) => {
     journal.counts.push(route.request().url())
     await fulfillJson(route, {
@@ -150,7 +155,7 @@ export async function appendEvidence(message: string): Promise<void> {
 
 async function installSession(page: Page): Promise<void> {
   await page.addInitScript(() => Object.defineProperty(window, "EventSource", { value: undefined }))
-  await page.route("**/api/auth/session", async (route) => fulfillJson(route, session))
+  await installAuthenticatedSession(page)
 }
 
 function matchingIndices(url: URL, total: number): number[] {
