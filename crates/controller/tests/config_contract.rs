@@ -11,11 +11,12 @@ static ENV_LOCK: Mutex<()> = Mutex::new(());
 const UPLOAD_OVERRIDE_KEY: &str = "VIDENOA_CONTROLLER_SCHEDULER__MAX_CONCURRENT_UPLOADS";
 const UNKNOWN_ENV_KEY: &str = "VIDENOA_CONTROLLER_SERVER__UNKNOWN";
 
+#[path = "config_contract/publication_roots.rs"]
+mod publication_roots;
+
 fn complete_config(directory: &TempDir) -> TestResult<String> {
-    let input = directory.path().join("input");
-    let output = directory.path().join("output");
-    let data = directory.path().join("data");
-    let temp = directory.path().join("temp");
+    let [input, output, data, temp] =
+        ["input", "output", "data", "temp"].map(|name| directory.path().join(name));
     let hash = directory.path().join("admin-password.phc");
     for path in [&input, &output, &data, &temp] {
         fs::create_dir(path)?;
@@ -126,12 +127,9 @@ fn invalid_roots_and_missing_hash_file_fail_typed_validation() -> TestResult {
         &directory.path().join("input").display().to_string(),
         &directory.path().join("missing-input").display().to_string(),
     );
+    let hash = directory.path().join("admin-password.phc");
     let missing_hash = source.replace(
-        &directory
-            .path()
-            .join("admin-password.phc")
-            .display()
-            .to_string(),
+        &hash.display().to_string(),
         &directory.path().join("missing.phc").display().to_string(),
     );
 
@@ -190,6 +188,7 @@ fn config_error_code(error: &ConfigError) -> &'static str {
         ConfigError::MissingConfigFile { .. } => "missing_config_file",
         ConfigError::Schema { .. } => "schema",
         ConfigError::InvalidRoot { .. } => "invalid_root",
+        ConfigError::OverlappingPublicationRoots { .. } => "overlapping_publication_roots",
         ConfigError::MissingPasswordHashFile { .. } => "missing_password_hash_file",
         ConfigError::InvalidPasswordHash { .. } => "invalid_password_hash",
         ConfigError::ZeroValue { .. } => "zero_value",

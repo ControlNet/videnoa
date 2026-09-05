@@ -90,6 +90,11 @@ pub enum ConfigError {
         path: PathBuf,
         reason: &'static str,
     },
+    #[error("temporary root {temp_root} overlaps output root {output_root}")]
+    OverlappingPublicationRoots {
+        temp_root: PathBuf,
+        output_root: PathBuf,
+    },
     #[error("password hash file is missing or invalid: {path}")]
     MissingPasswordHashFile { path: PathBuf },
     #[error("password hash file does not contain an Argon2id PHC string: {path}")]

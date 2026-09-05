@@ -16,6 +16,7 @@ pub(super) fn build_config(raw: RawControllerConfig) -> Result<ControllerConfig,
     validate_roots("paths.output_roots", &raw.paths.output_roots)?;
     validate_directory("paths.data_root", &raw.paths.data_root)?;
     validate_directory("paths.temp_root", &raw.paths.temp_root)?;
+    validate_publication_roots(&raw.paths.temp_root, &raw.paths.output_roots)?;
     validate_hash_file(&raw.auth.password_hash_file)?;
     let session_absolute = positive_duration(
         "auth.session_absolute_seconds",
@@ -81,6 +82,31 @@ pub(super) fn build_config(raw: RawControllerConfig) -> Result<ControllerConfig,
             max_attempts: positive_nonzero_u32("retry.max_attempts", raw.retry.max_attempts)?,
         },
     })
+}
+
+fn validate_publication_roots(temp_root: &Path, output_roots: &[PathBuf]) -> Result<(), ConfigError> {
+    let canonical_temp = fs::canonicalize(temp_root).map_err(|_| ConfigError::InvalidRoot {
+        field: "paths.temp_root",
+        path: temp_root.to_path_buf(),
+        reason: "path could not be resolved",
+    })?;
+    for output_root in output_roots {
+        let canonical_output =
+            fs::canonicalize(output_root).map_err(|_| ConfigError::InvalidRoot {
+                field: "paths.output_roots",
+                path: output_root.clone(),
+                reason: "path could not be resolved",
+            })?;
+        if canonical_temp.starts_with(&canonical_output)
+            || canonical_output.starts_with(&canonical_temp)
+        {
+            return Err(ConfigError::OverlappingPublicationRoots {
+                temp_root: temp_root.to_path_buf(),
+                output_root: output_root.clone(),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn validate_roots(field: &'static str, paths: &[PathBuf]) -> Result<(), ConfigError> {
