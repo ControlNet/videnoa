@@ -26,25 +26,14 @@ impl Store {
                          WHERE json_extract(capability.value, '$.name') = tasks.workflow
                      )
                      AND (
-                         SELECT COUNT(*) FROM tasks assigned
-                         WHERE assigned.worker_id = worker.id
-                           AND assigned.status NOT IN ('completed', 'failed', 'cancelled')
-                     ) < worker.compute_slots
-                     AND (
-                         NOT EXISTS (
-                             SELECT 1 FROM tasks assigned
-                             WHERE assigned.worker_id = worker.id
-                               AND assigned.status NOT IN ('completed', 'failed', 'cancelled')
-                         ) OR (
-                             SELECT COUNT(*) FROM tasks pending
-                             WHERE pending.worker_id = worker.id
-                               AND pending.status IN ('reserved', 'uploading', 'staged')
-                         ) < settings.prefetch_per_worker + CASE WHEN NOT EXISTS (
-                             SELECT 1 FROM tasks active
+                         SELECT COUNT(*) FROM tasks pending
+                         WHERE pending.worker_id = worker.id
+                           AND pending.status IN ('reserved', 'uploading', 'staged')
+                     ) < MAX(worker.compute_slots - (
+                             SELECT COUNT(*) FROM tasks active
                              WHERE active.worker_id = worker.id
                                AND active.status IN ('submitting', 'processing')
-                         ) THEN 1 ELSE 0 END
-                     )
+                         ), 0) + settings.prefetch_per_worker
                )
              RETURNING attempt_count",
         )

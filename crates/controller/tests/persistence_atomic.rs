@@ -121,10 +121,10 @@ async fn concurrent_reservations_claim_once_and_respect_capacity() -> TestResult
         }
     }
 
-    // Then: exactly one durable task/attempt pair owns the only slot.
-    assert_eq!(reserved, 1);
-    assert_eq!(store.worker_used_slots(worker_id).await?, 1);
-    assert_eq!(store.count_attempts_for_tasks(&task_ids).await?, 1);
+    // Then: one idle feed plus one prefetch reserve uniquely without claiming compute.
+    assert_eq!(reserved, 2);
+    assert_eq!(store.worker_used_slots(worker_id).await?, 0);
+    assert_eq!(store.count_attempts_for_tasks(&task_ids).await?, 2);
     Ok(())
 }
 

@@ -65,7 +65,7 @@ impl Store {
              WHERE id = ? AND version = ?
                AND (SELECT COUNT(*) FROM tasks assigned
                     WHERE assigned.worker_id = workers.id
-                      AND assigned.status NOT IN ('completed', 'failed', 'cancelled')) <= ?
+                      AND assigned.status IN ('submitting', 'processing')) <= ?
              RETURNING version",
         )
         .bind(update.name.as_str())
@@ -87,7 +87,7 @@ impl Store {
                 "SELECT worker.version,
                     (SELECT COUNT(*) FROM tasks assigned
                      WHERE assigned.worker_id = worker.id
-                       AND assigned.status NOT IN ('completed', 'failed', 'cancelled'))
+                       AND assigned.status IN ('submitting', 'processing'))
                  FROM workers worker WHERE worker.id = ?",
             )
             .bind(update.id.to_string())
@@ -141,7 +141,7 @@ impl Store {
     pub async fn worker_used_slots(&self, id: WorkerId) -> Result<u64, PersistenceError> {
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM tasks
-             WHERE worker_id = ? AND status NOT IN ('completed', 'failed', 'cancelled')",
+             WHERE worker_id = ? AND status IN ('submitting', 'processing')",
         )
         .bind(id.to_string())
         .fetch_one(self.database.pool())

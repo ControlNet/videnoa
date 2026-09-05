@@ -83,11 +83,18 @@ impl Store {
                AND EXISTS (
                    SELECT 1 FROM workers WHERE id = ? AND enabled = 1 AND online = 1
                )
-               AND (
-                   SELECT COUNT(*) FROM tasks assigned
-                   WHERE assigned.worker_id = ?
-                     AND assigned.status NOT IN ('completed', 'failed', 'cancelled')
-               ) < (SELECT compute_slots FROM workers WHERE id = ?)
+                AND (
+                    SELECT COUNT(*) FROM tasks pending
+                    WHERE pending.worker_id = ?
+                      AND pending.status IN ('reserved', 'uploading', 'staged')
+                ) < (SELECT MAX(worker.compute_slots - (
+                        SELECT COUNT(*) FROM tasks active
+                        WHERE active.worker_id = worker.id
+                          AND active.status IN ('submitting', 'processing')
+                    ), 0) + settings.prefetch_per_worker
+                FROM workers worker
+                JOIN controller_settings settings ON settings.id = 1
+                WHERE worker.id = ? AND settings.paused = 0)
              RETURNING attempt_count",
         )
         .bind(write.worker_id.to_string())

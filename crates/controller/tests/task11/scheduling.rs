@@ -110,8 +110,8 @@ async fn scheduler_selects_exact_task_and_worker_order_with_compatibility() -> T
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn concurrent_scheduler_claims_never_exceed_capacity_or_duplicate_attempts() -> TestResult {
-    // Given: one two-slot worker and four queued tasks.
+async fn concurrent_scheduler_claims_reservation_budget_without_duplicate_attempts() -> TestResult {
+    // Given: one two-slot worker with prefetch one and four queued tasks.
     let fixture = fixture().await?;
     let worker = fixture
         .registry
@@ -144,11 +144,11 @@ async fn concurrent_scheduler_claims_never_exceed_capacity_or_duplicate_attempts
         }
     }
 
-    // Then: exactly two unique task/attempt pairs own the two durable slots.
+    // Then: exactly three unique task/attempt pairs own idle demand plus prefetch.
     assignments.sort_by_key(|assignment| assignment.task_id());
     assignments.dedup_by_key(|assignment| assignment.task_id());
-    assert_eq!(assignments.len(), 2);
-    assert_eq!(fixture.store.worker_used_slots(worker.id).await?, 2);
-    assert_eq!(fixture.store.count_attempts_for_tasks(&task_ids).await?, 2);
+    assert_eq!(assignments.len(), 3);
+    assert_eq!(fixture.store.worker_used_slots(worker.id).await?, 0);
+    assert_eq!(fixture.store.count_attempts_for_tasks(&task_ids).await?, 3);
     Ok(())
 }

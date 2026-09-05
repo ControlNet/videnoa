@@ -96,7 +96,8 @@ impl Store {
     pub async fn worker_capacity(&self, id: WorkerId) -> Result<WorkerCapacity, PersistenceError> {
         let row = sqlx::query(
             "SELECT w.compute_slots,
-                SUM(CASE WHEN t.status NOT IN ('completed', 'failed', 'cancelled') THEN 1 ELSE 0 END) AS used,
+                SUM(CASE WHEN t.status IN ('submitting', 'processing') THEN 1 ELSE 0 END) AS used,
+                SUM(CASE WHEN t.status NOT IN ('completed', 'failed', 'cancelled') THEN 1 ELSE 0 END) AS assigned,
                 SUM(CASE WHEN t.status = 'staged' THEN 1 ELSE 0 END) AS staged,
                 SUM(CASE WHEN t.status = 'processing' THEN 1 ELSE 0 END) AS processing,
                 SUM(CASE WHEN t.status = 'uploading' THEN 1 ELSE 0 END) AS uploads,
@@ -114,7 +115,7 @@ impl Store {
                 .map_err(|_| super::codec::corrupt("used_slots", used))?,
             available_slots: u16::try_from(total.saturating_sub(used))
                 .map_err(|_| super::codec::corrupt("available_slots", total))?,
-            assigned_tasks: rust_u32("assigned_tasks", row.try_get("used")?)?,
+            assigned_tasks: rust_u32("assigned_tasks", row.try_get("assigned")?)?,
             staged_tasks: rust_u32("staged_tasks", row.try_get("staged")?)?,
             processing_tasks: rust_u32("processing_tasks", row.try_get("processing")?)?,
             active_uploads: u16::try_from(rust_u64("active_uploads", row.try_get("uploads")?)?)
