@@ -53,8 +53,9 @@ impl TransferExecutor {
             Err(PathError::Io { source, .. }) if source.kind() == ErrorKind::AlreadyExists => {
                 self.fail_ambiguous(task, attempt, now).await
             }
-            Err(error @ PathError::CrossFilesystemPublication { .. }) => {
-                self.fail_publication_path(task, attempt, error, now).await
+            Err(PathError::CrossFilesystemPublication { .. }) => {
+                self.move_publication(output, source, task, attempt, expected, now)
+                    .await
             }
             Err(PathError::Io { .. }) => self.fail_publication(task, attempt, now).await,
             Err(_) => self.fail_ambiguous(task, attempt, now).await,

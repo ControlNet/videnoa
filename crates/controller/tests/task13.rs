@@ -16,6 +16,9 @@ mod cleanup;
 mod publication;
 #[path = "task13/publication_ambiguity.rs"]
 mod publication_ambiguity;
+#[cfg(target_os = "linux")]
+#[path = "task13/publication_copy.rs"]
+mod publication_copy;
 #[path = "task13/publication_durability.rs"]
 mod publication_durability;
 #[path = "task13/publication_nonregular.rs"]

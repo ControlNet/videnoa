@@ -8,6 +8,7 @@ mod lifecycle_retry;
 mod lifecycle_status;
 mod lifecycle_transition;
 mod models;
+mod processing_progress;
 mod readiness;
 mod reservation;
 mod scheduler;

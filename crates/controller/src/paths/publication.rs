@@ -131,7 +131,7 @@ impl RootedOutput {
         }
     }
 
-    fn open_parent(&self, create_missing: bool) -> Result<Dir, PathError> {
+    pub(super) fn open_parent(&self, create_missing: bool) -> Result<Dir, PathError> {
         self.root.ensure_current()?;
         let mut directory = self.root.open_directory(&self.parent)?;
         let metadata = directory

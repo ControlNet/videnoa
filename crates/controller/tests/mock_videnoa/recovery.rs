@@ -189,3 +189,188 @@ fn reconciler(fixture: &Fixture) -> Reconciler {
         ShutdownCoordinator::new(),
     )
 }
+
+#[tokio::test]
+async fn processing_polls_persist_progress_and_complete_without_losing_attempt_identity(
+) -> TestResult {
+    // Given: a real HTTP mock worker and durable processing task.
+    let server = MockVidenoa::start().await?;
+    let fixture = Fixture::new(&server, 1).await?;
+    let state = fixture.task_at(TaskStatus::Processing).await?;
+    let original = fixture.store.current_attempt(state.task_id).await?.unwrap();
+    let remote_id = original.attempt.remote_job_id.unwrap();
+    let sample = crate::mock_videnoa::domain::JobProgress {
+        current_frame: 125,
+        total_frames: Some(1000),
+        fps: 25.0,
+        eta_seconds: Some(35.2),
+    };
+    server
+        .set_job(
+            &remote_id.to_string(),
+            crate::mock_videnoa::domain::JobStatus::Running,
+            Some(sample),
+        )
+        .await?;
+    let reconciler = reconciler(&fixture);
+
+    // Wire the real Store observer used by SSE, without any password verification fixture.
+    let config_workspace = tempfile::tempdir()?;
+    let config =
+        videnoa_controller::config::ControllerConfig::from_toml_in("", config_workspace.path())?;
+    let events = videnoa_controller::operations::EventHub::new();
+    let mut wakeups = events.subscribe_wakeups();
+    let _operations = videnoa_controller::operations::OperationsState::new(
+        videnoa_controller::operations::OperationsDependencies {
+            auth: videnoa_controller::auth::AuthService::new(
+                config.auth.clone(),
+                fixture.store.clone(),
+            )?,
+            store: fixture.store.clone(),
+            scheduler: videnoa_controller::scheduler::Scheduler::load(fixture.store.clone())?,
+            paths: fixture.paths.clone(),
+            config,
+            events,
+            payload_limits: PayloadLimits::new(1024 * 1024, 4096)?,
+        },
+    );
+    // When: a running poll observes actual frame/FPS/ETA values.
+    reconciler
+        .reconcile_task_id(state.task_id, fixture.now)
+        .await?;
+    let task = fixture.load_task(state.task_id).await?;
+    let attempt = fixture.store.current_attempt(state.task_id).await?.unwrap();
+    tokio::time::timeout(Duration::from_secs(1), wakeups.recv()).await??;
+    assert!((task.progress.percent - 12.5).abs() < f32::EPSILON);
+    assert_eq!(task.progress.processed_frames, Some(125));
+    assert_eq!(task.progress.total_frames, Some(1000));
+    assert_eq!(task.progress.frames_per_second, Some(25.0));
+    assert_eq!(task.progress.eta_seconds, Some(36));
+    assert_eq!(task.progress, attempt.attempt.progress);
+    assert_eq!(attempt.attempt.id, original.attempt.id);
+    assert_eq!(attempt.attempt.remote_job_id, Some(remote_id));
+
+    // Then: unchanged samples do not churn versions, and completion uses fresh CAS versions.
+    reconciler
+        .reconcile_task_id(state.task_id, fixture.now)
+        .await?;
+    assert_eq!(
+        fixture.load_task(state.task_id).await?.version,
+        task.version
+    );
+    assert!(matches!(
+        wakeups.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+    server
+        .set_job(
+            &remote_id.to_string(),
+            crate::mock_videnoa::domain::JobStatus::Completed,
+            None,
+        )
+        .await?;
+    reconciler
+        .reconcile_task_id(state.task_id, fixture.now)
+        .await?;
+    let completed = fixture.load_task(state.task_id).await?;
+    assert_eq!(completed.status, TaskStatus::RemoteCompleted);
+    assert!((completed.progress.percent - 100.0).abs() < f32::EPSILON);
+    assert_eq!(completed.progress.eta_seconds, Some(0));
+    assert_eq!(
+        completed.progress,
+        fixture
+            .store
+            .current_attempt(state.task_id)
+            .await?
+            .unwrap()
+            .attempt
+            .progress
+    );
+    assert_eq!(completed.attempt_count, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn processing_progress_cannot_race_past_cancellation() -> TestResult {
+    use crate::mock_videnoa::checkpoints::Checkpoint;
+    let server = MockVidenoa::start().await?;
+    let fixture = Fixture::new(&server, 1).await?;
+    let state = fixture.task_at(TaskStatus::Processing).await?;
+    let attempt = fixture.store.current_attempt(state.task_id).await?.unwrap();
+    let remote = attempt.attempt.remote_job_id.unwrap();
+    server
+        .set_job(
+            &remote.to_string(),
+            crate::mock_videnoa::domain::JobStatus::Running,
+            Some(crate::mock_videnoa::domain::JobProgress {
+                current_frame: 20,
+                total_frames: Some(100),
+                fps: 10.0,
+                eta_seconds: Some(8.0),
+            }),
+        )
+        .await?;
+    let ticket = server.pause(Checkpoint::BeforePollResponse).await;
+    let recovery = reconciler(&fixture);
+    let now = fixture.now;
+    let id = state.task_id;
+    let poll = tokio::spawn(async move { recovery.reconcile_task_id(id, now).await });
+    server.await_checkpoint(&ticket).await?;
+    let task = fixture.load_task(id).await?;
+    fixture
+        .service
+        .request_cancellation(&task, Some(&attempt), now)
+        .await?;
+    server.release(ticket).await?;
+    assert!(matches!(
+        poll.await?,
+        Err(videnoa_controller::recovery::RecoveryError::Conflict)
+    ));
+    let current = fixture.load_task(id).await?;
+    assert!(current.cancel_requested_at.is_some());
+    assert_eq!(current.progress, task.progress);
+    assert_eq!(
+        fixture
+            .store
+            .current_attempt(id)
+            .await?
+            .unwrap()
+            .attempt
+            .progress,
+        attempt.attempt.progress
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn failed_attempt_progress_write_rolls_back_the_task_update() -> TestResult {
+    let server = MockVidenoa::start().await?;
+    let fixture = Fixture::new(&server, 1).await?;
+    let state = fixture.task_at(TaskStatus::Processing).await?;
+    let before = fixture.load_task(state.task_id).await?;
+    let attempt = fixture.store.current_attempt(state.task_id).await?.unwrap();
+    server
+        .set_job(
+            &attempt.attempt.remote_job_id.unwrap().to_string(),
+            crate::mock_videnoa::domain::JobStatus::Running,
+            Some(crate::mock_videnoa::domain::JobProgress {
+                current_frame: 1,
+                total_frames: Some(10),
+                fps: 1.0,
+                eta_seconds: Some(9.0),
+            }),
+        )
+        .await?;
+    sqlx::query("CREATE TRIGGER reject_progress BEFORE UPDATE OF progress_json ON task_attempts BEGIN SELECT RAISE(ABORT, 'injected attempt failure'); END")
+        .execute(fixture.store.database().pool()).await?;
+    assert!(reconciler(&fixture)
+        .reconcile_task_id(state.task_id, fixture.now)
+        .await
+        .is_err());
+    assert_eq!(fixture.load_task(state.task_id).await?, before);
+    assert_eq!(
+        fixture.store.current_attempt(state.task_id).await?.unwrap(),
+        attempt
+    );
+    Ok(())
+}

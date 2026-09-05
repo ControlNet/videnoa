@@ -8,7 +8,7 @@ use crate::support::{assert_status, output_path, publish, verified_task};
 use crate::transfer_support::{verified_path, zero_jitter, Fixture, TestResult};
 
 #[cfg(target_os = "linux")]
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 
 #[tokio::test]
 async fn output_root_contains_no_controller_file_before_final_publication() -> TestResult {
@@ -179,33 +179,6 @@ async fn crash_after_rename_recovers_without_ai_replay() -> TestResult {
     assert_eq!(server.counters().await.get(Route::Run), run_requests);
     assert_eq!(tokio::fs::read(&destination).await?, output);
     assert_status(&fixture, &prepared, TaskStatus::Completed).await?;
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-#[tokio::test]
-async fn cross_filesystem_output_is_rejected_without_copy_fallback() -> TestResult {
-    // Given: temp and output roots are on different mounted filesystems.
-    let server = MockVidenoa::start().await?;
-    let output_directory = tempfile::TempDir::new_in("/dev/shm")?;
-    let temp_directory = tempfile::TempDir::new()?;
-    assert_ne!(
-        std::fs::metadata(temp_directory.path())?.dev(),
-        std::fs::metadata(output_directory.path())?.dev()
-    );
-
-    // When: Controller starts normally, then evaluates an output on another filesystem.
-    let fixture = Fixture::new_with_output_directory(&server, 1, 1, output_directory).await?;
-    let result = fixture
-        .paths
-        .open_output(fixture.output_root.join("result.mp4"));
-
-    // Then: the task gets a typed capability error without a copy or visible staging file.
-    assert!(matches!(
-        result,
-        Err(videnoa_controller::paths::PathError::CrossFilesystemPublication { .. })
-    ));
-    assert_eq!(std::fs::read_dir(&fixture.output_root)?.count(), 0);
     Ok(())
 }
 

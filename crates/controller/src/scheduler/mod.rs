@@ -12,6 +12,7 @@ mod model;
 mod permits;
 mod publication;
 mod publication_artifact;
+mod publication_copy;
 mod publication_failure;
 mod publication_finalize;
 #[path = "service.rs"]

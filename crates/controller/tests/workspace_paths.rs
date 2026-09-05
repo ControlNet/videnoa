@@ -192,7 +192,7 @@ fn external_symlinks_and_replaced_parents_are_rejected() -> TestResult {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn different_filesystem_intake_returns_publication_error_without_media_artifacts() -> TestResult {
+fn different_filesystem_intake_accepts_output_without_media_artifacts() -> TestResult {
     use std::os::unix::fs::MetadataExt;
     let workspace = Workspace::new()?;
     let media = TempDir::new_in("/dev/shm")?;
@@ -202,9 +202,7 @@ fn different_filesystem_intake_returns_publication_error_without_media_artifacts
         "test requires separate filesystems"
     );
     let output = media.path().join("E08.mp4");
-    assert!(
-        matches!(workspace.paths.open_output(&output), Err(PathError::CrossFilesystemPublication { destination, .. }) if destination == output)
-    );
+    workspace.paths.open_output(&output)?.revalidate_missing()?;
     assert_eq!(fs::read_dir(media.path())?.count(), 0);
     Ok(())
 }
