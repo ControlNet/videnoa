@@ -51,6 +51,22 @@ impl Database {
     /// # Errors
     /// Returns an error when `SQLite` cannot open or migrate the database.
     pub async fn open(options: DatabaseOptions) -> Result<Self, PersistenceError> {
+        for suffix in ["", "-wal", "-shm", "-journal"] {
+            let mut component = options.path.as_os_str().to_os_string();
+            component.push(suffix);
+            match std::fs::symlink_metadata(Path::new(&component)) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    return Err(sqlx::Error::Io(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "symbolic links are not allowed for SQLite files",
+                    ))
+                    .into());
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(sqlx::Error::Io(error).into()),
+            }
+        }
         let connect = SqliteConnectOptions::new()
             .filename(options.path)
             .create_if_missing(true)
