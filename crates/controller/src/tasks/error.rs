@@ -28,9 +28,10 @@ impl TaskApiError {
             AuthError::RateLimited => Self::RateLimited,
             AuthError::Forbidden => Self::Forbidden,
             AuthError::InvalidPasswordHash
+            | AuthError::InvalidRequest
+            | AuthError::Conflict
             | AuthError::PasswordHashing
             | AuthError::PasswordVerification
-            | AuthError::PasswordFile { .. }
             | AuthError::InvalidLifetime
             | AuthError::Persistence(_) => Self::Internal,
         }
