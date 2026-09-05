@@ -52,6 +52,7 @@ done
 for route in \
   '/api/health' \
   '/api/readiness' \
+  '/api/auth/setup' \
   '/api/auth/login' \
   '/api/auth/session' \
   '/api/auth/logout' \
@@ -72,8 +73,24 @@ for field in input_path output_path workflow priority source source_reference; d
   require_text "$GUIDE" "$field"
 done
 
-for section in server paths auth scheduler timeouts retry; do
-  require_text "$CONFIG" "[$section]"
+expected_sections="$(printf '%s\n' '[server]' '[auth]' '[scheduler]' '[timeouts]' '[retry]')"
+actual_sections="$(grep -E '^\[[a-z]+\]$' "$CONFIG")"
+[[ "$actual_sections" == "$expected_sections" ]] || fail "controller.example.toml has unsupported sections: $actual_sections"
+
+for text in \
+  './data/controller.toml' \
+  './data/controller.sqlite3' \
+  'password_confirmation' \
+  'workspace' \
+  'config_file' \
+  'hot-applied' \
+  '$(id -u):$(id -g)' \
+  '--host 0.0.0.0'; do
+  require_text "$GUIDE" "$text"
+done
+
+for text in './videnoa-controller' '/api/auth/setup' './data/controller.toml' './data/controller.sqlite3'; do
+  require_text "$ARCHIVE_GUIDE" "$text"
 done
 
 if grep -Eiq 'videnoa-worker|videnoa-controller-linux-|videnoa-controller-windows-|controlnet/videnoa-controller:(stable|version)' "$GUIDE" "$ARCHIVE_GUIDE" "$ROOT_README"; then
@@ -82,6 +99,10 @@ fi
 
 if grep -Ein '^[[:space:]]*(password|token|secret|cookie|csrf)[[:space:]]*=[[:space:]]*"[^$%{<]' "$CONFIG" "$GUIDE" "$ARCHIVE_GUIDE"; then
   fail 'documentation contains a plaintext secret assignment'
+fi
+
+if grep -Eiq '\[paths\]|password_hash_file|hash-password|admin-password\.phc|/run/secrets|/etc/videnoa-controller|/var/lib/videnoa-controller|input_roots|output_roots|temp_root' "$CONFIG" "$GUIDE" "$ARCHIVE_GUIDE"; then
+  fail 'documentation contains the obsolete prepared-root or password-file contract'
 fi
 
 while IFS= read -r link; do

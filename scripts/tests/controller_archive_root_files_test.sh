@@ -12,19 +12,20 @@ for name in controller.example.toml README-controller.md LICENSE; do
   [[ -s "$REPO_ROOT/$name" ]] || fail "missing or empty archive root file: $name"
 done
 
-grep -Fq 'password_hash_file = ' "$REPO_ROOT/controller.example.toml" \
-  || fail "example configuration must reference a password hash file"
 if grep -Eiq '^\s*(password|password_hash|admin_password)\s*=' "$REPO_ROOT/controller.example.toml"; then
   fail "example configuration contains credential material"
 fi
-for section in server paths auth scheduler timeouts retry; do
+for section in server auth scheduler timeouts retry; do
   grep -Fq "[$section]" "$REPO_ROOT/controller.example.toml" \
     || fail "example configuration is missing [$section]"
 done
-grep -Fq 'hash-password' "$REPO_ROOT/README-controller.md" \
-  || fail "Controller README is missing password hash setup"
-grep -Fq -- '--config' "$REPO_ROOT/README-controller.md" \
-  || fail "Controller README is missing explicit configuration startup"
+if grep -Eq '\[paths\]|password_hash_file|hash-password|admin-password\.phc' "$REPO_ROOT/controller.example.toml" "$REPO_ROOT/README-controller.md"; then
+  fail "archive root files still require prepared paths or password hashes"
+fi
+grep -Fq './videnoa-controller' "$REPO_ROOT/README-controller.md" \
+  || fail "Controller README is missing zero-config startup"
+grep -Fq '/api/auth/setup' "$REPO_ROOT/README-controller.md" \
+  || fail "Controller README is missing first-administrator setup"
 grep -Fq '/api/health' "$REPO_ROOT/README-controller.md" \
   || fail "Controller README is missing a health smoke command"
 
