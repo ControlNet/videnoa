@@ -66,6 +66,8 @@ impl Store {
             self,
             "EXPLAIN QUERY PLAN SELECT id FROM tasks
              WHERE status NOT IN ('completed', 'failed', 'cancelled')
+               AND (updated_at_ms, id) > (0, '00000000-0000-4000-8000-000000000000')
+               AND (updated_at_ms, id) <= (9223372036854775807, 'ffffffff-ffff-4fff-bfff-ffffffffffff')
              ORDER BY updated_at_ms ASC, id ASC LIMIT 100",
         )
         .await
