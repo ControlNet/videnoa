@@ -5,9 +5,8 @@ use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt, OpenOptionsSyncEx
 use cap_std::fs::{Dir, File, OpenOptions};
 
 use super::{
-    publication_finalizer::sync_directory,
-    identity, select_root, PathCapabilities, PathError, PublicationFinalizer, RootedOutput,
-    TempArtifact,
+    identity, publication_finalizer::sync_directory, select_root, PathCapabilities, PathError,
+    PublicationFinalizer, RootedOutput, TempArtifact,
 };
 
 pub(crate) enum PublicationArtifact {
@@ -22,7 +21,8 @@ impl PathCapabilities {
     /// # Errors
     /// Returns a typed path error for escapes, symbolic components, or changed roots.
     pub fn reopen_output(&self, path: impl AsRef<Path>) -> Result<RootedOutput, PathError> {
-        let path = path.as_ref();
+        let path = self.media_path(path.as_ref(), &self.outputs)?;
+        let path = path.as_path();
         let (root, relative) = select_root(&self.outputs, path)?;
         let leaf =
             relative
@@ -63,10 +63,7 @@ impl RootedOutput {
         self.open_existing(&self.leaf)
     }
 
-    pub(crate) fn open_legacy_staging(
-        &self,
-        name: &str,
-    ) -> Result<PublicationArtifact, PathError> {
+    pub(crate) fn open_legacy_staging(&self, name: &str) -> Result<PublicationArtifact, PathError> {
         self.open_existing(&legacy_staging_leaf(name, &self.display_path)?)
     }
 
