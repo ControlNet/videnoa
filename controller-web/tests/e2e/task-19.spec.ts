@@ -27,7 +27,7 @@ test("has no serious accessibility violations on login and operational routes", 
   await page.unrouteAll({ behavior: "wait" })
   await installOperationalApi(page)
   await installTaskRoutes(page, false)
-  for (const path of ["/tasks?columns=path,error", "/workers", "/settings"] as const) {
+  for (const path of ["/tasks?columns=input_path,error", "/workers", "/settings"] as const) {
     await page.goto(path)
     await expect(page.locator("h1")).toBeVisible()
     await expectNoSeriousViolations(page)
@@ -85,7 +85,7 @@ test("recovers an API 500 and contains long CJK task evidence at narrow width", 
   await installTaskRoutes(page, true)
   await page.setViewportSize({ width: 375, height: 812 })
   await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" })
-  await page.goto("/tasks?columns=path,error")
+  await page.goto("/tasks?columns=input_path,error")
   const loadError = page.getByRole("alert")
   await expect(loadError).toContainText("Controller could not load task history.")
   await loadError.scrollIntoViewIfNeeded()

@@ -10,7 +10,7 @@ test("keeps 20,000 task history bounded through filters, sorting, paging, and na
   await installPagedApi(page, journal)
   await page.setViewportSize({ width: 1280, height: 900 })
   await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" })
-  await page.goto("/tasks?columns=path,error,remote_job")
+  await page.goto("/tasks?columns=input_path,error,remote_job_id")
   await expect(page.getByRole("table").locator("tbody tr")).toHaveCount(50)
   const previous = page.getByRole("button", { name: "Previous" })
   const next = page.getByRole("button", { name: "Next" })
@@ -83,7 +83,7 @@ test("keeps 20,000 task history bounded through filters, sorting, paging, and na
   await capture(page, "narrow-pagination.png")
 
   // When: the operator opens the final bounded server page directly.
-  await page.goto("/tasks?limit=50&offset=19950&columns=path,error,remote_job")
+  await page.goto("/tasks?limit=50&offset=19950&columns=input_path,error,remote_job_id")
   await expect(page.getByRole("table").locator("tbody tr")).toHaveCount(50)
 
   // Then: pagination reverses its unavailable and available visual states.

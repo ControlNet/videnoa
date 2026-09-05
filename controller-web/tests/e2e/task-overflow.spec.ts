@@ -25,7 +25,7 @@ test.beforeEach(async ({ page }) => {
 test("characterizes the native disabled transition at the right scroll edge", async ({ page }) => {
   // Given: an overflowing task table at its initial left boundary.
   await page.setViewportSize({ width: 1440, height: 900 })
-  await page.goto("/tasks?columns=path,error,remote_job,attempts,duration,failure")
+  await page.goto("/tasks?columns=input_path,output_path,error,remote_job_id,attempts,duration,failure_stage,failure")
   const frame = page.getByRole("region", { name: "Scrollable task results" })
   const left = page.getByRole("button", { name: "Scroll task table left" })
   const right = page.getByRole("button", { name: "Scroll task table right" })
@@ -44,7 +44,7 @@ test("characterizes the native disabled transition at the right scroll edge", as
 test("keeps unavailable styling when right-edge layout geometry grows", async ({ page }) => {
   // Given: keyboard navigation has committed the unavailable right-edge state.
   await page.setViewportSize({ width: 1440, height: 900 })
-  await page.goto("/tasks?columns=path,error,remote_job,attempts,duration,failure")
+  await page.goto("/tasks?columns=input_path,output_path,error,remote_job_id,attempts,duration,failure_stage,failure")
   const frame = page.getByRole("region", { name: "Scrollable task results" })
   const table = page.getByRole("table")
   const left = page.getByRole("button", { name: "Scroll task table left" })
@@ -74,7 +74,7 @@ test("keeps unavailable styling when right-edge layout geometry grows", async ({
 
 test("keeps measured task overflow continuously discoverable and keyboard operable", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
-  await page.goto("/tasks?columns=path,error,remote_job,attempts,duration,failure")
+  await page.goto("/tasks?columns=input_path,output_path,error,remote_job_id,attempts,duration,failure_stage,failure")
   const frame = page.getByRole("region", { name: "Scrollable task results" })
   const controls = page.getByRole("navigation", { name: "Task table horizontal navigation" })
   const left = page.getByRole("button", { name: "Scroll task table left" })

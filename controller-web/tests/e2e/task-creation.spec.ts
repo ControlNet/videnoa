@@ -32,8 +32,8 @@ test("replays one manual creation intent after a dropped response", async ({ pag
   // When: the operator submits exact paths, sees ambiguity, and retries unchanged.
   await page.getByRole("button", { name: "Add Task" }).click()
   expect(Number.parseFloat(await page.getByRole("button", { name: "Create Task" }).evaluate((element) => getComputedStyle(element).columnGap))).toBeGreaterThan(0)
-  await page.getByLabel("Input Path").fill("/nas/input/Show/episode.01.mkv")
-  await page.getByLabel("Output Path").fill("/nas/output/Show/episode.01.mp4")
+  await page.getByRole("textbox", { name: "Input Path", exact: true }).fill("/nas/input/Show/episode.01.mkv")
+  await page.getByRole("textbox", { name: "Output Path", exact: true }).fill("/nas/output/Show/episode.01.mp4")
   await page.getByLabel("Workflow").last().fill("anime-2x")
   await page.getByLabel("Priority").fill("17")
   await page.getByRole("button", { name: "Create Task" }).click()
@@ -104,14 +104,14 @@ test("uses a new key after an ambiguous form changes and recovers a key collisio
   })
   await page.goto("/tasks")
   await page.getByRole("button", { name: "Add Task" }).click()
-  await page.getByLabel("Input Path").fill("/nas/input/exact.mkv")
-  await page.getByLabel("Output Path").fill("/nas/output/first.mp4")
+  await page.getByRole("textbox", { name: "Input Path", exact: true }).fill("/nas/input/exact.mkv")
+  await page.getByRole("textbox", { name: "Output Path", exact: true }).fill("/nas/output/first.mp4")
   await page.getByLabel("Workflow").last().fill("anime-2x")
   await page.getByRole("button", { name: "Create Task" }).click()
   await expect(page.getByRole("button", { name: "Retry Same Task" })).toBeVisible()
 
   // When: the output path changes and the changed intent receives a collision response.
-  await page.getByLabel("Output Path").fill("/nas/output/second.mp4")
+  await page.getByRole("textbox", { name: "Output Path", exact: true }).fill("/nas/output/second.mp4")
   await page.getByRole("button", { name: "Create Task" }).click()
 
   // Then: the changed body never reuses the ambiguous key and the collision remains actionable.
@@ -134,23 +134,23 @@ test("focuses structured root and output collision errors and restores the add t
   })
   await page.goto("/tasks")
   await page.getByRole("button", { name: "Add Task" }).click()
-  await page.getByLabel("Input Path").fill("/outside/input.mkv")
-  await page.getByLabel("Output Path").fill("/nas/output/existing.mp4")
+  await page.getByRole("textbox", { name: "Input Path", exact: true }).fill("/outside/input.mkv")
+  await page.getByRole("textbox", { name: "Output Path", exact: true }).fill("/nas/output/existing.mp4")
   await page.getByLabel("Workflow").last().fill("anime-2x")
 
   // When: root validation fails, then corrected input reaches no-clobber validation.
   await page.getByRole("button", { name: "Create Task" }).click()
   await expect(page.getByRole("alert")).toContainText("outside the configured roots")
-  await expect(page.getByLabel("Input Path")).toBeFocused()
+  await expect(page.getByRole("textbox", { name: "Input Path" })).toBeFocused()
   await page.screenshot({
     path: "../.omo/evidence/videnoa-controller/task-19/playwright-report/screenshots/task-17/task-actions/manual-intake-root-focus.png",
     animations: "disabled",
   })
-  await page.getByLabel("Input Path").fill("/nas/input/exact.mkv")
+  await page.getByRole("textbox", { name: "Input Path" }).fill("/nas/input/exact.mkv")
   await page.getByRole("button", { name: "Create Task" }).click()
   await expect(page.getByRole("alert")).toContainText("will not be overwritten")
-  await expect(page.getByLabel("Output Path")).toBeFocused()
-  await expect(page.getByLabel("Output Path")).toHaveAttribute("aria-describedby", "task-output-path-error")
+  await expect(page.getByRole("textbox", { name: "Output Path" })).toBeFocused()
+  await expect(page.getByRole("textbox", { name: "Output Path" })).toHaveAttribute("aria-describedby", "task-output-path-error")
   await page.keyboard.press("Escape")
 
   // Then: both failures were executed and the native modal restores its trigger.
