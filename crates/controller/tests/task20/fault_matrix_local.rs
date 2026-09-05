@@ -141,7 +141,10 @@ fn checkpoint_status(point: TransferCheckpointPoint) -> TestResult<TaskStatus> {
     Ok(match point {
         TransferCheckpointPoint::DownloadVerified => TaskStatus::Downloading,
         TransferCheckpointPoint::BeforeDestinationStaging
-        | TransferCheckpointPoint::PublicationFinalized => TaskStatus::Publishing,
+        | TransferCheckpointPoint::PublicationFinalized
+        | TransferCheckpointPoint::PublicationCopyStarted
+        | TransferCheckpointPoint::PublicationCopyChunkWritten
+        | TransferCheckpointPoint::PublicationCopyVerified => TaskStatus::Publishing,
         TransferCheckpointPoint::BeforeLocalCleanup
         | TransferCheckpointPoint::LocalCleanupCompleted
         | TransferCheckpointPoint::BeforeRemoteDelete

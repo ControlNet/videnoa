@@ -168,18 +168,27 @@ caller-selected missing leaf with an extension. Parent traversal, symlink
 components, changed file identity/content, non-regular input, and existing or
 racing output fail closed. Controller never overwrites or auto-renames output.
 
-Downloaded bytes remain in private UUID task directories under `data` until
-verified. Final publication uses atomic no-replace rename. No `.videnoa-*`,
-`.partial`, `.staging`, or incomplete final file is created in the media/Jellyfin
-directory. An existing destination is never overwritten.
+Downloaded bytes are verified in private UUID task directories under `data`.
+Publication first attempts atomic no-replace rename. If it returns `EXDEV`
+(including separate bind mounts on the same host disk), Controller falls back to
+move semantics: exclusively create the requested final file, copy and fsync its
+bytes, verify its size/SHA-256, then remove the private source. Absolute output
+paths on other filesystems are accepted at intake.
 
-Paths outside workspace are allowed. Safe publication still requires a supported
-atomic publication relationship between private temporary storage and output.
-Different devices are rejected at output intake with `CrossFilesystemPublication`;
-a rename that reports `EXDEV` (including separate mounts of one filesystem)
-returns the same typed publication capability error. There is no copy fallback,
-visible sibling staging, or destination rewriting. Preserve verified recovery
-evidence and arrange a supported mount layout before retrying publication.
+**During the copy fallback, the final filename is visible before copying finishes.**
+Jellyfin or another scanner may observe that incomplete file. Same-mount atomic
+rename retains the complete-file visibility guarantee. Neither route overwrites
+an existing destination, changes the requested path, or creates sibling staging
+files such as `.videnoa-*`, `.partial`, or `.staging`.
+
+Private copy evidence records the exclusively created output's file identity.
+After interruption, Controller validates that identity and the existing byte
+prefix before appending the remainder from the verified source. A replaced or
+corrupt output, or missing ownership evidence, fails as publication ambiguity;
+the source is retained. Successful publication recovery never repeats AI compute.
+Upgrades make legacy cross-mount publication failures with verified-output evidence
+retryable; use Retry to resume publication on the same attempt. They do not retry
+automatically.
 
 ## Register Workers and Workflows
 
@@ -237,9 +246,11 @@ retryable.
 ## No-Clobber and Ambiguity
 
 Task intake requires the exact output leaf not to exist. Before publication,
-Controller rechecks the output capability and verified artifact, then atomically
-renames directly to the final path without replacement. Existing or racing
-output is never overwritten, auto-renamed, or used as a reason to copy.
+Controller rechecks the output capability and verified artifact, then attempts
+atomic no-replace rename. Only `EXDEV` activates copy fallback, with exclusive
+creation of the final filename. Existing or racing output is never overwritten
+or auto-renamed. A partial output is resumed only with matching private ownership
+evidence and a byte-for-byte match against the verified source prefix.
 
 If recovery cannot prove whether remote compute or local publication completed,
 Controller records `remote_state_ambiguous` or `publication_ambiguous` and
@@ -414,13 +425,10 @@ files persist in `./data/controller.toml` and `./data/controller.sqlite3` on the
 host. `/workspace/data` is private and forbidden for task input/output. Use task
 paths such as `/media/input.mkv` and `/media/output.mp4`.
 
-**Publication limitation:** separate data and media bind mounts can return
-`EXDEV` when publishing the verified temporary artifact from private data to
-`/media`, even when both host directories are on the same disk. This layout
-supports configuration persistence and media access, but does not guarantee
-successful final publication. The Controller reports an explicit publication
-error; it never falls back to copying into the final filename or creating a
-visible staging file in the media directory.
+Separate data and media bind mounts are supported. Their final rename can return
+`EXDEV` even on the same host disk, activating the verified copy-and-delete
+fallback described above. The final filename is visible during that copy;
+Jellyfin may scan it before completion.
 
 Keep the published host port on loopback for trusted first setup, or protect it
 with firewalling and a same-origin HTTPS reverse proxy. Do not expose an
@@ -431,8 +439,8 @@ exists and media need not live under `/workspace`. If another application sends
 `/mnt/user/media/anime/E08.mkv`, mount media at that same container path instead
 of `/media`.
 
-For end-to-end processing, a common bind mount can provide the required atomic
-rename relationship while keeping workspace and media in separate directories.
+To retain atomic publication without copy fallback, a common bind mount can keep
+workspace and media in separate directories on the same mounted filesystem.
 For example, when your media is under `/mnt/user/media`:
 
 ```bash
@@ -446,8 +454,8 @@ docker run -d --name videnoa-controller \
 ```
 
 Only this alternative overrides the default working directory; private state
-then lives under `/mnt/user/controller-workspace/data`. Safe publication still
-requires a supported atomic rename relationship between private data and output.
+then lives under `/mnt/user/controller-workspace/data`. Atomic rename is preferred;
+cross-mount outputs use the copy fallback when necessary.
 Changing the Controller listener port in Docker also requires updating container
 port mapping, reverse proxy, and health-check configuration. Listener settings
 remain available normally.

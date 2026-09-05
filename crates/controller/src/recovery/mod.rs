@@ -3,6 +3,7 @@ mod local_first;
 mod model;
 mod paths;
 mod processing;
+mod progress;
 mod reconciler;
 mod remote_failure;
 #[path = "error.rs"]

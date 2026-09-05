@@ -7,8 +7,8 @@ use crate::lifecycle::{
 use crate::paths::{PathError, PublicationArtifact};
 use crate::persistence::{AttemptRecord, TaskRecord};
 
-use super::download_artifact::{inspect_verified, recover_verified, VerifiedArtifactInspection};
-use super::publication_artifact::matches_file;
+use super::download_artifact::{recover_verified, VerifiedArtifactInspection};
+use super::publication_artifact::{inspect_source, matches_file};
 use super::publication_failure::publication_evidence;
 use super::{PublicationOutcome, TransferError, TransferExecutor};
 
@@ -151,24 +151,18 @@ impl TransferExecutor {
         let Ok(workspace) = self.resources.paths.temp_workspace(task.id, false) else {
             return self.fail_publication(task, attempt, now).await;
         };
-        let artifact = match workspace.as_ref() {
-            Some(workspace) => {
-                match inspect_verified(
-                    workspace,
-                    task.output_extension.as_str(),
-                    expected.size,
-                    expected.sha256,
-                )
-                .await
-                {
-                    Ok(artifact) => artifact,
-                    Err(_) => return self.fail_publication(task, attempt, now).await,
-                }
-            }
-            None => VerifiedArtifactInspection::Missing,
+        let Ok(artifact) =
+            inspect_source(workspace.as_ref(), task.output_extension.as_str(), expected).await
+        else {
+            return self.fail_publication(task, attempt, now).await;
         };
         match output.open_final() {
             Ok(PublicationArtifact::Regular(final_file)) => {
+                if let VerifiedArtifactInspection::Valid(ref artifact) = artifact {
+                    return self
+                        .move_publication(&output, &artifact.source, task, attempt, expected, now)
+                        .await;
+                }
                 if !matches!(artifact, VerifiedArtifactInspection::Missing) {
                     return self.fail_ambiguous(task, attempt, now).await;
                 }

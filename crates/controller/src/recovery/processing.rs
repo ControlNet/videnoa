@@ -4,14 +4,15 @@ use serde_json::Value;
 use crate::lifecycle::{LifecycleFailure, LifecycleService, RemoteAmbiguityStage};
 use crate::persistence::{AttemptRecord, TaskRecord};
 use crate::remote::{Job, JobStatus, VidenoaClient, VidenoaClientError};
+use crate::scheduler::TransferCheckpointPoint;
 
 use super::{Reconciler, RecoveryCommandKind, RecoveryError, RecoveryReport, StagePermit};
 
 impl Reconciler {
     pub(super) async fn reconcile_processing(
         &self,
-        task: TaskRecord,
-        attempt: AttemptRecord,
+        mut task: TaskRecord,
+        mut attempt: AttemptRecord,
         client: &VidenoaClient,
         now: DateTime<Utc>,
         stage: &StagePermit,
@@ -42,56 +43,58 @@ impl Reconciler {
                 )
                 .await?;
             }
-            Ok(job) => match job.status {
-                JobStatus::Queued | JobStatus::Running => {
-                    report.push(task.id, RecoveryCommandKind::Poll);
+            Ok(job) => {
+                self.refresh_processing_progress(&mut task, &mut attempt, &job, now, stage)
+                    .await?;
+                match job.status {
+                    JobStatus::Queued | JobStatus::Running => {
+                        report.push(task.id, RecoveryCommandKind::Poll);
+                    }
+                    JobStatus::Completed => {
+                        let _write = stage.begin_write();
+                        service
+                            .advance(
+                                &task,
+                                &attempt,
+                                crate::lifecycle::AdvanceCommand::FinishProcessing,
+                                now,
+                            )
+                            .await?;
+                        self.checkpoint(TransferCheckpointPoint::RemoteCompletionPersisted)
+                            .await;
+                        report.push(task.id, RecoveryCommandKind::Download);
+                    }
+                    JobStatus::Failed => {
+                        let _write = stage.begin_write();
+                        service
+                            .fail(
+                                &task,
+                                Some(&attempt),
+                                LifecycleFailure::processing(
+                                    job.error
+                                        .unwrap_or_else(|| "remote processing failed".to_owned()),
+                                ),
+                                now,
+                            )
+                            .await?;
+                        report.push(task.id, RecoveryCommandKind::Terminal);
+                    }
+                    JobStatus::Cancelled => {
+                        let _write = stage.begin_write();
+                        service
+                            .fail(
+                                &task,
+                                Some(&attempt),
+                                LifecycleFailure::restart_cancelled(
+                                    "remote job was cancelled during worker restart",
+                                ),
+                                now,
+                            )
+                            .await?;
+                        report.push(task.id, RecoveryCommandKind::Terminal);
+                    }
                 }
-                JobStatus::Completed => {
-                    let _write = stage.begin_write();
-                    service
-                        .advance(
-                            &task,
-                            &attempt,
-                            crate::lifecycle::AdvanceCommand::FinishProcessing,
-                            now,
-                        )
-                        .await?;
-                    self.checkpoint(
-                        crate::scheduler::TransferCheckpointPoint::RemoteCompletionPersisted,
-                    )
-                    .await;
-                    report.push(task.id, RecoveryCommandKind::Download);
-                }
-                JobStatus::Failed => {
-                    let _write = stage.begin_write();
-                    service
-                        .fail(
-                            &task,
-                            Some(&attempt),
-                            LifecycleFailure::processing(
-                                job.error
-                                    .unwrap_or_else(|| "remote processing failed".to_owned()),
-                            ),
-                            now,
-                        )
-                        .await?;
-                    report.push(task.id, RecoveryCommandKind::Terminal);
-                }
-                JobStatus::Cancelled => {
-                    let _write = stage.begin_write();
-                    service
-                        .fail(
-                            &task,
-                            Some(&attempt),
-                            LifecycleFailure::restart_cancelled(
-                                "remote job was cancelled during worker restart",
-                            ),
-                            now,
-                        )
-                        .await?;
-                    report.push(task.id, RecoveryCommandKind::Terminal);
-                }
-            },
+            }
             Err(VidenoaClientError::NotFound) => {
                 let _write = stage.begin_write();
                 service
@@ -108,9 +111,8 @@ impl Reconciler {
                 report.push(task.id, RecoveryCommandKind::Terminal);
             }
             Err(error) => {
-                return self
-                    .resolve_processing_failure(&task, &attempt, error, now, stage, report)
-                    .await;
+                self.resolve_processing_failure(&task, &attempt, error, now, stage, report)
+                    .await?;
             }
         }
         Ok(())

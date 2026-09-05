@@ -10,6 +10,7 @@ mod input;
 mod input_identity;
 mod output;
 mod publication;
+mod publication_copy;
 mod publication_finalizer;
 #[cfg(test)]
 mod publication_tests;
@@ -224,12 +225,6 @@ impl PathCapabilities {
         let metadata = directory
             .dir_metadata()
             .map_err(|source| io_error(path, source))?;
-        if identity(&metadata).device != self.temp.device() {
-            return Err(PathError::CrossFilesystemPublication {
-                source_path: self.temp.display_path().to_path_buf(),
-                destination: path.to_path_buf(),
-            });
-        }
         Ok(RootedOutput {
             root: root.clone(),
             parent,

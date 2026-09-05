@@ -35,3 +35,22 @@ fn hash_reader(mut file: File) -> Result<(u64, Sha256Digest), std::io::Error> {
     }
     Ok((size, Sha256Digest::new(hasher.finalize().into())))
 }
+
+pub(super) async fn inspect_source(
+    workspace: Option<&crate::paths::TempWorkspace>,
+    extension: &str,
+    expected: super::publication_failure::ExpectedPublication,
+) -> Result<super::download_artifact::VerifiedArtifactInspection, TransferError> {
+    match workspace {
+        Some(workspace) => {
+            super::download_artifact::inspect_verified(
+                workspace,
+                extension,
+                expected.size,
+                expected.sha256,
+            )
+            .await
+        }
+        None => Ok(super::download_artifact::VerifiedArtifactInspection::Missing),
+    }
+}

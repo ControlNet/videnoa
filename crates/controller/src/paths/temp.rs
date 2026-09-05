@@ -117,6 +117,10 @@ impl TempWorkspace {
 }
 
 impl TempArtifact {
+    pub(crate) fn sibling(&self, leaf: &str) -> Result<Self, PathError> {
+        self.workspace.artifact(leaf)
+    }
+
     pub(crate) fn display_path(&self) -> &Path {
         &self.display_path
     }
