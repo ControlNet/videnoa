@@ -24,6 +24,7 @@ The memorable moment is the transition from the isolated sign-in panel into a fi
 | Accent strong | `--color-accent-strong` | `oklch(0.46 0.21 292)` | `oklch(0.72 0.17 292)` | Accent hover |
 | Accent wash | `--color-accent-wash` | `oklch(0.92 0.035 292)` | `oklch(0.22 0.055 292)` | Active navigation surface |
 | Healthy | `--color-healthy` | `oklch(0.44 0.15 145)` | `oklch(0.72 0.16 145)` | Connected service state |
+| Healthy wash | `--color-healthy-wash` | `oklch(0.94 0.025 145)` | `oklch(0.2 0.04 145)` | Saved and applied confirmation |
 | Danger | `--color-danger` | `oklch(0.48 0.18 25)` | `oklch(0.7 0.17 25)` | Recoverable error text |
 | Danger wash | `--color-danger-wash` | `oklch(0.94 0.025 25)` | `oklch(0.2 0.04 25)` | Error summary |
 
@@ -59,6 +60,16 @@ The authenticated root is a `fixed-sidenav-shell` bounded by `100dvb`. The sideb
 At widths below 48rem, the frame becomes two rows. Navigation is a horizontally scrollable, keyboard-accessible cluster, labels remain visible, and the route body keeps full-width gutters.
 
 ## 5. Components
+
+### Authentication Bootstrap
+- **Sequence**: startup checks initialization before checking the cookie session. An uninitialized Controller renders setup; an initialized Controller proceeds to session recovery and sign-in.
+- **Race recovery**: a setup conflict means another client initialized the Controller. The client rechecks initialization and session state, then presents normal sign-in without retaining the submitted values.
+- **Security**: passwords exist only in component and request memory. Setup, login, logout, reload, and expiry recovery never write authentication material to browser storage.
+
+### Setup Panel
+- **Structure**: product mark, first-run purpose statement, labelled password and confirmation fields, inline validation or recovery summary, primary setup action.
+- **States**: idle, submitting, mismatched confirmation, password outside the 12-1024 UTF-8 byte boundary, already-initialized race, malformed response, and network failure.
+- **Accessibility**: password receives initial focus; field errors are programmatically associated; the first invalid field or recovery summary receives focus.
 
 ### Login Panel
 - **Structure**: product mark, purpose statement, labelled password field, inline error summary, primary submit.
@@ -134,11 +145,18 @@ At widths below 48rem, the frame becomes two rows. Navigation is a horizontally 
 - **Responsiveness**: the table frame owns horizontal overflow and is keyboard-focusable; the route never creates document-level overflow.
 
 ### Runtime Settings Surface
-- **Structure**: scheduler controls, transfer limits, timeout/retry fields, readiness, and restart-required configuration are separated by ruled sections rather than cards.
-- **Authority**: runtime writes submit the displayed settings version. Stale writes refetch settings and readiness before another action.
-- **Safety**: paths, cookie/session policy, and password-hash file location are read-only browser output. Credential material is never returned, entered, or stored.
+- **Structure**: scheduler controls, transfer limits, timeout/retry fields, server binding, session policy, readiness, and safe path context are separated by ruled sections rather than cards.
+- **Authority**: runtime writes submit the displayed settings version. Stale writes and retryable committed-degraded responses refetch settings and readiness before another action.
+- **Persistence**: a successful save explicitly confirms that the configuration file was written and the returned settings were applied to the running Controller.
+- **Reconnect**: when host or port changes, the UI exposes a usable Controller link based on the effective configured endpoint and current browser host for wildcard bindings. Successful saves place it in the receipt; committed-degraded saves keep it with the exact failure alert and never claim that configuration projection succeeded.
+- **Safety**: workspace, data root, and configuration file are read-only context. Fixed input/output roots, temporary roots, password-hash paths, and credential material are never returned, entered, shown, or stored.
 - **Pause semantics**: pausing blocks new reservations, prefetch, and compute starts. Already-running processing continues; transfer and publication continue where applicable; cleanup continues.
-- **Accessibility**: every numeric control has a visible label and exact server bounds; validation errors are programmatically associated and focus the first invalid field, including retry cross-field failures; readiness and mutation errors use explicit text rather than color alone.
+- **Accessibility**: every public server, authentication, scheduler, timeout, and retry field is editable through a visible labelled control. Validation errors are programmatically associated and focus the first invalid field, including retry cross-field failures; readiness, mutation errors, and save receipts use explicit text rather than color alone.
+
+### Configuration Save Receipt
+- **Structure**: saved-and-applied status, configuration file path, and an optional reconnect link when server binding changed.
+- **States**: saved in place and saved with endpoint change.
+- **Accessibility**: uses status semantics, meaningful link text, and explicit connection guidance without relying on green alone.
 
 ## 6. Motion & Interaction
 
@@ -162,10 +180,10 @@ Depth uses solid luminance stacking and fine structural borders rather than grad
 
 Constraints:
 - WCAG 2.2 AA contrast, visible keyboard focus, semantic landmarks, and ordered headings.
-- Login, navigation, logout, bootstrap retry, and expiry recovery are keyboard operable.
+- Setup, login, navigation, logout, bootstrap retry, and expiry recovery are keyboard operable.
 - Manual task creation, task selection, detail dismissal, cancellation confirmation, and eligible retry are keyboard operable.
 - Worker creation/editing, enable policy, deletion, scheduler pause/resume, and runtime settings updates are keyboard operable.
-- No authentication material is written to local or session storage.
+- No authentication material is written to local or session storage, and no password-hash path is rendered.
 - No color-only status or error communication.
 - No horizontal page overflow at 375px, 768px, or 1280px.
 - Browser zoom, user font scaling, reduced motion, and color-scheme preferences remain usable.
