@@ -17,6 +17,8 @@ export const taskStatusSchema = z.enum([
   "cancelled",
 ])
 
+export const taskSourceSchema = z.enum(["manual", "api"])
+
 export const taskProgressSchema = z
   .object({
     percent: z.number().min(0).max(100),
@@ -78,7 +80,7 @@ export const taskSchema = z
     output_extension: z.string(),
     workflow: z.string(),
     priority: z.number().int(),
-    source: z.enum(["manual", "api"]),
+    source: taskSourceSchema,
     source_reference: z.string().nullable(),
     input_size: z.number().int().nonnegative(),
     worker_id: z.string().uuid().nullable(),
@@ -183,6 +185,7 @@ export const taskUpdatedEventSchema = z
 export type Task = z.infer<typeof taskSchema>
 export type FailureCode = z.infer<typeof failureCodeSchema>
 export type FailureStage = z.infer<typeof failureStageSchema>
+export type TaskSource = z.infer<typeof taskSourceSchema>
 export type TaskAttempt = z.infer<typeof taskAttemptSchema>
 export type TaskCreateRequest = z.infer<typeof taskCreateRequestSchema>
 export type TaskDetail = z.infer<typeof taskDetailSchema>

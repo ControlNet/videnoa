@@ -97,9 +97,10 @@ At widths below 48rem, the frame becomes two rows. Navigation is a horizontally 
 - **Scope**: intentionally excludes Tasks table, task creation/detail, worker operations, and settings controls assigned to Tasks 16-18.
 
 ### Task History Surface
-- **Structure**: compact status counters, one bounded filter toolbar, a semantic dense table, and server-page navigation.
+- **Structure**: compact status counters, one bounded filter toolbar with server-backed Status, Source, Failure Stage, workflow, worker, and path search controls, a semantic dense table, and server-page navigation.
 - **States**: loading rows, populated page, empty filter result, recoverable load failure, and live active-row replacement.
-- **Density**: numeric and identifier cells use Geist Mono; row separators replace cards; long values truncate with native title disclosure.
+- **Density**: task rows use the existing `--control-compact` 36px measure; numeric and identifier cells use Geist Mono; row separators replace cards; long values truncate with native title disclosure.
+- **Columns**: Input Path, Output Path, Attempts, Duration, Failure Stage, Failure, Error, and Remote Job ID are independent URL-persisted options. A generic Path option is not used because it obscures whether the value is an input or output path.
 - **Responsiveness**: the route never owns horizontal overflow; the table frame is the deliberate inline scroll region whenever measured content width exceeds its client width. A concise associated hint and compact boundary-aware navigation remain visible above the frame while overflow exists at any viewport width, and the named frame becomes a visible-focus keyboard scroll stop.
 - **Live data**: matching active task deltas replace only newer row versions; membership or ordering changes refetch the bounded current page and counts.
 

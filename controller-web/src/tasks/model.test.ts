@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import type { Task, TaskStatusCounts } from "../api/taskSchemas"
-import { canMergeTaskUpdate, counterValues } from "./model"
+import { canMergeTaskUpdate, counterValues, matchesTaskQuery } from "./model"
 import { parseTaskQuery } from "./query"
 
 const task = {
@@ -59,6 +59,33 @@ describe("task live model", () => {
 
     // Then: the row requires a bounded page refetch instead of an in-place merge.
     expect(canMergeTaskUpdate(task, incoming, query)).toBe(false)
+  })
+
+  it("matches live updates against Source and Failure Stage filters", () => {
+    // Given: a failed manual task inside a server-filtered view.
+    const query = parseTaskQuery(new URLSearchParams("source=manual&failure_stage=processing"))
+    const failedTask = {
+      ...task,
+      status: "failed",
+      failure: {
+        failure_stage: "processing",
+        failure_code: "processing_failed",
+        message: "Remote processing failed.",
+        retryable: true,
+      },
+      completed_at: "2030-01-01T00:02:00Z",
+    } as const satisfies Task
+
+    // When: matching and non-matching live task variants are evaluated.
+    const results = [
+      matchesTaskQuery(failedTask, query),
+      matchesTaskQuery({ ...failedTask, source: "api" }, query),
+      matchesTaskQuery({ ...failedTask, failure: { ...failedTask.failure, failure_stage: "publication" } }, query),
+      matchesTaskQuery({ ...failedTask, failure: null }, query),
+    ]
+
+    // Then: only a task satisfying both server-backed filters belongs to the view.
+    expect(results).toEqual([true, false, false, false])
   })
 
   it("derives compact counters from all fourteen server statuses", () => {

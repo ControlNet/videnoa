@@ -57,6 +57,8 @@ export function isActiveStatus(status: TaskStatus): boolean {
 
 export function matchesTaskQuery(task: Task, query: TaskQuery): boolean {
   if (query.status !== "all" && task.status !== query.status) return false
+  if (query.source !== "all" && task.source !== query.source) return false
+  if (query.failureStage !== "all" && task.failure?.failure_stage !== query.failureStage) return false
   if (query.workflow !== "" && task.workflow !== query.workflow) return false
   if (query.worker !== "" && task.worker_id !== query.worker) return false
   const search = query.search.trim().toLocaleLowerCase()

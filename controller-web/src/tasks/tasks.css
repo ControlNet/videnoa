@@ -96,7 +96,7 @@
 .task-filter select,
 .task-search-frame,
 .column-picker summary {
-  min-block-size: 2.25rem;
+  min-block-size: var(--control-compact);
   border: var(--border-default);
   border-radius: var(--radius-control);
   background: var(--color-surface-elevated);
@@ -148,7 +148,7 @@
 
 .column-picker > div {
   position: absolute;
-  z-index: 1;
+  z-index: 3;
   inset-block-start: calc(100% + var(--space-1));
   inset-inline-end: 0;
   display: grid;
@@ -227,8 +227,8 @@
 
 .task-table td {
   max-inline-size: 16rem;
-  block-size: 2.75rem;
-  padding: var(--space-2) var(--space-3);
+  block-size: var(--control-compact);
+  padding: var(--space-1) var(--space-3);
   overflow: hidden;
   border-block-end: var(--border-subtle);
   color: var(--color-text-muted);
@@ -364,7 +364,7 @@
 .task-load-error button,
 .task-table-scroll-controls button,
 .task-pagination button {
-  min-block-size: 2.25rem;
+  min-block-size: var(--control-compact);
   padding-inline: var(--space-3);
   border: var(--border-default);
   border-radius: var(--radius-control);

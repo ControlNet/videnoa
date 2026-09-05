@@ -2,7 +2,7 @@ import { appendFile, mkdir } from "node:fs/promises"
 
 import { expect, type Page, type Route } from "@playwright/test"
 
-import type { Task, TaskAttempt, TaskDetail, TaskStatus } from "../../src/api/taskSchemas"
+import type { FailureStage, Task, TaskAttempt, TaskDetail, TaskStatus } from "../../src/api/taskSchemas"
 
 export const evidenceDir = "../.omo/evidence/videnoa-controller/task-19/playwright-report/screenshots/task-16"
 export const statuses = [
@@ -44,7 +44,7 @@ export function task(index: number, overrides: Partial<Task> = {}): Task {
     output_extension: "mp4",
     workflow: workflowFor(index),
     priority: 20_000 - index,
-    source: index % 2 === 0 ? "manual" : "api",
+    source: sourceFor(index),
     source_reference: null,
     input_size: 4_294_967_296 + index,
     worker_id: workerFor(index),
@@ -171,6 +171,10 @@ function matchesIndex(index: number, url: URL): boolean {
   if (workflow !== null && workflowFor(index) !== workflow) return false
   const worker = url.searchParams.get("worker_id")
   if (worker !== null && workerFor(index) !== worker) return false
+  const source = url.searchParams.get("source")
+  if (source !== null && sourceFor(index) !== source) return false
+  const failureStage = url.searchParams.get("failure_stage")
+  if (failureStage !== null && failureStageFor(index) !== failureStage) return false
   const search = url.searchParams.get("search")?.toLocaleLowerCase() ?? ""
   return search === "" || inputPath(index).toLocaleLowerCase().includes(search)
 }
@@ -179,10 +183,14 @@ function matchesUrl(candidate: Task, url: URL): boolean {
   const status = url.searchParams.get("status")
   const workflow = url.searchParams.get("workflow")
   const worker = url.searchParams.get("worker_id")
+  const source = url.searchParams.get("source")
+  const failureStage = url.searchParams.get("failure_stage")
   const search = url.searchParams.get("search")?.toLocaleLowerCase() ?? ""
   return (status === null || candidate.status === status)
     && (workflow === null || candidate.workflow === workflow)
     && (worker === null || candidate.worker_id === worker)
+    && (source === null || candidate.source === source)
+    && (failureStage === null || candidate.failure?.failure_stage === failureStage)
     && (search === "" || candidate.input_path.toLocaleLowerCase().includes(search) || candidate.output_path.toLocaleLowerCase().includes(search))
 }
 
@@ -222,6 +230,14 @@ function workflowFor(index: number): string {
 
 function workerFor(index: number): string {
   return `550e8400-e29b-41d4-a716-${String(index % 3 + 1).padStart(12, "0")}`
+}
+
+function sourceFor(index: number): Task["source"] {
+  return index % 2 === 0 ? "manual" : "api"
+}
+
+function failureStageFor(index: number): FailureStage | null {
+  return statusFor(index) === "failed" ? "processing" : null
 }
 
 function inputPath(index: number): string {
