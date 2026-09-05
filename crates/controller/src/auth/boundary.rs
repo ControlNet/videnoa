@@ -14,13 +14,15 @@ pub(crate) enum RequestAuth {
     Session(SessionRecord),
 }
 
-pub(crate) fn peer_ip(request: &Request) -> IpAddr {
+#[derive(Debug)]
+pub(crate) struct MissingPeerMetadata;
+
+pub(crate) fn peer_ip(request: &Request) -> Result<IpAddr, MissingPeerMetadata> {
     request
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
-        .expect("server requests include peer connection information")
-        .0
-        .ip()
+        .map(|connect_info| connect_info.0.ip())
+        .ok_or(MissingPeerMetadata)
 }
 
 pub(crate) async fn authenticate(

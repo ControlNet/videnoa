@@ -15,5 +15,6 @@ pub use http::{
 };
 
 pub(crate) use boundary::{
-    authenticate, authenticate_passive, authorize_mutation, peer_ip, RequestAuth,
+    authenticate, authenticate_passive, authorize_mutation, peer_ip, MissingPeerMetadata,
+    RequestAuth,
 };
