@@ -1,8 +1,9 @@
 import { Columns3, Search } from "lucide-react"
 
-import { taskStatusSchema } from "../api/taskSchemas"
+import { failureStageSchema, taskSourceSchema, taskStatusSchema } from "../api/taskSchemas"
 import type { OptionalColumn, TaskLimit, TaskQuery } from "./query"
 import {
+  optionalColumnLabels,
   optionalColumns,
   taskLimits,
   taskOrders,
@@ -33,6 +34,18 @@ export function TaskToolbar({ query, search, onQueryChange, onSearchChange }: Ta
           {taskStatusSchema.options.map((status) => <option key={status} value={status}>{status.replaceAll("_", " ")}</option>)}
         </select>
       </Filter>
+      <Filter label="Source">
+        <select aria-label="Source" value={query.source} onChange={(event) => onQueryChange({ source: parseSource(event.currentTarget.value), offset: 0 })}>
+          <option value="all">All sources</option>
+          {taskSourceSchema.options.map((source) => <option key={source} value={source}>{source === "api" ? "API" : "Manual"}</option>)}
+        </select>
+      </Filter>
+      <Filter label="Failure Stage">
+        <select aria-label="Failure Stage" value={query.failureStage} onChange={(event) => onQueryChange({ failureStage: parseFailureStage(event.currentTarget.value), offset: 0 })}>
+          <option value="all">All failure stages</option>
+          {failureStageSchema.options.map((stage) => <option key={stage} value={stage}>{stage.replaceAll("_", " ")}</option>)}
+        </select>
+      </Filter>
       <TextFilter name="workflow" label="Workflow" value={query.workflow} onChange={(workflow) => onQueryChange({ workflow, offset: 0 })} />
       <TextFilter name="worker" label="Worker ID" value={query.worker} onChange={(worker) => onQueryChange({ worker, offset: 0 })} />
       <Filter label="Sort">
@@ -57,10 +70,11 @@ export function TaskToolbar({ query, search, onQueryChange, onSearchChange }: Ta
             <label key={column}>
               <input
                 type="checkbox"
+                aria-label={`Show ${optionalColumnLabels[column]} column`}
                 checked={query.columns.includes(column)}
                 onChange={() => onQueryChange({ columns: toggleColumn(query.columns, column) })}
               />
-              {column.replaceAll("_", " ")}
+              {optionalColumnLabels[column]}
             </label>
           ))}
         </div>
@@ -80,6 +94,16 @@ function TextFilter({ name, label, value, onChange }: { readonly name: string; r
 function parseStatus(value: string): TaskQuery["status"] {
   if (value === "all") return value
   return taskStatusSchema.parse(value)
+}
+
+function parseSource(value: string): TaskQuery["source"] {
+  if (value === "all") return value
+  return taskSourceSchema.parse(value)
+}
+
+function parseFailureStage(value: string): TaskQuery["failureStage"] {
+  if (value === "all") return value
+  return failureStageSchema.parse(value)
 }
 
 function parseSort(value: string): TaskQuery["sort"] {

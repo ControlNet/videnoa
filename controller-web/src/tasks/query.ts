@@ -1,4 +1,11 @@
-import { type TaskStatus, taskStatusSchema } from "../api/taskSchemas"
+import {
+  type FailureStage,
+  failureStageSchema,
+  type TaskSource,
+  type TaskStatus,
+  taskSourceSchema,
+  taskStatusSchema,
+} from "../api/taskSchemas"
 
 export const taskSorts = ["priority", "created_at", "completed_at", "status", "worker", "duration"] as const
 export type TaskSort = (typeof taskSorts)[number]
@@ -9,11 +16,33 @@ export type TaskOrder = (typeof taskOrders)[number]
 export const taskLimits = [25, 50, 100] as const
 export type TaskLimit = (typeof taskLimits)[number]
 
-export const optionalColumns = ["path", "attempts", "duration", "failure", "error", "remote_job"] as const
+export const optionalColumns = [
+  "input_path",
+  "output_path",
+  "attempts",
+  "duration",
+  "failure_stage",
+  "failure",
+  "error",
+  "remote_job_id",
+] as const
 export type OptionalColumn = (typeof optionalColumns)[number]
+
+export const optionalColumnLabels = {
+  input_path: "Input Path",
+  output_path: "Output Path",
+  attempts: "Attempts",
+  duration: "Duration",
+  failure_stage: "Failure Stage",
+  failure: "Failure",
+  error: "Error",
+  remote_job_id: "Remote Job ID",
+} as const satisfies Record<OptionalColumn, string>
 
 export type TaskQuery = {
   readonly status: TaskStatus | "all"
+  readonly source: TaskSource | "all"
+  readonly failureStage: FailureStage | "all"
   readonly workflow: string
   readonly worker: string
   readonly search: string
@@ -26,6 +55,8 @@ export type TaskQuery = {
 
 const defaults: TaskQuery = {
   status: "all",
+  source: "all",
+  failureStage: "all",
   workflow: "",
   worker: "",
   search: "",
@@ -38,6 +69,8 @@ const defaults: TaskQuery = {
 
 export function parseTaskQuery(parameters: URLSearchParams): TaskQuery {
   const parsedStatus = taskStatusSchema.safeParse(parameters.get("status"))
+  const parsedSource = taskSourceSchema.safeParse(parameters.get("source"))
+  const parsedFailureStage = failureStageSchema.safeParse(parameters.get("failure_stage"))
   const parsedLimit = Number(parameters.get("limit"))
   const parsedOffset = Number(parameters.get("offset"))
   const limit = taskLimits.find((candidate) => candidate === parsedLimit) ?? defaults.limit
@@ -47,6 +80,8 @@ export function parseTaskQuery(parameters: URLSearchParams): TaskQuery {
 
   return {
     status: parsedStatus.success ? parsedStatus.data : defaults.status,
+    source: parsedSource.success ? parsedSource.data : defaults.source,
+    failureStage: parsedFailureStage.success ? parsedFailureStage.data : defaults.failureStage,
     workflow: parameters.get("workflow") ?? defaults.workflow,
     worker: parameters.get("worker") ?? defaults.worker,
     search: parameters.get("search") ?? defaults.search,
@@ -61,6 +96,8 @@ export function parseTaskQuery(parameters: URLSearchParams): TaskQuery {
 export function serializeTaskQuery(query: TaskQuery): URLSearchParams {
   const parameters = new URLSearchParams()
   setMeaningful(parameters, "status", query.status, defaults.status)
+  setMeaningful(parameters, "source", query.source, defaults.source)
+  setMeaningful(parameters, "failure_stage", query.failureStage, defaults.failureStage)
   setMeaningful(parameters, "workflow", query.workflow, defaults.workflow)
   setMeaningful(parameters, "worker", query.worker, defaults.worker)
   setMeaningful(parameters, "search", query.search, defaults.search)
@@ -80,6 +117,8 @@ export function taskPagePath(query: TaskQuery): string {
     direction: query.order,
   })
   if (query.status !== "all") parameters.set("status", query.status)
+  if (query.source !== "all") parameters.set("source", query.source)
+  if (query.failureStage !== "all") parameters.set("failure_stage", query.failureStage)
   if (query.workflow !== "") parameters.set("workflow", query.workflow)
   if (query.worker !== "") parameters.set("worker_id", query.worker)
   if (query.search !== "") parameters.set("search", query.search)

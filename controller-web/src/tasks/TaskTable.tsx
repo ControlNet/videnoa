@@ -4,7 +4,7 @@ import type { KeyboardEvent } from "react"
 import type { TaskList } from "../api/taskSchemas"
 import { formatBytes, formatDate, formatDuration, formatStatus } from "./format"
 import { taskName } from "./model"
-import type { OptionalColumn } from "./query"
+import { type OptionalColumn, optionalColumnLabels } from "./query"
 import { type ScrollUpdate, useTaskTableScroll } from "./useTaskTableScroll"
 
 type TaskTableProps = {
@@ -72,7 +72,7 @@ export function TaskTable({ page, columns, loading, selectedTaskId = null, onSel
               <th scope="col">Source</th>
               {columns.map((column) => (
                 <th scope="col" key={column}>
-                  {column.replaceAll("_", " ")}
+                  {optionalColumnLabels[column]}
                 </th>
               ))}
             </tr>
@@ -164,10 +164,16 @@ function handleScrollKey(event: KeyboardEvent<HTMLElement>, onScroll: ScrollUpda
 
 function OptionalCell({ column, task }: { readonly column: OptionalColumn; readonly task: TaskList["items"][number] }) {
   switch (column) {
-    case "path":
+    case "input_path":
       return (
-        <td className="long-cell" title={task.input_path}>
+        <td className="long-cell mono-cell" title={task.input_path}>
           {task.input_path}
+        </td>
+      )
+    case "output_path":
+      return (
+        <td className="long-cell mono-cell" title={task.output_path}>
+          {task.output_path}
         </td>
       )
     case "attempts":
@@ -178,6 +184,8 @@ function OptionalCell({ column, task }: { readonly column: OptionalColumn; reado
           {formatDuration((new Date(task.completed_at ?? task.updated_at).getTime() - new Date(task.created_at).getTime()) / 1000)}
         </td>
       )
+    case "failure_stage":
+      return <td>{task.failure?.failure_stage ?? "--"}</td>
     case "failure":
       return <td>{task.failure?.failure_code ?? "--"}</td>
     case "error":
@@ -186,7 +194,7 @@ function OptionalCell({ column, task }: { readonly column: OptionalColumn; reado
           {task.failure?.message ?? "--"}
         </td>
       )
-    case "remote_job":
+    case "remote_job_id":
       return (
         <td className="mono-cell" title={task.remote_job_id ?? undefined}>
           {shortId(task.remote_job_id)}
