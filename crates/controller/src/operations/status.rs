@@ -77,6 +77,7 @@ pub(super) async fn readiness(
         Err(
             crate::auth::AuthError::InvalidPasswordHash
             | crate::auth::AuthError::PasswordHashing
+            | crate::auth::AuthError::PasswordVerification
             | crate::auth::AuthError::PasswordFile { .. }
             | crate::auth::AuthError::InvalidLifetime
             | crate::auth::AuthError::Persistence(_),

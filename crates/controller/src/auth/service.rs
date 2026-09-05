@@ -27,6 +27,8 @@ pub enum AuthError {
     InvalidPasswordHash,
     #[error("password hashing failed")]
     PasswordHashing,
+    #[error("password verification task failed")]
+    PasswordVerification,
     #[error("failed to read password hash file: {path}")]
     PasswordFile {
         path: PathBuf,
@@ -105,8 +107,8 @@ impl AuthService {
         password: &SecretString,
         now: DateTime<Utc>,
     ) -> Result<IssuedSession, AuthError> {
-        let loaded = self.inner.password.load()?;
-        if !loaded.verify(password) {
+        let (loaded, password_matches) = self.inner.password.verify(password.clone()).await?;
+        if !password_matches {
             return if self.inner.limiter.record_failure(address, now) {
                 Err(AuthError::RateLimited)
             } else {
@@ -218,18 +220,18 @@ impl AuthService {
     ///
     /// # Errors
     /// Returns a typed authentication or throttling error when the password does not match.
-    pub fn authenticate_bearer(
+    pub async fn authenticate_bearer(
         &self,
         address: IpAddr,
         password: &str,
         now: DateTime<Utc>,
     ) -> Result<(), AuthError> {
-        if self
+        let (_, password_matches) = self
             .inner
             .password
-            .load()?
-            .verify(&SecretString::new(password))
-        {
+            .verify(SecretString::new(password))
+            .await?;
+        if password_matches {
             self.inner.limiter.clear(address);
             Ok(())
         } else if self.inner.limiter.record_failure(address, now) {
