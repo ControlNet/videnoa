@@ -1,27 +1,47 @@
 use std::net::{IpAddr, Ipv4Addr};
 use std::num::{NonZeroU16, NonZeroU32};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
-use figment::providers::{Env, Format, Serialized, Toml};
-use figment::Figment;
-
+#[path = "config/document.rs"]
+mod document;
+#[path = "config/bootstrap.rs"]
+mod local;
+#[path = "config/projection.rs"]
+mod projection;
+#[path = "config/private.rs"]
+mod private;
 #[path = "config/raw.rs"]
 mod raw;
+#[path = "config/server_override.rs"]
+mod server_override;
+#[path = "config/listener.rs"]
+mod serving;
 #[path = "config/validate.rs"]
 mod validate;
-use raw::RawControllerConfig;
 
-const DEFAULT_MAX_ATTEMPTS: NonZeroU32 = match NonZeroU32::new(5) {
-    Some(value) => value,
-    None => NonZeroU32::MIN,
+pub use local::ConfigBootstrap;
+pub use serving::{
+    listener_channel, serve_reconfigurable, ListenerHandle, ListenerReceiver, PreparedListener,
 };
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ServerOverride {
+    pub host: Option<IpAddr>,
+    pub port: Option<NonZeroU16>,
+}
+
+fn persistence(error: &crate::persistence::PersistenceError) -> ConfigError {
+    ConfigError::Schema {
+        detail: error.to_string(),
+    }
+}
+
+const DEFAULT_MAX_ATTEMPTS: NonZeroU32 = NonZeroU32::MIN.saturating_add(4);
 const SESSION_ABSOLUTE_SECONDS: u64 = 24 * 60 * 60;
 const SESSION_IDLE_SECONDS: u64 = 60 * 60;
 const TRANSFER_TIMEOUT_SECONDS: u64 = 5 * 60;
 const RETRY_MAXIMUM_SECONDS: u64 = 60;
-
-pub const ENV_PREFIX: &str = "VIDENOA_CONTROLLER_";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ControllerConfig {
@@ -49,7 +69,6 @@ pub struct PathConfig {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuthConfig {
-    pub password_hash_file: PathBuf,
     pub secure_cookie: bool,
     pub session_absolute: Duration,
     pub session_idle: Duration,
@@ -82,6 +101,12 @@ pub struct RetryConfig {
 pub enum ConfigError {
     #[error("configuration file is missing or invalid: {path}")]
     MissingConfigFile { path: PathBuf },
+    #[error("configuration I/O failed at {path}")]
+    Io {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("configuration schema is invalid: {detail}")]
     Schema { detail: String },
     #[error("configuration root `{field}` is invalid at {path}: {reason}")]
@@ -113,62 +138,22 @@ pub enum ConfigError {
     InvalidRetryBounds { initial: u64, maximum: u64 },
 }
 
-impl ControllerConfig {
-    /// Parses and validates a TOML configuration layered over typed defaults.
-    ///
-    /// # Errors
-    /// Returns [`ConfigError`] when the schema or any configured boundary is invalid.
-    pub fn from_toml(source: &str) -> Result<Self, ConfigError> {
-        let figment = Figment::from(Serialized::defaults(RawControllerConfig::default()))
-            .merge(Toml::string(source));
-        Self::extract(&figment)
-    }
-
-    /// Loads defaults, an optional exact TOML file, and prefixed environment overrides.
-    ///
-    /// # Errors
-    /// Returns [`ConfigError`] when extraction or runtime boundary validation fails.
-    pub fn load(path: Option<&Path>) -> Result<Self, ConfigError> {
-        let mut figment = Figment::from(Serialized::defaults(RawControllerConfig::default()));
-        if let Some(path) = path {
-            if !path.is_file() {
-                return Err(ConfigError::MissingConfigFile {
-                    path: path.to_path_buf(),
-                });
-            }
-            figment = figment.merge(Toml::file_exact(path));
-        }
-        let figment = figment.merge(Env::prefixed(ENV_PREFIX).split("__"));
-        Self::extract(&figment)
-    }
-
-    fn extract(figment: &Figment) -> Result<Self, ConfigError> {
-        let raw =
-            figment
-                .extract::<RawControllerConfig>()
-                .map_err(|error| ConfigError::Schema {
-                    detail: error.to_string(),
-                })?;
-        validate::build_config(raw)
-    }
-}
-
 impl Default for ControllerConfig {
     fn default() -> Self {
+        let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         Self {
             server: ServerConfig {
                 host: IpAddr::V4(Ipv4Addr::LOCALHOST),
                 port: 3001,
             },
             paths: PathConfig {
-                input_roots: vec![PathBuf::from("input")],
-                output_roots: vec![PathBuf::from("output")],
-                data_root: PathBuf::from("data"),
-                temp_root: PathBuf::from("data/temp"),
+                input_roots: vec![workspace.clone()],
+                output_roots: vec![workspace.clone()],
+                data_root: workspace.join("data"),
+                temp_root: workspace.join("data"),
             },
             auth: AuthConfig {
-                password_hash_file: PathBuf::from("data/admin-password.phc"),
-                secure_cookie: true,
+                secure_cookie: false,
                 session_absolute: Duration::from_secs(SESSION_ABSOLUTE_SECONDS),
                 session_idle: Duration::from_secs(SESSION_IDLE_SECONDS),
             },

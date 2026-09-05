@@ -1,13 +1,10 @@
-use std::net::{IpAddr, Ipv4Addr};
-use std::path::PathBuf;
-
 use serde::{Deserialize, Serialize};
+use std::net::{IpAddr, Ipv4Addr};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RawControllerConfig {
     pub server: RawServerConfig,
-    pub paths: RawPathConfig,
     pub auth: RawAuthConfig,
     pub scheduler: RawSchedulerConfig,
     pub timeouts: RawTimeoutConfig,
@@ -23,17 +20,7 @@ pub(super) struct RawServerConfig {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct RawPathConfig {
-    pub input_roots: Vec<PathBuf>,
-    pub output_roots: Vec<PathBuf>,
-    pub data_root: PathBuf,
-    pub temp_root: PathBuf,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub(super) struct RawAuthConfig {
-    pub password_hash_file: PathBuf,
     pub secure_cookie: bool,
     pub session_absolute_seconds: u64,
     pub session_idle_seconds: u64,
@@ -75,15 +62,8 @@ impl Default for RawControllerConfig {
                 host: IpAddr::V4(Ipv4Addr::LOCALHOST),
                 port: 3001,
             },
-            paths: RawPathConfig {
-                input_roots: vec![PathBuf::from("input")],
-                output_roots: vec![PathBuf::from("output")],
-                data_root: PathBuf::from("data"),
-                temp_root: PathBuf::from("data/temp"),
-            },
             auth: RawAuthConfig {
-                password_hash_file: PathBuf::from("data/admin-password.phc"),
-                secure_cookie: true,
+                secure_cookie: false,
                 session_absolute_seconds: 86_400,
                 session_idle_seconds: 3_600,
             },
