@@ -60,6 +60,7 @@ export function validateUnitWorkflow(workflow) {
 	const faultLoad = requireJob(jobs, "controller-fault-load");
 	requireNeeds(faultLoad, "controller-fault-load", ["controller-rust"]);
 	requireText(faultLoad, "controller-fault-load", [
+		"--test auth_contention -- --ignored --nocapture",
 		"--test task20",
 		"--test task21",
 		"--test task21_concurrency",

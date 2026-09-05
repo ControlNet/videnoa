@@ -4,13 +4,15 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use anyhow::Context;
 use axum::body::{to_bytes, Body};
 use axum::extract::connect_info::ConnectInfo;
-use axum::http::{header, Request};
+use axum::http::{header, HeaderValue, Method, Request, StatusCode};
 use axum::Router;
 use serde_json::{json, Value};
 use tempfile::TempDir;
-use videnoa_controller::auth::{hash_password, AuthService};
+use tower::ServiceExt;
+use videnoa_controller::auth::{AuthService, CSRF_HEADER, SESSION_COOKIE};
 use videnoa_controller::config::{AuthConfig, ControllerConfig, PathConfig};
 use videnoa_controller::operations::{EventHub, OperationsDependencies, OperationsState};
 use videnoa_controller::paths::PathCapabilities;
@@ -22,12 +24,78 @@ use videnoa_controller::{controller_app_router, FrontendAssets};
 
 pub(super) type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 const PASSWORD: &str = "test-only-password";
+// TEST ONLY: Argon2id v19, 64 KiB, one iteration/lane, salt "videnoa-test-salt".
+// This precomputed PHC authenticates PASSWORD through the real production verifier.
+// These deliberately weak parameters MUST NEVER be used in production.
+const FAST_TEST_PASSWORD_HASH: &str = "$argon2id$v=19$m=64,t=1,p=1$dmlkZW5vYS10ZXN0LXNhbHQ$dGqvNdXw/rRAt0s9Uc4UrMmfKjwpqrGJqfwKo0aP1To";
 
 pub(super) struct Fixture {
     _directory: TempDir,
     pub router: Router,
     pub input: PathBuf,
     pub output: PathBuf,
+    pub session: SessionClient,
+}
+
+#[derive(Clone)]
+pub(super) struct SessionClient {
+    cookie: HeaderValue,
+    csrf: HeaderValue,
+}
+
+impl SessionClient {
+    async fn login(router: &Router) -> TestResult<Self> {
+        let response = router
+            .clone()
+            .oneshot(request(
+                "POST",
+                "/api/auth/login",
+                Some(&json!({ "password": PASSWORD })),
+            )?)
+            .await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        let cookie = response
+            .headers()
+            .get(header::SET_COOKIE)
+            .ok_or("login omitted session cookie")?
+            .to_str()?
+            .split(';')
+            .next()
+            .ok_or("empty session cookie")?;
+        assert!(cookie.starts_with(&format!("{SESSION_COOKIE}=")));
+        let csrf = response
+            .headers()
+            .get(CSRF_HEADER)
+            .ok_or("login omitted CSRF token")?
+            .clone();
+        Ok(Self {
+            cookie: cookie.parse()?,
+            csrf,
+        })
+    }
+
+    pub fn request(
+        &self,
+        method: &str,
+        uri: &str,
+        body: Option<&Value>,
+    ) -> TestResult<Request<Body>> {
+        let mut request = request(method, uri, body)?;
+        request
+            .headers_mut()
+            .insert(header::COOKIE, self.cookie.clone());
+        if !matches!(
+            *request.method(),
+            Method::GET | Method::HEAD | Method::OPTIONS
+        ) {
+            request.headers_mut().insert(CSRF_HEADER, self.csrf.clone());
+            request.headers_mut().insert(
+                header::ORIGIN,
+                HeaderValue::from_static("http://controller.test"),
+            );
+        }
+        Ok(request)
+    }
 }
 
 #[cfg(debug_assertions)]
@@ -66,15 +134,25 @@ async fn fixture_with_busy_timeout_option(busy_timeout: Option<Duration>) -> Tes
 
     let mut database_options = DatabaseOptions::new(directory.path().join("controller.sqlite3"));
     if let Some(busy_timeout) = busy_timeout {
+        // Schema creation is fixture setup, outside the request-contention regression.
+        // Finish it before opening the one-connection pool with its strict 100 ms bound.
+        Database::open(database_options.clone())
+            .await
+            .context("migrating task API fixture database")?
+            .close()
+            .await;
         database_options = database_options
             .with_busy_timeout(busy_timeout)
             .with_max_connections(1);
     }
-    let database = Database::open(database_options).await?;
+    let database = Database::open(database_options)
+        .await
+        .context("opening task API fixture database")?;
     let store = Store::new(database);
     store
-        .insert_administrator_credential(&hash_password(PASSWORD)?, chrono::Utc::now())
-        .await?;
+        .insert_administrator_credential(FAST_TEST_PASSWORD_HASH, chrono::Utc::now())
+        .await
+        .context("seeding task API fixture credential")?;
     let auth_config = AuthConfig {
         secure_cookie: false,
         session_absolute: Duration::from_secs(86_400),
@@ -88,7 +166,9 @@ async fn fixture_with_busy_timeout_option(busy_timeout: Option<Duration>) -> Tes
     };
     let auth = AuthService::new(auth_config.clone(), store.clone())?;
     let paths = PathCapabilities::open(&path_config)?;
-    let scheduler = Scheduler::load(store.clone()).await?;
+    let scheduler = Scheduler::load(store.clone())
+        .await
+        .context("loading task API fixture scheduler")?;
     let config = ControllerConfig {
         auth: auth_config,
         paths: path_config,
@@ -105,11 +185,15 @@ async fn fixture_with_busy_timeout_option(busy_timeout: Option<Duration>) -> Tes
     });
     let tasks = TaskService::new(store, paths);
     let router = controller_app_router(&assets(directory.path())?, auth, tasks, operations);
+    let session = SessionClient::login(&router)
+        .await
+        .map_err(|error| format!("logging in task API fixture session: {error}"))?;
     Ok(Fixture {
         _directory: directory,
         router,
         input,
         output,
+        session,
     })
 }
 
@@ -134,7 +218,19 @@ pub(super) fn request(method: &str, uri: &str, body: Option<&Value>) -> TestResu
     Ok(request)
 }
 
-pub(super) fn request_without_peer(
+pub(super) fn bearer_request(
+    method: &str,
+    uri: &str,
+    body: Option<&Value>,
+) -> TestResult<Request<Body>> {
+    let mut request = request(method, uri, body)?;
+    request
+        .headers_mut()
+        .insert(header::AUTHORIZATION, format!("Bearer {PASSWORD}").parse()?);
+    Ok(request)
+}
+
+fn request_without_peer(
     method: &str,
     uri: &str,
     body: Option<&Value>,
@@ -142,7 +238,7 @@ pub(super) fn request_without_peer(
     let mut builder = Request::builder()
         .method(method)
         .uri(uri)
-        .header(header::AUTHORIZATION, format!("Bearer {PASSWORD}"));
+        .header(header::HOST, "controller.test");
     let body = match body {
         Some(value) => {
             builder = builder.header(header::CONTENT_TYPE, "application/json");

@@ -5,7 +5,38 @@ use axum::extract::connect_info::ConnectInfo;
 use axum::http::{header, Request, StatusCode};
 use tower::ServiceExt;
 
-use super::support::{fixture, request_without_peer, TestResult};
+use super::support::{bearer_request, fixture, task_request, TestResult};
+
+#[tokio::test]
+async fn task_mutations_require_session_csrf_but_bearer_is_exempt() -> TestResult {
+    let fixture = fixture().await?;
+    let body = task_request(&fixture.input, &fixture.output, 1);
+    for invalid_header in [videnoa_controller::auth::CSRF_HEADER, "origin"] {
+        let mut request = fixture.session.request("POST", "/api/tasks", Some(&body))?;
+        assert!(!request.headers().contains_key(header::AUTHORIZATION));
+        request
+            .headers_mut()
+            .insert("idempotency-key", "auth-boundary".parse()?);
+        request.headers_mut().remove(invalid_header);
+        let response = fixture.router.clone().oneshot(request).await?;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    // A valid Bearer password still authorizes mutations without cookies or CSRF.
+    let mut request = bearer_request("POST", "/api/tasks", Some(&body))?;
+    assert!(!request.headers().contains_key(header::COOKIE));
+    assert!(!request
+        .headers()
+        .contains_key(videnoa_controller::auth::CSRF_HEADER));
+    request
+        .headers_mut()
+        .insert("idempotency-key", "auth-boundary".parse()?);
+    assert_eq!(
+        fixture.router.oneshot(request).await?.status(),
+        StatusCode::CREATED
+    );
+    Ok(())
+}
 
 #[tokio::test]
 async fn direct_router_returns_typed_internal_error_when_peer_metadata_is_missing() -> TestResult {
@@ -18,7 +49,8 @@ async fn direct_router_returns_typed_internal_error_when_peer_metadata_is_missin
         ("GET", "/api/settings"),
         ("PUT", "/api/settings"),
     ] {
-        let request = request_without_peer(method, uri, None)?;
+        let mut request = bearer_request(method, uri, None)?;
+        request.extensions_mut().remove::<ConnectInfo<SocketAddr>>();
 
         // When: an authenticated task or operations request is routed directly.
         let response = fixture.router.clone().oneshot(request).await?;
