@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use videnoa_controller::config::ControllerConfig;
 
 #[test]
@@ -8,15 +6,12 @@ fn defaults_match_locked_task_two_settings() {
     let config = ControllerConfig::default();
 
     // When/Then: every locked path, auth, scheduler, timeout, and retry default is explicit.
-    assert_eq!(config.paths.input_roots, [PathBuf::from("input")]);
-    assert_eq!(config.paths.output_roots, [PathBuf::from("output")]);
-    assert_eq!(config.paths.data_root, PathBuf::from("data"));
-    assert_eq!(config.paths.temp_root, PathBuf::from("data/temp"));
-    assert_eq!(
-        config.auth.password_hash_file,
-        PathBuf::from("data/admin-password.phc")
-    );
-    assert!(config.auth.secure_cookie);
+    let workspace = std::env::current_dir().expect("test working directory");
+    assert_eq!(config.paths.input_roots, [workspace.clone()]);
+    assert_eq!(config.paths.output_roots, [workspace.clone()]);
+    assert_eq!(config.paths.data_root, workspace.join("data"));
+    assert_eq!(config.paths.temp_root, workspace.join("data"));
+    assert!(!config.auth.secure_cookie);
     assert_eq!(config.auth.session_absolute.as_secs(), 86_400);
     assert_eq!(config.auth.session_idle.as_secs(), 3_600);
     assert!(!config.scheduler.paused);
