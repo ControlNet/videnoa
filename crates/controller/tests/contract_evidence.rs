@@ -4,6 +4,7 @@ use std::fs;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{json, Value};
+use videnoa_controller::auth::{SetupRequest, SetupResponse};
 use videnoa_controller::domain::{
     ApiErrorEnvelope, CancelTaskResponse, HealthResponse, IdempotencyKey, LoginRequest,
     LoginResponse, LogoutResponse, ReadinessResponse, RetryTaskResponse, SessionResponse,
@@ -114,12 +115,11 @@ fn settings() -> Value {
     json!({
         "version": 3,
         "paths": {
-            "input_roots": ["/nas/input"],
-            "output_roots": ["/nas/output"],
-            "data_root": "/var/lib/videnoa-controller",
-            "temp_root": "/var/lib/videnoa-controller/temp",
-            "password_hash_file": "/run/secrets/admin-password.phc"
+            "workspace": "/workspace",
+            "data_root": "/workspace/data",
+            "config_file": "/workspace/data/controller.toml"
         },
+        "server": {"host": "127.0.0.1", "port": 3001},
         "secure_cookie": true,
         "session_absolute_seconds": 86400,
         "session_idle_seconds": 3600,
@@ -133,6 +133,15 @@ fn settings() -> Value {
         "timeouts": {"health_seconds": 10, "poll_seconds": 5, "transfer_seconds": 300},
         "retry": {"initial_seconds": 1, "maximum_seconds": 60, "max_attempts": 5}
     })
+}
+
+fn parse_credential_contracts() -> TestResult {
+    let _: SetupRequest = serde_json::from_value(json!({
+        "password": "synthetic-test-password",
+        "password_confirmation": "synthetic-test-password"
+    }))?;
+    let _: LoginRequest = serde_json::from_value(json!({"password": "test-only-value"}))?;
+    Ok(())
 }
 
 #[test]
@@ -194,11 +203,17 @@ fn all_public_http_contracts_roundtrip_and_can_write_evidence() -> TestResult {
         "settings": roundtrip::<SettingsResponse>(settings_value.clone())?,
         "settings_update": roundtrip::<SettingsUpdateRequest>(json!({
             "version": 3,
+            "server": {"host": "0.0.0.0", "port": 3101},
+            "auth": {
+                "secure_cookie": false,
+                "session_absolute_seconds": 43200,
+                "session_idle_seconds": 1800
+            },
             "scheduler": settings_value["scheduler"],
             "timeouts": settings_value["timeouts"],
             "retry": settings_value["retry"]
         }))?,
-        "login_request_fields": ["password"],
+        "setup_status": roundtrip::<SetupResponse>(json!({"initialized": false}))?,
         "login": roundtrip::<LoginResponse>(json!({"session": session.clone()}))?,
         "session": roundtrip::<SessionResponse>(session.clone())?,
         "logout": roundtrip::<LogoutResponse>(json!({"logged_out": true}))?,
@@ -222,12 +237,13 @@ fn all_public_http_contracts_roundtrip_and_can_write_evidence() -> TestResult {
             }
         }))?
     });
-    let _: LoginRequest = serde_json::from_value(json!({"password": "test-only-value"}))?;
+    parse_credential_contracts()?;
     let output = format!("{}\n", serde_json::to_string_pretty(&contracts)?);
 
     // Then: output is stable, health stays Task 1-compatible, and no credential value is emitted.
     assert_eq!(contracts["health"], json!({"status": "ok"}));
     assert!(!output.contains("test-only-value"));
+    assert!(!output.contains("synthetic-test-password"));
     if let Some(path) = std::env::var_os("VIDENOA_CONTRACT_EVIDENCE") {
         fs::write(path, output)?;
     }

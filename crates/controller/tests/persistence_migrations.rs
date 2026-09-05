@@ -33,6 +33,7 @@ async fn database_applies_migrations_and_effective_pragmas() -> TestResult {
         tables,
         [
             "_sqlx_migrations",
+            "administrator_credential",
             "auth_sessions",
             "controller_settings",
             "task_attempts",
@@ -109,7 +110,7 @@ async fn existing_database_migrates_idempotently() -> TestResult {
     )
     .fetch_all(database.pool())
     .await?;
-    assert_eq!(migration_count, 6);
+    assert_eq!(migration_count, 8);
     assert_eq!(settings_count, 1);
     assert_eq!(index_flags, (1, 1));
     assert_eq!(index_columns, ["worker_id", "remote_job_id"]);
