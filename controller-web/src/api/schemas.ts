@@ -12,8 +12,30 @@ export const sessionSchema = z
 
 export const loginResponseSchema = z.object({ session: sessionSchema }).strict()
 export const logoutResponseSchema = z.object({ logged_out: z.literal(true) }).strict()
+export const setupStatusSchema = z.object({ initialized: z.boolean() }).strict()
 
-const authErrorCodeSchema = z.enum(["unauthorized", "forbidden", "rate_limited", "internal"])
+const setupPasswordSchema = z.string().superRefine((password, context) => {
+  const byteLength = new TextEncoder().encode(password).byteLength
+  if (byteLength < 12) {
+    context.addIssue({ code: "custom", message: "Use at least 12 UTF-8 bytes." })
+  } else if (byteLength > 1024) {
+    context.addIssue({ code: "custom", message: "Use at most 1024 UTF-8 bytes." })
+  }
+})
+
+export const setupRequestSchema = z
+  .object({
+    password: setupPasswordSchema,
+    password_confirmation: z.string(),
+  })
+  .strict()
+  .superRefine((request, context) => {
+    if (request.password !== request.password_confirmation) {
+      context.addIssue({ code: "custom", path: ["password_confirmation"], message: "Passwords do not match." })
+    }
+  })
+
+const authErrorCodeSchema = z.enum(["unauthorized", "forbidden", "invalid_request", "conflict", "rate_limited", "internal"])
 const operationsErrorCodeSchema = z.enum([
   "unauthorized",
   "forbidden",
@@ -80,3 +102,4 @@ const nestedApiErrorSchema = z
 export const apiErrorSchema = z.union([flatApiErrorSchema, nestedApiErrorSchema])
 
 export type Session = z.infer<typeof sessionSchema>
+export type SetupRequest = z.infer<typeof setupRequestSchema>
