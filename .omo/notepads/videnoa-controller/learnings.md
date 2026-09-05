@@ -491,3 +491,25 @@
 - A fixed narrow error alert can remain inside the viewport yet still obscure enabled controls. Putting the focused alert in an explicit grid row between the mobile shell header and main content prevents overlap without weakening route scrolling.
 - Browser regressions are stronger when they combine a real wheel gesture with frame/document scroll invariants, fixed-footer visibility, focus-outline containment, and rectangle intersections against every visible enabled control.
 - Fresh production-preview captures at 1440x900 and 1024x900 reached each Settings scroll maximum while keeping Sign out and final readiness content visible. At 375x812, the focused alert occupied `y=129..197`, main began at `y=201`, and the intersection set was empty.
+
+## 2026-09-05 F2 Authenticated Peer Metadata Panic Remediation
+
+- Production `into_make_service_with_connect_info::<SocketAddr>()` supplies direct peer identity, but a public Axum `Router` can also be invoked through `ServiceExt::oneshot`; listener wiring therefore cannot justify an infallible request-extension lookup.
+- Missing peer metadata is a transport-wiring failure, not an authentication failure. A private typed `MissingPeerMetadata` result maps through task and operations request adapters to the existing `500 internal_error` envelope without expanding `AuthError` or changing `401`, `403`, or `429` policy.
+- Fail closed rather than inventing loopback/unspecified peers or consulting forwarding headers. This preserves per-connection login/Bearer budgets and prevents unrelated direct-router requests from sharing a fabricated limiter identity.
+- One direct-router matrix covers task and operations read/mutation middleware (`GET`/`POST /api/tasks`, `GET`/`PUT /api/settings`) while existing real-peer fixtures continue to cover cookies, CSRF, SSE, and shared login/Bearer throttling.
+- Live TCP QA confirmed the unchanged production listener returned `200 {"status":"ok"}` for health and the existing typed `401 unauthorized` envelope for an unauthenticated task request, with no panic.
+
+## 2026-09-05 F2 Durable Recovery Pagination
+
+- A fixed-prefix recovery query can starve durable work indefinitely even when each orchestration pass is otherwise correct. Stable keyset pagination over `(updated_at_ms, id)` visits every row without offset skips on a mutating set.
+- Capturing the greatest nonterminal tuple before scanning creates a finite high-water boundary. Rows inserted or moved beyond that boundary wait for the next scan, while strict lower and inclusive upper tuple bounds keep the current scan complete and deterministic.
+- Startup recovery and recurring orchestration must consume the same durable page contract while preserving their distinct behavior: startup classifies every nonterminal task, whereas orchestration retains active-task ownership, retry deadlines, worker-health deferral, and shutdown admission.
+- Tiny injected page sizes are sufficient production-shaped proof. Page size two reconciled eleven equal-timestamp startup rows, and page size one proved an older active task cannot starve later reserved work.
+
+## 2026-09-05 Legacy Linux p7zip Resource Safety
+
+- Hosted comparison was CPU/resource-specific, not disk- or input-specific: exact-tip run `33919997302` and earlier `33799944410` failed with p7zip 16.02 on 4-CPU Intel 6973P runners, while `33910972161`, `33919341191`, `33873102244`, and `33841747853` passed on 4-CPU AMD runners using the same command, archive topology, and approximately 5.335 GB input. Exact-tip had `84,695,440` KiB available.
+- p7zip 16.02 initializes compression parallelism from detected processors and allocates LZMA2 resources per thread. On the real 632,554,805-byte cuDNN package asset, four threads peaked at `604,164` KiB RSS; under `ulimit -v 450000` the four-thread split and unsplit commands failed allocation, while `-mx=5 -md=16m -mmt=1` completed at `194,584` KiB RSS.
+- Exact real-bundle QA command `bash scripts/package_dist_archive.sh create /tmp/videnoa-v013-extracted /tmp/opencode/videnoa-package-archive-debug/videnoa-linux64-real.7z 2000m` archived `5,330,656,910` bytes in `46:35.85`, peaked at `195,496` KiB RSS, and produced a 2,097,152,000-byte `.001` plus 151,790,351-byte `.002`. `bash scripts/package_dist_archive.sh verify .../videnoa-linux64-real.7z` returned 0 through `.001`.
+- Leaving method selection automatic is compatibility-critical: the final archive retained `LZMA2:24 BCJ`, solid mode, and four blocks. Explicit `-m0=lzma2` was rejected because it suppresses p7zip's automatic executable BCJ filter.
