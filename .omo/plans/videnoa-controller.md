@@ -504,11 +504,13 @@ Expected: the image starts without GPU flags/libraries; archives have the locked
 
   Run formatting, clippy, Rust/frontend tests, dependency/content scans, migrations, secret/log scans, and path/auth attacks; inspect exhaustive transitions, typed errors, module size, indexes/CAS, and no-clobber primitives. Reject panic request paths, permissive CORS, plaintext secrets, unsafe paths, overwrite fallback, blind resubmit, or misleading success logs. Save `.omo/evidence/videnoa-controller/final/F2-quality-security.md`.
 
-- [ ] F3. Real manual QA and visual verification
+- [x] F3. Real manual QA and visual verification
 
   Launch a production-like Controller with a test-only password hash, NAS roots, and multiple mock Videnoa instances. Use Playwright for login, workers/settings, manual/API tasks, live pipeline, 20,000-row filters, pause, cancel/retry, Controller/worker restarts, output, and cleanup. Capture desktop/narrow/CJK screenshots plus DB/filesystem/remote evidence. Reject a card-heavy/sparse/inaccessible UI, clipping, credential leakage, or divergence from API/DB truth. Save `.omo/evidence/videnoa-controller/final/F3-manual-visual.md`.
 
-- [x] F4. Packaging, release, regression, and repository-landing audit
+- [~] F4. Packaging, release, regression, and repository-landing audit
+
+  Landing blocker (2026-09-05): the concurrent-intake authentication executor-starvation fix is locally verified but uncommitted. Await explicit user authorization to commit and push intended source/test/evidence changes. After authorization, refresh affected final reviews and require a successful hosted run on the landing revision before marking F4 complete. Initial language acceptance is English and Chinese only; Korean is out of scope.
 
   Build/smoke the dedicated image and Linux/Windows archives; inspect linkage/content; run existing Videnoa workspace/web/package/GPU Docker/version checks; verify exact new names and unchanged old layouts. Test migration plus backup/rollback instructions. Reject GPU dependencies, existing regressions, incomplete release success, uncommitted/unpushed work, or branch not up-to-date. Save `.omo/evidence/videnoa-controller/final/F4-release-regression.md`.
 

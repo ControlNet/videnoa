@@ -513,3 +513,38 @@
 - p7zip 16.02 initializes compression parallelism from detected processors and allocates LZMA2 resources per thread. On the real 632,554,805-byte cuDNN package asset, four threads peaked at `604,164` KiB RSS; under `ulimit -v 450000` the four-thread split and unsplit commands failed allocation, while `-mx=5 -md=16m -mmt=1` completed at `194,584` KiB RSS.
 - Exact real-bundle QA command `bash scripts/package_dist_archive.sh create /tmp/videnoa-v013-extracted /tmp/opencode/videnoa-package-archive-debug/videnoa-linux64-real.7z 2000m` archived `5,330,656,910` bytes in `46:35.85`, peaked at `195,496` KiB RSS, and produced a 2,097,152,000-byte `.001` plus 151,790,351-byte `.002`. `bash scripts/package_dist_archive.sh verify .../videnoa-linux64-real.7z` returned 0 through `.001`.
 - Leaving method selection automatic is compatibility-critical: the final archive retained `LZMA2:24 BCJ`, solid mode, and four blocks. Explicit `-m0=lzma2` was rejected because it suppresses p7zip's automatic executable BCJ filter.
+
+## 2026-09-05 F3 English/Chinese Scope Clarification
+
+- The user explicitly limited the initial release acceptance scope to English and Chinese. Korean support is out of scope and must not block release.
+- The aborted Hangul remediation was fully removed: source and design files were restored exactly, and only the attempt-created test, font files, license/provenance docs, debug journal, captures, temporary source font, and isolated preview process were cleaned up.
+- This cleanup does not approve F3. The orchestrator must re-evaluate the existing F3 functional and visual evidence against the corrected English/Chinese scope.
+
+## 2026-09-05 F3 English/Chinese Final Disposition
+
+- F3 is approved for the user-authorized English/Chinese initial-release scope. The prior rejection was superseded because its only blocker was Korean rendering, which is outside this gate; Korean is not claimed fixed.
+- Fresh current-tip production-build evidence contains 31/31 required captures across login, Tasks, Workers, Settings, logout failure, and desktop/tablet/mobile viewports. All captures had expected dimensions, loaded fonts, no document-level horizontal overflow, and no unexpected console/page errors.
+- The fresh evidence uses deterministic same-origin production-shaped API fixtures and makes no new Controller runtime, SQLite, restart, or persistence claim. Those claims remain grounded in the 34 prior real release-runtime captures and runtime journals at `0fb4eb597acda9b571efc686c4701da333831675`.
+- Product source is identical between the prior runtime revision and current tip `e161e772744c48791f67cb21575c6ebef4ace13c`: `controller-web` tree `1e21aa9ac5a1546ecafacf50473ef1c10afed070` and `crates/controller` tree `49f0a2f356e0ca9eb36c446a5a89679c9d242ebc`.
+- Both independent read-only reviewers returned `PASS` with high confidence, no findings, and no blockers. The Chinese precision reviewer explicitly inspected all 31 fresh PNGs.
+
+## 2026-09-05 F4 Current Release Re-evaluation
+
+- GitHub Actions run `33933923401` is genuine all-green product evidence: the read-only jobs API reports exactly 14 jobs, all successful, at `0fb4eb597acda9b571efc686c4701da333831675`.
+- Packaging remediation is closed independently of final landing: the legacy Linux archive passed in both `33933923401` and current-tip run `33940048214`, and the latter also passed both legacy package jobs, legacy Docker, both Controller archives, and Controller image/content smoke.
+- Product-tree equality and exact-tip CI are different claims. `0fb4eb5..e161e77` changes only `.omo` evidence/knowledge, so the green run remains product evidence, but the literal `e161e77` run is still 13/14 because duplicate-intake concurrency returned an unexpected HTTP 500.
+- A branch can be `0 0` with its actual remote tip and still fail repository landing. The audit-start worktree had six uncommitted final-evidence/plan paths; F4 must reject until the intended evidence is committed/pushed and the exact landing commit has an all-green required run.
+
+## 2026-09-05 Controller Duplicate Intake Authentication Contention
+
+- Argon2 password verification is synchronous CPU work. Running it directly in async Bearer middleware can starve Tokio workers long enough that unrelated completed SQLite futures are not polled and their pool connections are not released before acquisition deadlines.
+- The reliable discriminator was a barrier-released eight-request HTTP race with one SQLite connection and a 100 ms acquisition/busy bound. Before the fix it returned typed `internal_error` responses sourced from `Database(PoolTimedOut)` during idempotency preflight; moving credential load and verification to `tokio::task::spawn_blocking` toggled the same race green.
+- Login and Bearer authentication must share the same asynchronous password-verification boundary so both paths preserve limiter behavior while keeping blocking filesystem and Argon2 work off executor threads.
+
+## 2026-09-05 F1 Exact-Tip Compliance Revalidation
+
+- F1 authority is exact commit `30d9f25d19cf0ec1a88733483da7f95581e980ad` and hosted run `33946244764`: `HEAD`, `origin/dev`, and remote `dev` match; the run is `completed/success` with exactly 14 successful jobs.
+- Commit `30d9f25` is limited to Controller authentication async propagation, exhaustive typed error mapping, and deterministic concurrent-intake regression support. It does not change existing Videnoa/core/frontend/packaging/release identity or Controller GPU/core isolation.
+- The eight dirty tracked paths observed at audit start are all `.omo` reviewer outputs. They must be described separately from implementation/source dirtiness, which is absent.
+- English and Chinese are the complete initial language acceptance scope. Korean remains out of scope and unfixed; neither F1 approval nor the corrected F3 evidence is a Korean-support claim.
+- The stale F4 rejection records the pre-remediation SHA/run and is not an F1 blocker, but F1 does not infer or assert F4 approval. F1 verdict at the exact product tip is `APPROVE`.

@@ -40,3 +40,26 @@ Final report: `.omo/evidence/videnoa-controller/final/F3-manual-visual.md`
 - Regressions use a normal Playwright wheel gesture, shell/frame scroll invariants, Sign out and final-content viewport assertions, focus-outline containment, and enabled-control intersection checks.
 - Fresh artifacts are under `.omo/evidence/videnoa-controller/task-19/f3-layout-fix/`: `settings-1440x900-scrolled.png`, `settings-1024x900-scrolled.png`, `logout-alert-375x812.png`, and `qa.md`.
 - Deterministic browser fixtures are synthetic test data shaped like the production API. They contain no usable credentials or authorization material.
+
+## 2026-09-05 English/Chinese Release Scope Correction
+
+- Initial release acceptance covers English and Chinese only. Korean rendering is explicitly out of scope and cannot be used as a release blocker.
+- The earlier exact-tip `REJECT` statement based solely on Korean worker-name rendering must be interpreted as superseded scope context, not as the current decision criterion.
+- No Korean font solution remains in the worktree. The attempted Noto Sans KR asset, declarations, documentation, test, runtime captures, and debug process were removed, and the original Manrope/Geist typography contract was restored.
+- This record is a scope clarification and cleanup receipt, not an F3 approval. Final disposition remains with the orchestrator after re-evaluating English/Chinese evidence.
+
+## 2026-09-05 Final F3 Disposition
+
+- Final verdict: `APPROVE` for the English/Chinese initial-release scope.
+- The approval combines prior real release-runtime evidence at `0fb4eb597acda9b571efc686c4701da333831675` with 31 fresh current-tip production-build Chromium captures. Product trees are identical across the two revisions.
+- Preserve the evidence boundary: fresh same-origin API fixtures validate current production rendering and interaction regressions, while prior runtime artifacts remain authoritative for Controller execution, SQLite, restart, persistence, filesystem, and real workflow claims.
+- Two independent reviewers returned `PASS` with high confidence and no blockers; one explicitly inspected all 31 fresh captures for English/Chinese glyphs, wrapping, clipping, layout, focus, overflow, and evidence defects.
+- Korean remains out of scope and unfixed. Do not reinterpret this approval as Korean support or as proof that the prior Hangul observation was remediated.
+
+## 2026-09-05 Exact-Tip Authentication Revalidation
+
+- F3 remains `APPROVE` for English and Chinese at exact tip `30d9f25d19cf0ec1a88733483da7f95581e980ad` after fresh release-runtime login, concurrent Bearer, limiter reset, authenticated-route, logout-failure/retry, reauthentication, and final revocation checks.
+- `controller-web` is byte-identical at `e161e77` and `30d9f25` with tree `1e21aa9ac5a1546ecafacf50473ef1c10afed070`; the Controller tree changes from `49f0a2f356e0ca9eb36c446a5a89679c9d242ebc` to `0eb1068692b827c107ac5ba51692d38bed5ba03b` for the authentication scheduling change.
+- Preserve exact attribution: the complete 31-image visual set remains prior source-identical frontend evidence, while 8 targeted captures and the real authentication runtime are fresh at `30d9f25`. The final F3 report embeds the sanitized filenames, dimensions, and SHA-256 values for those 8 captures.
+- One reviewer initially returned evidence-only `REVISE` for stale report attribution and missing exact-tip capture metadata. After correction, a new independent reviewer returned `PASS`; the Chinese precision reviewer also returned `PASS` after enumerating all 39 images.
+- The isolated credential never appeared in browser storage, DOM, captures, Playwright artifacts, or the report. The credential bridge and Controller runtime were stopped and the temporary runtime root was removed.
