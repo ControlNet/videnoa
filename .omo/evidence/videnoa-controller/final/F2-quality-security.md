@@ -2,77 +2,87 @@
 
 Audit date: 2026-09-05
 
-Audited tip: `67620f5b45d54205b44861e3cc5d59e88724e998`
+Audited tip: `d8830fa55cf54d504eafbc768747e57f3d2dcadf`
 
-Comparison baseline only: `094d87833ebbc55c8f27857cd70d85fc5cc91afe`
+Shell-remediation commit: `90561edafb7df40af084c3ffe8a19bebf909c3c9`
 
-Hosted authority: [GitHub Actions run 33910972161](https://github.com/ControlNet/videnoa/actions/runs/33910972161)
+Hosted authority: [GitHub Actions run 33919997302](https://github.com/ControlNet/videnoa/actions/runs/33919997302)
 
 ## Verdict
 
-**APPROVE**
+**REJECT**
 
-The two prior F2 blockers are corrected at the audited tip. Bearer and login password failures now share one direct-peer limiter across every authenticated route class and return typed `429 rate_limited` responses. The locked Controller TLS/HTTP graph now uses patched `h2 0.4.16` and `rustls-webpki 0.103.13`. Fresh Rust 1.83 quality gates, all Controller targets, focused security and publication-race tests, frontend quality and browser gates, live HTTP authentication checks, dependency analysis, and exact-tip hosted CI pass. No unresolved Controller production-reachable advisory or integrity blocker was found.
+The exact tip passes the Controller Rust, frontend, dependency, security, load, fault, archive, and image gates exercised by this review. The shell remediation is behaviorally verified and the hosted run's only failure is an unrelated legacy Linux package split-archive step. However, F2 requires rejection of panic-based request handling and requires startup reconciliation to cover every durable nonterminal task. The current tip violates both requirements: authenticated middleware can panic when peer connection metadata is absent, and recovery/orchestration scan only the first 65,535 nonterminal rows without pagination.
 
-## Prior Blocker Closure
+## Blocking Findings
 
-### Bearer throttling and peer identity: CLOSED
+### 1. Authenticated request handling contains a reachable panic boundary
 
-- `AuthService` owns one `LoginLimiter` shared by `login` and `authenticate_bearer`; both record failed Argon2 verification against the connecting `IpAddr`, return `RateLimited` after five failures within five minutes, and clear that peer's failures after successful verification.
-- Axum `ConnectInfo<SocketAddr>` supplies the peer address. Task and operations middleware obtain the same extension through `peer_ip`; `Forwarded`, `X-Forwarded-For`, and `X-Real-IP` are not trusted as client identity.
-- Authorization parsing invokes Bearer verification only for valid UTF-8 with the exact `Bearer ` prefix. Malformed or non-Bearer authorization values fall through to cookie-session authentication rather than creating an alternate password path.
-- Auth, task, and operations error adapters all preserve `AuthError::RateLimited` as HTTP 429 with a typed `rate_limited` code.
-- A live Controller run accumulated failures across login, readiness, task listing, settings, and SSE. The sixth localhost failure returned typed 429. Spoofed forwarding headers did not move the budget; a request sourced from `127.0.0.2` received an independent 401; an existing cookie session remained valid; a correct Bearer credential succeeded and cleared the localhost failures; the next invalid request returned 401.
-- Focused integration tests additionally pass for the shared login/Bearer budget and typed task-middleware 429 response.
+**Severity:** HIGH
 
-### TLS and HTTP dependency advisories: CLOSED
+- `crates/controller/src/auth/boundary.rs:17-24` implements `peer_ip` by reading `ConnectInfo<SocketAddr>` from request extensions and calling `.expect("server requests include peer connection information")`.
+- `peer_ip` is called by authenticated task and operations request middleware. A request routed through `controller_app_router` without the matching extension panics instead of producing a typed HTTP error.
+- The production listener in `crates/controller/src/auth/http.rs:105-124` installs `into_make_service_with_connect_info::<SocketAddr>()`, so the normal binary wiring supplies the extension. That wiring does not remove the panic from the request path: `controller_app_router` is public and has multiple direct test/runtime consumers, while the F2 plan explicitly says to reject panic request paths.
+- Required remediation: make peer metadata extraction fallible and map absence to a typed internal or authentication response, or encapsulate the router so every construction path statically guarantees the extension. Add a direct-router regression proving absence cannot panic.
 
-- `Cargo.lock` pins `h2 0.4.16` and `rustls-webpki 0.103.13`, replacing vulnerable `0.4.13` and `0.103.9` resolutions.
-- Feature-unified workspace inversion proves `h2 0.4.16` reaches `videnoa-controller` through Axum/Hyper and Reqwest, and `rustls-webpki 0.103.13` reaches it through Reqwest/Hyper-Rustls/Rustls. These are the production Controller paths that required remediation.
-- `cargo deny check advisories` no longer reports the prior `h2` or `rustls-webpki` advisories. Remaining vulnerability advisories are `quick-xml 0.38.4` through Tauri desktop packaging and `time 0.3.45` through Tauri/desktop or `videnoa-core`; workspace feature-unified inverse trees do not connect those versions to `videnoa-controller`.
-- Remaining unmaintained-crate reports likewise trace through GTK3/Tauri desktop dependencies. They are workspace risks for their owning products, not Controller normal/build dependency paths.
+### 2. Recovery can omit durable nonterminal tasks above 65,535 rows
 
-## Security and Integrity Dispositions
+**Severity:** HIGH
 
-| Area | Result | Current-tip basis |
+- `Store::recovery_tasks` in `crates/controller/src/persistence/task.rs:34-44` accepts a `u16` limit and executes one ordered `LIMIT ?` query with no cursor or offset.
+- Startup reconciliation uses `RECOVERY_SCAN_LIMIT: u16 = u16::MAX` in `crates/controller/src/recovery/reconciler.rs:15,55-69`. It therefore processes at most 65,535 nonterminal tasks even though its contract says it reconciles every durable nonterminal task.
+- Recurring orchestration uses the same `SCAN_LIMIT: u16 = u16::MAX` in `crates/controller/src/orchestration.rs:16,124-149`. Each fill reads the same oldest prefix. Active, deferred, or otherwise long-lived tasks are filtered only after the limited query, so they can continuously occupy that prefix and starve later tasks.
+- This violates Task 10's requirement to scan every nonterminal task/attempt on startup. It can leave later durable tasks without recovery, transfer, publication, or cleanup after restart.
+- Required remediation: paginate over a stable `(updated_at_ms, id)` cursor, or otherwise iterate until the complete nonterminal set has been considered. Filtering active/deferred tasks must not consume the page budget. Add a regression exceeding the page size and proving a task beyond the first page is reconciled and dispatched.
+
+## Hosted Run Disposition
+
+- Run `33919997302` is for the exact audited SHA and completed with overall `failure`.
+- All F2-relevant jobs passed: Controller Rust quality/tests, Controller frontend quality/E2E, Controller fault/load/security suites, Linux and Windows Controller archives, Controller image/content smoke, workflow contracts, existing Rust tests, and web builds.
+- The sole failed job was legacy `Package smoke (Linux)`. Its `Create split archive (2000MB volumes)` step failed after the bundle build and runtime checks; the hosted log reports p7zip 16.02 `System ERROR: E_FAIL`.
+- This legacy packaging failure is not evidence of a Controller F2 defect, but the exact-tip hosted run must not be described as green.
+
+## Passing Security and Integrity Areas
+
+| Area | Result | Exact-tip basis |
 |---|---|---|
-| Authentication and authorization | PASS | Shared direct-peer login/Bearer throttling, session fallback, exact Bearer parsing, route middleware, live cross-route verification, and typed 401/403/429 behavior pass. |
-| Sessions and secrets | PASS | Argon2id password verification, random raw session/CSRF values, digest-only persistence, absolute/idle expiry, touch/rotation/revocation, password-hash fingerprint invalidation, and cookie protections remain enforced. Reviewed secret-scan matches are synthetic test/log fixtures, not usable credentials. |
-| CSRF and CORS | PASS | Session mutations require same-origin and CSRF proof; Bearer requests do not rely on browser cookies; hostile-origin and preflight tests prove no permissive credentialed CORS response. |
-| SQL, migrations, indexes, and CAS | PASS | Six migrations, transaction rollback, WAL/foreign keys/busy timeout, enum/relation constraints, optimistic versions, submission ownership, atomic reservation, snapshot pagination, and 20,000-row query-plan/load coverage pass. |
-| Lifecycle and recovery | PASS | Persist-before-side-effect, exhaustive transition/recovery matrices, durable submission ownership, bounded retry, cancellation boundaries, restart takeover, malformed-task isolation, and no duplicate same-generation remote submission are covered and pass. |
-| Input and temporary paths | PASS | Capability-retained roots, descriptor-relative/no-follow reopening, traversal/symlink/FIFO rejection, replacement detection, bounded streaming, exact length/hash checks, and owned cleanup pass adversarial tests. |
-| Publication and no-clobber | PASS on Linux | Platform no-replace finalization, descriptor-relative staging, regular-file verification, racing destination preservation, duplicate finalizers, cross-filesystem publication, and staging-replacement rejection pass. Native Windows publication races remain a host-specific residual risk. |
-| Panic, unsafe, and typed errors | PASS | Controller forbids unsafe code. The production `ConnectInfo` expectation is at the server-internal boundary that always installs `into_make_service_with_connect_info`; domain and HTTP failure paths otherwise use typed errors. No production `todo!` or `unimplemented!` was found. |
-| Module size and maintainability | PASS | Reviewed production Controller modules remain within the established 250 pure-line ceiling; the largest relevant modules are approximately 200-241 pure lines. Remediation is localized and does not introduce parallel authentication or publication paths. |
-| Frontend dependencies and behavior | PASS | `npm audit --json` reports zero vulnerabilities; lint, typecheck, unit tests, production build, and all 47 Chromium E2E scenarios pass. |
-| Rust dependencies | PASS for Controller | Patched Controller-reachable HTTP/TLS versions are present and verified through feature-unified paths. Current advisory failures terminate in other workspace products. Sources pass. The repository has no `deny.toml`, so default `cargo deny check licenses` rejects all licenses and is not an enforceable project policy result. |
-| Packaging and runtime boundary | PASS | Controller remains GPU-free and independent of `videnoa-core`, ORT, CUDA, cuDNN, TensorRT, and model content; exact-tip archive/image and non-root runtime jobs pass. |
+| Authentication behavior | PASS with panic blocker above | Direct-peer login/Bearer throttling, session fallback, exact Bearer parsing, typed 401/403/429 responses, CSRF, and hostile-origin behavior pass focused and live checks. |
+| Sessions and secrets | PASS | Argon2id verification, random session/CSRF material, digest-only persistence, expiry/rotation/revocation, protected cookies, and password-hash invalidation remain enforced. Secret-scan matches are synthetic fixtures, not usable credentials. |
+| SQL, migrations, indexes, and CAS | PASS | Migration, rollback, constraints, optimistic versions, submission ownership, atomic reservation, snapshot pagination, and 20,000-row query-plan/load tests pass. |
+| Lifecycle and remote submission | PASS with recovery blocker above | Exhaustive lifecycle, persist-before-side-effect, cancellation, durable submission ownership, restart takeover, and same-generation no-duplicate-request tests pass. |
+| Input and temporary paths | PASS | Capability-retained roots, descriptor-relative/no-follow access, traversal/symlink/FIFO rejection, replacement detection, bounded streaming, and length/hash checks pass adversarial coverage. |
+| Publication and no-clobber | PASS on Linux | No-replace finalization, descriptor-relative staging, racing destination preservation, duplicate finalizers, cross-filesystem publication, and staging-replacement rejection pass. Native Windows race behavior remains host-specific. |
+| Unsafe and typed errors | PARTIAL | Controller forbids unsafe code and domain failures are typed, but missing peer connection metadata still uses panic-based request handling. |
+| Frontend and shell | PASS | Lint, typecheck, 112 Vitest tests, production build, focused shell tests, and all 48 Chromium E2E scenarios pass. Wheel scrolling, control/alert non-overlap, and focus retention are asserted behaviorally. |
+| Controller dependencies | PASS | Locked Controller paths use `anyhow 1.0.103`, `h2 0.4.16`, and `rustls-webpki 0.103.13`; no Controller normal/build path to GPU/core or the remaining desktop/core advisories was found. |
+| Packaging boundary | PASS for Controller | Controller archive/image checks pass and remain GPU-free, independent of ORT, CUDA, cuDNN, TensorRT, model content, and `videnoa-core`. |
 
 ## Verification Performed
 
-- Provenance at audit start: `HEAD == origin/dev == 67620f5b45d54205b44861e3cc5d59e88724e998`, branch divergence `0 0`, and no pre-existing worktree change. A concurrent modification to `F4-release-regression.md` appeared later and was excluded from this report.
-- Hosted run `33910972161`: exact `headSha`, completed `success`, and all 14 jobs passed, including Controller Rust, fault/load/security, frontend E2E, Linux/Windows archives, container/image checks, and legacy product regressions.
+- Provenance: `HEAD == origin/dev == d8830fa55cf54d504eafbc768747e57f3d2dcadf`, divergence `0 0`, and clean worktree at audit start.
 - `cargo +1.83.0 fmt --all -- --check`: PASS.
-- `cargo +1.83.0 check -p videnoa-controller --all-targets --all-features`: PASS.
-- `cargo +1.83.0 clippy -p videnoa-controller --all-targets --all-features -- -D warnings`: PASS.
-- `cargo +1.83.0 test -p videnoa-controller --all-targets`: PASS for every target.
-- Focused tests passed: `login_and_bearer_share_the_direct_peer_failure_budget`, `protected_task_middleware_returns_typed_rate_limit_response`, `staging_replacement_after_verification_is_never_accepted`, and `duplicate_publication_finalizers_preserve_exactly_one_final_artifact`.
-- Controller web `npm ci --no-fund`, `npm run lint`, `npm run typecheck`, `npm test -- --run`, `npm run build`, and `npm run test:e2e`: PASS; all 47 Chromium scenarios passed.
-- Live localhost HTTP verification: valid login 200; first five cross-route invalid password attempts 401; sixth invalid attempt 429 with typed `rate_limited`; alternate direct peer 401; cookie session during limiter state 200; valid Bearer 200 and cleared failures; following invalid Bearer 401.
-- `npm audit --json`: zero vulnerabilities.
-- `cargo deny check advisories`: expected workspace failure only for remaining desktop/core advisories; prior Controller-reachable `h2` and `rustls-webpki` advisory IDs are absent.
+- Rust 1.83 Controller all-target/all-feature check, strict Clippy, and tests with the locked graph: PASS.
+- Focused migration, query-plan/load, CAS, hostile path/auth, publication, and submission-ownership tests: PASS.
+- Controller web install, lint, typecheck, 112 Vitest tests, production build, six focused shell tests, and all 48 Chromium E2E tests: PASS.
+- LSP diagnostics for `controller-web/src/shell/AppShell.tsx` and `controller-web/tests/e2e/shell.spec.ts`: PASS.
+- `npm audit`: zero vulnerabilities.
 - `cargo deny check sources`: PASS.
-- Feature-unified inverse trees explicitly connect patched `h2` and `rustls-webpki` to Controller and connect remaining vulnerable `quick-xml`/`time` versions only to other workspace products.
-- Source review covered auth boundaries and services, limiter semantics, route middleware/error adapters, CORS/CSRF, sessions, persistence/migrations/CAS, lifecycle/recovery, path capabilities, publication finalization, tests, workflows, Dockerfile, lockfile, module size, unsafe/panic sites, and secret-storage patterns.
+- Advisory analysis: remaining reported vulnerability and unmaintained advisories terminate in desktop/core GTK3, Tauri, XML, time, or legacy Unicode paths; they do not reach the Controller normal/build graph.
+- Controller archive/content/documentation contract scripts: PASS.
+- Exact-tip hosted job and step status was rechecked with GitHub CLI.
 
-## Residual Risk and Non-Blocking Observations
+## Tooling Limitations and Residual Risk
 
-- The limiter performs Argon2 verification before recording and classifying a failed attempt, and a correct credential is intentionally accepted and clears the budget. This avoids administrator lockout and meets the tested policy, but it does not eliminate CPU cost from continued invalid requests after the response threshold. Upstream connection/request-rate controls remain advisable for Internet-exposed deployments.
-- A staging-file replacement racing between verification and no-replace rename can leave attacker-controlled replacement bytes occupying a previously absent final path while the task fails verification. The task is not marked complete and an existing destination is never overwritten. The actor model already requires write access inside the publication directory, which also permits direct creation of that final path, so this is retained as an operational cleanup/ambiguity risk rather than a crossed trust-boundary blocker.
-- Generic secret-bearing filename patterns such as `*.pem`, `*.key`, and `credentials.json` are not comprehensively ignored. No tracked usable credential was found, but `.gitignore` hardening is recommended.
-- Native Windows no-clobber race behavior is supported by implementation review and hosted archive/runtime smoke, while the descriptor/filesystem race suite executed locally on Linux.
-- The workspace still carries desktop/core vulnerability and unmaintained-dependency advisories. They do not reach the Controller graph but should remain visible to the release reviews for those products.
-- The repository lacks a configured Cargo license allow-list, making `cargo deny check licenses` fail by default even for standard permissive licenses. Establishing an explicit reviewed policy would turn that check into meaningful governance evidence.
+- Cargo 1.83 cannot parse workspace-wide `cargo tree --workspace --all-features` because `ort-sys 2.0.0-rc.12` uses Edition 2024. Feature-unified inverse dependency checks were rerun with current stable Cargo; Controller compilation and tests themselves pass on Rust/Cargo 1.83.
+- Secret scanning found no real credential. The repository still lacks 19 common sensitive-file ignore patterns, including generic key and credential filenames; `.gitignore` hardening is recommended.
+- Browser execution is Chromium-only. The shell uses modern `:has()` and dynamic viewport units, leaving cross-browser behavior as a residual compatibility risk.
+- Native Windows publication races were not executed on this Linux host; implementation and hosted Windows package/archive coverage do not fully replace native filesystem race testing.
+- The overall hosted run remains red until the independently scoped legacy Linux split-archive failure is resolved or superseded by a passing exact-tip run.
 
-VERDICT: APPROVE
+## Approval Conditions
+
+1. Remove the panic-based peer metadata extraction from authenticated request handling and add direct-router regression coverage.
+2. Replace the fixed-prefix recovery scans with complete pagination and prove recovery/dispatch beyond one page.
+3. Rerun the focused regressions plus the complete Rust 1.83 Controller and frontend gates, then regenerate this exact-tip report.
+
+VERDICT: REJECT
