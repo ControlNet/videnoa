@@ -5,7 +5,7 @@ export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
-      "/api": "http://localhost:3001",
+      "/api": process.env["VIDENOA_CONTROLLER_DEV_API_URL"] ?? "http://127.0.0.1:13001",
     },
   },
   /*

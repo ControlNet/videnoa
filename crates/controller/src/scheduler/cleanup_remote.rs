@@ -27,10 +27,11 @@ impl TransferExecutor {
             .worker(worker_id)
             .await?
             .ok_or(TransferError::MissingEvidence)?;
-        let client = VidenoaClient::new(
+        let client = VidenoaClient::new_with_password(
             worker.api_url,
             self.config.runtime_settings.remote_timeouts(),
             self.config.payload_limits,
+            worker.password.as_ref(),
         )?;
         let workspace = FileApiPath::parse(&task.id.to_string())?;
         match client.delete_file(&workspace).await {

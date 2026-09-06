@@ -57,13 +57,45 @@ impl RunFixture {
         app_router(self.state.clone())
     }
 
-    fn restarted_state(&self) -> AppState {
-        build_state(
-            self._root.path(),
-            &self.data_dir,
-            &self.workflows_dir,
-            &self.presets_dir,
-        )
+    async fn restarted(self) -> Result<Self> {
+        let Self {
+            _root,
+            state,
+            data_dir,
+            workflows_dir,
+            presets_dir,
+        } = self;
+        let previous = std::sync::Arc::downgrade(&state.inner);
+        drop(state);
+        // A restart releases the previous executor and authentication lock first.
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while previous.strong_count() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        // Arc's strong count reaches zero before its fields finish dropping.
+        // Wait for the SQLite connection and its instance lock to finish closing.
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(data_dir.join("auth.lock"))?;
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while lock.try_lock().is_err() {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        })
+        .await?;
+        drop(lock);
+        let state = build_state(_root.path(), &data_dir, &workflows_dir, &presets_dir);
+        state.ensure_auth_ready()?;
+        Ok(Self {
+            _root,
+            state,
+            data_dir,
+            workflows_dir,
+            presets_dir,
+        })
     }
 }
 

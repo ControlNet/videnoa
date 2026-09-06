@@ -1,3 +1,4 @@
+import { authenticatedFetch } from '../auth/transport';
 import { create } from 'zustand';
 
 export interface PortDescriptor {
@@ -36,7 +37,7 @@ export const useNodeDefinitions = create<NodeDefinitionsState>((set, get) => ({
     if (get().descriptors.length > 0) return;
     set({ loading: true, error: null });
     try {
-      const resp = await fetch('/api/nodes');
+      const resp = await authenticatedFetch('/api/nodes');
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const data: NodeDescriptor[] = await resp.json();
       set({ descriptors: data, loading: false });

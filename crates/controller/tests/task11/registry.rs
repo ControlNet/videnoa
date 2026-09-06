@@ -33,6 +33,7 @@ async fn registry_reports_normalized_duplicates_and_stale_writes() -> TestResult
         .await
         .expect_err("canonical worker URL must be unique");
     let update = WorkerUpdateRequest {
+        password: None,
         version: created.version,
         name: WorkerName::new("worker-renamed"),
         api_url: created.api_url.clone(),
@@ -235,6 +236,7 @@ async fn health_refresh_is_atomic_and_capacity_reduction_cannot_hide_usage() -> 
         .update(
             worker.id,
             WorkerUpdateRequest {
+                password: None,
                 version: current.version,
                 name: current.name.clone(),
                 api_url: current.api_url.clone(),

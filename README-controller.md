@@ -308,3 +308,6 @@ Published images are `controlnet/videnoa-controller:<version>` and
   older builds incorrectly bound transfers by `poll_seconds` (5 seconds by default).
   On fixed builds, set **Transfer timeout seconds** above the expected complete
   upload duration, then retry the failed task.
+
+Worker access passwords can be configured in **Add Worker** and **Edit Worker**.
+See [password access](docs/password-access.md#controller-workers) for update and storage behavior.

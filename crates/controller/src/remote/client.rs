@@ -20,7 +20,30 @@ impl VidenoaClient {
         timeouts: RemoteTimeouts,
         limits: PayloadLimits,
     ) -> Result<Self, ClientConfigError> {
+        Self::new_with_password(base_url, timeouts, limits, None)
+    }
+
+    /// Creates a client with a private, optional worker credential for all requests.
+    ///
+    /// # Errors
+    /// Returns an error when the credential or HTTP client is invalid.
+    pub fn new_with_password(
+        base_url: WorkerApiUrl,
+        timeouts: RemoteTimeouts,
+        limits: PayloadLimits,
+        password: Option<&crate::domain::SecretString>,
+    ) -> Result<Self, ClientConfigError> {
+        let mut headers = reqwest::header::HeaderMap::new();
+        if let Some(password) = password {
+            let mut value = reqwest::header::HeaderValue::from_bytes(
+                format!("Bearer {}", password.expose()).as_bytes(),
+            )
+            .map_err(|_| ClientConfigError::HttpClient)?;
+            value.set_sensitive(true);
+            headers.insert(reqwest::header::AUTHORIZATION, value);
+        }
         let http = reqwest::Client::builder()
+            .default_headers(headers)
             .connect_timeout(timeouts.connect)
             .pool_max_idle_per_host(8)
             .redirect(reqwest::redirect::Policy::none())

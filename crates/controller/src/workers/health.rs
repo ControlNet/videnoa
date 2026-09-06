@@ -108,6 +108,12 @@ impl WorkerHealthService {
                     pending.clear();
                     break;
                 };
+                if !worker.online {
+                    cache.invalidate(
+                        &worker.api_url,
+                        crate::remote::CacheInvalidation::RemoteError,
+                    );
+                }
                 let cached = cache.catalog(&worker.api_url);
                 let settings = self.runtime_settings.clone();
                 let limits = self.payload_limits;

@@ -16,12 +16,13 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, RwLock, Semaphore};
 use tokio_util::sync::CancellationToken;
-use tower_http::cors::CorsLayer;
+
 #[cfg(debug_assertions)]
 use tower_http::services::{ServeDir, ServeFile};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
+pub mod auth;
 mod files;
 mod idempotency;
 mod persistence;
@@ -76,6 +77,7 @@ pub struct AppState {
 }
 
 struct AppStateInner {
+    auth: std::result::Result<auth::AuthService, String>,
     jobs: DashMap<String, Job>,
     jobs_persistence: Option<JobsPersistence>,
     gpu_semaphore: Arc<Semaphore>,
@@ -102,6 +104,14 @@ const RERUN_COMPLETED_REJECTION: &str = "cannot rerun completed job";
 const PREVIEW_VSYNC_MODE: &str = "vfr";
 
 impl AppState {
+    pub fn ensure_auth_ready(&self) -> Result<()> {
+        self.inner
+            .auth
+            .as_ref()
+            .map(|_| ())
+            .map_err(|e| anyhow::anyhow!(e.clone()))
+    }
+
     pub fn new(
         node_registry: NodeRegistry,
         model_registry: ModelRegistry,
@@ -110,6 +120,8 @@ impl AppState {
         config_path: PathBuf,
         data_dir: PathBuf,
     ) -> Self {
+        let auth =
+            auth::AuthService::open(&data_dir, config.auth.clone()).map_err(|e| e.to_string());
         let jobs = DashMap::new();
         let workspace_root = data_dir.join("workspace");
         if let Err(err) = std::fs::create_dir_all(&workspace_root) {
@@ -158,6 +170,7 @@ impl AppState {
 
         Self {
             inner: Arc::new(AppStateInner {
+                auth,
                 jobs,
                 jobs_persistence,
                 gpu_semaphore: Arc::new(Semaphore::new(1)),
@@ -584,7 +597,6 @@ pub fn app_router(state: AppState) -> Router {
 
 pub fn app_router_with_static(state: AppState, static_dir: Option<&StdPath>) -> Router {
     let api = Router::new()
-        .route("/api/health", get(health))
         .route("/api/config", get(get_config).put(update_config))
         .route("/api/performance/current", get(get_performance_current))
         .route("/api/performance/overview", get(get_performance_overview))
@@ -597,7 +609,6 @@ pub fn app_router_with_static(state: AppState, static_dir: Option<&StdPath>) -> 
         .route("/api/run", post(run_workflow_by_name))
         .route("/api/jobs/{id}", get(get_job).delete(delete_job_history))
         .route("/api/jobs/{id}/rerun", post(rerun_job))
-        .route("/api/jobs/{id}/ws", any(job_ws))
         .route("/api/nodes", get(list_nodes))
         .route("/api/models", get(list_models))
         .route("/api/models/{filename}/inspect", get(inspect_model))
@@ -628,7 +639,19 @@ pub fn app_router_with_static(state: AppState, static_dir: Option<&StdPath>) -> 
             get(serve_preview_frame),
         )
         .route("/api/{*path}", any(api_route_not_found))
-        .layer(CorsLayer::permissive())
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth::protect,
+        ))
+        .route("/api/health", get(health))
+        .route("/api/jobs/{id}/ws", any(job_ws))
+        .route("/api/auth/session", get(auth::session))
+        .route("/api/auth/login", post(auth::login))
+        .route("/api/auth/logout", post(auth::logout))
+        .route(
+            "/api/auth/password",
+            axum::routing::put(auth::set_password).delete(auth::disable),
+        )
         .with_state(state);
 
     #[cfg(not(debug_assertions))]
@@ -1217,12 +1240,19 @@ async fn update_config(
     State(state): State<AppState>,
     Json(payload): Json<AppConfig>,
 ) -> Result<Json<AppConfig>, AppError> {
+    payload
+        .auth
+        .validate()
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let auth = state
+        .inner
+        .auth
+        .as_ref()
+        .map_err(|_| AppError::Internal("Authentication unavailable".into()))?;
+    let mut config = state.inner.config.write().await;
     payload.save_to_path(&state.inner.config_path)?;
-
-    {
-        let mut config = state.inner.config.write().await;
-        *config = payload.clone();
-    }
+    auth.reconfigure(payload.auth.clone())?;
+    *config = payload.clone();
 
     Ok(Json(payload))
 }
@@ -3176,6 +3206,7 @@ mod tests {
         let mut app = app_router(state);
 
         let updated = AppConfig {
+            auth: crate::config::AuthConfig::default(),
             paths: crate::config::PathsConfig {
                 models_dir: PathBuf::from("models_custom"),
                 trt_cache_dir: PathBuf::from("cache_custom"),

@@ -1,3 +1,4 @@
+import { authenticatedFetch } from '@/auth/transport';
 import i18n from "i18next";
 import { initReactI18next } from "react-i18next";
 import { enResources } from "@/i18n/locales/en";
@@ -65,7 +66,7 @@ async function fetchDesktopConfig(): Promise<ConfigPayload | null> {
 	if (typeof window === "undefined" || !isDesktopRuntime()) return null;
 
 	try {
-		const response = await fetch("/api/config");
+		const response = await authenticatedFetch("/api/config");
 		if (!response.ok) return null;
 		const payload = (await response.json()) as ConfigPayload;
 		return payload && typeof payload === "object" ? payload : null;
@@ -82,7 +83,7 @@ async function persistDesktopLocale(locale: SupportedLocale): Promise<void> {
 	if (!config) return;
 
 	try {
-		const response = await fetch("/api/config", {
+		const response = await authenticatedFetch("/api/config", {
 			method: "PUT",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ ...config, locale }),

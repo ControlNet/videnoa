@@ -55,6 +55,7 @@ pub const fn worker_id(value: u128) -> WorkerId {
 
 pub fn worker_request(name: &str, url: &str, slots: u64) -> TestResult<WorkerCreateRequest> {
     Ok(WorkerCreateRequest {
+        password: None,
         name: WorkerName::new(name),
         api_url: WorkerApiUrl::parse(url)?,
         enabled: true,
@@ -70,6 +71,7 @@ pub async fn create_worker_with_id(
     fixture
         .store
         .insert_worker(&NewWorker {
+            password: None,
             id,
             name: request.name,
             api_url: request.api_url,

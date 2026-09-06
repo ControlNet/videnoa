@@ -21,9 +21,9 @@ impl Store {
         };
         sqlx::query(
             "INSERT INTO workers (
-                id, name, api_url, enabled, online, compute_slots, capabilities_json,
+                id, name, api_url, enabled, online, compute_slots, capabilities_json, password,
                 created_at_ms, updated_at_ms
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(worker.id.to_string())
         .bind(worker.name.as_str())
@@ -32,6 +32,12 @@ impl Store {
         .bind(worker.online)
         .bind(i64::from(worker.compute_slots.get()))
         .bind(encode_json("capabilities_json", &capabilities)?)
+        .bind(
+            worker
+                .password
+                .as_ref()
+                .map(crate::domain::SecretString::expose),
+        )
         .bind(timestamp(worker.created_at))
         .bind(timestamp(worker.created_at))
         .execute(self.database.pool())
@@ -60,7 +66,12 @@ impl Store {
     ) -> Result<WorkerUpdateOutcome, PersistenceError> {
         let mut transaction = self.database.pool().begin().await?;
         let updated_version: Option<i64> = sqlx::query_scalar(
-            "UPDATE workers SET name = ?, api_url = ?, enabled = ?, compute_slots = ?,
+            "UPDATE workers SET password = CASE WHEN ? THEN ? ELSE password END,
+                online = CASE WHEN ? THEN 0 ELSE online END,
+                next_health_check_at_ms = CASE WHEN ? THEN NULL ELSE next_health_check_at_ms END,
+                health_retry_count = CASE WHEN ? THEN 0 ELSE health_retry_count END,
+                capabilities_json = CASE WHEN ? THEN '{\"workflows\":[],\"refreshed_at\":null}' ELSE capabilities_json END,
+                name = ?, api_url = ?, enabled = ?, compute_slots = ?,
                 version = version + 1, updated_at_ms = ?
              WHERE id = ? AND version = ?
                AND (SELECT COUNT(*) FROM tasks assigned
@@ -68,6 +79,12 @@ impl Store {
                       AND assigned.status IN ('submitting', 'processing')) <= ?
              RETURNING version",
         )
+        .bind(update.password.is_some())
+        .bind(update.password.as_ref().and_then(Option::as_ref).map(crate::domain::SecretString::expose))
+        .bind(update.password.is_some())
+        .bind(update.password.is_some())
+        .bind(update.password.is_some())
+        .bind(update.password.is_some())
         .bind(update.name.as_str())
         .bind(update.api_url.as_url().as_str())
         .bind(update.enabled)
@@ -151,7 +168,7 @@ impl Store {
 }
 
 pub(super) const WORKER_COLUMNS: &str =
-    "SELECT id, version, name, api_url, enabled, online, compute_slots,
+    "SELECT password, id, version, name, api_url, enabled, online, compute_slots,
     capabilities_json, last_seen_at_ms, last_assigned_at_ms, health_retry_count,
     next_health_check_at_ms, created_at_ms, updated_at_ms, last_error
     FROM workers";
@@ -162,6 +179,9 @@ pub(super) fn map_worker(row: &sqlx::sqlite::SqliteRow) -> Result<WorkerRecord, 
         .map_err(|_| super::codec::corrupt("api_url", api_url_value))?;
     let slots = rust_u64("compute_slots", row.try_get("compute_slots")?)?;
     Ok(WorkerRecord {
+        password: row
+            .try_get::<Option<String>, _>("password")?
+            .map(crate::domain::SecretString::new),
         id: parse_brand::<WorkerId>("id", row.try_get("id")?)?,
         version: rust_u64("version", row.try_get("version")?)?,
         name: WorkerName::new(row.try_get::<String, _>("name")?),

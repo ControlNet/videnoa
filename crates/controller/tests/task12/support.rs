@@ -122,6 +122,7 @@ impl Fixture {
         let server_url = WorkerApiUrl::parse(server.base_url())?;
         store
             .insert_worker(&NewWorker {
+                password: None,
                 id: worker_id,
                 name: WorkerName::new("worker-a"),
                 api_url: server_url.clone(),

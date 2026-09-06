@@ -48,6 +48,7 @@ impl ControllerFixture {
             .post(format!("{}/api/workers", self.base_url))
             .bearer_auth(PASSWORD)
             .json(&WorkerCreateRequest {
+                password: None,
                 name: videnoa_controller::domain::WorkerName::new(name),
                 api_url: videnoa_controller::domain::WorkerApiUrl::parse(server.base_url())?,
                 enabled,

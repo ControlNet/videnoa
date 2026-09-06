@@ -65,6 +65,10 @@ impl OperationsError {
             WorkerRegistryErrorCode::CapacityBelowUsage => {
                 Self::Conflict("worker capacity is below durable usage")
             }
+            WorkerRegistryErrorCode::InvalidPassword => Self::InvalidField(
+                "password",
+                "Password must contain 1 to 1024 UTF-8 bytes and no control characters",
+            ),
             WorkerRegistryErrorCode::InvalidName => {
                 Self::InvalidField("name", "worker name must not be empty")
             }

@@ -33,7 +33,8 @@ async fn replay_after_restart_returns_same_cancelled_job_without_replacement() -
     tokio::task::yield_now().await;
 
     // When: a new AppState starts from the same database and receives the replay.
-    let restarted = fixture.restarted_state();
+    let fixture = fixture.restarted().await?;
+    let restarted = &fixture.state;
     let restored = restarted.inner.jobs.get(&job_id).expect("restored job");
     assert_eq!(restored.status, JobStatus::Cancelled);
     drop(restored);

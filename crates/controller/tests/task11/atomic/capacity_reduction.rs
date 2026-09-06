@@ -18,6 +18,7 @@ async fn worker_capacity_reduction_rechecks_usage_after_concurrent_compute_claim
     let reducing_store = fixture.store.clone();
     let reserving_store = fixture.store.clone();
     let update = WorkerUpdate {
+        password: None,
         id: worker.id,
         expected_version: worker.version,
         name: worker.name,

@@ -13,7 +13,7 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/api': 'http://localhost:3000',
+      '/api': { target: process.env.VIDENOA_DEV_API_URL ?? 'http://127.0.0.1:13000', ws: true },
     },
   },
 })

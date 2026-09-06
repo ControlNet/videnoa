@@ -5908,6 +5908,7 @@ name = "videnoa-core"
 version = "0.1.2"
 dependencies = [
  "anyhow",
+ "argon2",
  "axum",
  "chrono",
  "dashmap",
@@ -5922,6 +5923,7 @@ dependencies = [
  "petgraph",
  "prost",
  "prost-build",
+ "rand_core 0.6.4",
  "rayon",
  "reqwest 0.12.27",
  "rusqlite",

@@ -534,3 +534,19 @@
     grid-column: auto;
   }
 }
+
+.worker-password-field {
+  display: grid;
+  gap: 8px;
+}
+
+.worker-password-field > .button {
+  justify-self: start;
+}
+
+.worker-password-field > p {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}

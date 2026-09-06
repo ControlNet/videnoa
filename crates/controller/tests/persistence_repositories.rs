@@ -57,6 +57,7 @@ fn task(id: TaskId, now: chrono::DateTime<Utc>) -> NewTask {
 
 fn worker(id: WorkerId, now: chrono::DateTime<Utc>) -> TestResult<NewWorker> {
     Ok(NewWorker {
+        password: None,
         id,
         name: WorkerName::new("worker-a"),
         api_url: WorkerApiUrl::parse("HTTPS://WORKER.EXAMPLE:443/api")?,
@@ -162,6 +163,7 @@ async fn worker_and_settings_updates_reject_stale_versions() -> TestResult {
     let worker_id = WorkerId::random();
     store.insert_worker(&worker(worker_id, now)?).await?;
     let worker_update = WorkerUpdate {
+        password: None,
         id: worker_id,
         expected_version: 0,
         name: WorkerName::new("worker-renamed"),

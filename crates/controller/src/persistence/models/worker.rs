@@ -4,6 +4,7 @@ use crate::domain::{ComputeSlots, WorkerApiUrl, WorkerCapabilities, WorkerId, Wo
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NewWorker {
+    pub password: Option<crate::domain::SecretString>,
     pub id: WorkerId,
     pub name: WorkerName,
     pub api_url: WorkerApiUrl,
@@ -15,6 +16,7 @@ pub struct NewWorker {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorkerRecord {
+    pub password: Option<crate::domain::SecretString>,
     pub id: WorkerId,
     pub version: u64,
     pub name: WorkerName,
@@ -34,6 +36,7 @@ pub struct WorkerRecord {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkerUpdate {
+    pub password: Option<Option<crate::domain::SecretString>>,
     pub id: WorkerId,
     pub expected_version: u64,
     pub name: WorkerName,

@@ -140,3 +140,9 @@ cargo build --release --workspace
 ```bash
 ./target/release/videnoa-desktop
 ```
+
+### Optional access password
+
+Configure an optional password in WebUI Settings. Controller workers support saved
+access passwords. See [password access and recovery](docs/password-access.md) for
+API authentication, session settings, public WebSocket behavior, and local recovery.

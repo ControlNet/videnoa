@@ -467,3 +467,7 @@ secrets.yaml
 .boto
 .s3cfg
 kubeconfig
+
+# Private service authentication state
+auth.sqlite3*
+auth.lock

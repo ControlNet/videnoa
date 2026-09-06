@@ -251,6 +251,7 @@ async fn capacity_reduction_ignores_existing_stage_in() -> TestResult {
     let outcome = fixture
         .store
         .update_worker(&WorkerUpdate {
+            password: None,
             id: worker.id,
             expected_version: worker.version,
             name: worker.name,

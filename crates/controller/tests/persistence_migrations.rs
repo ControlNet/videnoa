@@ -111,7 +111,7 @@ async fn existing_database_migrates_idempotently() -> TestResult {
     )
     .fetch_all(database.pool())
     .await?;
-    assert_eq!(migration_count, 10);
+    assert_eq!(migration_count, 11);
     assert_eq!(settings_count, 1);
     assert_eq!(index_flags, (1, 1));
     assert_eq!(index_columns, ["worker_id", "remote_job_id"]);

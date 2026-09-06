@@ -15,17 +15,20 @@ export const workerApiUrlSchema = z.string().refine((value) => {
     && url.hash === ""
 }, "Enter a credential-free HTTP(S) base URL without a query or fragment.")
 
+const workerPasswordSchema = z.string().refine((value) => value.length > 0 && new TextEncoder().encode(value).length <= 1024 && !/\p{Cc}/u.test(value), "Enter 1 to 1024 UTF-8 bytes without control characters.")
+
 export const workerCreateRequestSchema = z
   .object({
     name: z.string().refine((value) => value.trim().length > 0, "Enter a worker name."),
     api_url: workerApiUrlSchema,
     enabled: z.boolean(),
     compute_slots: positiveU16Schema,
+    password: workerPasswordSchema.optional(),
   })
   .strict()
 
 export const workerUpdateRequestSchema = workerCreateRequestSchema
-  .extend({ version: unsignedIntegerSchema })
+  .extend({ version: unsignedIntegerSchema, password: workerPasswordSchema.nullable().optional() })
   .strict()
 
 const workflowSummarySchema = z
@@ -69,6 +72,7 @@ export const workerSchema = z
     created_at: z.iso.datetime(),
     updated_at: z.iso.datetime(),
     last_error: z.string().nullable(),
+    has_password: z.boolean().optional(),
   })
   .strict()
 

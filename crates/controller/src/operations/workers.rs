@@ -132,6 +132,7 @@ pub(super) async fn summary(
         .await
         .map_err(|error| OperationsError::from_worker(&error))?;
     Ok(WorkerSummary {
+        has_password: record.password.is_some(),
         id: record.id,
         version: record.version,
         name: record.name,

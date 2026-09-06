@@ -61,6 +61,23 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     Run(RunArgs),
+    Auth(AuthArgs),
+}
+
+#[derive(Args)]
+struct AuthArgs {
+    #[command(subcommand)]
+    command: AuthCommand,
+}
+#[derive(Subcommand)]
+enum AuthCommand {
+    /// Clear the access password and sessions while this instance is stopped.
+    Reset {
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Args)]
@@ -81,6 +98,22 @@ struct RunArgs {
 
 pub async fn run_from_env() -> Result<()> {
     let cli = Cli::parse();
+    if let Some(Commands::Auth(AuthArgs {
+        command: AuthCommand::Reset {
+            data_dir: directory,
+            yes,
+        },
+    })) = &cli.command
+    {
+        eprintln!("This removes the access password and all sessions, restoring open access.");
+        anyhow::ensure!(
+            *yes,
+            "Pass --yes to confirm the reset. Stop the instance first."
+        );
+        videnoa_core::server::auth::reset(&data_dir(directory.as_deref()))?;
+        println!("Access password and sessions cleared.");
+        return Ok(());
+    }
     let mode = if cli.command.is_some() {
         RuntimeLogMode::Cli
     } else {
@@ -99,6 +132,9 @@ pub async fn run_from_env() -> Result<()> {
     log_startup_metadata(mode, Some(resolved_data_dir.as_path()));
 
     match cli.command {
+        Some(Commands::Auth(_)) => {
+            unreachable!("Authentication CLI returns before runtime initialization")
+        }
         Some(Commands::Run(run)) => {
             run_workflow(run.workflow, run.input, run.output, run.params).await
         }
@@ -276,13 +312,7 @@ async fn run_server(
         warn!(error = %e, "Failed to initialize data directory");
     }
     let cfg_path = config_path(&data_dir);
-    let config = match AppConfig::load_from_path(&cfg_path) {
-        Ok(config) => config,
-        Err(err) => {
-            warn!(error = %err, "Failed to load config file, using defaults");
-            AppConfig::default()
-        }
-    };
+    let config = AppConfig::load_from_path(&cfg_path)?;
 
     let port = port_override
         .or_else(|| std::env::var("PORT").ok().and_then(|v| v.parse().ok()))
@@ -290,6 +320,7 @@ async fn run_server(
     let host = host_override.unwrap_or_else(|| config.server.host.clone());
 
     let state = app_state_with_config(config, cfg_path, data_dir);
+    state.ensure_auth_ready()?;
 
     #[cfg(not(debug_assertions))]
     {
@@ -316,7 +347,11 @@ async fn run_server(
     info!(%addr, "Starting videnoa server");
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 

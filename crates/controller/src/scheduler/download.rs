@@ -78,16 +78,13 @@ impl TransferExecutor {
                 .worker(worker_id)
                 .await?
                 .ok_or(TransferError::MissingEvidence)?;
-            let client = VidenoaClient::new(
+            let client = VidenoaClient::new_with_password(
                 worker.api_url,
                 self.config.runtime_settings.remote_timeouts(),
                 self.config.payload_limits,
+                worker.password.as_ref(),
             )?;
-            let remote_path = FileApiPath::parse(&format!(
-                "{}/output.{}",
-                task.id,
-                task.output_extension.as_str()
-            ))?;
+            let remote_path = FileApiPath::parse(&format!("{}/{output_name}", task.id))?;
             let Some(stat) = download_stat(&client, &remote_path, task_id).await else {
                 return self.download_retry(&task, &attempt, now, jitter).await;
             };

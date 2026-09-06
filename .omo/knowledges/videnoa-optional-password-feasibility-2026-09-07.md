@@ -2,7 +2,7 @@
 
 ## Scope and findings
 
-- Assessment only; no authentication feature has been implemented.
+- Historical assessment; implementation now exists on `feat/optional-password`. See the implementation knowledge note for verified behavior.
 - The ordinary service uses `crates/core/src/server/mod.rs` and `web/`, distinct from the already authenticated Controller.
 - `app_router_with_static` centralizes HTTP endpoints, including job WebSockets, workspace file transfers, filesystem browsing, and preview images. It currently uses permissive CORS without authentication middleware.
 - `AppConfig` has no authentication state. The config GET/PUT endpoints serialize the entire public configuration, so credential material should have separate private persistence and mutation endpoints.
@@ -16,8 +16,8 @@
 - Missing credentials mean open access; explicitly enabling a password protects business APIs and the WebUI immediately and across restart.
 - Browser login should issue a random HttpOnly session cookie, supporting same-origin HTTP requests, image loads, and WebSocket handshakes without storing the raw password in browser storage or URLs.
 - External HTTP clients use `Authorization: Bearer <password>`; the notation denotes user-supplied input, not an actual credential.
-- Only authentication bootstrap/login status and required static assets are public by default; any public health exemption must be explicit and minimal.
-- Password changes/removal require authenticated authorization, with current-password confirmation recommended. Rotation revokes old sessions and existing authenticated WebSockets; disabling returns the service to open access.
+- Authentication status/login, required static assets, `/api/health`, and `/api/jobs/{id}/ws` are explicitly public.
+- Password changes/removal require authenticated authorization without current-password confirmation. Rotation revokes old browser sessions. WebSockets stay anonymous and connected; disabling returns the service to open access.
 - Persist only a salted password hash with atomic updates. Corrupt/unreadable credential storage must fail closed rather than silently restore open access.
 - Cover CSRF and WebSocket Origin checks, failed-attempt limits, bounded password verification, concurrent initial setup, and transport security. The service currently defaults to listening on all interfaces, so initial open access permits reachable clients to claim password setup.
 
@@ -36,4 +36,4 @@
 - The browser job store subscribes to one active job at a time, updates progress and node runtime previews, and closes the old subscription when switching jobs. The API client retries disconnected sockets up to three times with a two-second delay.
 - The server currently checks job/channel existence before upgrade, with no authentication or Origin check. Incoming application messages are ignored; this socket does not submit or cancel jobs, transfer files, or carry preview image bytes.
 - Controller queries worker progress through HTTP `GET /api/jobs/{id}`. Its own WebUI uses SSE via `/api/events`, not the worker WebSocket.
-- Authentication integration therefore has a small WebSocket surface: authenticate the handshake, validate browser Origin, and revoke already-open connections when access policy or session validity changes. Background inference should continue when a viewer disconnects.
+- The user explicitly exempted WebSockets from authentication. Preserve anonymous handshakes and existing connections across password changes. Background inference continues when a viewer disconnects.

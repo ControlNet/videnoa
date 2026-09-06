@@ -9,6 +9,7 @@ pub enum WorkerRegistryErrorCode {
     Referenced,
     CapacityBelowUsage,
     InvalidName,
+    InvalidPassword,
     Internal,
 }
 
@@ -28,6 +29,8 @@ pub enum WorkerRegistryError {
     CapacityBelowUsage,
     #[error("worker name must not be empty")]
     InvalidName,
+    #[error("worker password must contain 1 to 1024 UTF-8 bytes and no control characters")]
+    InvalidPassword,
     #[error("worker registry persistence failed")]
     Persistence(#[from] PersistenceError),
 }
@@ -42,6 +45,7 @@ impl WorkerRegistryError {
             Self::DuplicateApiUrl => WorkerRegistryErrorCode::DuplicateApiUrl,
             Self::Referenced => WorkerRegistryErrorCode::Referenced,
             Self::CapacityBelowUsage => WorkerRegistryErrorCode::CapacityBelowUsage,
+            Self::InvalidPassword => WorkerRegistryErrorCode::InvalidPassword,
             Self::InvalidName => WorkerRegistryErrorCode::InvalidName,
             Self::Persistence(_) => WorkerRegistryErrorCode::Internal,
         }

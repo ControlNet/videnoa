@@ -64,6 +64,7 @@ async fn concurrent_reservations_claim_once_and_respect_capacity() -> TestResult
     let worker_id = WorkerId::random();
     store
         .insert_worker(&NewWorker {
+            password: None,
             id: worker_id,
             name: WorkerName::new("worker-a"),
             api_url: WorkerApiUrl::parse("https://worker.example/api/")?,

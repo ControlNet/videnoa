@@ -9,10 +9,11 @@ export function workerActionMessage(error: ApiClientError): string {
   return error.message
 }
 
-export function workerServerFieldErrors(error: ApiClientError | null): Partial<Record<"name" | "apiUrl" | "computeSlots", string>> {
+export function workerServerFieldErrors(error: ApiClientError | null): Partial<Record<"name" | "apiUrl" | "computeSlots" | "password", string>> {
   if (error === null) return {}
-  const result: Partial<Record<"name" | "apiUrl" | "computeSlots", string>> = {}
+  const result: Partial<Record<"name" | "apiUrl" | "computeSlots" | "password", string>> = {}
   for (const fieldError of error.fieldErrors) {
+    if (fieldError.field === "password") result.password = fieldError.message
     if (fieldError.field === "name") result.name = fieldError.message
     if (fieldError.field === "api_url") result.apiUrl = fieldError.message
     if (fieldError.field === "compute_slots") result.computeSlots = fieldError.message

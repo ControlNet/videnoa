@@ -30,8 +30,10 @@ impl WorkerRegistry {
         request: WorkerCreateRequest,
         now: DateTime<Utc>,
     ) -> Result<WorkerRecord, WorkerRegistryError> {
+        validate_password(request.password.as_ref())?;
         let name = normalized_name(&request.name)?;
         let worker = NewWorker {
+            password: request.password,
             id: WorkerId::random(),
             name,
             api_url: request.api_url,
@@ -69,6 +71,7 @@ impl WorkerRegistry {
         request: WorkerUpdateRequest,
         now: DateTime<Utc>,
     ) -> Result<WorkerRecord, WorkerRegistryError> {
+        validate_password(request.password.as_ref().and_then(Option::as_ref))?;
         let current = self
             .worker(id)
             .await?
@@ -77,6 +80,7 @@ impl WorkerRegistry {
             return Err(WorkerRegistryError::Conflict);
         }
         let update = WorkerUpdate {
+            password: request.password,
             id,
             expected_version: request.version,
             name: normalized_name(&request.name)?,
@@ -118,6 +122,7 @@ impl WorkerRegistry {
         self.update(
             id,
             WorkerUpdateRequest {
+                password: None,
                 version: expected_version,
                 name: current.name,
                 api_url: current.api_url,
@@ -211,4 +216,16 @@ fn normalized_name(name: &WorkerName) -> Result<WorkerName, WorkerRegistryError>
 
 fn unique_violation(error: &PersistenceError) -> bool {
     matches!(error, PersistenceError::Database(sqlx::Error::Database(error)) if error.is_unique_violation())
+}
+
+fn validate_password(
+    password: Option<&crate::domain::SecretString>,
+) -> Result<(), WorkerRegistryError> {
+    if password.is_some_and(|password| {
+        let value = password.expose();
+        value.is_empty() || value.len() > 1024 || value.chars().any(char::is_control)
+    }) {
+        return Err(WorkerRegistryError::InvalidPassword);
+    }
+    Ok(())
 }

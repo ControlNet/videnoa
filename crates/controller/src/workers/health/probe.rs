@@ -23,18 +23,22 @@ pub(super) enum ProbeFailure {
     Client,
     Health,
     Capabilities,
+    Authentication,
 }
 
 impl ProbeFailure {
     pub(super) const fn invalidation(&self) -> CacheInvalidation {
         match self {
             Self::Health => CacheInvalidation::HealthFailure,
-            Self::Client | Self::Capabilities => CacheInvalidation::RemoteError,
+            Self::Client | Self::Capabilities | Self::Authentication => {
+                CacheInvalidation::RemoteError
+            }
         }
     }
 
     pub(super) const fn message(&self) -> &'static str {
         match self {
+            Self::Authentication => "worker authentication failed; check the saved worker password",
             Self::Client => "worker remote client initialization failed",
             Self::Health => "worker health check failed",
             Self::Capabilities => "worker capability refresh failed",
@@ -50,10 +54,11 @@ pub(super) async fn probe(
     stage: StagePermit,
 ) -> ProbeOutcome {
     let worker = ProbedWorker { record, stage };
-    let Ok(client) = VidenoaClient::new(
+    let Ok(client) = VidenoaClient::new_with_password(
         worker.record.api_url.clone(),
         settings.remote_timeouts(),
         limits,
+        worker.record.password.as_ref(),
     ) else {
         return ProbeOutcome::Failed {
             worker,
@@ -84,7 +89,14 @@ pub(super) async fn probe(
                 tracing::warn!(worker_id = %worker.record.id, error = %error, "Worker capability request failed");
                 return ProbeOutcome::Failed {
                     worker,
-                    failure: ProbeFailure::Capabilities,
+                    failure: if matches!(
+                        error,
+                        crate::remote::VidenoaClientError::ClientStatus { status: 401 | 403 }
+                    ) {
+                        ProbeFailure::Authentication
+                    } else {
+                        ProbeFailure::Capabilities
+                    },
                 };
             }
         },
