@@ -320,8 +320,12 @@ fields and Workflow support the existing dropdown completion. Filenames use
 `E01.AI.mkv`). Original filenames are available only with a separate output
 directory. Workflow and priority apply to every task.
 
-Click **Preview** to inspect input/output paths and conflicts in a table before
-**Create Tasks**. Changing a setting invalidates the preview. Existing outputs,
+The dialog has two steps. **Add Batch** contains the settings and a single
+**Preview Tasks** action. A successful preview opens the **Preview Tasks** screen,
+showing the input/output table, conflicts, workflow, and priority. Only this screen
+has **Create Tasks**. Use **Back** to return to the saved settings and generate a
+new preview; no tasks are created by previewing or going back. Preview errors keep
+the settings screen open. Existing outputs,
 unsafe paths, and duplicate output destinations block submission. Preview creates
 no tasks, directories, or files, and does not hash video contents. Actual intake
 independently validates each file and captures its full content identity.
@@ -339,8 +343,8 @@ limit is reached; no partial scan is silently accepted.
 Batch creation submits the exact previewed rows through `POST /api/tasks`, each
 with a stable independent idempotency key. Creation pauses on the first failure;
 **Retry Remaining** skips successful rows and replays the remaining requests with
-the same keys, including after a lost response on LAN HTTP. The form locks once
-submission starts. Keep the dialog open to retain retry state; closing or reloading
+the same keys, including after a lost response on LAN HTTP. **Back** is disabled
+once submission starts to preserve the exact task list and retry keys. Keep the dialog open to retain retry state; closing or reloading
 discards that browser state. A batch is not a single database transaction: tasks
 already created remain queued even if another row fails.
 

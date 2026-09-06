@@ -1,4 +1,4 @@
-import { Eye, Layers, X } from "lucide-react"
+import { ArrowLeft, Eye, Layers, X } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 
 import type { ApiClient } from "../api/client"
@@ -13,6 +13,7 @@ type Props = { apiClient: ApiClient; onClose: () => void; onCreated: () => void 
 
 export function BatchTaskDialog({ apiClient, onClose, onCreated }: Props) {
   const dialogRef = useRef<HTMLDialogElement>(null)
+  const titleRef = useRef<HTMLHeadingElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const outputRef = useRef<HTMLInputElement>(null)
   const workflowRef = useRef<HTMLInputElement>(null)
@@ -22,6 +23,7 @@ export function BatchTaskDialog({ apiClient, onClose, onCreated }: Props) {
   const [busy, setBusy] = useState(false)
   const [started, setStarted] = useState(false)
   const busyRef = useRef(false)
+  const reviewing = rows !== null
   const created = rows?.filter((row) => row.status === "created").length ?? 0
   const complete = rows !== null && rows.length > 0 && created === rows.length
   const canCreate = rows !== null && rows.length > 0 && rows.every((row) => row.error === null) && !complete
@@ -30,6 +32,17 @@ export function BatchTaskDialog({ apiClient, onClose, onCreated }: Props) {
     dialogRef.current?.showModal()
     inputRef.current?.focus()
   }, [])
+
+  useEffect(() => {
+    if (reviewing) titleRef.current?.focus()
+    else inputRef.current?.focus()
+  }, [reviewing])
+
+  function back() {
+    if (busyRef.current || started) return
+    setRows(null)
+    setError(null)
+  }
 
   function update(patch: Partial<BatchOptions>) {
     setOptions({ ...options, ...patch })
@@ -101,12 +114,16 @@ export function BatchTaskDialog({ apiClient, onClose, onCreated }: Props) {
 
   return <dialog ref={dialogRef} className="dialog task-dialog batch-task-dialog" aria-labelledby="batch-task-title" onCancel={(event) => { event.preventDefault(); close() }}>
     <form className="task-create-form" onSubmit={(event) => { event.preventDefault(); void (rows === null ? preview() : create()) }}>
-      <header><div><p className="technical-label">BATCH INTAKE</p><h2 id="batch-task-title">Add Batch</h2></div>
-        <Button variant="outline" size="sm" icon aria-label="Close Add Batch" disabled={busy} onClick={close}><X size={16} aria-hidden="true" /></Button>
+      <header><div><p className="technical-label">{reviewing ? "STEP 2 OF 2 · REVIEW" : "STEP 1 OF 2 · BATCH INTAKE"}</p><h2 ref={titleRef} tabIndex={-1} id="batch-task-title">{reviewing ? "Preview Tasks" : "Add Batch"}</h2></div>
+        <Button variant="outline" size="sm" icon aria-label={reviewing ? "Close Preview Tasks" : "Close Add Batch"} disabled={busy} onClick={close}><X size={16} aria-hidden="true" /></Button>
       </header>
-      <p>Match files, preview their output paths, then create tasks with one workflow and priority.</p>
+      <p>{reviewing ? "Review the task paths below before creating this batch." : "Choose input files, output names, a workflow, and priority. Preview the task list next."}</p>
       {error === null ? null : <div className="task-action-error alert alert--danger" role="alert">{error}</div>}
-      <fieldset className="batch-task-fields" disabled={busy || started}>
+      {reviewing ? <dl className="batch-review-summary">
+        <div><dt>Input Pattern</dt><dd>{options.input_pattern}</dd></div>
+        <div><dt>Workflow</dt><dd>{options.workflow}</dd></div>
+        <div><dt>Priority</dt><dd>{options.priority}</dd></div>
+      </dl> : <fieldset className="batch-task-fields" disabled={busy || started}>
         <ManualTaskField apiClient={apiClient} enabled={!busy && !started} idPrefix="batch" label="Input Pattern" name="input_pattern" value={options.input_pattern} error={undefined} inputRef={inputRef} onChange={(input_pattern) => update({ input_pattern })} />
         <p className="batch-help">Use * for filenames, ? for one character, or ** for nested directories. Up to 500 files.</p>
         <label className="field"><span>Output Mode</span><select value={options.output_mode} onChange={(event) => update({ output_mode: event.target.value as BatchOptions["output_mode"], naming_mode: "insert_extension" })}>
@@ -123,8 +140,9 @@ export function BatchTaskDialog({ apiClient, onClose, onCreated }: Props) {
           <ManualTaskField apiClient={apiClient} enabled={!busy && !started} idPrefix="batch" label="Workflow" name="workflow" value={options.workflow} error={undefined} inputRef={workflowRef} onChange={(workflow) => update({ workflow })} />
           <label className="field"><span>Priority</span><input type="number" min={-100} max={100} step={1} value={options.priority} onChange={(event) => update({ priority: event.target.value })} /></label>
         </div>
-      </fieldset>
+      </fieldset>}
       {rows === null ? null : <section className="batch-preview" aria-label="Batch preview">
+        {!started && rows.some((row) => row.error !== null) ? <p>Resolve the conflicts below before creating tasks. Go back to change the batch settings.</p> : null}
         <p role="status">{started ? `${created} of ${rows.length} tasks created` : `${rows.length} matching files · ${rows.filter((row) => row.error !== null).length} conflicts`}</p>
         {rows.length === 0 ? <p>No files matched. Adjust the input pattern and preview again.</p> : <div className="batch-preview-scroll" tabIndex={0} role="region" aria-label="Preview task paths">
           <table><thead><tr><th scope="col">Input Path</th><th scope="col">Output Path</th><th scope="col">Status</th></tr></thead>
@@ -134,11 +152,13 @@ export function BatchTaskDialog({ apiClient, onClose, onCreated }: Props) {
           </table>
         </div>}
       </section>}
-      {started && !complete ? <p>Keep this dialog open to retry safely. Settings are locked to the previewed task list.</p> : null}
+      {started && !complete ? <p>Keep this dialog open to retry safely. The previewed task list stays fixed once creation starts.</p> : null}
       <footer>
-        <Button variant="outline" disabled={busy || started} onClick={() => { void preview() }}><Eye size={16} aria-hidden="true" />{busy && !started ? "Previewing…" : "Preview"}</Button>
+        {reviewing && !complete ? <Button variant="outline" disabled={busy || started} onClick={back}><ArrowLeft size={16} aria-hidden="true" />Back</Button> : null}
         <span className="spacer" />
-        {complete ? <Button variant="primary" onClick={close}>Done</Button> : <Button variant="primary" disabled={busy || !canCreate} onClick={() => { void create() }}><Layers size={16} aria-hidden="true" />{busy && started ? `Creating ${created}/${rows?.length ?? 0}…` : started ? "Retry Remaining" : "Create Tasks"}</Button>}
+        {!reviewing ? <Button variant="primary" type="submit" disabled={busy}><Eye size={16} aria-hidden="true" />{busy ? "Previewing…" : "Preview Tasks"}</Button>
+          : complete ? <Button variant="primary" onClick={close}>Done</Button>
+            : <Button variant="primary" type="submit" disabled={busy || !canCreate}><Layers size={16} aria-hidden="true" />{busy ? `Creating ${created}/${rows.length}…` : started ? "Retry Remaining" : "Create Tasks"}</Button>}
       </footer>
     </form>
   </dialog>

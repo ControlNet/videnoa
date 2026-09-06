@@ -13,3 +13,9 @@
 .batch-preview td { overflow-wrap: anywhere; min-inline-size: 9rem; }
 .batch-preview td:first-child, .batch-preview td:nth-child(2) { font-family: var(--font-mono); width: 38%; }
 @media (max-width: 48rem) { .batch-field-pair { grid-template-columns: 1fr; } }
+
+.batch-review-summary { display: flex; flex-wrap: wrap; gap: var(--space-4); margin: 0; font-size: var(--type-chip); }
+.batch-review-summary > div { min-inline-size: 0; }
+.batch-review-summary > div:first-child { flex: 1 1 16rem; }
+.batch-review-summary dt { color: var(--color-text-muted); margin-block-end: var(--space-1); }
+.batch-review-summary dd { margin: 0; overflow-wrap: anywhere; font-family: var(--font-mono); }
