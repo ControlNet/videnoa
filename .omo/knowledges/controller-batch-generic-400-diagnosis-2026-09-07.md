@@ -58,3 +58,21 @@ cargo fmt --all -- --check
 cargo clippy --locked -p videnoa-controller --all-targets --all-features -- -D warnings
 bash scripts/tests/controller_docs_test.sh
 ```
+
+## Follow-up: input directory unavailable
+
+A subsequent NAS response had `request validation failed`, field `input_pattern`,
+and `Input directory is unsafe or unavailable.` JSON extraction therefore passed.
+`paths/batch.rs::match_inputs` maps failure of `Root::open` on the fixed directory
+prefix before the first wildcard to this message. The failure precedes matching
+files and content hashing. Root opening checks each directory component without
+following symlinks; missing mounts/components, permissions, non-directory nodes,
+symlinks, or filesystem I/O errors can all reach this generic message.
+
+Inspect the Controller container's mount destinations and effective user, then
+list each component and the target directory inside that container as its normal
+user. A path visible to another container or to the NAS root shell does not prove
+Controller access. The shipped image defaults to UID/GID 10001:10001, subject to
+deployment overrides. No deployment evidence was available to choose among these
+causes. Do not collect full docker inspect output (which can include secrets);
+limit inspection to Config.User and Mounts. Never retain pasted credentials.
