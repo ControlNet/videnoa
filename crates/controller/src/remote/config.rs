@@ -10,7 +10,8 @@ pub struct RemoteTimeouts {
 }
 
 impl RemoteTimeouts {
-    /// Creates nonzero connect, request, and per-chunk stall timeouts.
+    /// Creates nonzero connect, control-request, and transfer timeouts.
+    /// The transfer bound covers an upload request or each download header/body wait.
     ///
     /// # Errors
     /// Returns [`ClientConfigError`] when any timeout is zero.

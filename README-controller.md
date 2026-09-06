@@ -304,3 +304,7 @@ Published images are `controlnet/videnoa-controller:<version>` and
 - A worker stays offline or incompatible: verify its credential-free HTTP(S)
   URL, Videnoa health, persistent data, and exact workflow interface.
 - Output already exists: preserve it and create a new task with another path.
+- Upload repeatedly restarts: use a Controller build with the transfer-timeout fix;
+  older builds incorrectly bound transfers by `poll_seconds` (5 seconds by default).
+  On fixed builds, set **Transfer timeout seconds** above the expected complete
+  upload duration, then retry the failed task.

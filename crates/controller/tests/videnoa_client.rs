@@ -290,6 +290,72 @@ async fn json_and_status_failures_are_bounded_typed_and_redacted() -> TestResult
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn transfers_can_exceed_the_poll_request_timeout() -> TestResult {
+    // Test-only TCP worker and synthetic bytes; no production media is transferred.
+    let server = MockVidenoa::start().await?;
+    let client = test_client(
+        &server,
+        Duration::from_millis(75),
+        Duration::from_secs(2),
+        JSON_LIMIT,
+    )?;
+    let path = FileApiPath::parse("slow-transfer/input.bin")?;
+    let upload_ticket = server.pause(Checkpoint::BeforeAcceptingUpload).await;
+    let upload_client = client.clone();
+    let upload_path = path.clone();
+    let uploading = tokio::spawn(async move {
+        upload_client
+            .upload(&upload_path, 4, std::io::Cursor::new(vec![1_u8, 2, 3, 4]))
+            .await
+    });
+    server.await_checkpoint(&upload_ticket).await?;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    server.release(upload_ticket).await?;
+    assert_eq!(uploading.await??.size, 4);
+
+    for checkpoint in [Checkpoint::BeforeDownloadBody, Checkpoint::MidDownloadBody] {
+        let ticket = server.pause(checkpoint).await;
+        let download_client = client.clone();
+        let download_path = path.clone();
+        let downloading = tokio::spawn(async move {
+            let mut writer = TrackedWriter::default();
+            download_client
+                .download(&download_path, &mut writer)
+                .await?;
+            Ok::<_, VidenoaClientError>(writer.bytes)
+        });
+        server.await_checkpoint(&ticket).await?;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        server.release(ticket).await?;
+        assert_eq!(downloading.await??, vec![1_u8, 2, 3, 4]);
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn upload_still_obeys_the_transfer_timeout() -> TestResult {
+    let server = MockVidenoa::start().await?;
+    let client = test_client(
+        &server,
+        Duration::from_secs(2),
+        Duration::from_millis(100),
+        JSON_LIMIT,
+    )?;
+    let path = FileApiPath::parse("timed-transfer/input.bin")?;
+    let ticket = server.pause(Checkpoint::BeforeAcceptingUpload).await;
+    let uploading = tokio::spawn(async move {
+        client
+            .upload(&path, 4, std::io::Cursor::new(vec![1_u8, 2, 3, 4]))
+            .await
+    });
+    server.await_checkpoint(&ticket).await?;
+    let result = uploading.await?;
+    server.release(ticket).await?;
+    assert_eq!(result, Err(VidenoaClientError::Timeout));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn network_request_stall_and_truncation_errors_remain_distinct() -> TestResult {
     // Given: short configured request/stall bounds and one stored multi-chunk file.
     let mut server = MockVidenoa::start().await?;

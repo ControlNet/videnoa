@@ -29,7 +29,7 @@ impl VidenoaClient {
             .header(header::CONTENT_TYPE, "application/octet-stream")
             .header(header::CONTENT_LENGTH, size)
             .body(reqwest::Body::wrap_stream(stream))
-            .timeout(self.timeouts.request)
+            .timeout(self.timeouts.stall)
             .send()
             .await
             .map_err(|error| {
@@ -54,13 +54,16 @@ impl VidenoaClient {
     where
         W: AsyncWrite + Unpin,
     {
-        let response = self
-            .http
-            .get(self.endpoint(&file_endpoint(path, None))?)
-            .timeout(self.timeouts.request)
-            .send()
-            .await
-            .map_err(|error| classify_download_start(&error))?;
+        // Bound header wait and each body read separately so an active download
+        // can exceed the short control-request deadline.
+        let response = stalled(
+            self.timeouts.stall,
+            self.http
+                .get(self.endpoint(&file_endpoint(path, None))?)
+                .send(),
+        )
+        .await?
+        .map_err(|error| classify_download_start(&error))?;
         ensure_success(response.status())?;
         self.copy_download(response, writer).await
     }

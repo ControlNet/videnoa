@@ -70,7 +70,10 @@ one prefetched task, one upload, one download, health/poll/transfer timeouts of
 10/5/300 seconds, retry delays of 1 through 60 seconds, and five attempts.
 Active tasks are polled again one second after the previous poll completes.
 This cadence is independent of `timeouts.poll_seconds`, which controls the remote
-request timeout. Changed progress is pushed immediately through SSE; unavailable
+control-request timeout. `timeouts.transfer_seconds` bounds the entire upload
+request and, for downloads, the wait for response headers and each body chunk.
+It defaults to 300 seconds; increase it if a complete upload needs longer on your
+network. Transfers do not use the short poll timeout. Changed progress is pushed immediately through SSE; unavailable
 workers still follow retry backoff. Existing TOML files need no cadence update.
 
 `data/controller.toml` is the sole persisted Controller configuration source.
