@@ -20,51 +20,6 @@ Videnoa supports super-resolution (Real-ESRGAN / RealCUGAN) and frame interpolat
 - **Jellyfin integration** through built-in workflow nodes
 - **TensorRT support** with engine cache and optional IoBinding
 
-## Requirements
-
-- Rust 1.83+
-- Node.js 18+
-- FFmpeg 4.4+
-- NVIDIA GPU (required for CUDA or TensorRT acceleration)
-- External ONNX Runtime shared library (required), TensorRT shared library (optional, recommended for speed)
-- Dependency bundles are available in [misc files](https://github.com/ControlNet/videnoa/releases/tag/misc)
-
-## Development setup
-
-### 1) Prepare runtime libraries and models
-
-Download from [misc files](https://github.com/ControlNet/videnoa/releases/tag/misc), then place shared libraries in `lib/` and models in `models/`.
-
-### 2) Build
-
-```bash
-cargo build --release --workspace
-```
-
-### 3) Run
-
-#### 3.1) Start web server:
-
-> First TensorRT run may take several minutes to build engine cache. Later runs are much faster.
-
-```bash
-./target/release/videnoa --host 0.0.0.0 --port 3000
-```
-
-#### 3.2) Run a workflow from CLI without GUI:
-
-```bash
-./target/release/videnoa run presets/anime-2x-upscale.json --input input.mkv --output output.mkv
-./target/release/videnoa run <your_workflow.json> --param <key1>=<value1> --param <key2>=<value2> ...
-```
-
-#### 3.3) Run desktop app:
-
-```bash
-./target/release/videnoa-desktop
-```
-
-
 ## Docker
 
 ### Videnoa Worker
@@ -129,3 +84,47 @@ profiling_enabled = false
 ```
 
 CLI flags override config values (`--host`, `--port`, `--data-dir`).
+
+## Development setup
+
+### Requirements
+
+- Rust 1.83+
+- Node.js 18+
+- FFmpeg 4.4+
+- NVIDIA GPU (required for CUDA or TensorRT acceleration)
+- External ONNX Runtime shared library (required), TensorRT shared library (optional, recommended for speed)
+- Dependency bundles are available in [misc files](https://github.com/ControlNet/videnoa/releases/tag/misc)
+
+### 1) Prepare runtime libraries and models
+
+Download from [misc files](https://github.com/ControlNet/videnoa/releases/tag/misc), then place shared libraries in `lib/` and models in `models/`.
+
+### 2) Build
+
+```bash
+cargo build --release --workspace
+```
+
+### 3) Run
+
+#### 3.1) Start web server:
+
+> First TensorRT run may take several minutes to build engine cache. Later runs are much faster.
+
+```bash
+./target/release/videnoa --host 0.0.0.0 --port 3000
+```
+
+#### 3.2) Run a workflow from CLI without GUI:
+
+```bash
+./target/release/videnoa run presets/anime-2x-upscale.json --input input.mkv --output output.mkv
+./target/release/videnoa run <your_workflow.json> --param <key1>=<value1> --param <key2>=<value2> ...
+```
+
+#### 3.3) Run desktop app:
+
+```bash
+./target/release/videnoa-desktop
+```
