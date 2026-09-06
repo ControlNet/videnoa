@@ -312,8 +312,20 @@ can produce truncated results; a missing suggestion never invalidates a manually
 entered path. Task intake still performs its full independent safety validation.
 
 The **Add Batch** button beside Add Task opens a batch intake dialog. Input Pattern
-supports `*`, `?`, character classes such as `[0-9]`, and `**` for recursive
-matching. Patterns resolve in the Controller filesystem namespace just like task
+supports `*`, `?`, character classes such as `[0-9]`, brace alternatives such as
+`*.{mkv,mp4,avi,mov,webm}`, and `**` for recursive matching. Both
+`/api/tasks/batch-preview` and `/api/tasks/batch` accept these patterns.
+For example, `魔女之旅 S01E01.{mkv,mp4}` selects those two extensions while
+excluding subtitles. Multiple groups can be combined, including directory names:
+`Season {1,2}/**/E[0-9][0-9].{mkv,mp4}`. Matching remains case-sensitive on Linux;
+include uppercase alternatives when needed. Existing `.AI.mkv` outputs still
+match `*.mkv`; brace alternatives filter names, not previously processed files.
+Groups require at least two non-empty comma-separated alternatives, cannot nest
+or cross path separators, and expand to at most 64 patterns per path component.
+Numeric range syntax such as `{1..12}` is not supported. Recursive `**` must
+remain a standalone path component outside braces. Use `[{]` and `[}]` to match
+literal braces. Invalid patterns fail before any tasks are created.
+Patterns resolve in the Controller filesystem namespace just like task
 paths. Choose outputs beside each input or in one Output Directory; both path
 fields and Workflow support the existing dropdown completion. Filenames use
 `<original stem>.<middle extension>.<original extension>` (for example,

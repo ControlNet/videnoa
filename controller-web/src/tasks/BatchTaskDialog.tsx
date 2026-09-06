@@ -132,7 +132,7 @@ export function BatchTaskDialog({ apiClient, onClose, onCreated }: Props) {
         <div><dt>Priority</dt><dd>{options.priority}</dd></div>
       </dl> : <fieldset className="batch-task-fields" disabled={busy || started}>
         <ManualTaskField apiClient={apiClient} enabled={!busy && !started} idPrefix="batch" label="Input Pattern" name="input_pattern" value={options.input_pattern} error={undefined} inputRef={inputRef} onChange={(input_pattern) => update({ input_pattern })} />
-        <p className="batch-help">Use * for filenames, ? for one character, or ** for nested directories. Up to 500 files.</p>
+        <p className="batch-help">{"Use * for filenames, ? for one character, ** for nested directories, or *.{mkv,mp4} for multiple formats. Up to 500 files."}</p>
         <label className="field"><span>Output Mode</span><select value={options.output_mode} onChange={(event) => update({ output_mode: event.target.value as BatchOptions["output_mode"], naming_mode: "insert_extension" })}>
           <option value="beside_input">Beside each input file</option><option value="directory">One output directory</option>
         </select></label>

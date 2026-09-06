@@ -7,6 +7,7 @@ use crate::config::PathConfig;
 
 mod boundary;
 mod batch;
+mod batch_pattern;
 mod completion;
 pub(crate) use completion::PathSuggestions;
 mod input;

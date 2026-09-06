@@ -9,6 +9,8 @@ mod authentication;
 mod batch;
 #[path = "task_api/batch_create.rs"]
 mod batch_create;
+#[path = "task_api/batch_wildcards.rs"]
+mod batch_wildcards;
 #[path = "task_api/intake_contract.rs"]
 mod intake_contract;
 #[path = "task_api/path_suggestions.rs"]

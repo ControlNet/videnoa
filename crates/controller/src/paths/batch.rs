@@ -41,11 +41,9 @@ impl PathCapabilities {
                 }
                 Component::Normal(name) => {
                     let name = name.to_str().ok_or("Input pattern must be UTF-8.")?;
-                    if segments.is_empty() && !name.contains(['*', '?', '[']) {
+                    if segments.is_empty() && !name.contains(['*', '?', '[', '{', '}']) {
                         base.push(name);
                     } else {
-                        Pattern::new(name)
-                            .map_err(|_| "Invalid wildcard syntax in input pattern.")?;
                         segments.push(name.to_owned());
                     }
                 }
@@ -59,15 +57,14 @@ impl PathCapabilities {
         }
         self.media_path(&base, &self.inputs)
             .map_err(|_| "Input directory is private.")?;
+        let patterns = segments
+            .iter()
+            .map(|segment| super::batch_pattern::compile(segment))
+            .collect::<Result<Vec<_>, _>>()?;
         let root = Root::open(&base).map_err(|_| "Input directory is unsafe or unavailable.")?;
         let directory = root
             .clone_directory()
             .map_err(|_| "Input directory is unavailable.")?;
-        let patterns = segments
-            .iter()
-            .map(|segment| Pattern::new(segment))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| "Invalid wildcard syntax.")?;
         let mut scan = Scan {
             paths: self,
             entries: 0,
@@ -94,7 +91,7 @@ impl Scan<'_> {
         directory: &Dir,
         path: &Path,
         segments: &[String],
-        patterns: &[Pattern],
+        patterns: &[Vec<Pattern>],
         index: usize,
         depth: usize,
     ) -> Result<(), &'static str> {
@@ -118,14 +115,16 @@ impl Scan<'_> {
             let name = entry.file_name();
             let Some(name) = name.to_str() else { continue };
             let matches = recursive
-                || patterns[index].matches_with(
-                    name,
-                    MatchOptions {
-                        case_sensitive: !cfg!(windows),
-                        require_literal_separator: true,
-                        require_literal_leading_dot: true,
-                    },
-                );
+                || patterns[index].iter().any(|pattern| {
+                    pattern.matches_with(
+                        name,
+                        MatchOptions {
+                            case_sensitive: !cfg!(windows),
+                            require_literal_separator: true,
+                            require_literal_leading_dot: true,
+                        },
+                    )
+                });
             if !matches {
                 continue;
             }
