@@ -49,8 +49,8 @@ describe("Settings page", () => {
     expect(await screen.findByLabelText("Default compute slots")).toHaveValue(2)
     fireEvent.change(screen.getByLabelText("Server port"), { target: { value: "4555" } })
     fireEvent.click(screen.getByLabelText("Require secure session cookie"))
-    fireEvent.change(screen.getByLabelText("Absolute session seconds"), { target: { value: "7200" } })
-    fireEvent.change(screen.getByLabelText("Idle session seconds"), { target: { value: "900" } })
+    fireEvent.change(screen.getByLabelText("Absolute session seconds"), { target: { value: "31536000" } })
+    fireEvent.change(screen.getByLabelText("Idle session seconds"), { target: { value: "2592000" } })
     fireEvent.change(screen.getByLabelText("Concurrent uploads"), { target: { value: "5" } })
     fireEvent.click(screen.getByRole("button", { name: "Save and apply settings" }))
 
@@ -66,8 +66,10 @@ describe("Settings page", () => {
       timeouts: testOnlySettings.timeouts,
       retry: testOnlySettings.retry,
       server: { host: "0.0.0.0", port: 4555 },
-      auth: { secure_cookie: false, session_absolute_seconds: 7200, session_idle_seconds: 900 },
+      auth: { secure_cookie: false, session_absolute_seconds: 31536000, session_idle_seconds: 2592000 },
     })
+    expect(screen.getByLabelText("Absolute session seconds")).not.toHaveAttribute("max")
+    expect(screen.getByLabelText("Idle session seconds")).not.toHaveAttribute("max")
     expect(screen.getByLabelText("Concurrent uploads")).toHaveAttribute("min", "1")
     expect(screen.getByLabelText("Transfer timeout seconds")).toHaveAttribute("max", "604800")
     expect(screen.getByText("/synthetic/workspace")).toBeInTheDocument()

@@ -2,6 +2,7 @@ import { z } from "zod"
 
 const unsignedIntegerSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
 const positiveU16Schema = z.number().int().min(1).max(65_535)
+const sessionDurationSchema = z.number().int().min(1)
 const durationSchema = z.number().int().min(1).max(604_800)
 
 export const serverSettingsSchema = z
@@ -14,8 +15,8 @@ export const serverSettingsSchema = z
 export const authSettingsSchema = z
   .object({
     secure_cookie: z.boolean(),
-    session_absolute_seconds: durationSchema,
-    session_idle_seconds: durationSchema,
+    session_absolute_seconds: sessionDurationSchema,
+    session_idle_seconds: sessionDurationSchema,
   })
   .strict()
   .refine((auth) => auth.session_idle_seconds <= auth.session_absolute_seconds, {
@@ -76,8 +77,8 @@ export const settingsResponseSchema = z
       .strict(),
     server: serverSettingsSchema,
     secure_cookie: z.boolean(),
-    session_absolute_seconds: durationSchema,
-    session_idle_seconds: durationSchema,
+    session_absolute_seconds: sessionDurationSchema,
+    session_idle_seconds: sessionDurationSchema,
     scheduler: schedulerStatusSchema,
     timeouts: timeoutSettingsSchema,
     retry: retrySettingsSchema,

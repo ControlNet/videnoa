@@ -130,8 +130,8 @@ export function SettingsEditor({ settings, actionError, onSave }: SettingsEditor
           <NumberField label="Server port" name="port" value={fields.serverPort} min={1} max={65_535} error={fieldErrors.serverPort ?? serverErrors.serverPort} onChange={(serverPort) => setFields({ ...fields, serverPort })} />
         </SettingsSection>
         <SettingsSection id="settings-auth" title="Authentication policy">
-          <NumberField label="Absolute session seconds" name="session_absolute_seconds" value={fields.sessionAbsolute} min={1} max={604_800} error={fieldErrors.sessionAbsolute ?? serverErrors.sessionAbsolute} onChange={(sessionAbsolute) => setFields({ ...fields, sessionAbsolute })} />
-          <NumberField label="Idle session seconds" name="session_idle_seconds" value={fields.sessionIdle} min={1} max={604_800} error={fieldErrors.sessionIdle ?? serverErrors.sessionIdle} onChange={(sessionIdle) => setFields({ ...fields, sessionIdle })} />
+          <NumberField label="Absolute session seconds" name="session_absolute_seconds" value={fields.sessionAbsolute} min={1} error={fieldErrors.sessionAbsolute ?? serverErrors.sessionAbsolute} onChange={(sessionAbsolute) => setFields({ ...fields, sessionAbsolute })} />
+          <NumberField label="Idle session seconds" name="session_idle_seconds" value={fields.sessionIdle} min={1} error={fieldErrors.sessionIdle ?? serverErrors.sessionIdle} onChange={(sessionIdle) => setFields({ ...fields, sessionIdle })} />
           <div className="settings-span-2">
             <CheckField id="settings-secure_cookie" name="secure_cookie" label="Require secure session cookie" checked={fields.secureCookie} onChange={(secureCookie) => setFields({ ...fields, secureCookie })} />
           </div>
@@ -166,7 +166,7 @@ const sectionIndex = [
   { id: "settings-retry", title: "Retry policy" },
 ] as const
 
-type NumberFieldProps = { readonly label: string; readonly name: string; readonly value: string; readonly min: number; readonly max: number; readonly error: string | undefined; readonly onChange: (value: string) => void }
+type NumberFieldProps = { readonly label: string; readonly name: string; readonly value: string; readonly min: number; readonly max?: number; readonly error: string | undefined; readonly onChange: (value: string) => void }
 
 type TextFieldProps = { readonly label: string; readonly name: string; readonly value: string; readonly error: string | undefined; readonly onChange: (value: string) => void }
 

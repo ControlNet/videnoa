@@ -56,11 +56,11 @@ pub(super) fn validate(request: &SettingsUpdateRequest) -> Result<(), Operations
             "value must be greater than zero",
         ));
     }
-    validate_duration(
+    validate_session_duration(
         "session_absolute_seconds",
         request.auth.session_absolute_seconds,
     )?;
-    validate_duration("session_idle_seconds", request.auth.session_idle_seconds)?;
+    validate_session_duration("session_idle_seconds", request.auth.session_idle_seconds)?;
     if request.auth.session_idle_seconds > request.auth.session_absolute_seconds {
         return Err(OperationsError::InvalidField(
             "auth",
@@ -97,6 +97,13 @@ fn validate_duration(field: &'static str, value: u64) -> Result<(), OperationsEr
             field,
             "value must be between one second and seven days",
         ));
+    }
+    Ok(())
+}
+
+fn validate_session_duration(field: &'static str, value: u64) -> Result<(), OperationsError> {
+    if value == 0 {
+        return Err(OperationsError::InvalidField(field, "value must be greater than zero"));
     }
     Ok(())
 }

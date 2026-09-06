@@ -47,3 +47,24 @@ cargo test --locked -p videnoa-controller --test config_bootstrap --test config_
 cargo fmt --all -- --check
 cargo clippy --locked -p videnoa-controller --all-targets -- -D warnings
 ```
+
+## Settings session limit removal (2026-09-07)
+
+- The original seven-day limit existed independently in Settings API validation,
+  frontend request/response schemas, and HTML input max attributes. Changing only
+  config defaults did not make the new policy editable through Settings.
+- Session durations now have no fixed day cap in those layers. Positive integer
+  and idle <= absolute checks remain; numeric representation limits still apply.
+- Other request timeout and retry limits are unchanged.
+- Tests use explicit test-only settings of 365-day absolute and 30-day idle
+  lifetimes to exercise frontend save/refetch and backend API persistence.
+- Verification (expect passing tests, lint/type checks, and successful build):
+
+```sh
+cargo test --locked -p videnoa-controller --test task14
+cargo clippy --locked -p videnoa-controller --all-targets -- -D warnings
+cargo fmt --all -- --check
+npm --prefix controller-web test -- src/api/settingsSchemas.test.ts src/settings/SettingsPage.test.tsx
+npm --prefix controller-web run lint
+npm --prefix controller-web run build
+```

@@ -16,8 +16,8 @@ const testOnlySettings = {
   },
   server: { host: "0.0.0.0", port: 3001 },
   secure_cookie: true,
-  session_absolute_seconds: 86_400,
-  session_idle_seconds: 3_600,
+  session_absolute_seconds: 31_536_000,
+  session_idle_seconds: 2_592_000,
   scheduler: {
     paused: false,
     default_compute_slots: 2,
@@ -80,7 +80,7 @@ describe("settings API schemas", () => {
       timeouts: { health_seconds: 604_800, poll_seconds: 604_800, transfer_seconds: 604_800 },
       retry: { initial_seconds: 604_800, maximum_seconds: 604_800, max_attempts: 100 },
       server: { host: "::", port: 65_535 },
-      auth: { secure_cookie: false, session_absolute_seconds: 604_800, session_idle_seconds: 604_800 },
+      auth: { secure_cookie: false, session_absolute_seconds: 31_536_000, session_idle_seconds: 2_592_000 },
     }
 
     // When: the update is parsed.

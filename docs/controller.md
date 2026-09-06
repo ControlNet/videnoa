@@ -77,7 +77,9 @@ network. Transfers do not use the short poll timeout. Changed progress is pushed
 workers still follow retry backoff. Existing TOML files need no cadence update.
 
 Authenticated API requests renew the seven-day idle deadline, capped at 30 days
-from login. Passive SSE checks do not renew it. Existing explicit auth settings
+from login under the default policy. Session durations have no fixed day limit
+in Settings; both must be positive integers and idle lifetime must not exceed
+absolute lifetime. Passive SSE checks do not renew it. Existing explicit auth settings
 remain unchanged: set `auth.session_absolute_seconds = 2592000` and
 `auth.session_idle_seconds = 604800` through Web Settings or the configuration
 file (restart after manual edits). Log in again to receive the longer absolute

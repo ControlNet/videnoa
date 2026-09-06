@@ -209,3 +209,30 @@ fn settings_update(settings: &Value, health_seconds: u64, transfer_seconds: u64)
         }
     })
 }
+
+#[tokio::test]
+async fn session_settings_have_no_fixed_day_limit() -> TestResult {
+    let fixture = Fixture::new().await?;
+    let response = fixture
+        .router
+        .clone()
+        .oneshot(Fixture::request("GET", "/api/settings", None)?)
+        .await?;
+    let settings = json_body(response).await?;
+    let mut update = settings_update(&settings, 11, 301);
+    update["auth"]["session_absolute_seconds"] = json!(31_536_000);
+    update["auth"]["session_idle_seconds"] = json!(2_592_000);
+    let response = fixture
+        .router
+        .clone()
+        .oneshot(Fixture::request("PUT", "/api/settings", Some(&update))?)
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let saved = json_body(response).await?;
+    assert_eq!(saved["session_absolute_seconds"], 31_536_000);
+    assert_eq!(saved["session_idle_seconds"], 2_592_000);
+    let document = fs::read_to_string(&fixture.config_file)?;
+    assert!(document.contains("session_absolute_seconds = 31536000"));
+    assert!(document.contains("session_idle_seconds = 2592000"));
+    Ok(())
+}
