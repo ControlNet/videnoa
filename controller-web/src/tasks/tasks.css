@@ -131,9 +131,16 @@
   gap: 2px;
 }
 
+/*
+ * The value and its label share a baseline, but that baseline group must still
+ * sit centred in the pill: `align-items: baseline` alone parks the line at the
+ * cross start, leaving every pixel of a fixed block-size below the text.
+ */
 .counter {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
+  align-content: center;
   gap: var(--space-2);
   block-size: var(--control-sm);
   padding-inline: var(--space-2);
