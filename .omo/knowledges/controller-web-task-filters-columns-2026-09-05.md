@@ -9,7 +9,9 @@
 
 ## Optional Columns
 
-- Stable column IDs are `input_path`, `output_path`, `attempts`, `duration`, `failure_stage`, `failure`, `error`, and `remote_job_id`.
+- Stable column IDs are `source`, `input_path`, `output_path`, `attempts`, `duration`, `failure_stage`, `failure`, `error`, and `remote_job_id`.
+- Added optional `Source` on 2026-09-06: hidden by default, selected through the existing Columns picker, and retained by URL query serialization. Values display as `API` or `Manual`, matching the Source filter. Only `query.ts` and `TaskTable.tsx` needed changes.
+- Source-column verification: `npm test -- --run src/tasks/query.test.ts src/tasks/TaskFiltersColumns.test.tsx src/tasks/TaskComponents.test.tsx` passed (15 tests), `npm run lint` and `npm run build` passed. The build reports non-fatal third-party Zod annotation warnings. No new synthetic fixtures or browser tests were introduced for this four-line change.
 - The generic `path` ID is intentionally absent because it obscures whether a value is an input or output path.
 - Checkbox accessible names use `Show <label> column`; tests selecting form fields should constrain by textbox role rather than fuzzy label text.
 - The Columns overlay must stack above both sticky headers: picker `z-index: 3`, detail header `z-index: 2`, table headers `z-index: 1`.
