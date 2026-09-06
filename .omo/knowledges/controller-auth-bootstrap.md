@@ -10,3 +10,19 @@
 - Durable sessions retain a credential fingerprint bound to secure-cookie issuance policy. Credential deletion closes readiness, credential rotation invalidates prior sessions, and enabling secure cookies rejects sessions issued under insecure-cookie policy.
 - `AuthService::reconfigure(AuthConfig)` stays synchronous. Existing sessions are validated against `min(stored absolute expiry, created_at + current absolute lifetime)`, so tightened lifetime policy applies immediately without rewriting persisted rows.
 - First client ownership remains a deployment risk when an uninitialized Controller is intentionally exposed beyond loopback; exact same-origin validation prevents cross-origin browser setup but cannot identify the intended first operator.
+
+## Browser session lifetime (verified 2026-09-07)
+
+- Default absolute lifetime is 86,400 seconds (24 hours); idle lifetime is
+  3,600 seconds (one hour), configured by `auth.session_absolute_seconds`
+  and `auth.session_idle_seconds`. Deployed overrides may differ.
+- Authenticated API requests, including the session endpoint, extend idle
+  expiry to the earlier of now plus the idle duration or absolute expiry.
+  The absolute deadline remains anchored to session creation.
+- SSE periodic authentication uses `authenticate_passive` and does not extend
+  idle expiry; merely keeping a stream open does not guarantee renewal.
+- The HttpOnly cookie has Max-Age equal to the absolute lifetime, but the
+  server also enforces idle expiry. Closing the browser alone does not revoke
+  the session; clearing cookies, logout, or credential rotation can invalidate it.
+- Sources: `config/raw.rs`, `auth/session.rs`, `auth/http.rs`, and
+  `operations/events.rs` under `crates/controller/src`.
