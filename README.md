@@ -92,12 +92,21 @@ CLI flags override config values (`--host`, `--port`, `--data-dir`).
 
 ### Requirements
 
-- Rust 1.83+
+- Rust 1.98.0 (pinned in `rust-toolchain.toml`)
 - Node.js 18+
 - FFmpeg 4.4+
 - NVIDIA GPU (required for CUDA or TensorRT acceleration)
 - External ONNX Runtime shared library (required), TensorRT shared library (optional, recommended for speed)
 - Dependency bundles are available in [misc files](https://github.com/ControlNet/videnoa/releases/tag/misc)
+
+Rustup automatically selects the pinned toolchain in this checkout. To install it explicitly:
+
+```bash
+rustup toolchain install 1.98.0 --profile minimal --component clippy --component rustfmt
+rustc --version
+```
+
+The version output should start with `rustc 1.98.0`.
 
 ### 1) Prepare runtime libraries and models
 

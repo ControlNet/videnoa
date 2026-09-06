@@ -50,7 +50,7 @@ pub async fn fixture() -> TestResult<Fixture> {
         .await?;
     let auth_config = AuthConfig {
         secure_cookie: false,
-        session_absolute: Duration::from_secs(86_400),
+        session_absolute: Duration::from_hours(24),
         session_idle: Duration::from_secs(3_600),
     };
     let path_config = PathConfig {

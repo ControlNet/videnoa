@@ -25,7 +25,7 @@
 # ---------------------------------------------------------------------------
 # Stage 1: Build the Rust workspace
 # ---------------------------------------------------------------------------
-FROM rust:1.88-bookworm AS builder
+FROM rust:1.98.0-bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         pkg-config \
@@ -38,7 +38,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /build
 
-COPY Cargo.toml Cargo.toml
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 
 COPY crates/core/Cargo.toml crates/core/Cargo.toml
 COPY crates/app/Cargo.toml crates/app/Cargo.toml
@@ -52,7 +52,7 @@ RUN mkdir -p crates/core/src && echo "" > crates/core/src/lib.rs \
     && mkdir -p crates/controller/src && echo "" > crates/controller/src/lib.rs \
     && echo "fn main() {}" > crates/controller/src/main.rs
 
-RUN cargo build --release -p videnoa-app --bin videnoa 2>/dev/null || true
+RUN cargo build --release --locked -p videnoa-app --bin videnoa 2>/dev/null || true
 
 COPY web/ web/
 COPY presets/ presets/
@@ -62,7 +62,7 @@ RUN rm -rf crates/*/src
 
 COPY crates/ crates/
 
-RUN cargo build --release -p videnoa-app --bin videnoa
+RUN cargo build --release --locked -p videnoa-app --bin videnoa
 
 # ---------------------------------------------------------------------------
 # Stage 2: Download ONNX Runtime GPU

@@ -33,7 +33,7 @@ impl Fixture {
         .await?;
         let mut config = ControllerConfig::default().auth;
         config.secure_cookie = false;
-        config.session_absolute = Duration::from_secs(86_400);
+        config.session_absolute = Duration::from_hours(24);
         config.session_idle = Duration::from_secs(3_600);
         let auth = AuthService::new(config, Store::new(database))?;
         auth.setup(SecretString::new(PASSWORD), Utc::now()).await?;
@@ -353,7 +353,7 @@ async fn live_policy_reconfiguration_updates_new_cookie_security_and_lifetime() 
     let mut updated = ControllerConfig::default().auth;
     updated.secure_cookie = true;
     updated.session_absolute = Duration::from_secs(7_200);
-    updated.session_idle = Duration::from_secs(900);
+    updated.session_idle = Duration::from_mins(15);
 
     // When: the live auth policy changes and a subsequent login is issued.
     fixture.auth.reconfigure(updated)?;

@@ -249,7 +249,7 @@ fn validate_options(options: &BatchPreviewRequest) -> Result<(), TaskApiError> {
         && options
             .output_directory
             .as_ref()
-            .map_or(true, String::is_empty)
+            .is_none_or(String::is_empty)
     {
         return Err(invalid("output_directory", "Enter an output directory."));
     }

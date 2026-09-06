@@ -32,7 +32,7 @@ require_line() {
 check_source_contract() {
   [[ -f "$DOCKERFILE" ]] || fail "missing Dockerfile.controller"
   require_line '^FROM node:24-bookworm-slim AS controller-web$' 'the isolated frontend stage'
-  require_line '^FROM rust:1\.83-bookworm AS controller-builder$' 'the Rust 1.83 builder stage'
+  require_line '^FROM rust:1\.98\.0-bookworm AS controller-builder$' 'the Rust 1.98.0 builder stage'
   require_line '^FROM debian:bookworm-slim AS runtime$' 'the GPU-free runtime stage'
   require_line '^WORKDIR /workspace$' 'the workspace working directory'
   require_line '^USER 10001:10001$' 'the numeric non-root user'

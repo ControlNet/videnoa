@@ -46,7 +46,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.98.0
       - name: Install protobuf compiler (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
@@ -99,7 +99,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@1.83
+        uses: dtolnay/rust-toolchain@1.98.0
         with:
           components: rustfmt, clippy
       - name: Set up Node.js
@@ -126,7 +126,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@1.83
+        uses: dtolnay/rust-toolchain@1.98.0
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -183,8 +183,8 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Rust 1.83
-        uses: dtolnay/rust-toolchain@1.83
+      - name: Set up Rust 1.98.0
+        uses: dtolnay/rust-toolchain@1.98.0
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -203,8 +203,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Rust 1.83
-        uses: dtolnay/rust-toolchain@1.83
+      - name: Set up Rust 1.98.0
+        uses: dtolnay/rust-toolchain@1.98.0
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -252,7 +252,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.98.0
       - name: Cache package Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
@@ -303,7 +303,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.98.0
       - name: Cache package Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:

@@ -145,7 +145,7 @@ mod tests {
 
     fn make_solid_frame(w: u32, h: u32, r: u8, g: u8, b: u8) -> Frame {
         let mut data = vec![0u8; w as usize * h as usize * 3];
-        for pixel in data.chunks_exact_mut(3) {
+        for pixel in data.as_chunks_mut::<3>().0 {
             pixel[0] = r;
             pixel[1] = g;
             pixel[2] = b;
@@ -235,7 +235,7 @@ mod tests {
                 assert_eq!(height, 8);
                 assert_eq!(bit_depth, 8);
                 assert_eq!(data.len(), 8 * 8 * 3);
-                for pixel in data.chunks_exact(3) {
+                for pixel in data.as_chunks::<3>().0 {
                     assert_eq!(pixel[0], 10);
                     assert_eq!(pixel[1], 20);
                     assert_eq!(pixel[2], 30);
@@ -271,7 +271,7 @@ mod tests {
                 assert_eq!(width, 4);
                 assert_eq!(height, 4);
                 assert_eq!(data.len(), 4 * 4 * 3);
-                for pixel in data.chunks_exact(3) {
+                for pixel in data.as_chunks::<3>().0 {
                     assert_eq!(pixel[0], 200);
                     assert_eq!(pixel[1], 100);
                     assert_eq!(pixel[2], 50);

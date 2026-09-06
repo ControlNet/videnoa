@@ -7,8 +7,8 @@ fn defaults_match_locked_task_two_settings() {
 
     // When/Then: every locked path, auth, scheduler, timeout, and retry default is explicit.
     let workspace = std::env::current_dir().expect("test working directory");
-    assert_eq!(config.paths.input_roots, [workspace.clone()]);
-    assert_eq!(config.paths.output_roots, [workspace.clone()]);
+    assert_eq!(config.paths.input_roots, std::slice::from_ref(&workspace));
+    assert_eq!(config.paths.output_roots, std::slice::from_ref(&workspace));
     assert_eq!(config.paths.data_root, workspace.join("data"));
     assert_eq!(config.paths.temp_root, workspace.join("data"));
     assert!(!config.auth.secure_cookie);

@@ -7,9 +7,9 @@ RUN --mount=type=cache,target=/root/.npm npm ci --no-fund
 COPY controller-web/ ./
 RUN npm run build
 
-FROM rust:1.83-bookworm AS controller-builder
+FROM rust:1.98.0-bookworm AS controller-builder
 WORKDIR /build
-COPY Cargo.toml Cargo.lock ./
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates/ crates/
 COPY --from=controller-web /build/controller-web/dist/ controller-web/dist/
 ENV VIDENOA_CONTROLLER_WEB_PREBUILT=1

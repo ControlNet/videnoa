@@ -4,7 +4,7 @@ resolver = "2"
 
 [workspace.package]
 version = "0.1.2"
-rust-version = "1.83"
+rust-version = "1.98.0"
 
 [workspace.dependencies]
 ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "cuda", "tensorrt", "ndarray", "load-dynamic", "half", "api-23"] }

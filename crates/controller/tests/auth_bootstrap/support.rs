@@ -31,7 +31,7 @@ impl Fixture {
         let database = Database::open(DatabaseOptions::new(&database_path)).await?;
         let mut config = ControllerConfig::default().auth;
         config.secure_cookie = false;
-        config.session_absolute = Duration::from_secs(86_400);
+        config.session_absolute = Duration::from_hours(24);
         config.session_idle = Duration::from_secs(3_600);
         let auth = AuthService::new(config, Store::new(database))?;
         let assets = test_frontend_assets(directory.path())?;

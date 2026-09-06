@@ -44,12 +44,14 @@ async fn not_found() -> Response {
     error_response(StatusCode::NOT_FOUND, "not_found")
 }
 
-pub(crate) async fn body_bytes(request: Request, limit: usize) -> Result<(Parts, Bytes), Response> {
+pub(crate) async fn body_bytes(
+    request: Request,
+    limit: usize,
+) -> Result<(Parts, Bytes), axum::Error> {
     let (parts, body) = request.into_parts();
     axum::body::to_bytes(body, limit)
         .await
         .map(|bytes| (parts, bytes))
-        .map_err(|_| error_response(StatusCode::BAD_REQUEST, "invalid_body"))
 }
 
 pub(crate) fn journal_request(
