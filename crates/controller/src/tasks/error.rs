@@ -131,6 +131,51 @@ impl TaskApiError {
 impl IntoResponse for TaskApiError {
     fn into_response(self) -> Response {
         let (status, error) = self.into_parts();
-        (status, Json(ApiErrorEnvelope { error })).into_response()
+        // Messages and field names originate from static Controller validation rules.
+        let diagnostics = crate::logging::TaskRequestDiagnostics(
+            serde_json::json!({ "error": &error }).to_string(),
+        );
+        let mut response = (status, Json(ApiErrorEnvelope { error })).into_response();
+        response.extensions_mut().insert(diagnostics);
+        response
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn task_error_diagnostics_match_public_response_for_every_error_kind() {
+        let errors = [
+            TaskApiError::Unauthorized,
+            TaskApiError::RateLimited,
+            TaskApiError::Forbidden,
+            TaskApiError::invalid(
+                "input_path",
+                FieldErrorCode::InvalidValue,
+                "input is unavailable",
+            ),
+            TaskApiError::InvalidRequest,
+            TaskApiError::Conflict,
+            TaskApiError::NotFound,
+            TaskApiError::Internal,
+        ];
+        for error in errors {
+            let response = error.into_response();
+            let diagnostics = response
+                .extensions()
+                .get::<crate::logging::TaskRequestDiagnostics>()
+                .unwrap()
+                .0
+                .clone();
+            let body = axum::body::to_bytes(response.into_body(), 4096)
+                .await
+                .unwrap();
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&diagnostics).unwrap(),
+                serde_json::from_slice::<serde_json::Value>(&body).unwrap()
+            );
+        }
     }
 }

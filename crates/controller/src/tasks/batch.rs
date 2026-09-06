@@ -65,6 +65,35 @@ struct BatchCreateRow {
     error: Option<ApiError>,
 }
 
+impl axum::response::IntoResponse for BatchCreateResponse {
+    fn into_response(self) -> axum::response::Response {
+        // Bound log size; row indices refer to the unchanged API response order.
+        let errors: Vec<_> = self
+            .items
+            .iter()
+            .enumerate()
+            .filter_map(|(index, row)| {
+                row.error
+                    .as_ref()
+                    .map(|error| serde_json::json!({ "item_index": index, "error": error }))
+            })
+            .take(16)
+            .collect();
+        let diagnostics = crate::logging::TaskRequestDiagnostics(
+            serde_json::json!({
+                "created": self.created,
+                "failed": self.failed,
+                "omitted_errors": self.failed.saturating_sub(errors.len()),
+                "errors": errors,
+            })
+            .to_string(),
+        );
+        let mut response = axum::Json(self).into_response();
+        response.extensions_mut().insert(diagnostics);
+        response
+    }
+}
+
 impl TaskService {
     pub(super) async fn create_batch(
         &self,
@@ -258,4 +287,49 @@ fn output_path(input: &Path, options: &BatchPreviewRequest) -> (PathBuf, Option<
         )),
         None,
     )
+}
+
+#[cfg(test)]
+mod logging_tests {
+    use super::*;
+    use axum::response::IntoResponse;
+
+    #[tokio::test]
+    async fn batch_diagnostics_bound_errors_and_omit_request_paths() {
+        let response = BatchCreateResponse {
+            created: 0,
+            failed: 20,
+            items: (0..20)
+                .map(|_| BatchCreateRow {
+                    request: TaskCreateRequest {
+                        input_path: InputPath::new("/private-input/video.mkv"),
+                        output_path: OutputPath::new("/private-output/video.mp4"),
+                        workflow: WorkflowName::new("private-workflow"),
+                        priority: 1,
+                        source: TaskSource::Api,
+                        source_reference: None,
+                    },
+                    task: None,
+                    error: Some(TaskApiError::InvalidRequest.into_parts().1),
+                })
+                .collect(),
+        }
+        .into_response();
+        let text = &response
+            .extensions()
+            .get::<crate::logging::TaskRequestDiagnostics>()
+            .unwrap()
+            .0;
+        let diagnostic: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(diagnostic["failed"], 20);
+        assert_eq!(diagnostic["errors"].as_array().unwrap().len(), 16);
+        assert_eq!(diagnostic["errors"][15]["item_index"], 15);
+        assert_eq!(diagnostic["omitted_errors"], 4);
+        assert!(!text.contains("private-"));
+        let body = axum::body::to_bytes(response.into_body(), 65536)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["items"].as_array().unwrap().len(), 20);
+    }
 }

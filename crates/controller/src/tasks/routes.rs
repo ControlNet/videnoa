@@ -100,7 +100,7 @@ async fn batch_create(
     State(state): State<TaskRouteState>,
     headers: HeaderMap,
     payload: Result<Json<super::batch::BatchPreviewRequest>, JsonRejection>,
-) -> Result<(StatusCode, Json<super::batch::BatchCreateResponse>), TaskApiError> {
+) -> Result<(StatusCode, super::batch::BatchCreateResponse), TaskApiError> {
     if headers.contains_key(IDEMPOTENCY_HEADER) {
         return Err(TaskApiError::invalid(
             "idempotency_key",
@@ -110,7 +110,7 @@ async fn batch_create(
     }
     let Json(request) = payload.map_err(|_| TaskApiError::InvalidRequest)?;
     let (status, response) = state.tasks.create_batch(request).await?;
-    Ok((status, Json(response)))
+    Ok((status, response))
 }
 
 #[derive(serde::Deserialize)]

@@ -34,3 +34,18 @@ cargo +1.83.0 fmt --all -- --check
 ```
 
 Verified locally: 504 Controller tests passed, strict Clippy and formatting passed, and the README contract passed. A freshly built standalone process in a temporary workspace also emitted default readiness, orchestration, and SIGTERM shutdown messages to stderr without ANSI escapes.
+
+## Task HTTP error details
+
+Task errors now attach explicitly constructed diagnostics to response extensions. The HTTP logging middleware records those diagnostics alongside method, route, status, and latency; it never reads or buffers response bodies. Single-task diagnostics match the existing public error envelope, including error code/message, retryability, and field validation details. These messages and field names are generated from Controller validation rules, not raw request values.
+
+Batch creation attaches created/failed counts and up to 16 error entries with zero-based response item indices. Additional errors are counted in `omitted_errors`; the actual HTTP response retains all items. Preview-gate rejection (400) and partial admission (207) both log at WARN, while successful creation stays at INFO. Task authentication errors, malformed requests, and idempotency conflicts use the same error envelope path.
+
+Targeted verification uses synthetic requests and temporary databases:
+
+```bash
+cargo +1.83.0 test --locked -p videnoa-controller --lib --test task_api --test task_api_concurrency
+cargo +1.83.0 clippy --locked -p videnoa-controller --all-targets --all-features -- -D warnings
+```
+
+Regression coverage checks public-error/diagnostic parity for every task error variant, default-level visibility of validation details and 207 failures, bounded batch diagnostic size, and omission of private request paths.

@@ -35,6 +35,10 @@ pub(crate) fn task_created(task: &crate::persistence::NewTask) {
         priority = task.request.priority, input_bytes = task.input_size, "Task created");
 }
 
+/// Diagnostics explicitly supplied by task handlers, never extracted from response bodies.
+#[derive(Clone)]
+pub(crate) struct TaskRequestDiagnostics(pub(crate) String);
+
 /// Logs response status and latency without bodies, headers, or raw URLs.
 pub async fn request(
     request: axum::extract::Request,
@@ -50,14 +54,18 @@ pub async fn request(
     let response = next.run(request).await;
     let status = response.status().as_u16();
     let elapsed_ms = started.elapsed().as_millis();
+    let diagnostics = response
+        .extensions()
+        .get::<TaskRequestDiagnostics>()
+        .map_or("", |diagnostics| diagnostics.0.as_str());
     if status >= 500 {
-        tracing::error!(%method, %route, status, elapsed_ms, "HTTP request failed");
-    } else if status >= 400 {
-        tracing::warn!(%method, %route, status, elapsed_ms, "HTTP request rejected");
+        tracing::error!(%method, %route, status, elapsed_ms, diagnostics, "HTTP request failed");
+    } else if status >= 400 || status == 207 {
+        tracing::warn!(%method, %route, status, elapsed_ms, diagnostics, "HTTP request rejected");
     } else if method == axum::http::Method::GET || method == axum::http::Method::HEAD {
-        tracing::debug!(%method, %route, status, elapsed_ms, "HTTP request completed");
+        tracing::debug!(%method, %route, status, elapsed_ms, diagnostics, "HTTP request completed");
     } else {
-        tracing::info!(%method, %route, status, elapsed_ms, "HTTP request completed");
+        tracing::info!(%method, %route, status, elapsed_ms, diagnostics, "HTTP request completed");
     }
     response
 }
@@ -216,5 +224,45 @@ mod tests {
         assert!(output.contains("status=409"));
         assert!(output.contains("elapsed_ms="));
         assert!(!output.contains("private-"));
+    }
+    #[tokio::test]
+    async fn task_failure_details_and_partial_batch_failures_are_visible_at_default_level() {
+        use axum::{
+            body::Body, http::Request, middleware, response::IntoResponse, routing::post, Router,
+        };
+        use tower::ServiceExt;
+        use tracing::instrument::WithSubscriber;
+
+        for status in [400, 401, 409, 500, 207] {
+            let capture = Capture::default();
+            let writer = capture.clone();
+            let subscriber = tracing_subscriber::fmt()
+                .with_env_filter(super::filter(None).0)
+                .with_ansi(false)
+                .with_writer(move || writer.clone())
+                .finish();
+            let app = Router::new().route("/api/tasks", post(move || async move {
+                let mut response = axum::http::StatusCode::from_u16(status).unwrap().into_response();
+                response.extensions_mut().insert(super::TaskRequestDiagnostics(
+                    serde_json::json!({"error": {"code": "invalid_request", "message": "request validation failed",
+                        "field_errors": [{"field": "input_path", "message": "input is unavailable"}]}}).to_string(),
+                ));
+                response
+            })).layer(middleware::from_fn(super::request));
+            app.oneshot(Request::post("/api/tasks").body(Body::empty()).unwrap())
+                .with_subscriber(subscriber)
+                .await
+                .unwrap();
+            let output = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+            assert!(output.contains(if status == 500 { "ERROR" } else { "WARN" }));
+            for expected in [
+                "invalid_request",
+                "request validation failed",
+                "input_path",
+                "input is unavailable",
+            ] {
+                assert!(output.contains(expected), "missing {expected}: {output}");
+            }
+        }
     }
 }
