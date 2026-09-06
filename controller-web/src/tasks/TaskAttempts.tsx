@@ -1,5 +1,7 @@
 import type { TaskAttempt } from "../api/taskSchemas"
+import { Status } from "../ui/Status"
 import { formatDate, formatDuration, formatStatus } from "./format"
+import { taskTone } from "./statusTone"
 
 type TaskAttemptsProps = {
   readonly attempts: readonly TaskAttempt[]
@@ -13,7 +15,7 @@ export function TaskAttempts({ attempts }: TaskAttemptsProps) {
         <li key={attempt.id}>
           <header>
             <strong>Attempt {attempt.attempt_number}</strong>
-            <span className={`task-status ${attempt.status}`}>{formatStatus(attempt.status)}</span>
+            <Status tone={taskTone(attempt.status)} label={formatStatus(attempt.status)} />
           </header>
           <dl className="detail-grid">
             <Detail label="Attempt ID" value={attempt.id} mono />

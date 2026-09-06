@@ -11,7 +11,7 @@ export function ManualTaskField({ label, name, value, error, inputRef, onChange 
   const id = `task-${name.replaceAll("_", "-")}`
   const errorId = `${id}-error`
   return (
-    <label className="task-form-field" htmlFor={id}>
+    <label className="field" htmlFor={id}>
       <span>{label}</span>
       <input
         ref={inputRef}

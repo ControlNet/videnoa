@@ -1,10 +1,12 @@
 import { ChevronLeft, ChevronRight } from "lucide-react"
 import type { KeyboardEvent } from "react"
 
-import type { TaskList } from "../api/taskSchemas"
-import { formatBytes, formatDate, formatDuration, formatStatus } from "./format"
+import type { Task, TaskList } from "../api/taskSchemas"
+import { Status } from "../ui/Status"
+import { formatBytes, formatDate, formatDuration, formatRelative, formatStatus } from "./format"
 import { taskName } from "./model"
 import { type OptionalColumn, optionalColumnLabels } from "./query"
+import { taskTone } from "./statusTone"
 import { type ScrollUpdate, useTaskTableScroll } from "./useTaskTableScroll"
 
 type TaskTableProps = {
@@ -16,6 +18,7 @@ type TaskTableProps = {
 }
 
 const loadingRowKeys = ["one", "two", "three", "four", "five", "six", "seven", "eight"] as const
+
 export function TaskTable({ page, columns, loading, selectedTaskId = null, onSelectTask }: TaskTableProps) {
   const rendersTable = page === null ? loading : page.items.length > 0
   const { frameRef, tableRef, scrollState, updateScrollState } = useTaskTableScroll(rendersTable)
@@ -33,30 +36,28 @@ export function TaskTable({ page, columns, loading, selectedTaskId = null, onSel
   return (
     <>
       {scrollState.hasOverflow ? (
-        <nav className="task-table-scroll-controls" aria-label="Task table horizontal navigation">
-          <p className="task-table-hint" id="task-table-scroll-hint">
-            Use the arrow keys or table navigation controls to view hidden columns.
-          </p>
+        <nav className="scroll-controls task-table-scroll-controls" aria-label="Task table horizontal navigation">
+          <p id="task-table-scroll-hint">Use the arrow keys or table navigation controls to view hidden columns.</p>
           <div>
             <button type="button" title="Scroll task table left" aria-label="Scroll task table left" disabled={!scrollState.canScrollLeft} onClick={() => scrollTable(frameRef.current, "left", updateScrollState)}>
-              <ChevronLeft size={16} aria-hidden="true" />
+              <ChevronLeft size={14} aria-hidden="true" />
             </button>
             <button type="button" title="Scroll task table right" aria-label="Scroll task table right" disabled={!scrollState.canScrollRight} onClick={() => scrollTable(frameRef.current, "right", updateScrollState)}>
-              <ChevronRight size={16} aria-hidden="true" />
+              <ChevronRight size={14} aria-hidden="true" />
             </button>
           </div>
         </nav>
       ) : null}
       <section
         ref={frameRef}
-        className="task-table-frame"
+        className="scroll-frame task-table-frame"
         aria-label="Scrollable task results"
         aria-describedby={scrollState.hasOverflow ? "task-table-scroll-hint" : undefined}
         aria-busy={loading}
         tabIndex={scrollState.hasOverflow ? 0 : -1}
         onKeyDown={(event) => handleScrollKey(event, updateScrollState)}
       >
-        <table ref={tableRef} className="task-table">
+        <table ref={tableRef} className="data-table task-table">
           <thead>
             <tr>
               <th scope="col">Status</th>
@@ -64,12 +65,9 @@ export function TaskTable({ page, columns, loading, selectedTaskId = null, onSel
               <th scope="col">Workflow</th>
               <th scope="col">Worker</th>
               <th scope="col">Progress</th>
-              <th scope="col">FPS</th>
               <th scope="col">ETA</th>
               <th scope="col">Size</th>
               <th scope="col">Created</th>
-              <th scope="col">Finished</th>
-              <th scope="col">Source</th>
               {columns.map((column) => (
                 <th scope="col" key={column}>
                   {optionalColumnLabels[column]}
@@ -82,11 +80,11 @@ export function TaskTable({ page, columns, loading, selectedTaskId = null, onSel
               <LoadingRows columns={columns.length} />
             ) : (
               page.items.map((task) => (
-                <tr key={task.id} aria-selected={selectedTaskId === task.id ? true : undefined}>
+                <tr key={task.id} aria-selected={selectedTaskId === task.id ? true : undefined} className={selectedTaskId === task.id ? "selected" : undefined}>
                   <td>
-                    <span className={`task-status ${task.status}`}>{formatStatus(task.status)}</span>
+                    <Status tone={taskTone(task.status)} label={formatStatus(task.status)} />
                   </td>
-                  <td className="task-name" title={task.input_path}>
+                  <td className="grow-cell task-name" title={task.input_path}>
                     {onSelectTask === undefined ? (
                       taskName(task)
                     ) : (
@@ -101,24 +99,21 @@ export function TaskTable({ page, columns, loading, selectedTaskId = null, onSel
                       </button>
                     )}
                   </td>
-                  <td>{task.workflow}</td>
+                  <td className="mono-cell">{task.workflow}</td>
                   <td className="mono-cell" title={task.worker_id ?? undefined}>
                     {shortId(task.worker_id)}
                   </td>
                   <td>
-                    <span className="progress-cell">
-                      <span>
+                    <span className={`progress status--${taskTone(task.status)}`}>
+                      <span className="progress-track">
                         <i style={{ inlineSize: `${task.progress.percent}%` }} />
                       </span>
-                      <b>{Math.round(task.progress.percent)}%</b>
+                      <b className="progress-value">{Math.round(task.progress.percent)}%</b>
                     </span>
                   </td>
-                  <td className="numeric-cell">{task.progress.frames_per_second?.toFixed(1) ?? "--"}</td>
                   <td className="numeric-cell">{formatDuration(task.progress.eta_seconds)}</td>
                   <td className="numeric-cell">{formatBytes(task.input_size)}</td>
-                  <td className="date-cell">{formatDate(task.created_at)}</td>
-                  <td className="date-cell">{formatDate(task.completed_at)}</td>
-                  <td>{task.source}</td>
+                  <td className="date-cell" title={formatDate(task.created_at)}>{formatRelative(task.created_at)}</td>
                   {columns.map((column) => (
                     <OptionalCell key={column} column={column} task={task} />
                   ))}
@@ -132,10 +127,47 @@ export function TaskTable({ page, columns, loading, selectedTaskId = null, onSel
   )
 }
 
-function scrollTable(frame: HTMLElement | null, direction: "left" | "right", onScroll: ScrollUpdate): void {
-  if (frame === null) return
-  frame.scrollBy({ left: frame.clientWidth * (direction === "left" ? -0.75 : 0.75) })
-  requestAnimationFrame(() => onScroll())
+function LoadingRows({ columns }: { readonly columns: number }) {
+  return (
+    <>
+      {loadingRowKeys.map((key) => (
+        <tr key={key} className="loading-row">
+          <td colSpan={8 + columns}>
+            <span />
+          </td>
+        </tr>
+      ))}
+    </>
+  )
+}
+
+function OptionalCell({ column, task }: { readonly column: OptionalColumn; readonly task: Task }) {
+  switch (column) {
+    case "input_path":
+      return <td className="long-cell mono-cell" title={task.input_path}>{task.input_path}</td>
+    case "output_path":
+      return <td className="long-cell mono-cell" title={task.output_path}>{task.output_path}</td>
+    case "attempts":
+      return <td className="numeric-cell">{task.attempt_count}</td>
+    case "duration":
+      return <td className="numeric-cell">{formatDuration(taskDuration(task))}</td>
+    case "failure_stage":
+      return <td>{task.failure?.failure_stage ?? "--"}</td>
+    case "failure":
+      return <td className="mono-cell">{task.failure?.failure_code ?? "--"}</td>
+    case "error":
+      return <td className="long-cell" title={task.failure?.message ?? undefined}>{task.failure?.message ?? "--"}</td>
+    case "remote_job_id":
+      return <td className="mono-cell" title={task.remote_job_id ?? undefined}>{shortId(task.remote_job_id)}</td>
+  }
+}
+
+function taskDuration(task: Task): number {
+  return (new Date(task.completed_at ?? task.updated_at).getTime() - new Date(task.created_at).getTime()) / 1000
+}
+
+function shortId(value: string | null): string {
+  return value === null ? "--" : value.slice(0, 8)
 }
 
 function handleScrollKey(event: KeyboardEvent<HTMLElement>, onScroll: ScrollUpdate): void {
@@ -162,57 +194,8 @@ function handleScrollKey(event: KeyboardEvent<HTMLElement>, onScroll: ScrollUpda
   }
 }
 
-function OptionalCell({ column, task }: { readonly column: OptionalColumn; readonly task: TaskList["items"][number] }) {
-  switch (column) {
-    case "input_path":
-      return (
-        <td className="long-cell mono-cell" title={task.input_path}>
-          {task.input_path}
-        </td>
-      )
-    case "output_path":
-      return (
-        <td className="long-cell mono-cell" title={task.output_path}>
-          {task.output_path}
-        </td>
-      )
-    case "attempts":
-      return <td className="numeric-cell">{task.attempt_count}</td>
-    case "duration":
-      return (
-        <td className="numeric-cell">
-          {formatDuration((new Date(task.completed_at ?? task.updated_at).getTime() - new Date(task.created_at).getTime()) / 1000)}
-        </td>
-      )
-    case "failure_stage":
-      return <td>{task.failure?.failure_stage ?? "--"}</td>
-    case "failure":
-      return <td>{task.failure?.failure_code ?? "--"}</td>
-    case "error":
-      return (
-        <td className="long-cell" title={task.failure?.message}>
-          {task.failure?.message ?? "--"}
-        </td>
-      )
-    case "remote_job_id":
-      return (
-        <td className="mono-cell" title={task.remote_job_id ?? undefined}>
-          {shortId(task.remote_job_id)}
-        </td>
-      )
-  }
-}
-
-function LoadingRows({ columns }: { readonly columns: number }) {
-  return loadingRowKeys.map((key) => (
-    <tr className="loading-row" key={key}>
-      <td colSpan={11 + columns}>
-        <span />
-      </td>
-    </tr>
-  ))
-}
-
-function shortId(value: string | null): string {
-  return value === null ? "--" : value.slice(0, 8)
+function scrollTable(frame: HTMLElement | null, direction: "left" | "right", onScroll: ScrollUpdate): void {
+  if (frame === null) return
+  frame.scrollBy({ left: frame.clientWidth * (direction === "left" ? -0.75 : 0.75) })
+  requestAnimationFrame(() => onScroll())
 }

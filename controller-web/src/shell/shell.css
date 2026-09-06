@@ -1,0 +1,325 @@
+/*
+ * The authenticated frame.
+ *
+ * `.app-frame` takes a definite block size so its implicit grid rows cannot
+ * grow to intrinsic route height. That keeps `.shell-main` the only vertical
+ * scroll owner, which is what pins the rail and the sign-out control.
+ */
+
+.app-frame {
+  display: grid;
+  grid-template-columns: var(--rail-width) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  block-size: 100dvb;
+  overflow: hidden;
+  background: var(--color-background);
+}
+
+.shell-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-inline-size: 0;
+  padding: 0.875rem 0.625rem;
+  border-inline-end: var(--border-subtle);
+  background: var(--color-surface);
+}
+
+.shell-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.5625rem;
+  padding: var(--space-1) var(--space-2) 0.875rem;
+}
+
+.brand-mark {
+  display: grid;
+  flex-shrink: 0;
+  place-items: center;
+  inline-size: 1.5rem;
+  block-size: 1.5rem;
+  border-radius: var(--radius-md);
+  background: var(--color-accent-wash);
+  color: var(--color-accent);
+  font-family: var(--font-mono);
+  font-size: var(--type-ui);
+  font-weight: 600;
+}
+
+.shell-brand > span:last-child {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-inline-size: 0;
+}
+
+.shell-brand strong {
+  font-size: var(--type-body);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.shell-brand small {
+  font-family: var(--font-mono);
+  font-size: 0.5625rem;
+  font-weight: 500;
+  letter-spacing: 0.09em;
+  color: var(--color-text-quiet);
+}
+
+.primary-navigation {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-inline-size: 0;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5625rem;
+  block-size: 2rem;
+  padding-inline: var(--space-2);
+  border-radius: var(--radius-md);
+  color: var(--color-text-muted);
+  font-size: var(--type-body);
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+
+.nav-item svg {
+  flex-shrink: 0;
+}
+
+.nav-item:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text);
+}
+
+.nav-item.active {
+  background: var(--color-accent-wash);
+  color: var(--color-accent);
+  font-weight: 600;
+}
+
+.shell-footer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin-block-start: auto;
+  min-inline-size: 0;
+}
+
+.connection-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  min-inline-size: 0;
+}
+
+.connection-status .status {
+  font-size: var(--type-chip);
+}
+
+.connection-status code {
+  font-size: 0.5625rem;
+  color: var(--color-text-quiet);
+}
+
+.shell-footer .button {
+  justify-content: flex-start;
+  gap: 0.5625rem;
+  padding-inline: var(--space-2);
+  color: var(--color-text-quiet);
+  font-size: var(--type-ui);
+  font-weight: 500;
+}
+
+.shell-main {
+  display: flex;
+  flex-direction: column;
+  min-inline-size: 0;
+  min-block-size: 0;
+  overflow: auto;
+}
+
+.shell-main:focus-visible {
+  outline-offset: -2px;
+}
+
+/* Fixed at desktop so it cannot add an implicit row to the fixed-height frame. */
+.shell-alert {
+  position: fixed;
+  z-index: 40;
+  inset-block-start: var(--space-4);
+  inset-inline-end: var(--space-4);
+  max-inline-size: min(24rem, calc(100% - var(--space-8)));
+  margin: 0;
+}
+
+.shell-alert:focus {
+  outline: 3px solid var(--color-accent);
+  outline-offset: var(--space-1);
+}
+
+/* Route scaffolding shared by every page inside the frame. */
+
+/*
+ * Route sizing is opted into by each page, not inherited: Tasks is capped at the
+ * shell height and scrolls internally, while form routes grow and let the shell
+ * scroll. Stylesheet order must not decide which one wins.
+ */
+.route-page {
+  display: flex;
+  flex-direction: column;
+  min-inline-size: 0;
+}
+
+/*
+ * The command row replaces the former display-type page header. A route
+ * announces itself in one 48px band that also carries its primary action.
+ */
+.command-row {
+  position: relative;
+  z-index: 50;
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: var(--space-2);
+  block-size: var(--row-command);
+  padding-inline: var(--gutter);
+  border-block-end: var(--border-subtle);
+}
+
+.command-row h1 {
+  font-size: var(--type-page);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+
+.command-row .command-note {
+  overflow: hidden;
+  color: var(--color-text-quiet);
+  font-family: var(--font-mono);
+  font-size: var(--type-chip);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.command-row .spacer {
+  flex-grow: 1;
+}
+
+.route-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-4) var(--gutter);
+}
+
+.shell-tabs {
+  display: none;
+}
+
+@media (max-width: 48rem) {
+  .app-frame {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr) auto;
+  }
+
+  /* A logout failure gets its own row so it can never overlay route controls. */
+  .app-frame:has(.shell-alert) {
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
+  }
+
+  .shell-alert {
+    position: static;
+    grid-column: 1 / -1;
+    grid-row: 2;
+    max-inline-size: none;
+    margin: var(--space-3) var(--space-4) var(--space-1);
+  }
+
+  .shell-sidebar {
+    flex-direction: row;
+    align-items: center;
+    gap: var(--space-3);
+    block-size: 3rem;
+    padding: 0 var(--gutter);
+    border-block-end: var(--border-subtle);
+    border-inline-end: 0;
+  }
+
+  .shell-brand {
+    padding: 0;
+  }
+
+  .shell-brand small {
+    display: none;
+  }
+
+  .primary-navigation {
+    display: none;
+  }
+
+  .shell-footer {
+    flex-direction: row;
+    align-items: center;
+    margin-block-start: 0;
+    margin-inline-start: auto;
+  }
+
+  .connection-status {
+    padding: 0;
+  }
+
+  .connection-status code {
+    display: none;
+  }
+
+  .shell-footer .button {
+    display: none;
+  }
+
+  /* Navigation moves to a thumb-reachable tab bar with 44px+ hit targets. */
+  .shell-tabs {
+    display: flex;
+    align-items: stretch;
+    block-size: 3.5rem;
+    border-block-start: var(--border-default);
+    background: var(--color-surface);
+  }
+
+  .shell-tabs a,
+  .shell-tabs button {
+    display: flex;
+    flex: 1 1 0;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    min-inline-size: 0;
+    border: 0;
+    background: none;
+    color: var(--color-text-quiet);
+    font-size: 0.625rem;
+    font-weight: 500;
+    text-decoration: none;
+  }
+
+  .shell-tabs a.active {
+    color: var(--color-accent);
+    font-weight: 600;
+  }
+}
+
+@media (max-width: 28rem) {
+  .shell-brand strong {
+    display: none;
+  }
+}

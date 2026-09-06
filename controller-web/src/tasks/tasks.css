@@ -1,462 +1,469 @@
-.tasks-page {
-  inline-size: min(100%, 96rem);
-  padding: var(--space-6);
+/*
+ * Task history surface.
+ *
+ * The route is exactly one viewport tall: two control bands, a table that owns
+ * its own overflow in both axes, and a pinned page footer. Nothing about the
+ * task list is reachable only by scrolling the shell.
+ */
+
+.route-page.tasks-page {
+  flex: 1 1 auto;
+  min-block-size: 0;
+  max-block-size: 100%;
 }
 
-.tasks-header {
-  display: grid;
-  grid-template-columns: minmax(16rem, 1fr) minmax(32rem, 1.5fr);
-  align-items: end;
-  gap: var(--space-8);
-}
-
-.tasks-header h1 {
-  margin: 0;
-  font-size: var(--type-title);
-  font-weight: 600;
-  line-height: 1.1;
-  letter-spacing: -0.04em;
-}
-
-.tasks-header > div > p:last-child {
-  margin: var(--space-3) 0 0;
-  color: var(--color-text-muted);
-  font-size: var(--type-ui);
-}
-
-.task-counters {
-  display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  margin: 0;
-  border-block: var(--border-subtle);
-}
-
-.task-counters div {
-  min-inline-size: 0;
-  padding: var(--space-2) var(--space-3);
-  border-inline-start: var(--border-subtle);
-}
-
-.task-counters div:last-child {
-  border-inline-end: var(--border-subtle);
-}
-
-.task-counters dt {
-  color: var(--color-text-quiet);
-  font-size: var(--type-micro);
-  font-weight: 650;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-
-.task-counters dd {
-  margin: var(--space-1) 0 0;
-  font-family: "Geist Mono", "SFMono-Regular", Consolas, monospace;
-  font-size: var(--type-subtitle);
-  font-weight: 600;
-}
-
-.task-toolbar {
-  position: relative;
-  display: flex;
-  align-items: end;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  margin-block: var(--space-6) var(--space-3);
-  padding-block-end: var(--space-3);
-  overflow: visible;
-  border-block-end: var(--border-default);
-  border-block-start: 0;
-  border-inline: 0;
-}
-
-.task-toolbar > legend {
-  position: absolute;
-  inline-size: 1px;
-  block-size: 1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-}
-
-.task-filter,
-.task-search {
-  display: grid;
-  flex: 0 0 auto;
-  gap: var(--space-1);
-  color: var(--color-text-quiet);
-  font-size: var(--type-micro);
-  font-weight: 650;
-}
+/* ------------------------------------------------------------ command row */
 
 .task-search {
-  inline-size: min(20rem, 38vw);
-}
-
-.task-filter input,
-.task-filter select,
-.task-search-frame,
-.column-picker summary {
-  min-block-size: var(--control-compact);
-  border: var(--border-default);
-  border-radius: var(--radius-control);
-  background: var(--color-surface-elevated);
-  color: var(--color-text);
-  font-size: var(--type-label);
-}
-
-.task-filter input,
-.task-filter select {
-  min-inline-size: 7rem;
-  padding-inline: var(--space-2);
-}
-
-.task-search-frame {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding-inline: var(--space-3);
-  color: var(--color-text-quiet);
-}
-
-.task-search-frame input {
-  min-inline-size: 0;
-  inline-size: 100%;
-  border: 0;
-  outline: 0;
-  background: transparent;
-  color: var(--color-text);
-}
-
-.task-search-frame:focus-within {
-  outline: 3px solid var(--color-accent);
-  outline-offset: var(--space-1);
+  inline-size: 13.5rem;
+  flex-shrink: 1;
+  min-inline-size: 6rem;
 }
 
 .column-picker {
   position: relative;
-  flex: 0 0 auto;
 }
 
 .column-picker summary {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  block-size: var(--control-md);
   padding-inline: var(--space-3);
-  cursor: pointer;
+  border: var(--border-default);
+  border-radius: var(--radius-md);
+  color: var(--color-text-muted);
+  font-size: var(--type-ui);
+  font-weight: 600;
+  white-space: nowrap;
   list-style: none;
+  cursor: pointer;
+}
+
+.column-picker summary::-webkit-details-marker {
+  display: none;
+}
+
+.column-picker summary:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text);
+}
+
+.column-picker[open] summary {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
 }
 
 .column-picker > div {
   position: absolute;
-  z-index: 3;
-  inset-block-start: calc(100% + var(--space-1));
+  z-index: 20;
   inset-inline-end: 0;
-  display: grid;
-  min-inline-size: 11rem;
+  inset-block-start: calc(var(--control-md) + var(--space-1));
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  inline-size: max-content;
   padding: var(--space-2);
   border: var(--border-default);
-  border-radius: var(--radius-control);
-  background: var(--color-surface);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface-elevated);
+  box-shadow: var(--shadow-dialog);
 }
 
 .column-picker label {
   display: flex;
-  gap: var(--space-2);
-  padding: var(--space-2);
-  color: var(--color-text-muted);
-  font-size: var(--type-label);
-  text-transform: capitalize;
-}
-
-.task-table-frame {
-  max-block-size: min(52rem, calc(100dvb - 27rem));
-  overflow: auto;
-  scrollbar-gutter: stable;
-  scrollbar-color: var(--color-text-quiet) var(--color-background-deep);
-  scrollbar-width: thin;
-  border: var(--border-default);
-  border-radius: var(--radius-control);
-  background: var(--color-surface);
-}
-
-.task-table-frame:focus-visible {
-  outline: var(--space-1) solid var(--color-accent);
-  outline-offset: var(--space-1);
-}
-
-.task-table-scroll-controls {
-  display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  margin-block-end: var(--space-2);
-}
-
-.task-table-scroll-controls div {
-  display: flex;
   gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--type-ui);
+  cursor: pointer;
 }
 
-.task-table-hint {
-  margin: 0;
-  color: var(--color-text-quiet);
-  font-size: var(--type-micro);
-}
-
-.task-table {
-  inline-size: 100%;
-  min-inline-size: 78rem;
-  border-collapse: collapse;
-  font-size: var(--type-label);
-  white-space: nowrap;
-}
-
-.task-table th {
-  position: sticky;
-  inset-block-start: 0;
-  z-index: 1;
-  padding: var(--space-2) var(--space-3);
-  border-block-end: var(--border-default);
-  background: var(--color-surface-elevated);
-  color: var(--color-text-quiet);
-  font-size: var(--type-micro);
-  text-align: start;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-
-.task-table td {
-  max-inline-size: 16rem;
-  block-size: var(--control-compact);
-  padding: var(--space-1) var(--space-3);
-  overflow: hidden;
-  border-block-end: var(--border-subtle);
-  color: var(--color-text-muted);
-  text-overflow: ellipsis;
-}
-
-.task-table tbody tr:last-child td {
-  border-block-end: 0;
-}
-
-.task-table tbody tr:hover td {
+.column-picker label:hover {
   background: var(--color-surface-hover);
 }
 
-.task-table td.task-name {
-  max-inline-size: 18rem;
-  color: var(--color-text);
-  font-weight: 600;
+.column-picker input {
+  accent-color: var(--color-accent);
 }
 
-.mono-cell,
-.numeric-cell,
-.date-cell,
-.progress-cell b {
-  font-family: "Geist Mono", "SFMono-Regular", Consolas, monospace;
+/* ------------------------------------------------------------- filter row */
+
+.task-toolbar {
+  display: flex;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  min-block-size: var(--row-filter);
+  margin: 0;
+  padding: var(--space-1) var(--gutter);
+  border: 0;
+  border-block-end: var(--border-subtle);
+  background: var(--color-background-deep);
+}
+
+.task-toolbar .spacer {
+  flex-grow: 1;
+}
+
+.task-filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.chip-divider {
+  inline-size: 1px;
+  block-size: 1rem;
+  margin-inline: var(--space-1);
+  background: var(--color-border-subtle);
+}
+
+/* --------------------------------------------------------------- counters */
+
+.task-counters {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.counter {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  block-size: var(--control-sm);
+  padding-inline: var(--space-2);
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+}
+
+.counter dt {
+  order: 2;
+  color: var(--color-text-quiet);
+  font-size: var(--type-chip);
+  font-weight: 500;
+}
+
+.counter dd {
+  order: 1;
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: var(--type-ui);
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
 
-.numeric-cell {
-  text-align: end;
-}
-
-.date-cell {
-  font-size: var(--type-micro);
-}
-
-.task-table td.long-cell {
-  max-inline-size: 24rem;
-}
-
-.task-status {
-  display: inline-flex;
-  align-items: center;
-  min-block-size: var(--space-6);
-  padding-inline: var(--space-2);
-  border: var(--border-subtle);
-  border-radius: var(--radius-control);
-  background: var(--color-background-deep);
-  color: var(--color-text-muted);
-  font-size: var(--type-micro);
-  font-weight: 650;
-}
-
-.task-status.processing,
-.task-status.uploading,
-.task-status.downloading {
-  border-color: color-mix(in oklch, var(--color-accent), var(--color-border) 60%);
+.counter--total {
   background: var(--color-accent-wash);
-  color: var(--color-accent-strong);
 }
 
-.task-status.completed {
-  color: var(--color-healthy);
+.counter--total dt,
+.counter--total dd {
+  color: var(--color-accent);
+  font-weight: 600;
 }
 
-.task-status.failed,
-.task-status.cancelled {
-  background: var(--color-danger-wash);
+.counter--negative dd {
   color: var(--color-danger);
 }
 
-.progress-cell {
-  display: grid;
-  grid-template-columns: 4rem 2.5rem;
-  align-items: center;
-  gap: var(--space-2);
-}
+/* ------------------------------------------------------------------ table */
 
-.progress-cell > span {
-  block-size: var(--space-1);
-  overflow: hidden;
-  border-radius: var(--radius-control);
-  background: var(--color-border-subtle);
-}
-
-.progress-cell i {
-  display: block;
-  block-size: 100%;
-  background: var(--color-accent);
-}
-
-.progress-cell b {
-  color: var(--color-text);
-  font-size: var(--type-micro);
-  text-align: end;
-}
-
-.loading-row span {
-  display: block;
-  inline-size: 45%;
-  block-size: var(--space-2);
-  border-radius: var(--radius-control);
-  background: var(--color-border-subtle);
-}
-
-.task-empty,
-.task-load-error {
+/*
+ * The inspector overlays the table, not the controls: the command row, filters
+ * and pagination stay reachable while a task is open.
+ */
+.task-workspace {
+  position: relative;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-4);
-  padding: var(--space-5);
-  border: var(--border-default);
-  border-radius: var(--radius-control);
-  background: var(--color-surface);
+  flex: 1 1 auto;
+  min-block-size: 0;
+  min-inline-size: 0;
 }
 
-.task-empty {
+.task-table-region {
+  display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
-  justify-content: center;
-  min-block-size: 14rem;
-  color: var(--color-text-muted);
+  gap: var(--space-2);
+  min-block-size: 0;
+  min-inline-size: 0;
+  padding: var(--space-2) var(--gutter) 0;
 }
 
-.task-load-error {
-  margin-block-end: var(--space-3);
-  border-color: color-mix(in oklch, var(--color-danger), var(--color-border) 56%);
-  background: var(--color-danger-wash);
-  color: var(--color-danger);
-  font-size: var(--type-ui);
-}
-
-.task-load-error button,
-.task-table-scroll-controls button,
-.task-pagination button {
-  min-block-size: var(--control-compact);
-  padding-inline: var(--space-3);
-  border: var(--border-default);
-  border-radius: var(--radius-control);
-  background: var(--color-surface-elevated);
-  color: var(--color-text);
-  font-size: var(--type-label);
-  font-weight: 650;
+.task-table-scroll-controls {
+  flex-shrink: 0;
 }
 
 .task-table-scroll-controls button {
   display: grid;
-  inline-size: var(--control-compact);
-  padding: 0;
   place-items: center;
+  inline-size: var(--control-sm);
+  block-size: var(--control-sm);
+  border: var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-elevated);
+  color: var(--color-text-muted);
+  opacity: 1;
 }
 
+.task-table-scroll-controls button:hover:not(:disabled),
+.worker-table-scroll-controls button:hover:not(:disabled) {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+/*
+ * The unavailable state is carried by four independent signals so it never
+ * depends on colour alone.
+ */
 .task-table-scroll-controls button:disabled,
-.task-pagination button:disabled {
+.worker-table-scroll-controls button:disabled {
   border-color: var(--color-border-subtle);
   background: var(--color-background-deep);
   color: var(--color-text-quiet);
-  cursor: not-allowed;
   opacity: 0.65;
 }
 
+.task-table-frame {
+  flex: 1 1 auto;
+  min-block-size: 0;
+  scrollbar-color: var(--color-text-quiet) var(--color-background-deep);
+  scrollbar-width: thin;
+}
+
+.task-table-frame:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+
+.task-table .task-name {
+  min-inline-size: 12rem;
+}
+
+.task-table td.long-cell {
+  max-inline-size: 20rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.task-table tr.selected td {
+  background: var(--color-accent-wash);
+}
+
+.task-row-select {
+  display: block;
+  inline-size: 100%;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  background: none;
+  color: var(--color-text);
+  font-size: inherit;
+  font-weight: 500;
+  text-align: start;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-row-select:hover {
+  color: var(--color-accent);
+}
+
+.loading-row td {
+  padding-block: var(--space-2);
+}
+
+.loading-row span {
+  display: block;
+  block-size: 0.5rem;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-hover);
+}
+
+.task-empty {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-10) var(--gutter);
+  color: var(--color-text-quiet);
+  text-align: center;
+}
+
+.task-empty strong {
+  color: var(--color-text);
+  font-size: var(--type-body);
+}
+
+.task-empty span {
+  font-size: var(--type-ui);
+}
+
+.task-load-error {
+  margin-inline: var(--gutter);
+}
+
+/* ------------------------------------------------------------- pagination */
+
 .task-pagination {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--space-4);
-  padding-block-start: var(--space-3);
+  gap: var(--space-3);
+  block-size: var(--row-foot);
+  padding-inline: var(--gutter);
+  border-block-start: var(--border-subtle);
+  background: var(--color-background-deep);
+}
+
+.task-pagination > span {
   color: var(--color-text-quiet);
-  font-family: "Geist Mono", "SFMono-Regular", Consolas, monospace;
-  font-size: var(--type-micro);
+  font-family: var(--font-mono);
+  font-size: var(--type-chip);
+  font-variant-numeric: tabular-nums;
 }
 
 .task-pagination div {
   display: flex;
-  gap: var(--space-2);
+  gap: var(--space-1);
+  margin-inline-start: auto;
 }
 
-@media (max-width: 72rem) {
-  .tasks-header {
-    grid-template-columns: minmax(0, 1fr);
+.task-pagination button {
+  block-size: var(--control-sm);
+  padding-inline: var(--space-3);
+  border: var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-elevated);
+  color: var(--color-text-muted);
+  font-size: var(--type-chip);
+  font-weight: 600;
+}
+
+.task-pagination button:hover:not(:disabled) {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+/* Unavailable paging is carried by border, background, colour and opacity. */
+.task-pagination button:disabled {
+  border-color: var(--color-border-subtle);
+  background: var(--color-background-deep);
+  color: var(--color-text-quiet);
+  opacity: 0.65;
+}
+
+/* ------------------------------------------------------------ responsive */
+
+@media (max-width: 62rem) {
+  /* Counts and filters each keep one scrollable row instead of stacking. */
+  .task-counters {
+    inline-size: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .task-toolbar .spacer {
+    display: none;
+  }
+
+  .task-filter-chips {
+    inline-size: 100%;
+    flex-wrap: nowrap;
+    padding-block: 2px;
+    overflow-x: auto;
+    scrollbar-width: none;
   }
 }
 
 @media (max-width: 48rem) {
-  .tasks-page {
-    padding: var(--space-5);
-  }
-
-  .task-counters {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
-  .task-counters div:nth-child(4) {
-    border-block-start: var(--border-subtle);
-  }
-
-  .task-counters div:nth-child(5),
-  .task-counters div:nth-child(6) {
-    border-block-start: var(--border-subtle);
-  }
-
-  .task-search {
-    grid-column: 1 / -1;
+  .command-row .task-search {
     inline-size: auto;
+    flex-grow: 1;
+    min-inline-size: 4rem;
   }
 
-  .task-toolbar {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    overflow: visible;
-  }
-
-  .task-filter {
-    min-inline-size: 0;
-  }
-
-  .task-filter input,
-  .task-filter select {
-    min-inline-size: 0;
-    inline-size: 100%;
-  }
-
-  .task-table-frame {
-    max-block-size: max(16rem, calc(100dvb - 34rem));
+  .column-picker summary span {
+    display: none;
   }
 
   .task-table td.long-cell {
-    max-inline-size: 18rem;
+    max-inline-size: 12rem;
   }
+}
 
+/* --------------------------------------------------------- manual intake */
+
+.task-dialog {
+  --dialog-measure: 32rem;
+}
+
+.task-create-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-5);
+}
+
+.task-create-form > header {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+.task-create-form > header > div {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  flex-grow: 1;
+  min-inline-size: 0;
+}
+
+.task-create-form h2 {
+  font-size: var(--type-page);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.task-create-form .technical-label {
+  color: var(--color-text-quiet);
+  font-size: var(--type-micro);
+  font-weight: 600;
+  letter-spacing: 0.09em;
+}
+
+.task-create-form > p {
+  color: var(--color-text-muted);
+  font-size: var(--type-chip);
+  line-height: 1.6;
+}
+
+.task-create-form .task-action-error {
+  margin: 0;
+}
+
+.task-create-form > footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding-block-start: var(--space-2);
+  border-block-start: var(--border-subtle);
+}
+
+.task-create-form > footer .spacer {
+  flex-grow: 1;
+}
+
+.task-create-form .field small {
+  color: var(--color-danger);
+  font-size: var(--type-chip);
+  font-weight: 600;
 }

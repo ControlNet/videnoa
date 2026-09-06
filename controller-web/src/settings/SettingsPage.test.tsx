@@ -150,7 +150,8 @@ describe("Settings page", () => {
     const uploads = screen.getByLabelText("Concurrent uploads")
     fireEvent.change(defaultSlots, { target: { value: "0" } })
     fireEvent.change(uploads, { target: { value: "0" } })
-    const form = screen.getByRole("button", { name: "Save and apply settings" }).closest("form")
+    const saveButton = screen.getByRole("button", { name: "Save and apply settings" })
+    const form = saveButton instanceof HTMLButtonElement ? saveButton.form : null
     if (!(form instanceof HTMLFormElement)) throw new TypeError("Settings form was not rendered")
 
     // When: the invalid form is submitted.
@@ -174,7 +175,8 @@ describe("Settings page", () => {
     render(<SettingsPage apiClient={apiClient} />)
     const retryInitial = await screen.findByLabelText("Initial retry seconds")
     fireEvent.change(retryInitial, { target: { value: "31" } })
-    const form = screen.getByRole("button", { name: "Save and apply settings" }).closest("form")
+    const saveButton = screen.getByRole("button", { name: "Save and apply settings" })
+    const form = saveButton instanceof HTMLButtonElement ? saveButton.form : null
     if (!(form instanceof HTMLFormElement)) throw new TypeError("Settings form was not rendered")
 
     // When: the cross-field-invalid form is submitted.

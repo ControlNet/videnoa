@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react"
 
 import type { Worker } from "../api/workerSchemas"
+import { Button } from "../ui/Button"
 
 type WorkerDeleteDialogProps = {
   readonly worker: Worker | null
@@ -23,12 +24,12 @@ export function WorkerDeleteDialog({ worker, deleting, onClose, onConfirm }: Wor
     if (worker === null && dialog?.open === true) dialog.close()
   }, [worker])
 
-  if (worker === null) return <dialog ref={dialogRef} className="operation-dialog" />
+  if (worker === null) return <dialog ref={dialogRef} className="dialog operation-dialog" />
 
   return (
     <dialog
       ref={dialogRef}
-      className="operation-dialog worker-delete-dialog"
+      className="dialog operation-dialog worker-delete-dialog"
       role="alertdialog"
       aria-modal="true"
       aria-labelledby="worker-delete-title"
@@ -63,12 +64,13 @@ export function WorkerDeleteDialog({ worker, deleting, onClose, onConfirm }: Wor
           Remove the worker at <code>{worker.api_url}</code>. Durable task references block deletion; disabling the worker is the non-destructive alternative.
         </p>
         <footer>
-          <button ref={keepWorkerRef} type="button" className="secondary-button" onClick={onClose}>
+          <span className="spacer" />
+          <Button ref={keepWorkerRef} variant="outline" onClick={onClose}>
             Keep Worker
-          </button>
-          <button ref={deleteWorkerRef} type="button" className="danger-button" disabled={deleting} onClick={onConfirm}>
+          </Button>
+          <Button ref={deleteWorkerRef} variant="danger" disabled={deleting} onClick={onConfirm}>
             {deleting ? "Deleting..." : "Delete Worker"}
-          </button>
+          </Button>
         </footer>
       </div>
     </dialog>

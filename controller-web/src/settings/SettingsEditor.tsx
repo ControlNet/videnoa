@@ -1,5 +1,6 @@
-import { Save } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
+
+import { CheckField, Field } from "../ui/Field"
 
 import type { ApiClientError } from "../api/client"
 import { type SettingsResponse, type SettingsUpdateRequest, settingsUpdateRequestSchema } from "../api/settingsSchemas"
@@ -7,8 +8,6 @@ import { type SettingsResponse, type SettingsUpdateRequest, settingsUpdateReques
 type SettingsEditorProps = {
   readonly settings: SettingsResponse
   readonly actionError: ApiClientError | null
-  readonly actionsEnabled: boolean
-  readonly saving: boolean
   readonly onSave: (request: SettingsUpdateRequest) => Promise<boolean>
 }
 
@@ -52,7 +51,9 @@ const settingsFieldNames = {
   health: "health_seconds", poll: "poll_seconds", transfer: "transfer_seconds", retryInitial: "initial_seconds", retryMaximum: "maximum_seconds", retryAttempts: "max_attempts",
 } as const satisfies Record<keyof SettingsFields, string>
 
-export function SettingsEditor({ settings, actionError, actionsEnabled, saving, onSave }: SettingsEditorProps) {
+export const settingsFormId = "settings-editor-form"
+
+export function SettingsEditor({ settings, actionError, onSave }: SettingsEditorProps) {
   const formRef = useRef<HTMLFormElement>(null)
   const [fields, setFields] = useState<SettingsFields>(() => fieldsFrom(settings))
   const [fieldErrors, setFieldErrors] = useState<Partial<Record<keyof SettingsFields, string>>>({})
@@ -118,58 +119,96 @@ export function SettingsEditor({ settings, actionError, actionsEnabled, saving, 
 
   const serverErrors = serverFieldErrors(actionError)
   return (
-    <form ref={formRef} className="settings-editor" noValidate onSubmit={(event) => { event.preventDefault(); void submit() }}>
-      <SettingsSection title="Server binding" description="Changes are applied after the new address is ready to accept connections.">
-        <TextField label="Server host" name="host" value={fields.serverHost} error={fieldErrors.serverHost ?? serverErrors.serverHost} onChange={(serverHost) => setFields({ ...fields, serverHost })} />
-        <NumberField label="Server port" name="port" value={fields.serverPort} min={1} max={65_535} error={fieldErrors.serverPort ?? serverErrors.serverPort} onChange={(serverPort) => setFields({ ...fields, serverPort })} />
-      </SettingsSection>
-      <SettingsSection title="Authentication policy" description="Controls cookie transport and the absolute and idle session lifetimes.">
-        <label className="operation-check settings-check" htmlFor="settings-secure_cookie">
-          <input id="settings-secure_cookie" name="secure_cookie" type="checkbox" checked={fields.secureCookie} onChange={(event) => setFields({ ...fields, secureCookie: event.currentTarget.checked })} />
-          <span>Require secure session cookie</span>
-        </label>
-        <NumberField label="Absolute session seconds" name="session_absolute_seconds" value={fields.sessionAbsolute} min={1} max={604_800} error={fieldErrors.sessionAbsolute ?? serverErrors.sessionAbsolute} onChange={(sessionAbsolute) => setFields({ ...fields, sessionAbsolute })} />
-        <NumberField label="Idle session seconds" name="session_idle_seconds" value={fields.sessionIdle} min={1} max={604_800} error={fieldErrors.sessionIdle ?? serverErrors.sessionIdle} onChange={(sessionIdle) => setFields({ ...fields, sessionIdle })} />
-      </SettingsSection>
-      <SettingsSection title="Scheduler capacity" description="Controls reservation, prefetch, compute starts, and transfer concurrency.">
-        <NumberField label="Default compute slots" name="default_compute_slots" value={fields.defaultSlots} min={1} max={65_535} error={fieldErrors.defaultSlots ?? serverErrors.defaultSlots} onChange={(defaultSlots) => setFields({ ...fields, defaultSlots })} />
-        <NumberField label="Prefetch per worker" name="prefetch_per_worker" value={fields.prefetch} min={0} max={65_535} error={fieldErrors.prefetch ?? serverErrors.prefetch} onChange={(prefetch) => setFields({ ...fields, prefetch })} />
-        <NumberField label="Concurrent uploads" name="max_concurrent_uploads" value={fields.uploads} min={1} max={65_535} error={fieldErrors.uploads ?? serverErrors.uploads} onChange={(uploads) => setFields({ ...fields, uploads })} />
-        <NumberField label="Concurrent downloads" name="max_concurrent_downloads" value={fields.downloads} min={1} max={65_535} error={fieldErrors.downloads ?? serverErrors.downloads} onChange={(downloads) => setFields({ ...fields, downloads })} />
-      </SettingsSection>
-      <SettingsSection title="Timeouts" description="Runtime ceilings in seconds; each value is limited to seven days.">
-        <NumberField label="Health timeout seconds" name="health_seconds" value={fields.health} min={1} max={604_800} error={fieldErrors.health ?? serverErrors.health} onChange={(health) => setFields({ ...fields, health })} />
-        <NumberField label="Poll timeout seconds" name="poll_seconds" value={fields.poll} min={1} max={604_800} error={fieldErrors.poll ?? serverErrors.poll} onChange={(poll) => setFields({ ...fields, poll })} />
-        <NumberField label="Transfer timeout seconds" name="transfer_seconds" value={fields.transfer} min={1} max={604_800} error={fieldErrors.transfer ?? serverErrors.transfer} onChange={(transfer) => setFields({ ...fields, transfer })} />
-      </SettingsSection>
-      <SettingsSection title="Retry policy" description="Backoff must start at or below its maximum delay.">
-        <NumberField label="Initial retry seconds" name="initial_seconds" value={fields.retryInitial} min={1} max={604_800} error={fieldErrors.retryInitial ?? serverErrors.retryInitial} onChange={(retryInitial) => setFields({ ...fields, retryInitial })} />
-        <NumberField label="Maximum retry seconds" name="maximum_seconds" value={fields.retryMaximum} min={1} max={604_800} error={fieldErrors.retryMaximum ?? serverErrors.retryMaximum} onChange={(retryMaximum) => setFields({ ...fields, retryMaximum })} />
-        <NumberField label="Maximum retry attempts" name="max_attempts" value={fields.retryAttempts} min={1} max={100} error={fieldErrors.retryAttempts ?? serverErrors.retryAttempts} onChange={(retryAttempts) => setFields({ ...fields, retryAttempts })} />
-      </SettingsSection>
-      <footer><span>Settings version {settings.version}</span><button type="submit" className="primary-button compact-action" disabled={!actionsEnabled}><Save size={16} aria-hidden="true" />{saving ? "Saving and applying..." : "Save and apply settings"}</button></footer>
+    <form ref={formRef} id={settingsFormId} className="settings-editor" noValidate onSubmit={(event) => { event.preventDefault(); void submit() }}>
+      <nav className="settings-nav" aria-label="Settings sections">
+        {sectionIndex.map(({ id, title }) => <a key={id} href={`#${id}`}>{title}</a>)}
+      </nav>
+
+      <div className="settings-sections">
+        <SettingsSection id="settings-server" title="Server binding" description="Changes are applied after the new address is ready to accept connections.">
+          <TextField label="Server host" name="host" value={fields.serverHost} error={fieldErrors.serverHost ?? serverErrors.serverHost} onChange={(serverHost) => setFields({ ...fields, serverHost })} />
+          <NumberField label="Server port" name="port" value={fields.serverPort} min={1} max={65_535} error={fieldErrors.serverPort ?? serverErrors.serverPort} onChange={(serverPort) => setFields({ ...fields, serverPort })} />
+        </SettingsSection>
+        <SettingsSection id="settings-auth" title="Authentication policy" description="Controls cookie transport and the absolute and idle session lifetimes.">
+          <NumberField label="Absolute session seconds" name="session_absolute_seconds" value={fields.sessionAbsolute} min={1} max={604_800} error={fieldErrors.sessionAbsolute ?? serverErrors.sessionAbsolute} onChange={(sessionAbsolute) => setFields({ ...fields, sessionAbsolute })} />
+          <NumberField label="Idle session seconds" name="session_idle_seconds" value={fields.sessionIdle} min={1} max={604_800} error={fieldErrors.sessionIdle ?? serverErrors.sessionIdle} onChange={(sessionIdle) => setFields({ ...fields, sessionIdle })} />
+          <div className="settings-span-2">
+            <CheckField id="settings-secure_cookie" name="secure_cookie" label="Require secure session cookie" checked={fields.secureCookie} onChange={(secureCookie) => setFields({ ...fields, secureCookie })} />
+          </div>
+        </SettingsSection>
+        <SettingsSection id="settings-scheduler" title="Scheduler capacity" description="Controls reservation, prefetch, compute starts, and transfer concurrency.">
+          <NumberField label="Default compute slots" name="default_compute_slots" value={fields.defaultSlots} min={1} max={65_535} error={fieldErrors.defaultSlots ?? serverErrors.defaultSlots} onChange={(defaultSlots) => setFields({ ...fields, defaultSlots })} />
+          <NumberField label="Prefetch per worker" name="prefetch_per_worker" value={fields.prefetch} min={0} max={65_535} error={fieldErrors.prefetch ?? serverErrors.prefetch} onChange={(prefetch) => setFields({ ...fields, prefetch })} />
+          <NumberField label="Concurrent uploads" name="max_concurrent_uploads" value={fields.uploads} min={1} max={65_535} error={fieldErrors.uploads ?? serverErrors.uploads} onChange={(uploads) => setFields({ ...fields, uploads })} />
+          <NumberField label="Concurrent downloads" name="max_concurrent_downloads" value={fields.downloads} min={1} max={65_535} error={fieldErrors.downloads ?? serverErrors.downloads} onChange={(downloads) => setFields({ ...fields, downloads })} />
+        </SettingsSection>
+        <SettingsSection id="settings-timeouts" title="Timeouts" description="Runtime ceilings in seconds; each value is limited to seven days.">
+          <NumberField label="Health timeout seconds" name="health_seconds" value={fields.health} min={1} max={604_800} error={fieldErrors.health ?? serverErrors.health} onChange={(health) => setFields({ ...fields, health })} />
+          <NumberField label="Poll timeout seconds" name="poll_seconds" value={fields.poll} min={1} max={604_800} error={fieldErrors.poll ?? serverErrors.poll} onChange={(poll) => setFields({ ...fields, poll })} />
+          <NumberField label="Transfer timeout seconds" name="transfer_seconds" value={fields.transfer} min={1} max={604_800} error={fieldErrors.transfer ?? serverErrors.transfer} onChange={(transfer) => setFields({ ...fields, transfer })} />
+        </SettingsSection>
+        <SettingsSection id="settings-retry" title="Retry policy" description="Backoff must start at or below its maximum delay.">
+          <NumberField label="Initial retry seconds" name="initial_seconds" value={fields.retryInitial} min={1} max={604_800} error={fieldErrors.retryInitial ?? serverErrors.retryInitial} onChange={(retryInitial) => setFields({ ...fields, retryInitial })} />
+          <NumberField label="Maximum retry seconds" name="maximum_seconds" value={fields.retryMaximum} min={1} max={604_800} error={fieldErrors.retryMaximum ?? serverErrors.retryMaximum} onChange={(retryMaximum) => setFields({ ...fields, retryMaximum })} />
+          <NumberField label="Maximum retry attempts" name="max_attempts" value={fields.retryAttempts} min={1} max={100} error={fieldErrors.retryAttempts ?? serverErrors.retryAttempts} onChange={(retryAttempts) => setFields({ ...fields, retryAttempts })} />
+        </SettingsSection>
+      </div>
+
     </form>
   )
 }
+
+const sectionIndex = [
+  { id: "settings-server", title: "Server binding" },
+  { id: "settings-auth", title: "Authentication" },
+  { id: "settings-scheduler", title: "Scheduler" },
+  { id: "settings-timeouts", title: "Timeouts" },
+  { id: "settings-retry", title: "Retry policy" },
+] as const
 
 type NumberFieldProps = { readonly label: string; readonly name: string; readonly value: string; readonly min: number; readonly max: number; readonly error: string | undefined; readonly onChange: (value: string) => void }
 
 type TextFieldProps = { readonly label: string; readonly name: string; readonly value: string; readonly error: string | undefined; readonly onChange: (value: string) => void }
 
 function TextField(props: TextFieldProps) {
-  const id = `settings-${props.name}`
-  const errorId = `${id}-error`
-  return <label className="operation-field" htmlFor={id}><span>{props.label}</span><input id={id} name={props.name} type="text" spellCheck={false} value={props.value} aria-invalid={props.error === undefined ? undefined : true} aria-describedby={props.error === undefined ? undefined : errorId} onChange={(event) => props.onChange(event.currentTarget.value)} />{props.error === undefined ? null : <small id={errorId} role="alert">{props.error}</small>}</label>
+  return (
+    <Field
+      id={`settings-${props.name}`}
+      label={props.label}
+      name={props.name}
+      type="text"
+      spellCheck={false}
+      value={props.value}
+      error={props.error}
+      onChange={(event) => props.onChange(event.currentTarget.value)}
+    />
+  )
 }
 
 function NumberField(props: NumberFieldProps) {
-  const id = `settings-${props.name}`
-  const errorId = `${id}-error`
-  return <label className="operation-field" htmlFor={id}><span>{props.label}</span><input id={id} name={props.name} type="number" inputMode="numeric" min={props.min} max={props.max} value={props.value} aria-invalid={props.error === undefined ? undefined : true} aria-describedby={props.error === undefined ? undefined : errorId} onChange={(event) => props.onChange(event.currentTarget.value)} />{props.error === undefined ? null : <small id={errorId} role="alert">{props.error}</small>}</label>
+  return (
+    <Field
+      id={`settings-${props.name}`}
+      label={props.label}
+      name={props.name}
+      type="number"
+      inputMode="numeric"
+      min={props.min}
+      max={props.max}
+      value={props.value}
+      error={props.error}
+      onChange={(event) => props.onChange(event.currentTarget.value)}
+    />
+  )
 }
 
-function SettingsSection({ title, description, children }: { readonly title: string; readonly description: string; readonly children: React.ReactNode }) {
-  return <section className="operation-section" aria-label={title}><header><h2>{title}</h2><p>{description}</p></header><div className="settings-grid">{children}</div></section>
+function SettingsSection({ id, title, description, children }: { readonly id: string; readonly title: string; readonly description: string; readonly children: React.ReactNode }) {
+  return (
+    <section id={id} className="operation-section" aria-label={title}>
+      <header className="section-head"><h2>{title}</h2><p>{description}</p></header>
+      <div className="settings-grid">{children}</div>
+    </section>
+  )
 }
 
 function fieldsFrom(settings: SettingsResponse): SettingsFields {

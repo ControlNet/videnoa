@@ -2,6 +2,7 @@ import { LockKeyhole } from "lucide-react"
 import { type FormEvent, useLayoutEffect, useRef, useState } from "react"
 
 import type { LoginResult } from "./useSessionController"
+import { Button } from "../ui/Button"
 import "./auth.css"
 
 type LoginPageProps = {
@@ -80,9 +81,9 @@ export function LoginPage({ login, notice }: LoginPageProps) {
               required
             />
           </div>
-          <button className="primary-button" type="submit" disabled={submitting}>
+          <Button variant="primary" type="submit" disabled={submitting}>
             {submitting ? "Signing in..." : "Sign in"}
-          </button>
+          </Button>
         </form>
 
         <p className="login-footnote">Credentials stay in this request and the HttpOnly session cookie.</p>

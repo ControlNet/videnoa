@@ -1,5 +1,7 @@
 import { useLayoutEffect, useRef } from "react"
 
+import { Button } from "../ui/Button"
+
 type BootstrapErrorProps = {
   readonly message: string
   readonly retry: () => void
@@ -18,9 +20,9 @@ export function BootstrapError({ message, retry }: BootstrapErrorProps) {
         <div className="error-summary" role="alert" tabIndex={-1} ref={alertRef}>
           {message}
         </div>
-        <button className="primary-button" type="button" onClick={retry}>
+        <Button variant="primary" onClick={retry}>
           Retry Controller check
-        </button>
+        </Button>
       </section>
     </main>
   )

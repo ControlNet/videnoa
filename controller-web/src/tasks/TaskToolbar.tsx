@@ -1,6 +1,8 @@
 import { Columns3, Search } from "lucide-react"
+import type { ReactNode } from "react"
 
 import { failureStageSchema, taskSourceSchema, taskStatusSchema } from "../api/taskSchemas"
+import { SelectChip, TextChip } from "../ui/Chip"
 import type { OptionalColumn, TaskLimit, TaskQuery } from "./query"
 import {
   optionalColumnLabels,
@@ -15,80 +17,85 @@ type TaskToolbarProps = {
   readonly search: string
   readonly onQueryChange: (patch: Partial<TaskQuery>) => void
   readonly onSearchChange: (value: string) => void
+  /**
+   * The toolbar owns both control bands so the route heading, search, column
+   * picker and primary action share one 48px command row above the filters.
+   */
+  readonly heading?: ReactNode
+  readonly counters?: ReactNode
+  readonly actions?: ReactNode
 }
 
-export function TaskToolbar({ query, search, onQueryChange, onSearchChange }: TaskToolbarProps) {
+export function TaskToolbar({ query, search, onQueryChange, onSearchChange, heading, counters, actions }: TaskToolbarProps) {
   return (
-    <fieldset className="task-toolbar">
-      <legend>Task filters</legend>
-      <label className="task-search">
-        <span>Search task paths</span>
-        <span className="task-search-frame">
-          <Search size={15} strokeWidth={1.75} aria-hidden="true" />
-          <input name="search" autoComplete="off" spellCheck={false} value={search} onChange={(event) => onSearchChange(event.currentTarget.value)} />
+    <>
+      <div className="command-row">
+        {heading}
+        <span className="spacer" />
+        <span className="input-frame task-search">
+          <Search size={13} strokeWidth={2} aria-hidden="true" />
+          <input
+            name="search"
+            aria-label="Search task paths"
+            placeholder="Search input or output path"
+            autoComplete="off"
+            spellCheck={false}
+            value={search}
+            onChange={(event) => onSearchChange(event.currentTarget.value)}
+          />
         </span>
-      </label>
-      <Filter label="Status">
-        <select aria-label="Status" value={query.status} onChange={(event) => onQueryChange({ status: parseStatus(event.currentTarget.value), offset: 0 })}>
-          <option value="all">All statuses</option>
-          {taskStatusSchema.options.map((status) => <option key={status} value={status}>{status.replaceAll("_", " ")}</option>)}
-        </select>
-      </Filter>
-      <Filter label="Source">
-        <select aria-label="Source" value={query.source} onChange={(event) => onQueryChange({ source: parseSource(event.currentTarget.value), offset: 0 })}>
-          <option value="all">All sources</option>
-          {taskSourceSchema.options.map((source) => <option key={source} value={source}>{source === "api" ? "API" : "Manual"}</option>)}
-        </select>
-      </Filter>
-      <Filter label="Failure Stage">
-        <select aria-label="Failure Stage" value={query.failureStage} onChange={(event) => onQueryChange({ failureStage: parseFailureStage(event.currentTarget.value), offset: 0 })}>
-          <option value="all">All failure stages</option>
-          {failureStageSchema.options.map((stage) => <option key={stage} value={stage}>{stage.replaceAll("_", " ")}</option>)}
-        </select>
-      </Filter>
-      <TextFilter name="workflow" label="Workflow" value={query.workflow} onChange={(workflow) => onQueryChange({ workflow, offset: 0 })} />
-      <TextFilter name="worker" label="Worker ID" value={query.worker} onChange={(worker) => onQueryChange({ worker, offset: 0 })} />
-      <Filter label="Sort">
-        <select aria-label="Sort" value={query.sort} onChange={(event) => onQueryChange({ sort: parseSort(event.currentTarget.value), offset: 0 })}>
-          {taskSorts.map((sort) => <option key={sort} value={sort}>{sort.replaceAll("_", " ")}</option>)}
-        </select>
-      </Filter>
-      <Filter label="Order">
-        <select aria-label="Order" value={query.order} onChange={(event) => onQueryChange({ order: parseOrder(event.currentTarget.value), offset: 0 })}>
-          {taskOrders.map((order) => <option key={order} value={order}>{order}</option>)}
-        </select>
-      </Filter>
-      <Filter label="Rows">
-        <select aria-label="Rows" value={query.limit} onChange={(event) => onQueryChange({ limit: parseLimit(event.currentTarget.value), offset: 0 })}>
-          {taskLimits.map((limit) => <option key={limit} value={limit}>{limit}</option>)}
-        </select>
-      </Filter>
-      <details className="column-picker">
-        <summary><Columns3 size={15} strokeWidth={1.75} aria-hidden="true" /> Columns</summary>
-        <div>
-          {optionalColumns.map((column) => (
-            <label key={column}>
-              <input
-                type="checkbox"
-                aria-label={`Show ${optionalColumnLabels[column]} column`}
-                checked={query.columns.includes(column)}
-                onChange={() => onQueryChange({ columns: toggleColumn(query.columns, column) })}
-              />
-              {optionalColumnLabels[column]}
-            </label>
-          ))}
+        <details className="column-picker">
+          <summary><Columns3 size={13} strokeWidth={1.8} aria-hidden="true" /> Columns</summary>
+          <div>
+            {optionalColumns.map((column) => (
+              <label key={column}>
+                <input
+                  type="checkbox"
+                  aria-label={`Show ${optionalColumnLabels[column]} column`}
+                  checked={query.columns.includes(column)}
+                  onChange={() => onQueryChange({ columns: toggleColumn(query.columns, column) })}
+                />
+                {optionalColumnLabels[column]}
+              </label>
+            ))}
+          </div>
+        </details>
+        {actions}
+      </div>
+
+      <fieldset className="task-toolbar">
+        <legend className="sr-only">Task filters</legend>
+        {counters}
+        <span className="spacer" />
+        <div className="task-filter-chips">
+          <SelectChip label="Status" value={query.status} neutralValue="all" onChange={(value) => onQueryChange({ status: parseStatus(value), offset: 0 })}>
+            <option value="all">Any</option>
+            {taskStatusSchema.options.map((status) => <option key={status} value={status}>{status.replaceAll("_", " ")}</option>)}
+          </SelectChip>
+          <SelectChip label="Source" value={query.source} neutralValue="all" onChange={(value) => onQueryChange({ source: parseSource(value), offset: 0 })}>
+            <option value="all">Any</option>
+            {taskSourceSchema.options.map((source) => <option key={source} value={source}>{source === "api" ? "API" : "Manual"}</option>)}
+          </SelectChip>
+          <SelectChip label="Failure Stage" shortLabel="Stage" value={query.failureStage} neutralValue="all" onChange={(value) => onQueryChange({ failureStage: parseFailureStage(value), offset: 0 })}>
+            <option value="all">Any</option>
+            {failureStageSchema.options.map((stage) => <option key={stage} value={stage}>{stage.replaceAll("_", " ")}</option>)}
+          </SelectChip>
+          <TextChip name="workflow" label="Workflow" placeholder="Any" value={query.workflow} onChange={(workflow) => onQueryChange({ workflow, offset: 0 })} />
+          <TextChip name="worker" label="Worker ID" placeholder="Any" value={query.worker} onChange={(worker) => onQueryChange({ worker, offset: 0 })} />
+          <span className="chip-divider" aria-hidden="true" />
+          <SelectChip label="Sort" value={query.sort} neutralValue="priority" onChange={(value) => onQueryChange({ sort: parseSort(value), offset: 0 })}>
+            {taskSorts.map((sort) => <option key={sort} value={sort}>{sort.replaceAll("_", " ")}</option>)}
+          </SelectChip>
+          <SelectChip label="Order" value={query.order} neutralValue="desc" onChange={(value) => onQueryChange({ order: parseOrder(value), offset: 0 })}>
+            {taskOrders.map((order) => <option key={order} value={order}>{order}</option>)}
+          </SelectChip>
+          <SelectChip label="Rows" value={String(query.limit)} neutralValue="50" onChange={(value) => onQueryChange({ limit: parseLimit(value), offset: 0 })}>
+            {taskLimits.map((limit) => <option key={limit} value={limit}>{limit}</option>)}
+          </SelectChip>
         </div>
-      </details>
-    </fieldset>
+      </fieldset>
+    </>
   )
-}
-
-function Filter({ label, children }: { readonly label: string; readonly children: React.ReactNode }) {
-  return <div className="task-filter"><span>{label}</span>{children}</div>
-}
-
-function TextFilter({ name, label, value, onChange }: { readonly name: string; readonly label: string; readonly value: string; readonly onChange: (value: string) => void }) {
-  return <label className="task-filter"><span>{label}</span><input name={name} autoComplete="off" spellCheck={false} value={value} onChange={(event) => onChange(event.currentTarget.value)} /></label>
 }
 
 function parseStatus(value: string): TaskQuery["status"] {

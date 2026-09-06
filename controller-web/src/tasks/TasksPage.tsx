@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useSearchParams } from "react-router"
 
 import type { ApiClient } from "../api/client"
+import { Button } from "../ui/Button"
 import "./task-actions.css"
 import "./task-detail.css"
 import "./tasks.css"
@@ -74,30 +75,34 @@ export function TasksPage({ apiClient }: TasksPageProps) {
 
   return (
     <div className="route-page tasks-page">
-      <header className="tasks-header">
-        <div>
-          <p className="technical-label">DURABLE WORK HISTORY</p>
-          <h1>Tasks</h1>
-          <p>Monitor bounded task history and active processing state from the Controller.</p>
-        </div>
-        <div className="tasks-header-operations">
-          <button ref={addTaskButtonRef} type="button" className="primary-button add-task-button" onClick={() => setAddTaskOpen(true)}>
-            <Plus size={16} aria-hidden="true" />
+      <TaskToolbar
+        query={query}
+        search={search}
+        onQueryChange={updateQuery}
+        onSearchChange={setSearch}
+        heading={<h1>Tasks</h1>}
+        counters={<TaskCounters counts={data.counts} />}
+        actions={
+          <Button ref={addTaskButtonRef} variant="primary" onClick={() => setAddTaskOpen(true)}>
+            <Plus size={13} strokeWidth={2.4} aria-hidden="true" />
             Add Task
-          </button>
-          <TaskCounters counts={data.counts} />
-        </div>
-      </header>
-      <TaskToolbar query={query} search={search} onQueryChange={updateQuery} onSearchChange={setSearch} />
+          </Button>
+        }
+      />
       {data.error === null ? null : (
-        <div className="task-load-error" role="alert">
+        <div className="task-load-error alert alert--danger" role="alert">
           <span>{data.error}</span>
           <button type="button" onClick={data.retry}>
             Retry
           </button>
         </div>
       )}
-      <TaskTable page={data.page} columns={query.columns} loading={data.loading} selectedTaskId={selectedTaskId} onSelectTask={setSelectedTaskId} />
+      <div className="task-workspace">
+        <div className="task-table-region">
+          <TaskTable page={data.page} columns={query.columns} loading={data.loading} selectedTaskId={selectedTaskId} onSelectTask={setSelectedTaskId} />
+        </div>
+        {selectedTaskId === null ? null : <TaskDetailPane apiClient={apiClient} taskId={selectedTaskId} onClose={closeDetail} onChanged={data.retry} />}
+      </div>
       <footer className="task-pagination">
         <span>
           {first.toLocaleString()}-{last.toLocaleString()} of {page?.total.toLocaleString() ?? "--"}
@@ -115,7 +120,6 @@ export function TasksPage({ apiClient }: TasksPageProps) {
           </button>
         </div>
       </footer>
-      {selectedTaskId === null ? null : <TaskDetailPane apiClient={apiClient} taskId={selectedTaskId} onClose={closeDetail} onChanged={data.retry} />}
       <ManualTaskDialog
         apiClient={apiClient}
         open={addTaskOpen}

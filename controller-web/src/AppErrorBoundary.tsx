@@ -1,5 +1,7 @@
 import { Component, createRef, type ReactNode } from "react"
 
+import { Button } from "./ui/Button"
+
 type AppErrorBoundaryProps = {
   readonly children: ReactNode
 }
@@ -31,14 +33,14 @@ export class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorB
           <div className="error-summary" role="alert">
             The interface could not continue. Retry without leaving the Controller.
           </div>
-          <button
-            className="primary-button"
+          <Button
+            variant="primary"
             type="button"
             ref={this.retryRef}
             onClick={() => this.setState({ interrupted: false })}
           >
             Retry application
-          </button>
+          </Button>
         </section>
       </main>
     )

@@ -213,7 +213,7 @@ test("preserves accessible desktop and narrow detail layouts without browser sec
     }
     await fulfillJson(route, offset === 0 ? detailPage(selectedTask, [newest], 2) : detailPage(selectedTask, [older], 2, 1))
   })
-  await page.goto("/tasks")
+  await page.goto("/tasks?columns=input_path,output_path,error,remote_job_id,attempts,duration,failure_stage,failure")
   await resetTask21Screenshots()
   const tableFrame = page.getByRole("region", { name: "Scrollable task results" })
   await tableFrame.scrollIntoViewIfNeeded()

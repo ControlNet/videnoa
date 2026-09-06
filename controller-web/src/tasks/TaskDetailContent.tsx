@@ -1,4 +1,5 @@
 import type { TaskDetail } from "../api/taskSchemas"
+import { Button } from "../ui/Button"
 import { formatBytes, formatDate, formatDuration } from "./format"
 import { Detail, TaskAttempts } from "./TaskAttempts"
 import type { FailureGuidance } from "./taskActionPolicy"
@@ -36,7 +37,7 @@ export function TaskDetailContent({ detail, guidance, loadingMore, onLoadMore }:
       </section>
       <section>
         <h3>Progress</h3>
-        <dl className="detail-grid">
+        <dl className="detail-grid progress-metrics">
           <Detail label="Percent" value={`${detail.task.progress.percent.toLocaleString()}%`} />
           <Detail label="Frames" value={frameProgress(detail.task.progress.processed_frames, detail.task.progress.total_frames)} />
           <Detail label="FPS" value={detail.task.progress.frames_per_second?.toLocaleString() ?? "--"} />
@@ -54,9 +55,9 @@ export function TaskDetailContent({ detail, guidance, loadingMore, onLoadMore }:
             : `Showing ${detail.attempts.length.toLocaleString()} of ${detail.total.toLocaleString()} persisted attempts.`}
         </output>
         {detail.attempts.length < detail.total ? (
-          <button type="button" className="secondary-button" disabled={loadingMore} onClick={onLoadMore}>
+          <Button variant="outline" size="sm" disabled={loadingMore} onClick={onLoadMore}>
             {loadingMore ? "Loading attempts…" : "Load more attempts"}
-          </button>
+          </Button>
         ) : null}
       </section>
       <section>

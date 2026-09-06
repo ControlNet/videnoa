@@ -3,6 +3,7 @@ import { type FormEvent, useLayoutEffect, useRef, useState } from "react"
 
 import { setupRequestSchema } from "../api/schemas"
 import type { SetupResult } from "./useSessionController"
+import { Button } from "../ui/Button"
 import "./auth.css"
 
 type SetupPageProps = {
@@ -119,9 +120,9 @@ export function SetupPage({ setup }: SetupPageProps) {
           </div>
           {error?.field === "confirmation" ? <small id={confirmationErrorId} className="setup-field-error" role="alert">{error.message}</small> : null}
 
-          <button className="primary-button" type="submit" disabled={submitting}>
+          <Button variant="primary" type="submit" disabled={submitting}>
             {submitting ? "Creating access..." : "Create secure access"}
-          </button>
+          </Button>
         </form>
 
         <p className="login-footnote">The password stays in this request and is never written to browser storage.</p>

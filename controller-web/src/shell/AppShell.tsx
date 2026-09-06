@@ -7,7 +7,11 @@ import type { LogoutResult } from "../auth/useSessionController"
 import { type ConnectionState, SessionEvents } from "../events/SessionEvents"
 import { SettingsPage } from "../settings/SettingsPage"
 import { TasksPage } from "../tasks/TasksPage"
+import { Button } from "../ui/Button"
+import { Status, type Tone } from "../ui/Status"
+import { useMediaQuery } from "../ui/useMediaQuery"
 import { WorkersPage } from "../workers/WorkersPage"
+import "./shell.css"
 
 type AppShellProps = {
   readonly apiClient: ApiClient
@@ -27,6 +31,7 @@ export function AppShell({ apiClient, logout }: AppShellProps) {
   const [signingOut, setSigningOut] = useState(false)
   const [logoutError, setLogoutError] = useState<string | null>(null)
   const [connectionState, setConnectionState] = useState<ConnectionState>("connecting")
+  const narrow = useMediaQuery("(max-width: 48rem)")
 
   useLayoutEffect(() => {
     const routeName = navigation.find(({ path }) => path === location.pathname)?.label ?? "Tasks"
@@ -50,7 +55,7 @@ export function AppShell({ apiClient, logout }: AppShellProps) {
     if (logoutError !== null) logoutAlertRef.current?.focus()
   }, [logoutError])
 
-  const connectionLabel = labelForConnection(connectionState)
+  const signOutLabel = signingOut ? "Signing out..." : "Sign out"
 
   return (
     <div className="app-frame">
@@ -59,37 +64,40 @@ export function AppShell({ apiClient, logout }: AppShellProps) {
           <span className="brand-mark" aria-hidden="true">V</span>
           <span>
             <strong>Videnoa</strong>
-            <small>Controller</small>
+            <small>CONTROLLER</small>
           </span>
         </div>
 
-        <nav className="primary-navigation" aria-label="Primary">
-          {navigation.map(({ path, label, icon: Icon }) => (
-            <NavLink key={path} to={path} className={({ isActive }) => isActive ? "nav-item active" : "nav-item"}>
-              <Icon size={17} strokeWidth={1.75} aria-hidden="true" />
-              <span>{label}</span>
-            </NavLink>
-          ))}
-        </nav>
+        {narrow ? null : (
+          <nav className="primary-navigation" aria-label="Primary">
+            {navigation.map(({ path, label, icon: Icon }) => (
+              <NavLink key={path} to={path} className={({ isActive }) => (isActive ? "nav-item active" : "nav-item")}>
+                <Icon size={15} strokeWidth={1.8} aria-hidden="true" />
+                <span>{label}</span>
+              </NavLink>
+            ))}
+          </nav>
+        )}
 
-        <footer className="shell-footer">
+        <div className="shell-footer">
           <output className="connection-status" aria-live="polite">
-            <span className={`status-indicator ${connectionState}`} aria-hidden="true" />
-            <span>{connectionLabel}</span>
+            <Status tone={connectionTone(connectionState)} label={connectionLabel(connectionState)} live={connectionState === "connected"} />
             <code>/api/events</code>
           </output>
-          <button
-            aria-label={signingOut ? "Signing out..." : "Sign out"}
-            className="signout-button"
-            type="button"
-            onClick={() => void handleLogout()}
-            disabled={signingOut}
-          >
-            <LogOut size={16} strokeWidth={1.75} aria-hidden="true" />
-            <span>{signingOut ? "Signing out..." : "Sign out"}</span>
-          </button>
-        </footer>
+          {narrow ? null : (
+            <Button aria-label={signOutLabel} onClick={() => void handleLogout()} disabled={signingOut}>
+              <LogOut size={14} strokeWidth={1.8} aria-hidden="true" />
+              <span>{signOutLabel}</span>
+            </Button>
+          )}
+        </div>
       </aside>
+
+      {logoutError === null ? null : (
+        <div className="shell-alert alert alert--danger" role="alert" tabIndex={-1} ref={logoutAlertRef}>
+          {logoutError}
+        </div>
+      )}
 
       <main className="shell-main" tabIndex={-1} ref={mainRef}>
         <Routes>
@@ -100,17 +108,28 @@ export function AppShell({ apiClient, logout }: AppShellProps) {
           <Route path="*" element={<Navigate to="/tasks" replace />} />
         </Routes>
       </main>
-      {logoutError === null ? null : (
-        <div className="shell-alert error-summary" role="alert" tabIndex={-1} ref={logoutAlertRef}>
-          {logoutError}
-        </div>
+
+      {!narrow ? null : (
+        <nav className="shell-tabs" aria-label="Primary">
+          {navigation.map(({ path, label, icon: Icon }) => (
+            <NavLink key={path} to={path} className={({ isActive }) => (isActive ? "active" : undefined)}>
+              <Icon size={18} strokeWidth={1.8} aria-hidden="true" />
+              <span>{label}</span>
+            </NavLink>
+          ))}
+          <button type="button" aria-label={signOutLabel} disabled={signingOut} onClick={() => void handleLogout()}>
+            <LogOut size={18} strokeWidth={1.8} aria-hidden="true" />
+            <span>{signOutLabel}</span>
+          </button>
+        </nav>
       )}
+
       <SessionEvents onConnectionStateChange={setConnectionState} />
     </div>
   )
 }
 
-function labelForConnection(state: ConnectionState): string {
+function connectionLabel(state: ConnectionState): string {
   switch (state) {
     case "connecting":
       return "Controller connecting"
@@ -120,5 +139,18 @@ function labelForConnection(state: ConnectionState): string {
       return "Controller reconnecting"
     case "unavailable":
       return "Controller unavailable"
+  }
+}
+
+function connectionTone(state: ConnectionState): Tone {
+  switch (state) {
+    case "connecting":
+      return "quiet"
+    case "connected":
+      return "positive"
+    case "reconnecting":
+      return "active"
+    case "unavailable":
+      return "negative"
   }
 }

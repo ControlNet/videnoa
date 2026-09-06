@@ -1,10 +1,12 @@
-import { CirclePause, CirclePlay } from "lucide-react"
+import { CirclePause, CirclePlay, Save } from "lucide-react"
 import { useState } from "react"
 
 import type { ApiClient, ApiClientError } from "../api/client"
 import type { Readiness, ServerSettings, SettingsResponse, SettingsUpdateRequest } from "../api/settingsSchemas"
+import { Button } from "../ui/Button"
+import { Status } from "../ui/Status"
 import "../operations.css"
-import { SettingsEditor } from "./SettingsEditor"
+import { SettingsEditor, settingsFormId } from "./SettingsEditor"
 import { useSettingsData } from "./useSettingsData"
 
 type SettingsPageProps = { readonly apiClient: ApiClient }
@@ -54,14 +56,46 @@ export function SettingsPage({ apiClient }: SettingsPageProps) {
 
   return (
     <div className="route-page operation-page settings-page">
-      <header className="operation-header"><div><p className="technical-label">CONTROLLER POLICY</p><h1>Settings</h1><p>Adjust server, session, scheduler, timeout, and retry policy through one durable configuration boundary.</p></div>{settings === null ? null : <button type="button" className={settings.scheduler.paused ? "primary-button compact-action" : "secondary-button compact-action"} aria-label={settings.scheduler.paused ? "Resume scheduler" : "Pause scheduler"} disabled={!actionsEnabled} onClick={() => void data.setPaused(!settings.scheduler.paused)}>{settings.scheduler.paused ? <CirclePlay size={16} aria-hidden="true" /> : <CirclePause size={16} aria-hidden="true" />}{settings.scheduler.paused ? "Resume" : "Pause"}</button>}</header>
-      {data.error === null ? null : <div className="operation-error" role="alert"><span>{data.error}</span><button type="button" onClick={data.retry}>Retry</button></div>}
-      {data.actionError === null ? null : <div className={degradedReconnectHref === null ? "operation-error" : "operation-error settings-degraded-error"} role="alert"><span>{settingsActionErrorMessage(data.actionError, data.loading, data.error)}{degradedReconnectHref === null ? null : " The Controller address changed and this page may disconnect."}</span>{degradedReconnectHref === null ? null : <a href={degradedReconnectHref}>Open Controller at the new address</a>}</div>}
+      <div className="command-row">
+        <h1>Settings</h1>
+        {settings === null ? null : <span className="command-note">v{settings.version} · {settings.paths.config_file}</span>}
+        <span className="spacer" />
+        {settings === null ? null : (
+          <span className={settings.scheduler.paused ? "scheduler-pill scheduler-pill--paused" : "scheduler-pill"}>
+            <Status tone={settings.scheduler.paused ? "quiet" : "positive"} label={settings.scheduler.paused ? "Scheduler paused" : "Scheduler running"} live={!settings.scheduler.paused} />
+            <span className="scheduler-pill-divider" aria-hidden="true" />
+            <Button
+              size="sm"
+              aria-label={settings.scheduler.paused ? "Resume scheduler" : "Pause scheduler"}
+              disabled={!actionsEnabled}
+              onClick={() => void data.setPaused(!settings.scheduler.paused)}
+            >
+              {settings.scheduler.paused ? <CirclePlay size={13} aria-hidden="true" /> : <CirclePause size={13} aria-hidden="true" />}
+              {settings.scheduler.paused ? "Resume" : "Pause"}
+            </Button>
+          </span>
+        )}
+      </div>
+      {data.error === null ? null : <div className="operation-error alert alert--danger" role="alert"><span>{data.error}</span><button type="button" onClick={data.retry}>Retry</button></div>}
+      {data.actionError === null ? null : <div className={degradedReconnectHref === null ? "operation-error alert alert--danger" : "operation-error alert alert--danger settings-degraded-error"} role="alert"><span>{settingsActionErrorMessage(data.actionError, data.loading, data.error)}{degradedReconnectHref === null ? null : " The Controller address changed and this page may disconnect."}</span>{degradedReconnectHref === null ? null : <a href={degradedReconnectHref}>Open Controller at the new address</a>}</div>}
       {saveReceipt === null ? null : <ConfigurationSaveReceipt receipt={saveReceipt} />}
       {settings === null ? <output className="operation-loading">{data.loading ? "Loading runtime settings..." : "Runtime settings are unavailable."}</output> : <>
-        <section className="scheduler-state" aria-label="Scheduler state"><div><span className={`operation-status ${settings.scheduler.paused ? "offline" : "healthy"}`}>{settings.scheduler.paused ? "Paused" : "Running"}</span><strong>{settings.scheduler.paused ? "New starts held" : "New work admitted"}</strong></div><p>Pause blocks new reservations, prefetch, and compute starts. Already-running processing continues; transfer and publication continue where applicable; cleanup continues.</p></section>
-        <SettingsEditor key={settings.version} settings={settings} actionError={data.actionError} actionsEnabled={actionsEnabled} saving={data.mutating} onSave={save} />
+        <section className="scheduler-state" aria-label="Scheduler state">
+          <span className={`operation-status ${settings.scheduler.paused ? "offline" : "healthy"}`}>{settings.scheduler.paused ? "Paused" : "Running"}</span>
+          <strong>{settings.scheduler.paused ? "New starts held" : "New work admitted"}</strong>
+          <p>Pause blocks new reservations, prefetch, and compute starts. Already-running processing continues; transfer and publication continue where applicable; cleanup continues.</p>
+        </section>
+        <SettingsEditor key={settings.version} settings={settings} actionError={data.actionError} onSave={save} />
         <ReadOnlyConfiguration settings={settings} readiness={data.readiness} />
+        {/* Pinned as the route's last child: a long form never hides its own commit. */}
+        <footer className="settings-save-bar">
+          <span className="technical-label">Settings version {settings.version}</span>
+          <span className="spacer" />
+          <Button variant="primary" type="submit" form={settingsFormId} disabled={!actionsEnabled}>
+            <Save size={13} aria-hidden="true" />
+            {data.mutating ? "Saving and applying..." : "Save and apply settings"}
+          </Button>
+        </footer>
       </>}
     </div>
   )

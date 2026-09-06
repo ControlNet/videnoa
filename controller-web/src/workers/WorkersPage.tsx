@@ -2,7 +2,8 @@ import { Plus } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 
 import type { ApiClient } from "../api/client"
-import type { Worker } from "../api/workerSchemas"
+import type { Worker, WorkerList } from "../api/workerSchemas"
+import { Button } from "../ui/Button"
 import "../operations.css"
 import { useWorkersData } from "./useWorkersData"
 import { WorkerDeleteDialog } from "./WorkerDeleteDialog"
@@ -70,13 +71,30 @@ export function WorkersPage({ apiClient }: WorkersPageProps) {
 
   return (
     <div className="route-page operation-page">
-      <header className="operation-header"><div><p className="technical-label">DISTRIBUTED CAPACITY</p><h1>Workers</h1><p>Manage scheduling policy and inspect durable processing capacity across Videnoa nodes.</p></div><button ref={addButtonRef} type="button" className="primary-button compact-action" onClick={(event) => openForm(null, event.currentTarget)}><Plus size={16} aria-hidden="true" />Add Worker</button></header>
-      {data.error === null ? null : <div className="operation-error" role="alert"><span>{data.error}</span><button type="button" onClick={data.retry}>Retry</button></div>}
-      {!formOpen && data.actionError !== null ? <div className="operation-error" role="alert">{workerActionMessage(data.actionError)}</div> : null}
-      <WorkerTable workers={data.workers} loading={data.loading} disabled={data.mutating} onEdit={openForm} onEnabledChange={(worker, enabled) => void data.setEnabled(worker, enabled)} onDelete={openDelete} />
-      <footer className="operation-footnote"><span>{data.workers?.total.toLocaleString() ?? "--"} registered</span><span>Online health and enabled scheduling policy are independent states.</span></footer>
+      <div className="command-row">
+        <h1>Workers</h1>
+        <span className="command-note">{workerSummary(data.workers)}</span>
+        <span className="spacer" />
+        <Button ref={addButtonRef} variant="primary" onClick={(event) => openForm(null, event.currentTarget)}>
+          <Plus size={13} strokeWidth={2.4} aria-hidden="true" />
+          Add Worker
+        </Button>
+      </div>
+      {data.error === null ? null : <div className="operation-error alert alert--danger" role="alert"><span>{data.error}</span><button type="button" onClick={data.retry}>Retry</button></div>}
+      {!formOpen && data.actionError !== null ? <div className="operation-error alert alert--danger" role="alert">{workerActionMessage(data.actionError)}</div> : null}
+      <div className="route-body">
+        <WorkerTable workers={data.workers} loading={data.loading} disabled={data.mutating} onEdit={openForm} onEnabledChange={(worker, enabled) => void data.setEnabled(worker, enabled)} onDelete={openDelete} />
+        <footer className="operation-footnote"><span>{data.workers?.total.toLocaleString() ?? "--"} registered</span><span>Online health and enabled scheduling policy are independent states.</span></footer>
+      </div>
       <WorkerDeleteDialog worker={deletingWorker} deleting={data.mutating} onClose={closeDelete} onConfirm={() => void confirmDelete()} />
       {formOpen ? <WorkerFormDialog worker={currentEditingWorker} open submitting={data.mutating} actionError={data.actionError} onClose={closeForm} onCreate={data.createWorker} onUpdate={data.updateWorker} /> : null}
     </div>
   )
+}
+
+function workerSummary(workers: WorkerList | null): string {
+  if (workers === null) return ""
+  const slots = workers.items.reduce((total, worker) => total + worker.compute_slots, 0)
+  const used = workers.items.reduce((total, worker) => total + worker.capacity.used_slots, 0)
+  return `${workers.total.toLocaleString()} registered · ${used.toLocaleString()} of ${slots.toLocaleString()} slots busy`
 }

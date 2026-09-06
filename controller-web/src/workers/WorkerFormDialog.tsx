@@ -9,6 +9,8 @@ import {
   workerCreateRequestSchema,
   workerUpdateRequestSchema,
 } from "../api/workerSchemas"
+import { Button } from "../ui/Button"
+import { CheckField, Field } from "../ui/Field"
 import { workerActionMessage, workerServerFieldErrors } from "./workerErrors"
 
 type WorkerFormDialogProps = {
@@ -99,18 +101,22 @@ export function WorkerFormDialog(props: WorkerFormDialogProps) {
   }, [props.actionError])
 
   return (
-    <dialog ref={dialogRef} className="operation-dialog" aria-labelledby="worker-form-title" onCancel={(event) => { event.preventDefault(); props.onClose() }}>
+    <dialog ref={dialogRef} className="dialog operation-dialog" aria-labelledby="worker-form-title" onCancel={(event) => { event.preventDefault(); props.onClose() }}>
       <form method="dialog" className="operation-form" noValidate onSubmit={(event) => { event.preventDefault(); void submit() }}>
         <header>
           <div><p className="technical-label">CAPACITY REGISTRY</p><h2 id="worker-form-title">{props.worker === null ? "Add Worker" : "Edit Worker"}</h2></div>
-          <button type="button" className="icon-button" aria-label="Close worker form" onClick={props.onClose}><X size={16} aria-hidden="true" /></button>
+          <Button variant="outline" size="sm" icon aria-label="Close worker form" onClick={props.onClose}><X size={14} aria-hidden="true" /></Button>
         </header>
-        {props.actionError === null ? null : <div className="operation-error" role="alert">{workerActionMessage(props.actionError)}</div>}
-        <label className="operation-field" htmlFor="worker-name"><span>Worker name</span><input ref={firstInputRef} id="worker-name" name="name" autoComplete="off" spellCheck={false} value={fields.name} aria-invalid={nameError === undefined ? undefined : true} aria-describedby={nameError === undefined ? undefined : "worker-name-error"} onChange={(event) => setFields({ ...fields, name: event.currentTarget.value })} />{nameError === undefined ? null : <small id="worker-name-error" role="alert">{nameError}</small>}</label>
-        <label className="operation-field" htmlFor="worker-api-url"><span>Worker API URL</span><input ref={apiUrlRef} id="worker-api-url" name="api_url" type="url" autoComplete="off" spellCheck={false} value={fields.apiUrl} aria-invalid={urlError === undefined ? undefined : true} aria-describedby={urlError === undefined ? undefined : "worker-api-url-error"} onChange={(event) => setFields({ ...fields, apiUrl: event.currentTarget.value })} />{urlError === undefined ? null : <small id="worker-api-url-error" role="alert">{urlError}</small>}</label>
-        <label className="operation-field" htmlFor="worker-slots"><span>Compute slots</span><input ref={computeSlotsRef} id="worker-slots" name="compute_slots" type="number" inputMode="numeric" min="1" max="65535" value={fields.computeSlots} aria-invalid={slotsError === undefined ? undefined : true} aria-describedby={slotsError === undefined ? undefined : "worker-slots-error"} onChange={(event) => setFields({ ...fields, computeSlots: event.currentTarget.value })} />{slotsError === undefined ? null : <small id="worker-slots-error" role="alert">{slotsError}</small>}</label>
-        <label className="operation-check"><input type="checkbox" checked={fields.enabled} onChange={(event) => setFields({ ...fields, enabled: event.currentTarget.checked })} /><span>Enabled for scheduling</span></label>
-        <footer><button type="button" className="secondary-button" onClick={props.onClose}>Dismiss</button><button type="submit" className="primary-button" disabled={props.submitting}>{props.submitting ? "Saving..." : "Save Worker"}</button></footer>
+        {props.actionError === null ? null : <div className="operation-error alert alert--danger" role="alert">{workerActionMessage(props.actionError)}</div>}
+        <Field ref={firstInputRef} id="worker-name" label="Worker name" name="name" autoComplete="off" spellCheck={false} value={fields.name} error={nameError} onChange={(event) => setFields({ ...fields, name: event.currentTarget.value })} />
+        <Field ref={apiUrlRef} id="worker-api-url" label="Worker API URL" name="api_url" type="url" autoComplete="off" spellCheck={false} value={fields.apiUrl} error={urlError} onChange={(event) => setFields({ ...fields, apiUrl: event.currentTarget.value })} />
+        <Field ref={computeSlotsRef} id="worker-slots" label="Compute slots" name="compute_slots" type="number" inputMode="numeric" min={1} max={65535} value={fields.computeSlots} error={slotsError} onChange={(event) => setFields({ ...fields, computeSlots: event.currentTarget.value })} />
+        <CheckField id="worker-enabled" name="enabled" label="Enabled for scheduling" checked={fields.enabled} onChange={(enabled) => setFields({ ...fields, enabled })} />
+        <footer>
+          <span className="spacer" />
+          <Button variant="outline" onClick={props.onClose}>Dismiss</Button>
+          <Button variant="primary" type="submit" disabled={props.submitting}>{props.submitting ? "Saving..." : "Save Worker"}</Button>
+        </footer>
       </form>
     </dialog>
   )

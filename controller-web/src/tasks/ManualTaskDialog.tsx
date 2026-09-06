@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react"
 
 import { type ApiClient, ApiClientError } from "../api/client"
 import { type Task, type TaskCreateRequest, taskCreateResponseSchema } from "../api/taskSchemas"
+import { Button } from "../ui/Button"
 import { ManualTaskField } from "./ManualTaskField"
 import { type ManualTaskFields, manualTaskErrorMessage, manualTaskFieldErrors } from "./manualTaskForm"
 import { beginSubmission, markSubmissionAmbiguous, type SubmissionIntent } from "./submissionIntent"
@@ -122,7 +123,7 @@ export function ManualTaskDialog({ apiClient, open, onClose, onCreated }: Manual
   return (
     <dialog
       ref={dialogRef}
-      className="task-dialog"
+      className="dialog task-dialog"
       aria-labelledby="add-task-title"
       onCancel={(event) => {
         event.preventDefault()
@@ -142,13 +143,13 @@ export function ManualTaskDialog({ apiClient, open, onClose, onCreated }: Manual
             <p className="technical-label">MANUAL INTAKE</p>
             <h2 id="add-task-title">Add Task</h2>
           </div>
-          <button type="button" className="icon-button" aria-label="Close Add Task" onClick={close}>
+          <Button variant="outline" size="sm" icon aria-label="Close Add Task" onClick={close}>
             <X size={16} aria-hidden="true" />
-          </button>
+          </Button>
         </header>
         <p>Paths are submitted exactly as entered. Retry never renames output or changes task paths.</p>
         {serverError === null ? null : (
-          <div className="task-action-error" role="alert">
+          <div className="task-action-error alert alert--danger" role="alert">
             {serverError}
           </div>
         )}
@@ -176,7 +177,7 @@ export function ManualTaskDialog({ apiClient, open, onClose, onCreated }: Manual
           inputRef={workflowRef}
           onChange={(workflow) => updateFields({ ...fields, workflow })}
         />
-        <label className="task-form-field" htmlFor="task-priority">
+        <label className="field" htmlFor="task-priority">
           <span>Priority</span>
           <input
             ref={priorityRef}
@@ -194,13 +195,14 @@ export function ManualTaskDialog({ apiClient, open, onClose, onCreated }: Manual
           {fieldErrors.priority === undefined ? null : <small id="task-priority-error">{fieldErrors.priority}</small>}
         </label>
         <footer>
-          <button type="button" className="secondary-button" onClick={close}>
+          <span className="spacer" />
+          <Button variant="outline" onClick={close}>
             Dismiss
-          </button>
-          <button type="submit" className="primary-button task-create-submit" disabled={submitting}>
+          </Button>
+          <Button variant="primary" type="submit" disabled={submitting}>
             {intent?.state === "ambiguous" ? <RotateCcw size={16} aria-hidden="true" /> : <Plus size={16} aria-hidden="true" />}
             {submitting ? "Submitting…" : intent?.state === "ambiguous" ? "Retry Same Task" : "Create Task"}
-          </button>
+          </Button>
         </footer>
       </form>
     </dialog>

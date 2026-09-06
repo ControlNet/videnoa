@@ -175,7 +175,7 @@ test("operates workers and runtime settings with safe failures", async ({ page }
   })
   await expect.poll(() => page.locator(".shell-main").evaluate((element) => element.scrollTop)).toBe(0)
   await expect(page.getByRole("heading", { name: "Settings" })).toBeInViewport()
-  await page.locator(".operation-header").screenshot({ path: `${evidenceDir}/settings-desktop.png` })
+  await page.locator(".command-row").screenshot({ path: `${evidenceDir}/settings-desktop.png` })
   await page.locator(".settings-editor").screenshot({ path: `${evidenceDir}/settings-desktop-runtime-section.png` })
   await page.getByRole("heading", { name: "Controller paths" }).evaluate((element) => element.scrollIntoView({ block: "start" }))
   await page.screenshot({ path: `${evidenceDir}/settings-desktop-readonly.png` })

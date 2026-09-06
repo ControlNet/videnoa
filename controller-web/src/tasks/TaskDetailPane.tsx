@@ -2,6 +2,7 @@ import { RotateCcw, X } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 
 import { type ApiClient, ApiClientError } from "../api/client"
+import { Button } from "../ui/Button"
 import { cancelTaskResponseSchema, retryTaskResponseSchema } from "../api/taskSchemas"
 import { formatStatus } from "./format"
 import { TaskDetailContent } from "./TaskDetailContent"
@@ -102,19 +103,19 @@ export function TaskDetailPane({ apiClient, taskId, onClose, onChanged }: TaskDe
         </div>
         <div className="task-detail-actions">
           {task !== undefined && canCancelTask(task) ? (
-            <button ref={cancelTaskRef} type="button" className="danger-button" disabled={action !== null} onClick={() => setConfirmingCancel(true)}>
+            <Button ref={cancelTaskRef} variant="danger" size="sm" disabled={action !== null} onClick={() => setConfirmingCancel(true)}>
               Cancel Task
-            </button>
+            </Button>
           ) : null}
           {task !== undefined && canRetryTask(task) ? (
-            <button type="button" className="primary-button compact-action" disabled={action !== null} onClick={() => void mutate("retry")}>
-              <RotateCcw size={15} aria-hidden="true" />
+            <Button variant="primary" size="sm" disabled={action !== null} onClick={() => void mutate("retry")}>
+              <RotateCcw size={13} aria-hidden="true" />
               Retry Failed Stage
-            </button>
+            </Button>
           ) : null}
-          <button type="button" className="icon-button" aria-label="Close Task Detail" onClick={onClose}>
-            <X size={16} aria-hidden="true" />
-          </button>
+          <Button variant="outline" size="sm" icon aria-label="Close Task Detail" onClick={onClose}>
+            <X size={14} aria-hidden="true" />
+          </Button>
         </div>
       </header>
       {confirmingCancel ? (
@@ -137,20 +138,20 @@ export function TaskDetailPane({ apiClient, taskId, onClose, onChanged }: TaskDe
         >
           <p>Cancel this task at its current stage? Completed work is preserved where the lifecycle permits.</p>
           <div>
-            <button ref={keepTaskRef} type="button" className="secondary-button" onClick={dismissCancellation}>
+            <Button ref={keepTaskRef} variant="outline" size="sm" onClick={dismissCancellation}>
               Keep Task
-            </button>
-            <button
+            </Button>
+            <Button
               ref={confirmCancelRef}
-              type="button"
-              className="danger-button"
+              variant="danger"
+              size="sm"
               onClick={() => {
                 setConfirmingCancel(false)
                 void mutate("cancel")
               }}
             >
               Confirm Cancellation
-            </button>
+            </Button>
           </div>
         </div>
       ) : null}
