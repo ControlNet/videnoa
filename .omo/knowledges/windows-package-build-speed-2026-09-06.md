@@ -27,3 +27,11 @@
 
 - Run 34033132957: Windows package smoke passed in 16m20s, down from 21m57s. The build/assembly step dropped from 19m38s to 13m7s before any compiled cache hit.
 - Both package jobs passed and saved the corrected caches. The overall run failed only on the independently identified three-worker test race; its fix is included in the next verification run.
+
+## Warm hosted result
+
+- Run 34034165451 passed all 14 jobs, including the Controller regression and both complete package smoke jobs.
+- Windows package smoke completed in 13m54s versus the earlier 21m57s (about 37% less elapsed time). The package build/assembly step took 11m5s. These are individual hosted-run measurements, not guaranteed timings.
+- Logs confirm restoration of the 525 MiB dependency cache. Cargo compiled only the three local Worker/core/desktop crates and finished in 7m55s. Local release compilation remains the largest cost; fetching, extracting, and assembling runtime assets takes approximately another three minutes.
+- Linux package smoke completed in 4m14s, with release compilation taking 1m22s versus 3m31s on the corrected cold run.
+- Keep the full release build and archive integrity checks. Workspace crate caching needs separate validation because packaging uses a temporary source copy and Tauri build outputs can retain source paths.
