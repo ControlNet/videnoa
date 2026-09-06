@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
+import type { Task } from "../api/taskSchemas"
 import { parseTaskQuery } from "./query"
 import { TaskCounters } from "./TaskCounters"
 import { TaskTable } from "./TaskTable"
@@ -51,6 +52,33 @@ describe("task surface accessibility", () => {
     expect(counters).toHaveAttribute("aria-atomic", "true")
     expect(empty).toHaveAttribute("aria-live", "polite")
     expect(empty).toHaveTextContent("No tasks match this view.")
+  })
+
+  it("labels the worker column by name and falls back to the identifier", () => {
+    // Given: two rows whose workers are respectively registered and no longer known.
+    vi.stubGlobal("ResizeObserver", class {
+      observe(): void {}
+      disconnect(): void {}
+    })
+    const known = "d2719a65-16d5-4e97-a756-d8f782769144"
+    const forgotten = "550e8400-e29b-41d4-a716-446655440099"
+    render(
+      <TaskTable
+        page={{ items: [taskRow(known), taskRow(forgotten, "00000000-0000-4000-8000-000000000002")], total: 2, limit: 50, offset: 0 }}
+        columns={[]}
+        loading={false}
+        workerNames={new Map([[known, "render-east"]])}
+      />,
+    )
+
+    // When: the worker cells are inspected.
+    const cells = screen.getAllByTitle(new RegExp(`${known}|${forgotten}`))
+
+    // Then: a registered worker reads as its name while an unknown one stays abbreviated.
+    expect(cells[0]).toHaveTextContent("render-east")
+    expect(cells[1]).toHaveTextContent("550e8400")
+    // The exact identifier remains available without widening the column.
+    expect(cells[0]).toHaveAttribute("title", known)
   })
 
   it("exposes measured overflow navigation and updates keyboard boundaries after resize", () => {
@@ -274,4 +302,38 @@ function setScrollGeometry(element: HTMLElement, dimensions: { readonly clientWi
     scrollWidth: { configurable: true, value: dimensions.scrollWidth },
     offsetWidth: { configurable: true, value: dimensions.offsetWidth ?? dimensions.clientWidth },
   })
+}
+
+function taskRow(workerId: string, id = "00000000-0000-4000-8000-000000000001"): Task {
+  return {
+    id,
+    version: 1,
+    status: "processing",
+    input_path: "/media/incoming/episode.mkv",
+    output_path: "/media/library/episode.mp4",
+    input_extension: "mkv",
+    output_extension: "mp4",
+    workflow: "anime-2x",
+    priority: 20_000,
+    source: "manual",
+    source_reference: null,
+    input_size: 4_294_967_296,
+    worker_id: workerId,
+    remote_job_id: null,
+    progress: {
+      percent: 42,
+      processed_frames: 4_200,
+      total_frames: 10_000,
+      frames_per_second: 23.8,
+      eta_seconds: 420,
+      bytes_transferred: null,
+      bytes_total: null,
+    },
+    attempt_count: 1,
+    failure: null,
+    cancel_requested_at: null,
+    created_at: "2030-01-01T00:00:00Z",
+    updated_at: "2030-01-01T00:05:00Z",
+    completed_at: null,
+  }
 }

@@ -13,13 +13,15 @@ type TaskTableProps = {
   readonly page: TaskList | null
   readonly columns: readonly OptionalColumn[]
   readonly loading: boolean
+  /** Worker identifier to registered name; unknown identifiers stay abbreviated. */
+  readonly workerNames?: ReadonlyMap<string, string>
   readonly selectedTaskId?: string | null
   readonly onSelectTask?: (taskId: string) => void
 }
 
 const loadingRowKeys = ["one", "two", "three", "four", "five", "six", "seven", "eight"] as const
 
-export function TaskTable({ page, columns, loading, selectedTaskId = null, onSelectTask }: TaskTableProps) {
+export function TaskTable({ page, columns, loading, workerNames, selectedTaskId = null, onSelectTask }: TaskTableProps) {
   const rendersTable = page === null ? loading : page.items.length > 0
   const { frameRef, tableRef, scrollState, updateScrollState } = useTaskTableScroll(rendersTable)
 
@@ -101,7 +103,7 @@ export function TaskTable({ page, columns, loading, selectedTaskId = null, onSel
                   </td>
                   <td className="mono-cell">{task.workflow}</td>
                   <td className="mono-cell" title={task.worker_id ?? undefined}>
-                    {shortId(task.worker_id)}
+                    {workerLabel(task.worker_id, workerNames)}
                   </td>
                   <td>
                     <span className={`progress status--${taskTone(task.status)}`}>
@@ -168,6 +170,15 @@ function taskDuration(task: Task): number {
 
 function shortId(value: string | null): string {
   return value === null ? "--" : value.slice(0, 8)
+}
+
+/**
+ * An operator recognises a worker by name, not by UUID. A worker that has since
+ * been deleted has no name left to show, so its identifier remains the label.
+ */
+function workerLabel(workerId: string | null, names: ReadonlyMap<string, string> | undefined): string {
+  if (workerId === null) return "--"
+  return names?.get(workerId) ?? shortId(workerId)
 }
 
 function handleScrollKey(event: KeyboardEvent<HTMLElement>, onScroll: ScrollUpdate): void {

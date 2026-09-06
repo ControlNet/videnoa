@@ -4,6 +4,7 @@ import { useSearchParams } from "react-router"
 
 import type { ApiClient } from "../api/client"
 import { Button } from "../ui/Button"
+import { useWorkerNames } from "../workers/useWorkerNames"
 import "./task-actions.css"
 import "./task-detail.css"
 import "./tasks.css"
@@ -27,6 +28,7 @@ export function TasksPage({ apiClient }: TasksPageProps) {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
   const addTaskButtonRef = useRef<HTMLButtonElement>(null)
   const data = useTasksData(apiClient, query)
+  const workerNames = useWorkerNames(apiClient)
 
   useEffect(() => {
     const timer = window.setTimeout(() => setSearch(query.search), 0)
@@ -99,7 +101,7 @@ export function TasksPage({ apiClient }: TasksPageProps) {
       )}
       <div className="task-workspace">
         <div className="task-table-region">
-          <TaskTable page={data.page} columns={query.columns} loading={data.loading} selectedTaskId={selectedTaskId} onSelectTask={setSelectedTaskId} />
+          <TaskTable page={data.page} columns={query.columns} loading={data.loading} workerNames={workerNames} selectedTaskId={selectedTaskId} onSelectTask={setSelectedTaskId} />
         </div>
         {selectedTaskId === null ? null : <TaskDetailPane apiClient={apiClient} taskId={selectedTaskId} onClose={closeDetail} onChanged={data.retry} />}
       </div>
