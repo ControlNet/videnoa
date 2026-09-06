@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react"
 import type { ApiClient } from "../api/client"
 import type { Worker, WorkerList } from "../api/workerSchemas"
 import { Button } from "../ui/Button"
+import { type Counter, Counters } from "../ui/Counters"
 import "../operations.css"
 import { useWorkersData } from "./useWorkersData"
 import { WorkerDeleteDialog } from "./WorkerDeleteDialog"
@@ -73,7 +74,6 @@ export function WorkersPage({ apiClient }: WorkersPageProps) {
     <div className="route-page operation-page">
       <div className="command-row">
         <h1>Workers</h1>
-        <span className="command-note">{workerSummary(data.workers)}</span>
         <span className="spacer" />
         <Button ref={addButtonRef} variant="primary" onClick={(event) => openForm(null, event.currentTarget)}>
           <Plus size={13} strokeWidth={2.4} aria-hidden="true" />
@@ -82,9 +82,11 @@ export function WorkersPage({ apiClient }: WorkersPageProps) {
       </div>
       {data.error === null ? null : <div className="operation-error alert alert--danger" role="alert"><span>{data.error}</span><button type="button" onClick={data.retry}>Retry</button></div>}
       {!formOpen && data.actionError !== null ? <div className="operation-error alert alert--danger" role="alert">{workerActionMessage(data.actionError)}</div> : null}
+      <div className="stats-row">
+        <Counters label="Worker capacity" counters={workerCounters(data.workers)} />
+      </div>
       <div className="route-body">
         <WorkerTable workers={data.workers} loading={data.loading} disabled={data.mutating} onEdit={openForm} onEnabledChange={(worker, enabled) => void data.setEnabled(worker, enabled)} onDelete={openDelete} />
-        <footer className="operation-footnote"><span>{data.workers?.total.toLocaleString() ?? "--"} registered</span><span>Online health and enabled scheduling policy are independent states.</span></footer>
       </div>
       <WorkerDeleteDialog worker={deletingWorker} deleting={data.mutating} onClose={closeDelete} onConfirm={() => void confirmDelete()} />
       {formOpen ? <WorkerFormDialog worker={currentEditingWorker} open submitting={data.mutating} actionError={data.actionError} onClose={closeForm} onCreate={data.createWorker} onUpdate={data.updateWorker} /> : null}
@@ -92,9 +94,25 @@ export function WorkersPage({ apiClient }: WorkersPageProps) {
   )
 }
 
-function workerSummary(workers: WorkerList | null): string {
-  if (workers === null) return ""
+function workerCounters(workers: WorkerList | null): readonly Counter[] {
+  if (workers === null) {
+    return [
+      { label: "All", value: null, tone: "total" },
+      { label: "Online", value: null, tone: "positive" },
+      { label: "Offline", value: null, tone: "negative" },
+      { label: "Enabled", value: null, tone: "quiet" },
+      { label: "Slots", value: null, tone: "active" },
+    ]
+  }
+  const online = workers.items.filter((worker) => worker.online).length
+  const enabled = workers.items.filter((worker) => worker.enabled).length
   const slots = workers.items.reduce((total, worker) => total + worker.compute_slots, 0)
   const used = workers.items.reduce((total, worker) => total + worker.capacity.used_slots, 0)
-  return `${workers.total.toLocaleString()} registered · ${used.toLocaleString()} of ${slots.toLocaleString()} slots busy`
+  return [
+    { label: "All", value: workers.total.toLocaleString(), tone: "total" },
+    { label: "Online", value: online.toLocaleString(), tone: "positive" },
+    { label: "Offline", value: (workers.items.length - online).toLocaleString(), tone: "negative" },
+    { label: "Enabled", value: enabled.toLocaleString(), tone: "quiet" },
+    { label: "Slots", value: `${used.toLocaleString()} / ${slots.toLocaleString()}`, tone: "active" },
+  ]
 }

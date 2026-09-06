@@ -1,36 +1,24 @@
 import type { TaskStatusCounts } from "../api/taskSchemas"
+import { type Counter, Counters } from "../ui/Counters"
 import { counterValues } from "./model"
 
 type TaskCountersProps = {
   readonly counts: TaskStatusCounts | null
 }
 
-/**
- * Status counts as one inline strip.
- *
- * Counts are context for the table beneath them, not a dashboard: the number
- * carries the weight and the label stays quiet, so the whole set costs one row.
- */
 export function TaskCounters({ counts }: TaskCountersProps) {
   const values = counts === null ? null : counterValues(counts)
-  const counters = [
-    ["All", values?.all, "total"],
-    ["Queued", values?.queued, "quiet"],
-    ["Active", values?.active, "active"],
-    ["Processing", values?.processing, "active"],
-    ["Failed", values?.failed, "negative"],
-    ["Finished", values?.finished, "quiet"],
-  ] as const
+  const counters: readonly Counter[] = [
+    { label: "All", value: format(values?.all), tone: "total" },
+    { label: "Queued", value: format(values?.queued), tone: "quiet" },
+    { label: "Active", value: format(values?.active), tone: "active" },
+    { label: "Processing", value: format(values?.processing), tone: "active" },
+    { label: "Failed", value: format(values?.failed), tone: "negative" },
+    { label: "Finished", value: format(values?.finished), tone: "quiet" },
+  ]
+  return <Counters label="Task status counts" counters={counters} />
+}
 
-  return (
-    <dl className="task-counters" aria-label="Task status counts" aria-live="polite" aria-atomic="true">
-      {counters.map(([label, value, tone]) => (
-        <div key={label} className={`counter counter--${tone}`}>
-          {/* Source order stays label-then-value for announcement; CSS shows the value first. */}
-          <dt>{label}</dt>
-          <dd>{value?.toLocaleString() ?? "--"}</dd>
-        </div>
-      ))}
-    </dl>
-  )
+function format(value: number | undefined): string | null {
+  return value === undefined ? null : value.toLocaleString()
 }

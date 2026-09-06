@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { describe, expect, it } from "vitest"
 
 import { createApiClient } from "../api/client"
@@ -37,9 +37,10 @@ describe("Workers page", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add Worker" }))
 
     // Then: health, policy, capacity, transfer state, and labelled inputs are exposed.
-    expect(screen.getByText("Offline")).toBeInTheDocument()
-    expect(screen.getByText("Enabled")).toBeInTheDocument()
-    expect(screen.getByText("2 / 4")).toBeInTheDocument()
+    const workerTable = screen.getByRole("table")
+    expect(within(workerTable).getByText("Offline")).toBeInTheDocument()
+    expect(within(workerTable).getByText("Enabled")).toBeInTheDocument()
+    expect(within(workerTable).getByText("2 / 4")).toBeInTheDocument()
     expect(screen.getByText("health check failed")).toBeInTheDocument()
     expect(screen.getAllByRole("columnheader")).toHaveLength(9)
     for (const header of screen.getAllByRole("columnheader")) expect(header).toHaveAttribute("scope", "col")

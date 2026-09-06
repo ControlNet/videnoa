@@ -304,6 +304,69 @@
   box-shadow: 0 0 0 3px color-mix(in oklch, currentColor 16%, transparent);
 }
 
+/* ---------------------------------------------------------------- counters */
+
+.counters {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/*
+ * The value and its label share a baseline, but that baseline group must still
+ * sit centred in the pill: `align-items: baseline` alone parks the line at the
+ * cross start, leaving every pixel of a fixed block-size below the text.
+ */
+.counter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  align-content: center;
+  gap: var(--space-2);
+  block-size: var(--control-sm);
+  padding-inline: var(--space-2);
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+}
+
+.counter dt {
+  order: 2;
+  color: var(--color-text-quiet);
+  font-size: var(--type-chip);
+  font-weight: 500;
+}
+
+.counter dd {
+  order: 1;
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: var(--type-ui);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.counter--total {
+  background: var(--color-accent-wash);
+}
+
+.counter--total dt,
+.counter--total dd {
+  color: var(--color-accent);
+  font-weight: 600;
+}
+
+.counter--positive dd {
+  color: var(--color-healthy);
+}
+
+.counter--active dd {
+  color: var(--color-accent);
+}
+
+.counter--negative dd {
+  color: var(--color-danger);
+}
+
 /* ---------------------------------------------------------------- progress */
 
 .progress {
