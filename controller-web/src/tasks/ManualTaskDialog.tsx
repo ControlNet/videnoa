@@ -154,6 +154,8 @@ export function ManualTaskDialog({ apiClient, open, onClose, onCreated }: Manual
           </div>
         )}
         <ManualTaskField
+          apiClient={apiClient}
+          enabled={open && !submitting}
           label="Input Path"
           name="input_path"
           value={fields.inputPath}
@@ -162,6 +164,8 @@ export function ManualTaskDialog({ apiClient, open, onClose, onCreated }: Manual
           onChange={(inputPath) => updateFields({ ...fields, inputPath })}
         />
         <ManualTaskField
+          apiClient={apiClient}
+          enabled={open && !submitting}
           label="Output Path"
           name="output_path"
           value={fields.outputPath}
@@ -170,6 +174,8 @@ export function ManualTaskDialog({ apiClient, open, onClose, onCreated }: Manual
           onChange={(outputPath) => updateFields({ ...fields, outputPath })}
         />
         <ManualTaskField
+          apiClient={apiClient}
+          enabled={open && !submitting}
           label="Workflow"
           name="workflow"
           value={fields.workflow}

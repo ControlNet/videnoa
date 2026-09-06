@@ -28,6 +28,7 @@ struct TaskRouteState {
 pub(crate) fn router(auth: AuthService, tasks: TaskService) -> Router {
     let state = TaskRouteState { auth, tasks };
     let reads = Router::new()
+        .route("/api/task-path-suggestions", get(path_suggestions))
         .route("/api/tasks", get(list_tasks))
         .route("/api/tasks/{id}", get(task_detail))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
@@ -45,9 +46,14 @@ async fn require_auth(
     request: Request,
     next: Next,
 ) -> Result<Response, TaskApiError> {
-    authenticate(&state.auth, peer_ip(&request)?, request.headers(), Utc::now())
-        .await
-        .map_err(|error| TaskApiError::from_auth(&error))?;
+    authenticate(
+        &state.auth,
+        peer_ip(&request)?,
+        request.headers(),
+        Utc::now(),
+    )
+    .await
+    .map_err(|error| TaskApiError::from_auth(&error))?;
     Ok(next.run(request).await)
 }
 
@@ -56,9 +62,14 @@ async fn require_mutation(
     request: Request,
     next: Next,
 ) -> Result<Response, TaskApiError> {
-    authorize_mutation(&state.auth, peer_ip(&request)?, request.headers(), Utc::now())
-        .await
-        .map_err(|error| TaskApiError::from_auth(&error))?;
+    authorize_mutation(
+        &state.auth,
+        peer_ip(&request)?,
+        request.headers(),
+        Utc::now(),
+    )
+    .await
+    .map_err(|error| TaskApiError::from_auth(&error))?;
     Ok(next.run(request).await)
 }
 
@@ -73,6 +84,41 @@ async fn create_task(
         IntakeOutcome::Created(task) => Ok((StatusCode::CREATED, Json(task))),
         IntakeOutcome::Replayed(task) => Ok((StatusCode::OK, Json(task))),
     }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PathSuggestionQuery {
+    #[serde(default)]
+    prefix: String,
+    kind: PathSuggestionKind,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum PathSuggestionKind {
+    Input,
+    Output,
+}
+
+async fn path_suggestions(
+    State(state): State<TaskRouteState>,
+    query: Result<Query<PathSuggestionQuery>, QueryRejection>,
+) -> Result<(HeaderMap, Json<crate::paths::PathSuggestions>), TaskApiError> {
+    let Query(query) = query.map_err(|_| TaskApiError::InvalidRequest)?;
+    let suggestions = state
+        .tasks
+        .suggest_paths(
+            query.prefix,
+            matches!(query.kind, PathSuggestionKind::Output),
+        )
+        .await?;
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        axum::http::header::CACHE_CONTROL,
+        "no-store".parse().map_err(|_| TaskApiError::Internal)?,
+    );
+    Ok((headers, Json(suggestions)))
 }
 
 async fn list_tasks(

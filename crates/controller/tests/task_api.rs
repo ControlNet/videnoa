@@ -7,3 +7,5 @@ mod support;
 mod authentication;
 #[path = "task_api/intake_contract.rs"]
 mod intake_contract;
+#[path = "task_api/path_suggestions.rs"]
+mod path_suggestions;

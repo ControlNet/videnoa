@@ -6,6 +6,8 @@ use std::time::SystemTime;
 use crate::config::PathConfig;
 
 mod boundary;
+mod completion;
+pub(crate) use completion::PathSuggestions;
 mod input;
 mod input_identity;
 mod output;

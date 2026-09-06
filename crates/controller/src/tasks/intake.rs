@@ -59,6 +59,18 @@ impl TaskService {
         &self.store
     }
 
+    pub(crate) async fn suggest_paths(
+        &self,
+        prefix: String,
+        directories_only: bool,
+    ) -> Result<crate::paths::PathSuggestions, TaskApiError> {
+        let paths = self.paths.clone();
+        tokio::task::spawn_blocking(move || paths.suggest_paths(&prefix, directories_only))
+            .await
+            .map_err(|_| TaskApiError::Internal)?
+            .map_err(|error| path_error("prefix", &error))
+    }
+
     pub(crate) async fn create(
         &self,
         key: IdempotencyKey,

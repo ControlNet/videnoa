@@ -288,6 +288,29 @@ counts, SSE, and logout require session or Bearer authentication after setup.
 
 ### Create and Read Tasks
 
+The Add Task form provides editable dropdown completion for Input Path, Output
+Path, and Workflow. Path completion follows the Videnoa path picker interaction:
+case-insensitive filename prefix matching, directories first, and selecting a
+directory continues browsing. Input lists regular files and directories; Output
+lists directories so the final filename remains a new, operator-chosen value.
+Workflow suggestions merge and deduplicate the compatible workflow/preset names
+reported by enabled workers, including cached capabilities from offline workers.
+Suggestions are optional; unavailable or empty results do not prevent manual input.
+Arrow keys select an option, Enter accepts it, and Escape first closes the dropdown.
+All completion works on trusted-LAN HTTP with the existing session.
+
+`GET /api/task-path-suggestions?kind=input&prefix=media/` requires authentication.
+Use `kind=output` for directories only. The response is `{items:[{value,kind}],
+truncated:bool}`; values are absolute Controller-visible paths and kinds are
+`directory` or `file`. Directory values end in the platform path separator. Empty
+prefix lists the workspace; relative prefixes resolve there, while absolute
+prefixes browse the process filesystem namespace. Private data/temp subtrees,
+symlinks, traversal, and non-regular files are excluded. Browsing creates no files
+and never reads file contents. Each request examines at most 4096 directory entries
+and returns at most 100 matches with `Cache-Control: no-store`. Large directories
+can produce truncated results; a missing suggestion never invalidates a manually
+entered path. Task intake still performs its full independent safety validation.
+
 `POST /api/tasks` requires one `Idempotency-Key` header containing 1 to 255
 visible ASCII bytes. Request fields are:
 
