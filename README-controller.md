@@ -160,6 +160,10 @@ clients may use the same password as a Bearer credential, but should read it
 through protected interactive input rather than a command argument or reusable
 script.
 
+Create tasks through `POST /api/tasks`. The `Idempotency-Key` header is optional:
+omit it for a new submission, or supply a stable key to safely retry the same
+request without creating another task. See [task request fields](docs/controller.md#create-and-read-tasks).
+
 ## Data and Backup
 
 SQLite is authoritative for operational state; TOML owns configuration.

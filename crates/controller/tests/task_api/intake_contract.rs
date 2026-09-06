@@ -75,27 +75,69 @@ async fn create_replay_conflict_history_and_detail_are_consistent() -> TestResul
 }
 
 #[tokio::test]
-async fn create_rejects_missing_key_invalid_paths_and_existing_output() -> TestResult {
+async fn create_without_key_creates_independent_tasks() -> TestResult {
     let fixture = fixture().await?;
     let body = task_request(&fixture.input, &fixture.output, 0);
+    let mut ids = Vec::new();
+    for _ in 0..2 {
+        let response = fixture
+            .router
+            .clone()
+            .oneshot(fixture.session.request("POST", "/api/tasks", Some(&body))?)
+            .await?;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let created = json_body(response).await?;
+        ids.push(created["id"].as_str().ok_or("task id missing")?.to_owned());
+    }
+    assert_ne!(ids[0], ids[1]);
     let response = fixture
         .router
         .clone()
-        .oneshot(fixture.session.request("POST", "/api/tasks", Some(&body))?)
+        .oneshot(fixture.session.request("GET", "/api/tasks", None)?)
         .await?;
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(json_body(response).await?["total"], 2);
+    Ok(())
+}
 
+#[tokio::test]
+async fn create_without_key_rejects_existing_output() -> TestResult {
+    let fixture = fixture().await?;
+    let body = task_request(&fixture.input, &fixture.output, 0);
     fs::write(&fixture.output, b"occupied")?;
-    let mut existing = fixture.session.request("POST", "/api/tasks", Some(&body))?;
-    existing
-        .headers_mut()
-        .insert("idempotency-key", "output-exists".parse()?);
+    let existing = fixture.session.request("POST", "/api/tasks", Some(&body))?;
     let response = fixture.router.clone().oneshot(existing).await?;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(
         json_body(response).await?["error"]["field_errors"][0]["field"],
         "output_path"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn create_rejects_invalid_or_repeated_explicit_keys() -> TestResult {
+    let fixture = fixture().await?;
+    let body = task_request(&fixture.input, &fixture.output, 0);
+    for keys in [
+        vec![String::new()],
+        vec!["contains space".to_owned()],
+        vec!["k".repeat(256)],
+        vec!["first".to_owned(), "second".to_owned()],
+    ] {
+        let mut request = fixture.session.request("POST", "/api/tasks", Some(&body))?;
+        for key in keys {
+            request
+                .headers_mut()
+                .append("idempotency-key", key.parse()?);
+        }
+        let response = fixture.router.clone().oneshot(request).await?;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json_body(response).await?["error"]["field_errors"][0]["field"],
+            "idempotency_key"
+        );
+    }
     Ok(())
 }
 

@@ -14,23 +14,17 @@ async fn task_mutations_require_session_csrf_but_bearer_is_exempt() -> TestResul
     for invalid_header in [videnoa_controller::auth::CSRF_HEADER, "origin"] {
         let mut request = fixture.session.request("POST", "/api/tasks", Some(&body))?;
         assert!(!request.headers().contains_key(header::AUTHORIZATION));
-        request
-            .headers_mut()
-            .insert("idempotency-key", "auth-boundary".parse()?);
         request.headers_mut().remove(invalid_header);
         let response = fixture.router.clone().oneshot(request).await?;
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     // A valid Bearer password still authorizes mutations without cookies or CSRF.
-    let mut request = bearer_request("POST", "/api/tasks", Some(&body))?;
+    let request = bearer_request("POST", "/api/tasks", Some(&body))?;
     assert!(!request.headers().contains_key(header::COOKIE));
     assert!(!request
         .headers()
         .contains_key(videnoa_controller::auth::CSRF_HEADER));
-    request
-        .headers_mut()
-        .insert("idempotency-key", "auth-boundary".parse()?);
     assert_eq!(
         fixture.router.oneshot(request).await?.status(),
         StatusCode::CREATED

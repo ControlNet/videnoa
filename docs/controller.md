@@ -358,8 +358,11 @@ removal/restoration are disabled once submission starts to preserve the exact ta
 discards that browser state. A batch is not a single database transaction: tasks
 already created remain queued even if another row fails.
 
-`POST /api/tasks` requires one `Idempotency-Key` header containing 1 to 255
-visible ASCII bytes. Request fields are:
+`POST /api/tasks` accepts requests without an `Idempotency-Key` header. Each
+request without a key is a new submission and does not deduplicate retries.
+Clients that need safe retries can supply one `Idempotency-Key` header containing
+1 to 255 visible ASCII bytes. Empty, invalid, or repeated headers are rejected.
+Request fields are:
 
 | Field | Rule |
 |---|---|
@@ -370,8 +373,10 @@ visible ASCII bytes. Request fields are:
 | `source` | `manual` or `api` |
 | `source_reference` | String up to 512 bytes or `null` |
 
-First creation returns 201. Replaying the same key and canonical body returns the
-original task with 200. The same key with a different body returns 409.
+Successful creation returns 201. When a key is supplied, replaying the same key
+and canonical body returns the original task with 200. The same key with a
+different body returns 409. Without a key, repeating a request can create another
+task; all normal path and request validation still applies.
 
 `GET /api/tasks` supports `limit`, `offset`, `status`, `worker_id`, `workflow`,
 `source`, `failure_stage`, `search`, `sort`, and `direction`. `GET

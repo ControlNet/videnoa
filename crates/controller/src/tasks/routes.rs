@@ -178,18 +178,15 @@ async fn task_detail(
 
 fn idempotency_key(headers: &HeaderMap) -> Result<IdempotencyKey, TaskApiError> {
     let mut values = headers.get_all(IDEMPOTENCY_HEADER).iter();
-    let value = values.next().ok_or_else(|| {
-        TaskApiError::invalid(
-            "idempotency_key",
-            FieldErrorCode::Required,
-            "exactly one Idempotency-Key header is required",
-        )
-    })?;
+    let Some(value) = values.next() else {
+        // Unkeyed requests are independent submissions, never client retries.
+        return Ok(IdempotencyKey::new(uuid::Uuid::new_v4().to_string()));
+    };
     if values.next().is_some() {
         return Err(TaskApiError::invalid(
             "idempotency_key",
             FieldErrorCode::InvalidValue,
-            "exactly one Idempotency-Key header is required",
+            "at most one Idempotency-Key header is allowed",
         ));
     }
     let value = value.to_str().map_err(|_| {
