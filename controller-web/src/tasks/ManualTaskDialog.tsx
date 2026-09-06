@@ -202,9 +202,6 @@ export function ManualTaskDialog({ apiClient, open, onClose, onCreated }: Manual
         </label>
         <footer>
           <span className="spacer" />
-          <Button variant="outline" onClick={close}>
-            Dismiss
-          </Button>
           <Button variant="primary" type="submit" disabled={submitting}>
             {intent?.state === "ambiguous" ? <RotateCcw size={16} aria-hidden="true" /> : <Plus size={16} aria-hidden="true" />}
             {submitting ? "Submitting…" : intent?.state === "ambiguous" ? "Retry Same Task" : "Create Task"}
