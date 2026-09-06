@@ -1,4 +1,4 @@
-import { Plus } from "lucide-react"
+import { Layers, Plus } from "lucide-react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useSearchParams } from "react-router"
 
@@ -8,6 +8,7 @@ import { useWorkerNames } from "../workers/useWorkerNames"
 import "./task-actions.css"
 import "./task-detail.css"
 import "./tasks.css"
+import { BatchTaskDialog } from "./BatchTaskDialog"
 import { ManualTaskDialog } from "./ManualTaskDialog"
 import { canonicalLastOffset, parseTaskQuery, serializeTaskQuery, type TaskQuery } from "./query"
 import { TaskCounters } from "./TaskCounters"
@@ -25,6 +26,8 @@ export function TasksPage({ apiClient }: TasksPageProps) {
   const query = useMemo(() => parseTaskQuery(parameters), [parameters])
   const [search, setSearch] = useState(query.search)
   const [addTaskOpen, setAddTaskOpen] = useState(false)
+  const [batchOpen, setBatchOpen] = useState(false)
+  const batchButtonRef = useRef<HTMLButtonElement>(null)
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
   const addTaskButtonRef = useRef<HTMLButtonElement>(null)
   const data = useTasksData(apiClient, query)
@@ -84,12 +87,15 @@ export function TasksPage({ apiClient }: TasksPageProps) {
         onSearchChange={setSearch}
         heading={<h1>Tasks</h1>}
         counters={<TaskCounters counts={data.counts} />}
-        actions={
+        actions={<>
+          <Button ref={batchButtonRef} variant="outline" onClick={() => setBatchOpen(true)}>
+            <Layers size={13} strokeWidth={2.4} aria-hidden="true" />Add Batch
+          </Button>
           <Button ref={addTaskButtonRef} variant="primary" onClick={() => setAddTaskOpen(true)}>
             <Plus size={13} strokeWidth={2.4} aria-hidden="true" />
             Add Task
           </Button>
-        }
+        </>}
       />
       {data.error === null ? null : (
         <div className="task-load-error alert alert--danger" role="alert">
@@ -122,6 +128,10 @@ export function TasksPage({ apiClient }: TasksPageProps) {
           </button>
         </div>
       </footer>
+      {batchOpen ? <BatchTaskDialog apiClient={apiClient} onCreated={data.retry} onClose={() => {
+        setBatchOpen(false)
+        queueMicrotask(() => batchButtonRef.current?.focus())
+      }} /> : null}
       <ManualTaskDialog
         apiClient={apiClient}
         open={addTaskOpen}

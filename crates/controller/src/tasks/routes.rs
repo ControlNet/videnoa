@@ -33,6 +33,7 @@ pub(crate) fn router(auth: AuthService, tasks: TaskService) -> Router {
         .route("/api/tasks/{id}", get(task_detail))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
     let writes = Router::new()
+        .route("/api/tasks/batch-preview", post(batch_preview))
         .route("/api/tasks", post(create_task))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
@@ -84,6 +85,14 @@ async fn create_task(
         IntakeOutcome::Created(task) => Ok((StatusCode::CREATED, Json(task))),
         IntakeOutcome::Replayed(task) => Ok((StatusCode::OK, Json(task))),
     }
+}
+
+async fn batch_preview(
+    State(state): State<TaskRouteState>,
+    payload: Result<Json<super::batch::BatchPreviewRequest>, JsonRejection>,
+) -> Result<Json<super::batch::BatchPreview>, TaskApiError> {
+    let Json(request) = payload.map_err(|_| TaskApiError::InvalidRequest)?;
+    state.tasks.preview_batch(request).await.map(Json)
 }
 
 #[derive(serde::Deserialize)]

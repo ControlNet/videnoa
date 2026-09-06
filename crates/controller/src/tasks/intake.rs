@@ -21,7 +21,7 @@ const SOURCE_REFERENCE_MAX_BYTES: usize = 512;
 #[derive(Clone)]
 pub struct TaskService {
     store: Store,
-    paths: PathCapabilities,
+    pub(super) paths: PathCapabilities,
     events: EventHub,
 }
 
@@ -188,15 +188,19 @@ impl TaskService {
     }
 }
 
-fn validate_request(request: &TaskCreateRequest) -> Result<(), TaskApiError> {
-    if !(PRIORITY_MIN..=PRIORITY_MAX).contains(&request.priority) {
+pub(super) fn validate_workflow_priority(workflow: &str, priority: i32) -> Result<(), TaskApiError> {
+    if !(PRIORITY_MIN..=PRIORITY_MAX).contains(&priority) {
         return Err(TaskApiError::invalid(
             "priority",
             FieldErrorCode::OutOfRange,
             "priority must be between -100 and 100",
         ));
     }
-    bounded_string(request.workflow.as_str(), "workflow", WORKFLOW_MAX_BYTES)?;
+    bounded_string(workflow, "workflow", WORKFLOW_MAX_BYTES)
+}
+
+fn validate_request(request: &TaskCreateRequest) -> Result<(), TaskApiError> {
+    validate_workflow_priority(request.workflow.as_str(), request.priority)?;
     if let Some(reference) = &request.source_reference {
         bounded_string(
             reference.as_str(),

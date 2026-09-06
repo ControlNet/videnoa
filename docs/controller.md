@@ -311,6 +311,39 @@ and returns at most 100 matches with `Cache-Control: no-store`. Large directorie
 can produce truncated results; a missing suggestion never invalidates a manually
 entered path. Task intake still performs its full independent safety validation.
 
+The **Add Batch** button beside Add Task opens a batch intake dialog. Input Pattern
+supports `*`, `?`, character classes such as `[0-9]`, and `**` for recursive
+matching. Patterns resolve in the Controller filesystem namespace just like task
+paths. Choose outputs beside each input or in one Output Directory; both path
+fields and Workflow support the existing dropdown completion. Filenames use
+`<original stem>.<middle extension>.<original extension>` (for example,
+`E01.AI.mkv`). Original filenames are available only with a separate output
+directory. Workflow and priority apply to every task.
+
+Click **Preview** to inspect input/output paths and conflicts in a table before
+**Create Tasks**. Changing a setting invalidates the preview. Existing outputs,
+unsafe paths, and duplicate output destinations block submission. Preview creates
+no tasks, directories, or files, and does not hash video contents. Actual intake
+independently validates each file and captures its full content identity.
+
+`POST /api/tasks/batch-preview` requires authentication and the same session
+Origin/CSRF proof as task creation. Its JSON fields are `input_pattern`,
+`output_mode` (`beside_input` or `directory`), `output_directory` (string or null),
+`naming_mode` (`insert_extension` or `original`), `middle_extension`, `workflow`,
+and integer `priority`. It returns `{items:[{request,error}]}`, where `request`
+is a manual task creation body and `error` is null or a conflict explanation.
+Scanning excludes private storage and symlinks, stops at 20,000 examined entries
+or 64 directory levels, and accepts at most 500 matches. Narrow the pattern if a
+limit is reached; no partial scan is silently accepted.
+
+Batch creation submits the exact previewed rows through `POST /api/tasks`, each
+with a stable independent idempotency key. Creation pauses on the first failure;
+**Retry Remaining** skips successful rows and replays the remaining requests with
+the same keys, including after a lost response on LAN HTTP. The form locks once
+submission starts. Keep the dialog open to retain retry state; closing or reloading
+discards that browser state. A batch is not a single database transaction: tasks
+already created remain queued even if another row fails.
+
 `POST /api/tasks` requires one `Idempotency-Key` header containing 1 to 255
 visible ASCII bytes. Request fields are:
 

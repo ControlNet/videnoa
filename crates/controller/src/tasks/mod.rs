@@ -1,4 +1,5 @@
 mod error;
+mod batch;
 mod fingerprint;
 mod intake;
 pub(crate) mod mapping;

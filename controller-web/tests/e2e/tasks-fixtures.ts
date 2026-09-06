@@ -156,6 +156,9 @@ export async function appendEvidence(message: string): Promise<void> {
 async function installSession(page: Page): Promise<void> {
   await page.addInitScript(() => Object.defineProperty(window, "EventSource", { value: undefined }))
   await installAuthenticatedSession(page)
+  // Synthetic defaults keep task tests isolated from the development API proxy.
+  await page.route("**/api/workers", async (route) => fulfillJson(route, { items: [], total: 0 }))
+  await page.route("**/api/task-path-suggestions?*", async (route) => fulfillJson(route, { items: [], truncated: false }))
 }
 
 function matchingIndices(url: URL, total: number): number[] {

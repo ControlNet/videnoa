@@ -9,11 +9,13 @@ export const taskSuggestionsSchema = z.object({
 }).strict()
 
 export type TaskSuggestion = z.infer<typeof taskSuggestionsSchema>["items"][number]
-export type TaskSuggestionField = "input_path" | "output_path" | "workflow"
+export type TaskSuggestionField = "input_path" | "input_pattern" | "output_path" | "workflow"
 
 export async function loadTaskSuggestions(apiClient: ApiClient, name: TaskSuggestionField, value: string, signal: AbortSignal) {
   if (name !== "workflow") {
-    const query = new URLSearchParams({ prefix: value, kind: name === "input_path" ? "input" : "output" })
+    const wildcard = name === "input_pattern" ? value.search(/[*?[]/) : -1
+    const prefix = wildcard < 0 ? value : value.slice(0, wildcard)
+    const query = new URLSearchParams({ prefix, kind: name === "output_path" ? "output" : "input" })
     return apiClient.request(`api/task-path-suggestions?${query}`, { schema: taskSuggestionsSchema, signal })
   }
   const workers = await apiClient.request("api/workers", { schema: workerListSchema, signal })

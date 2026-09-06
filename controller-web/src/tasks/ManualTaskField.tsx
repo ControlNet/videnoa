@@ -8,6 +8,7 @@ import "./task-suggestions.css"
 type TaskFieldProps = {
   readonly apiClient: ApiClient
   readonly enabled: boolean
+  readonly idPrefix?: string
   readonly label: string
   readonly name: TaskSuggestionField
   readonly value: string
@@ -16,8 +17,8 @@ type TaskFieldProps = {
   readonly onChange: (value: string) => void
 }
 
-export function ManualTaskField({ apiClient, enabled, label, name, value, error, inputRef, onChange }: TaskFieldProps) {
-  const id = `task-${name.replaceAll("_", "-")}`
+export function ManualTaskField({ apiClient, enabled, idPrefix = "task", label, name, value, error, inputRef, onChange }: TaskFieldProps) {
+  const id = `${idPrefix}-${name.replaceAll("_", "-")}`
   const errorId = `${id}-error`
   const listId = `${id}-suggestions`
   const [expanded, setExpanded] = useState(false)

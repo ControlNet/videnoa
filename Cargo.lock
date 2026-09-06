@@ -5875,6 +5875,7 @@ dependencies = [
  "clap",
  "figment",
  "futures-util",
+ "glob",
  "hyper",
  "hyper-util",
  "mime_guess",
