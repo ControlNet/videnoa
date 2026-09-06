@@ -34,6 +34,14 @@ export async function fulfillJson(route: Route, body: unknown, status = 200): Pr
 export async function installAuthenticatedSession(page: Page): Promise<void> {
   await page.route("**/api/auth/setup", async (route) => fulfillJson(route, { initialized: true }))
   await page.route("**/api/auth/session", async (route) => fulfillJson(route, session))
+  /*
+   * The preview server inherits `server.proxy`, so any unrouted `/api/*` call
+   * leaves the test and reaches whatever Controller is listening on the proxy
+   * target. Tasks resolves worker names, so that read needs a default here:
+   * without it a real 401 tears the stubbed session down mid-test. Suites that
+   * need real workers register their own route afterwards, which wins.
+   */
+  await page.route("**/api/workers", async (route) => fulfillJson(route, { items: [], total: 0 }))
 }
 
 export function task(index: number, overrides: Partial<Task> = {}): Task {
