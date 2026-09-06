@@ -128,6 +128,11 @@ impl WorkerHealthService {
         cache: &mut CapabilityCache<SystemClock>,
         now: DateTime<Utc>,
     ) -> Result<(), WorkerHealthError> {
+        let was_online = match &outcome {
+            ProbeOutcome::Healthy { worker, .. } | ProbeOutcome::Failed { worker, .. } => {
+                worker.record.online
+            }
+        };
         let (update, stage, catalog) = match outcome {
             ProbeOutcome::Healthy { worker, catalog } => (
                 WorkerHealthUpdate {
@@ -170,6 +175,11 @@ impl WorkerHealthService {
         let _write = stage.begin_write();
         match self.registry.refresh_health(update).await {
             Ok(record) => {
+                if record.online && !was_online {
+                    tracing::info!(worker_id = %record.id, workflows = record.capabilities.workflows.len(), "Worker online");
+                } else if !record.online {
+                    tracing::warn!(worker_id = %record.id, retry_count = record.health_retry_count, next_check_at = ?record.next_health_check_at, "Worker unavailable; health check will retry");
+                }
                 if let Some(catalog) = catalog {
                     cache.insert(&record.api_url, catalog);
                 }

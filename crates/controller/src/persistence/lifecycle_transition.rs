@@ -41,6 +41,7 @@ impl Store {
             return Ok(CasOutcome::Conflict);
         }
         transaction.commit().await?;
+        tracing::info!(task_id = %write.task_id, attempt_id = %write.attempt.id, from = task_status(write.from), to = task_status(write.to), "Task stage changed");
         Ok(CasOutcome::Applied {
             new_version: write.task_version + 1,
         })
@@ -96,6 +97,7 @@ impl Store {
             }
         }
         transaction.commit().await?;
+        tracing::error!(task_id = %write.task_id, attempt_id = ?write.attempt.map(|a| a.id), stage = failure_stage(write.failure.failure_stage), code = failure_code(write.failure.failure_code), retryable = write.failure.retryable, "Task failed; see task details for failure message");
         Ok(CasOutcome::Applied {
             new_version: write.task_version + 1,
         })
@@ -150,6 +152,7 @@ impl Store {
             }
         }
         transaction.commit().await?;
+        tracing::info!(task_id = %write.task_id, immediate = write.immediate, "Task cancellation requested");
         Ok(CasOutcome::Applied {
             new_version: write.task_version + 1,
         })

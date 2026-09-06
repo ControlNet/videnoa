@@ -88,24 +88,24 @@ impl TransferExecutor {
                 task.id,
                 task.output_extension.as_str()
             ))?;
-            let stat = match client.stat(&remote_path).await {
-                Ok(stat) if stat.is_file && stat.size > 0 => stat,
-                Ok(_) | Err(_) => {
-                    return self.download_retry(&task, &attempt, now, jitter).await;
-                }
+            let Some(stat) = download_stat(&client, &remote_path, task_id).await else {
+                return self.download_retry(&task, &attempt, now, jitter).await;
             };
-            let Ok(artifact) = Box::pin(download_artifact(DownloadArtifact {
+            let artifact = Box::pin(download_artifact(DownloadArtifact {
                 client: &client,
                 remote_path: &remote_path,
                 workspace,
                 extension: task.output_extension.as_str(),
                 expected_size: stat.size,
             }))
-            .await
-            else {
-                return self.download_retry(&task, &attempt, now, jitter).await;
-            };
-            artifact
+            .await;
+            match artifact {
+                Ok(artifact) => artifact,
+                Err(error) => {
+                    log_download_failure(task_id, &error);
+                    return self.download_retry(&task, &attempt, now, jitter).await;
+                }
+            }
         };
         self.checkpoint(TransferCheckpointPoint::DownloadVerified)
             .await;
@@ -187,5 +187,31 @@ impl TransferExecutor {
                 RetryResult::Failed => DownloadOutcome::Failed,
             },
         )
+    }
+}
+
+async fn download_stat(
+    client: &VidenoaClient,
+    path: &FileApiPath,
+    task_id: TaskId,
+) -> Option<crate::remote::FileStat> {
+    match client.stat(path).await {
+        Ok(stat) if stat.is_file && stat.size > 0 => Some(stat),
+        Ok(_) => {
+            tracing::warn!(%task_id, "Remote output is empty or is not a file");
+            None
+        }
+        Err(error) => {
+            tracing::warn!(%task_id, error = %error, "Download metadata request failed");
+            None
+        }
+    }
+}
+
+fn log_download_failure(task_id: TaskId, error: &TransferError) {
+    if let TransferError::Remote(remote) = error {
+        tracing::warn!(%task_id, error = %remote, "Download failed");
+    } else {
+        tracing::warn!(%task_id, error = %error, "Download artifact preparation failed");
     }
 }

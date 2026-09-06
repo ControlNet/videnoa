@@ -59,7 +59,12 @@ fn frontend_assets() -> Result<FrontendAssets, StartupError> {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    Box::pin(run_controller(cli)).await
+    videnoa_controller::logging::init();
+    let result = Box::pin(run_controller(cli)).await;
+    if result.is_err() {
+        tracing::error!("Controller stopped with an error");
+    }
+    result
 }
 
 async fn run_controller(cli: Cli) -> anyhow::Result<()> {
@@ -92,12 +97,7 @@ async fn run_controller(cli: Cli) -> anyhow::Result<()> {
         shutdown.clone(),
         &events,
     );
-    let runtime = async move {
-        let orchestration = async { orchestration.run().await.map_err(RuntimeError::from) };
-        let worker_health = async { worker_health.run().await.map_err(RuntimeError::from) };
-        tokio::try_join!(orchestration, worker_health)?;
-        Ok::<(), RuntimeError>(())
-    };
+    let runtime = run_background_services(orchestration, worker_health);
     let tasks = TaskService::with_events(store.clone(), paths.clone(), events.clone());
     warn_runtime_config(&config);
     let assets = frontend_assets()?;
@@ -118,10 +118,14 @@ async fn run_controller(cli: Cli) -> anyhow::Result<()> {
         auth,
         tasks,
         operations.with_shutdown(http_shutdown.child_token()),
-    );
+    )
+    .layer(axum::middleware::from_fn(
+        videnoa_controller::logging::request,
+    ));
     let prepared = PreparedListener::bind(address)
         .await
         .map_err(|source| StartupError::Bind { address, source })?;
+    tracing::info!(%address, version = env!("CARGO_PKG_VERSION"), paused = config.scheduler.paused, transfer_timeout_seconds = config.timeouts.transfer.as_secs(), "Controller ready");
     let server = async {
         serve_reconfigurable(prepared, router, rebinds, http_shutdown.child_token())
             .await
@@ -134,6 +138,7 @@ async fn run_controller(cli: Cli) -> anyhow::Result<()> {
         result = &mut runtime => RuntimeExit::Runtime(result),
         signal = shutdown_signal() => RuntimeExit::Signal(signal),
     };
+    tracing::info!("Controller shutdown started");
     http_shutdown.cancel();
     let shutdown_result = shutdown
         .shutdown(&scheduler, chrono::Utc::now(), SHUTDOWN_DRAIN_BOUND)
@@ -159,6 +164,7 @@ async fn run_controller(cli: Cli) -> anyhow::Result<()> {
             runtime_result?;
         }
     }
+    tracing::info!("Controller shutdown completed");
     Ok(())
 }
 
@@ -181,11 +187,13 @@ fn load_configuration(
 
 fn warn_runtime_config(config: &ControllerConfig) {
     if !config.auth.secure_cookie {
-        eprintln!("warning: session cookies are running without Secure; use only on trusted HTTP networks");
+        tracing::warn!(
+            "session cookies are running without Secure; use only on trusted HTTP networks"
+        );
     }
     if !config.server.host.is_loopback() {
-        eprintln!(
-            "warning: Controller is exposed beyond localhost; the first administrator setup request claims instance ownership"
+        tracing::warn!(
+            "Controller is exposed beyond localhost; the first administrator setup request claims instance ownership"
         );
     }
 }
@@ -242,4 +250,14 @@ fn recovery_runtime(
         shutdown,
         payload_limits,
     })
+}
+
+async fn run_background_services(
+    orchestration: Orchestrator,
+    worker_health: WorkerHealthService,
+) -> Result<(), RuntimeError> {
+    let orchestration = async { orchestration.run().await.map_err(RuntimeError::from) };
+    let worker_health = async { worker_health.run().await.map_err(RuntimeError::from) };
+    tokio::try_join!(orchestration, worker_health)?;
+    Ok(())
 }

@@ -46,6 +46,7 @@ impl Store {
             return Ok(CasOutcome::Conflict);
         }
         transaction.commit().await?;
+        tracing::warn!(task_id = %write.task_id, attempt_id = %write.attempt.id, stage = task_status(write.attempt.status), retry_count = write.retry.retry_count, next_retry_at = ?write.retry.next_retry_at, "Transfer retry scheduled");
         Ok(CasOutcome::Applied {
             new_version: write.task_version + 1,
         })

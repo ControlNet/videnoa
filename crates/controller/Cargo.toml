@@ -38,6 +38,8 @@ thiserror = "2"
 tokio.workspace = true
 tokio-util = { workspace = true, features = ["io", "rt"] }
 toml.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 url.workspace = true
 uuid.workspace = true
 

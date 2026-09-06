@@ -22,7 +22,9 @@ impl Store {
     /// Returns an error when `SQLite` access or task encoding fails.
     pub async fn insert_task(&self, task: &NewTask) -> Result<(), PersistenceError> {
         let mut connection = self.database.pool().acquire().await?;
-        insert_task_on(&mut connection, task).await
+        insert_task_on(&mut connection, task).await?;
+        crate::logging::task_created(task);
+        Ok(())
     }
 
     /// # Errors

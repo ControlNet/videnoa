@@ -72,6 +72,9 @@ impl TransferExecutor {
             .client
             .upload(context.api_path, context.task.input_size, file)
             .await;
+        if let Err(error) = &uploaded {
+            tracing::warn!(task_id = %context.task.id, attempt_id = %context.attempt.attempt.id, error = %error, "Upload request failed; checking remote file before retry");
+        }
         let stat = context.client.stat(context.api_path).await;
         match stat {
             Ok(stat) if stat.is_file && stat.size == context.task.input_size => {
@@ -87,7 +90,8 @@ impl TransferExecutor {
                 )
                 .await
             }
-            Ok(_) => {
+            Ok(stat) => {
+                tracing::warn!(task_id = %context.task.id, expected_bytes = context.task.input_size, actual_bytes = stat.size, is_file = stat.is_file, "Uploaded file does not match input");
                 self.cleanup_and_retry(
                     context.client,
                     context.api_path,
@@ -98,7 +102,8 @@ impl TransferExecutor {
                 )
                 .await
             }
-            Err(_) => {
+            Err(error) => {
+                tracing::warn!(task_id = %context.task.id, error = %error, "Upload verification request failed");
                 self.upload_retry(context.task, context.attempt, context.now, context.jitter)
                     .await
             }

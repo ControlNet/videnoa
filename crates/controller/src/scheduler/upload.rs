@@ -90,7 +90,10 @@ impl TransferExecutor {
                     })
                     .await
                 }
-                Err(_) => self.upload_retry(&task, &attempt, now, jitter).await,
+                Err(error) => {
+                    tracing::warn!(%task_id, %worker_id, error = %error, "Upload recovery request failed");
+                    self.upload_retry(&task, &attempt, now, jitter).await
+                }
             };
         }
         self.upload_fresh(UploadContext {

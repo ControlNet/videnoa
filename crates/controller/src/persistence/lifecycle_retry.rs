@@ -57,6 +57,7 @@ impl Store {
             return Ok(CasOutcome::Conflict);
         }
         transaction.commit().await?;
+        tracing::info!(task_id = %write.task_id, attempt_id = %write.attempt.id, to = status, "Task retry requested");
         Ok(CasOutcome::Applied {
             new_version: write.task_version + 1,
         })
@@ -142,6 +143,7 @@ impl Store {
             .execute(&mut *transaction)
             .await?;
         transaction.commit().await?;
+        tracing::info!(task_id = %write.task_id, attempt_id = %write.new_attempt_id, worker_id = %write.worker_id, "Processing retry reserved");
         Ok(CasOutcome::Applied {
             new_version: write.task_version + 1,
         })

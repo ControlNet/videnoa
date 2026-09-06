@@ -79,6 +79,7 @@ impl Store {
             .execute(&mut *transaction)
             .await?;
         transaction.commit().await?;
+        tracing::info!(task_id = %reservation.task_id, attempt_id = %reservation.attempt_id, worker_id = %reservation.worker_id, "Task reserved on Worker");
         Ok(ReservationOutcome::Reserved(reservation.attempt_id))
     }
 }

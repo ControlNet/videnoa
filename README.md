@@ -62,6 +62,9 @@ docker run -d --name videnoa-controller \
 Open `http://localhost:3001`, set an administrator password, and add your Videnoa workers.
 State persists in `./controller-data`; use `/media/...` paths for tasks.
 
+View startup, task stages, Worker availability, and retries with `docker logs -f videnoa-controller`.
+Logs default to `INFO`; add `-e RUST_LOG=warn,videnoa_controller=debug` to `docker run` for request and recovery diagnostics.
+
 ## Configuration
 
 Runtime config lives at `data/config.toml` (or `${VIDENOA_DATA_DIR}/config.toml`).

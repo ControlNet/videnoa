@@ -62,7 +62,14 @@ pub(super) async fn probe(
     };
     match client.health().await {
         Ok(health) if health.is_healthy() => {}
-        Ok(_) | Err(_) => {
+        Err(error) => {
+            tracing::warn!(worker_id = %worker.record.id, error = %error, "Worker health request failed");
+            return ProbeOutcome::Failed {
+                worker,
+                failure: ProbeFailure::Health,
+            };
+        }
+        Ok(_) => {
             return ProbeOutcome::Failed {
                 worker,
                 failure: ProbeFailure::Health,
@@ -73,7 +80,8 @@ pub(super) async fn probe(
         Some(catalog) => catalog,
         None => match client.capabilities().await {
             Ok(catalog) => catalog,
-            Err(_) => {
+            Err(error) => {
+                tracing::warn!(worker_id = %worker.record.id, error = %error, "Worker capability request failed");
                 return ProbeOutcome::Failed {
                     worker,
                     failure: ProbeFailure::Capabilities,

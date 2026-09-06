@@ -31,6 +31,7 @@ impl Store {
         .rows_affected();
         if inserted == 1 {
             transaction.commit().await?;
+            crate::logging::task_created(task);
             return Ok(TaskIngressOutcome::Inserted);
         }
         let existing = sqlx::query(

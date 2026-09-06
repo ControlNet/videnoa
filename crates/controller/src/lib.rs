@@ -15,6 +15,7 @@ use axum::Router;
 use percent_encoding::percent_decode_str;
 
 include!("module_topology.rs");
+pub mod logging;
 use asset_path::ExactAssetPath;
 pub use auth::{
     authenticated_app_router, controller_app_router, serve_authenticated, serve_controller,

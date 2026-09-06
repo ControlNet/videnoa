@@ -15,6 +15,7 @@ impl Orchestrator {
     /// # Errors
     /// Returns when durable scheduling cannot be scanned or a stage task panics.
     pub async fn run(mut self) -> Result<(), OrchestrationError> {
+        tracing::info!("Task orchestration started; reconciling persisted tasks");
         let cancellation = self.shutdown.cancellation_token();
         let mut stages = JoinSet::new();
         let mut active = HashSet::new();
@@ -46,7 +47,10 @@ impl Orchestrator {
                     active.remove(&outcome.task_id);
                     let defer = match outcome.result {
                         Ok(defer) => defer,
-                        Err(error) if error.retryable() => true,
+                        Err(error) if error.retryable() => {
+                            tracing::debug!(task_id = %outcome.task_id, error = %error, "Task advance deferred");
+                            true
+                        },
                         Err(StageError::Recovery(error)) => return Err(error.into()),
                         Err(StageError::Transfer(error)) => return Err(error.into()),
                     };
