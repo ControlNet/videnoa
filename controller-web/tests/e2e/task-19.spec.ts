@@ -22,7 +22,7 @@ test("has no serious accessibility violations on login and operational routes", 
   await page.route("**/api/auth/setup", async (route) => fulfillJson(route, { initialized: true }))
   await page.route("**/api/auth/session", async (route) => fulfillJson(route, { error: "unauthorized" }, 401))
   await page.goto("/")
-  await expect(page.getByRole("heading", { name: "Sign in to Controller" })).toBeVisible()
+  await expect(page.getByRole("heading", { name: "Sign in to Videnoa Controller" })).toBeVisible()
   await expectNoSeriousViolations(page)
 
   await page.unrouteAll({ behavior: "wait" })
@@ -70,7 +70,7 @@ test("announces SSE reconnect and unavailable states while refetching bounded da
   await page.goto("/tasks")
   await expect(page.getByRole("table")).toBeVisible()
   await dispatchConnectionEvent(page, "open", 1)
-  await expect(page.getByText("Controller connected", { exact: true })).toBeVisible()
+  await expect(page.getByText(/^Controller (connecting|connected)$/)).toHaveCount(0)
   const readsBeforeReconnect = taskReads.count()
   await dispatchConnectionEvent(page, "error", 0)
   await expect(page.getByText("Controller reconnecting", { exact: true })).toBeVisible()
@@ -111,8 +111,9 @@ test("preserves visible focus and instant feedback in forced colors and reduced 
   expect(Number.parseFloat(styles.animationDuration)).toBeLessThanOrEqual(0.00001)
   expect(Number.parseFloat(styles.transitionDuration)).toBeLessThanOrEqual(0.00001)
   expect(styles.outlineStyle).not.toBe("none")
-  await expect(page.getByText("Offline", { exact: true })).toBeVisible()
-  await expect(page.getByText("Enabled", { exact: true })).toBeVisible()
+  const workerTable = page.getByRole("table")
+  await expect(workerTable.getByText("Offline", { exact: true })).toBeVisible()
+  await expect(workerTable.getByText("Enabled", { exact: true })).toBeVisible()
   await page.screenshot({ path: `${failureEvidenceDir}/forced-colors-reduced-motion.png`, animations: "disabled", fullPage: false, scale: "css" })
 })
 
@@ -146,7 +147,7 @@ test("expires to a clean login surface without browser-stored credentials", asyn
   await expect(page.getByRole("heading", { name: "Tasks" })).toBeVisible()
   authenticated = false
   await page.reload()
-  await expect(page.getByRole("heading", { name: "Sign in to Controller" })).toBeVisible()
+  await expect(page.getByRole("heading", { name: "Sign in to Videnoa Controller" })).toBeVisible()
   await expect(page.getByLabel("Controller password")).toBeFocused()
   expect(await page.evaluate(async () => ({
     cacheKeys: typeof caches === "undefined" ? [] : await caches.keys(),

@@ -28,7 +28,6 @@ export class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorB
     return (
       <main className="login-page">
         <section className="login-panel compact-panel" aria-labelledby="application-error-title">
-          <p className="technical-label">APPLICATION RECOVERY</p>
           <h1 id="application-error-title">Controller interface interrupted</h1>
           <div className="error-summary" role="alert">
             The interface could not continue. Retry without leaving the Controller.

@@ -140,14 +140,12 @@ export function ManualTaskDialog({ apiClient, open, onClose, onCreated }: Manual
       >
         <header>
           <div>
-            <p className="technical-label">MANUAL INTAKE</p>
             <h2 id="add-task-title">Add Task</h2>
           </div>
           <Button variant="outline" size="sm" icon aria-label="Close Add Task" onClick={close}>
             <X size={16} aria-hidden="true" />
           </Button>
         </header>
-        <p>Paths are submitted exactly as entered. Retry never renames output or changes task paths.</p>
         {serverError === null ? null : (
           <div className="task-action-error alert alert--danger" role="alert">
             {serverError}

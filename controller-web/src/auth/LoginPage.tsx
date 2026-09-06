@@ -52,11 +52,7 @@ export function LoginPage({ login, notice }: LoginPageProps) {
           <span className="brand-mark">V</span>
           <span className="boundary-line" />
         </div>
-        <p className="technical-label">VIDENOA / CONTROL PLANE</p>
-        <h1 id="login-title">Sign in to Controller</h1>
-        <p className="login-summary">
-          Open the private coordination surface for tasks, workers, and runtime settings.
-        </p>
+        <h1 id="login-title">Sign in to Videnoa Controller</h1>
 
         <form className="login-form" onSubmit={handleSubmit}>
           {notice === null ? null : <output className="login-notice">{notice}</output>}
@@ -86,7 +82,6 @@ export function LoginPage({ login, notice }: LoginPageProps) {
           </Button>
         </form>
 
-        <p className="login-footnote">Credentials stay in this request and the HttpOnly session cookie.</p>
       </section>
     </main>
   )

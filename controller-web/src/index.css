@@ -156,8 +156,7 @@ figure {
 .numeric-cell,
 .date-cell,
 .copy-value,
-.technical-label,
-.login-footnote {
+.technical-label {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
 }

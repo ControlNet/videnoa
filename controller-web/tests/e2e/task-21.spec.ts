@@ -234,7 +234,7 @@ test("preserves accessible desktop and narrow detail layouts without browser sec
   const detailPane = page.getByRole("region", { name: "Task Detail" })
   const errorHeading = detailPane.getByText("Error / Logs", { exact: true })
   const finalLogLine = detailPane.getByText(
-    "No persisted failure. The Controller API does not expose server logs for this task.",
+    "No persisted failure.",
     { exact: true },
   )
 

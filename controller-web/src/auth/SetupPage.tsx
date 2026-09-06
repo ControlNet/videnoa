@@ -74,7 +74,6 @@ export function SetupPage({ setup }: SetupPageProps) {
           <span className="brand-mark">V</span>
           <span className="boundary-line" />
         </div>
-        <p className="technical-label">VIDENOA / FIRST ACCESS</p>
         <h1 id="setup-title">Set up Controller access</h1>
         <p className="login-summary">Create the administrator password for this private coordination surface.</p>
 
@@ -125,7 +124,6 @@ export function SetupPage({ setup }: SetupPageProps) {
           </Button>
         </form>
 
-        <p className="login-footnote">The password stays in this request and is never written to browser storage.</p>
       </section>
     </main>
   )

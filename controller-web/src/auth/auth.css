@@ -71,13 +71,6 @@
   background: var(--color-border-subtle);
 }
 
-.login-panel .technical-label {
-  color: var(--color-text-quiet);
-  font-size: var(--type-micro);
-  font-weight: 600;
-  letter-spacing: 0.1em;
-}
-
 .login-panel h1 {
   font-size: var(--type-login-title);
   font-weight: 600;
@@ -160,14 +153,6 @@
   background: var(--color-background-deep);
   color: var(--color-text-muted);
   font-size: var(--type-chip);
-  line-height: 1.6;
-}
-
-.login-footnote {
-  padding-block-start: var(--space-4);
-  border-block-start: var(--border-subtle);
-  color: var(--color-text-quiet);
-  font-size: var(--type-micro);
   line-height: 1.6;
 }
 

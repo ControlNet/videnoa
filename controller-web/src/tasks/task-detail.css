@@ -48,13 +48,6 @@
   min-inline-size: 0;
 }
 
-.task-detail-header .technical-label {
-  font-size: var(--type-micro);
-  font-weight: 600;
-  letter-spacing: 0.09em;
-  color: var(--color-text-quiet);
-}
-
 .task-detail-header h2 {
   overflow: hidden;
   font-size: var(--type-page);

@@ -57,7 +57,6 @@ export function WorkerDeleteDialog({ worker, deleting, onClose, onConfirm }: Wor
     >
       <div className="operation-confirmation">
         <header>
-          <p className="technical-label">DURABLE CAPACITY</p>
           <h2 id="worker-delete-title">Delete {worker.name}?</h2>
         </header>
         <p id="worker-delete-description">

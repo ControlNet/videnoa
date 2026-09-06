@@ -80,9 +80,11 @@ export function AppShell({ apiClient, logout }: AppShellProps) {
         )}
 
         <div className="shell-footer">
+          {/* Stays mounted so a degraded stream is announced, but shows nothing while healthy. */}
           <output className="connection-status" aria-live="polite">
-            <Status tone={connectionTone(connectionState)} label={connectionLabel(connectionState)} live={connectionState === "connected"} />
-            <code>/api/events</code>
+            {connectionState === "connected" || connectionState === "connecting" ? null : (
+              <Status tone={connectionTone(connectionState)} label={connectionLabel(connectionState)} />
+            )}
           </output>
           {narrow ? null : (
             <Button aria-label={signOutLabel} onClick={() => void handleLogout()} disabled={signingOut}>

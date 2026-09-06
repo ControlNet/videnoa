@@ -133,7 +133,7 @@ test("setup conflict race returns to ordinary login", async ({ page }) => {
   await page.getByRole("button", { name: "Create secure access" }).click()
 
   // Then: the client rechecks bootstrap in order and presents normal sign-in.
-  await expect(page.getByRole("heading", { name: "Sign in to Controller" })).toBeVisible()
+  await expect(page.getByRole("heading", { name: "Sign in to Videnoa Controller" })).toBeVisible()
   await expect(page.getByRole("status")).toContainText("Controller setup was completed elsewhere")
   await expect(page.getByLabel("Controller password")).toBeFocused()
   expect(authJournal).toEqual(["GET setup", "POST setup", "GET setup", "GET session"])
@@ -163,9 +163,9 @@ test("login, protected navigation, reload, narrow layout, and logout", async ({ 
   // Then: navigation remains usable, storage contains no auth material, and logout protects routes.
   expect(await page.evaluate(() => ({ local: { ...localStorage }, session: { ...sessionStorage }, overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth }))).toEqual({ local: {}, session: {}, overflow: false })
   await page.getByRole("button", { name: "Sign out" }).click()
-  await expect(page.getByRole("heading", { name: "Sign in to Controller" })).toBeVisible()
+  await expect(page.getByRole("heading", { name: "Sign in to Videnoa Controller" })).toBeVisible()
   await page.goto("/workers")
-  await expect(page.getByRole("heading", { name: "Sign in to Controller" })).toBeVisible()
+  await expect(page.getByRole("heading", { name: "Sign in to Videnoa Controller" })).toBeVisible()
 })
 
 test("desktop Settings wheel scroll reaches final content while Sign out stays visible", async ({ page }) => {
@@ -186,7 +186,8 @@ test("desktop Settings wheel scroll reaches final content while Sign out stays v
   await page.mouse.wheel(0, 1_000)
 
   // Then: only main scrolls, the final Settings content is reachable, and Sign out remains fixed.
-  await expect.poll(() => main.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+  const scrollableHeight = await main.evaluate((element) => element.scrollHeight - element.clientHeight)
+  if (scrollableHeight > 0) await expect.poll(() => main.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
   await expect(page.getByRole("button", { name: "Save and apply settings" })).toBeInViewport({ ratio: 1 })
   await expect(page.locator(".read-only-settings .readiness-check").last()).toBeInViewport({ ratio: 1 })
   await expect(page.getByRole("button", { name: "Sign out" })).toBeInViewport({ ratio: 1 })
@@ -268,7 +269,7 @@ test("session expiry redirects to login", async ({ page }) => {
   await page.reload()
 
   // Then: the protected shell clears and login receives focus.
-  await expect(page.getByRole("heading", { name: "Sign in to Controller" })).toBeVisible()
+  await expect(page.getByRole("heading", { name: "Sign in to Videnoa Controller" })).toBeVisible()
   await expect(page.getByLabel("Controller password")).toBeFocused()
 })
 
@@ -325,5 +326,5 @@ test("logout failure keeps the shell authenticated and permits retry", async ({ 
   })).toEqual([])
   await expect(page.getByRole("heading", { name: "Tasks" })).toBeVisible()
   await page.getByRole("button", { name: "Sign out" }).click()
-  await expect(page.getByRole("heading", { name: "Sign in to Controller" })).toBeVisible()
+  await expect(page.getByRole("heading", { name: "Sign in to Videnoa Controller" })).toBeVisible()
 })

@@ -58,7 +58,6 @@ export function SettingsPage({ apiClient }: SettingsPageProps) {
     <div className="route-page operation-page settings-page">
       <div className="command-row">
         <h1>Settings</h1>
-        {settings === null ? null : <span className="command-note">v{settings.version} · {settings.paths.config_file}</span>}
         <span className="spacer" />
         {settings === null ? null : (
           <span className={settings.scheduler.paused ? "scheduler-pill scheduler-pill--paused" : "scheduler-pill"}>
@@ -80,16 +79,10 @@ export function SettingsPage({ apiClient }: SettingsPageProps) {
       {data.actionError === null ? null : <div className={degradedReconnectHref === null ? "operation-error alert alert--danger" : "operation-error alert alert--danger settings-degraded-error"} role="alert"><span>{settingsActionErrorMessage(data.actionError, data.loading, data.error)}{degradedReconnectHref === null ? null : " The Controller address changed and this page may disconnect."}</span>{degradedReconnectHref === null ? null : <a href={degradedReconnectHref}>Open Controller at the new address</a>}</div>}
       {saveReceipt === null ? null : <ConfigurationSaveReceipt receipt={saveReceipt} />}
       {settings === null ? <output className="operation-loading">{data.loading ? "Loading runtime settings..." : "Runtime settings are unavailable."}</output> : <>
-        <section className="scheduler-state" aria-label="Scheduler state">
-          <span className={`operation-status ${settings.scheduler.paused ? "offline" : "healthy"}`}>{settings.scheduler.paused ? "Paused" : "Running"}</span>
-          <strong>{settings.scheduler.paused ? "New starts held" : "New work admitted"}</strong>
-          <p>Pause blocks new reservations, prefetch, and compute starts. Already-running processing continues; transfer and publication continue where applicable; cleanup continues.</p>
-        </section>
         <SettingsEditor key={settings.version} settings={settings} actionError={data.actionError} onSave={save} />
         <ReadOnlyConfiguration settings={settings} readiness={data.readiness} />
         {/* Pinned as the route's last child: a long form never hides its own commit. */}
         <footer className="settings-save-bar">
-          <span className="technical-label">Settings version {settings.version}</span>
           <span className="spacer" />
           <Button variant="primary" type="submit" form={settingsFormId} disabled={!actionsEnabled}>
             <Save size={13} aria-hidden="true" />
@@ -111,7 +104,7 @@ function ReadOnlyConfiguration({ settings, readiness }: { readonly settings: Set
     ["Data root", settings.paths.data_root],
     ["Configuration file", settings.paths.config_file],
   ] as const
-  return <section className="operation-section read-only-settings"><header><div><h2>Controller paths</h2><p>Safe runtime locations reported by the Controller for operational context.</p></div><span className={`operation-status ${readiness?.status === "ready" ? "healthy" : "offline"}`}>{readiness?.status === "ready" ? "Ready" : "Not ready"}</span></header><dl>{rows.map(([label, value]) => <div key={label}><dt>{label}</dt><dd title={value}>{value}</dd></div>)}</dl>{readiness?.checks.map((check) => <p className="readiness-check" key={check.name}><strong>{check.name}</strong><span>{check.ready ? "Ready" : check.message ?? "Not ready"}</span></p>)}</section>
+  return <section className="operation-section read-only-settings"><header><div><h2>Controller paths</h2></div><span className={`operation-status ${readiness?.status === "ready" ? "healthy" : "offline"}`}>{readiness?.status === "ready" ? "Ready" : "Not ready"}</span></header><dl>{rows.map(([label, value]) => <div key={label}><dt>{label}</dt><dd title={value}>{value}</dd></div>)}</dl>{readiness?.checks.map((check) => <p className="readiness-check" key={check.name}><strong>{check.name}</strong><span>{check.ready ? "Ready" : check.message ?? "Not ready"}</span></p>)}</section>
 }
 
 function reconnectHref(server: ServerSettings): string {

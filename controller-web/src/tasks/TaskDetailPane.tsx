@@ -98,7 +98,6 @@ export function TaskDetailPane({ apiClient, taskId, onClose, onChanged }: TaskDe
     >
       <header className="task-detail-header">
         <div>
-          <p className="technical-label">SELECTED TASK</p>
           <h2>{task === undefined ? "Task Detail" : `${formatStatus(task.status)} · ${task.input_path.split("/").at(-1) ?? task.id}`}</h2>
         </div>
         <div className="task-detail-actions">

@@ -104,7 +104,7 @@ export function WorkerFormDialog(props: WorkerFormDialogProps) {
     <dialog ref={dialogRef} className="dialog operation-dialog" aria-labelledby="worker-form-title" onCancel={(event) => { event.preventDefault(); props.onClose() }}>
       <form method="dialog" className="operation-form" noValidate onSubmit={(event) => { event.preventDefault(); void submit() }}>
         <header>
-          <div><p className="technical-label">CAPACITY REGISTRY</p><h2 id="worker-form-title">{props.worker === null ? "Add Worker" : "Edit Worker"}</h2></div>
+          <div><h2 id="worker-form-title">{props.worker === null ? "Add Worker" : "Edit Worker"}</h2></div>
           <Button variant="outline" size="sm" icon aria-label="Close worker form" onClick={props.onClose}><X size={14} aria-hidden="true" /></Button>
         </header>
         {props.actionError === null ? null : <div className="operation-error alert alert--danger" role="alert">{workerActionMessage(props.actionError)}</div>}

@@ -93,7 +93,7 @@ test("captures the unauthenticated sign-in baseline", async ({ page }) => {
   await page.route("**/api/auth/setup", async (route) => fulfillJson(route, { initialized: true }))
   await page.route("**/api/auth/session", async (route) => fulfillJson(route, unauthenticatedSession, 401))
   await page.goto("/")
-  await expect(page.getByRole("heading", { name: "Sign in to Controller" })).toBeVisible()
+  await expect(page.getByRole("heading", { name: "Sign in to Videnoa Controller" })).toBeVisible()
   await captureAcrossViewports(page, "login")
 })
 

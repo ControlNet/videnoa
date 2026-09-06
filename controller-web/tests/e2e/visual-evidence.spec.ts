@@ -88,7 +88,7 @@ test("captures the complete Task 15 visual evidence matrix deterministically", a
   await page.goto("/")
 
   // When: every required login viewport is captured before authentication.
-  await expect(page.getByRole("heading", { name: "Sign in to Controller" })).toBeVisible()
+  await expect(page.getByRole("heading", { name: "Sign in to Videnoa Controller" })).toBeVisible()
   await expectNoRenderedGradients(page)
   for (const [viewportName, viewport] of Object.entries(viewports)) {
     await settleAndCapture(page, `login-${viewportName}`, viewport)

@@ -63,7 +63,7 @@ export function TaskDetailContent({ detail, guidance, loadingMore, onLoadMore }:
       <section>
         <h3>Error / Logs</h3>
         {detail.task.failure === null ? (
-          <p className="detail-empty">No persisted failure. The Controller API does not expose server logs for this task.</p>
+          <p className="detail-empty">No persisted failure.</p>
         ) : (
           <div className="failure-detail">
             <dl className="detail-grid">

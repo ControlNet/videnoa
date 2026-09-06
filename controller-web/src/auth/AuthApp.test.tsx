@@ -126,7 +126,7 @@ describe("authenticated Controller shell", () => {
     render(<App />)
 
     // Then: login is the only application surface and focus reaches the password field.
-    expect(await screen.findByRole("heading", { name: "Sign in to Controller" })).toBeVisible()
+    expect(await screen.findByRole("heading", { name: "Sign in to Videnoa Controller" })).toBeVisible()
     expect(screen.queryByRole("navigation", { name: "Primary" })).not.toBeInTheDocument()
     await waitFor(() => expect(screen.getByLabelText("Controller password")).toHaveFocus())
   })
@@ -147,7 +147,7 @@ describe("authenticated Controller shell", () => {
     // Then: setup is the only surface, setup ran before session, and focus reaches the new password.
     expect(await screen.findByRole("heading", { name: "Set up Controller access" })).toBeVisible()
     expect(requestedPaths).toEqual(["/api/auth/setup"])
-    expect(screen.queryByRole("heading", { name: "Sign in to Controller" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("heading", { name: "Sign in to Videnoa Controller" })).not.toBeInTheDocument()
     await waitFor(() => expect(screen.getByLabelText("Create password")).toHaveFocus())
   })
 
@@ -236,7 +236,7 @@ describe("authenticated Controller shell", () => {
     fireEvent.click(screen.getByRole("button", { name: "Create secure access" }))
 
     // Then: setup and session are rechecked in order and the ordinary login surface is restored.
-    expect(await screen.findByRole("heading", { name: "Sign in to Controller" })).toBeVisible()
+    expect(await screen.findByRole("heading", { name: "Sign in to Videnoa Controller" })).toBeVisible()
     expect(screen.getByRole("status")).toHaveTextContent("Controller setup was completed elsewhere. Sign in with the administrator password.")
     expect(requestedPaths).toEqual([
       "GET /api/auth/setup",
@@ -302,7 +302,7 @@ describe("authenticated Controller shell", () => {
     fireEvent.click(screen.getByRole("button", { name: "Sign out" }))
 
     // Then: auth state clears, login returns, and storage remains empty.
-    expect(await screen.findByRole("heading", { name: "Sign in to Controller" })).toBeVisible()
+    expect(await screen.findByRole("heading", { name: "Sign in to Videnoa Controller" })).toBeVisible()
     expect(localStorage).toHaveLength(0)
     expect(sessionStorage).toHaveLength(0)
   })
@@ -419,7 +419,7 @@ describe("authenticated Controller shell", () => {
     fireEvent.click(screen.getByRole("button", { name: "Retry Controller check" }))
 
     // Then: recovery returns to login rather than crashing.
-    await waitFor(() => expect(screen.getByRole("heading", { name: "Sign in to Controller" })).toBeVisible())
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Sign in to Videnoa Controller" })).toBeVisible())
   })
 
   it("focuses a malformed session bootstrap summary and recovers on retry", async () => {
@@ -438,7 +438,7 @@ describe("authenticated Controller shell", () => {
     expect(alert).toHaveTextContent("Controller returned an invalid response.")
     expect(alert).toHaveFocus()
     fireEvent.click(screen.getByRole("button", { name: "Retry Controller check" }))
-    expect(await screen.findByRole("heading", { name: "Sign in to Controller" })).toBeVisible()
+    expect(await screen.findByRole("heading", { name: "Sign in to Videnoa Controller" })).toBeVisible()
     expect(screen.getByLabelText("Controller password")).toHaveFocus()
   })
 
@@ -477,7 +477,7 @@ describe("authenticated Controller shell", () => {
     expect(await screen.findByRole("heading", { name: "Workers" })).toBeVisible()
     expect(alert).toHaveFocus()
     fireEvent.click(screen.getByRole("button", { name: "Sign out" }))
-    expect(await screen.findByRole("heading", { name: "Sign in to Controller" })).toBeVisible()
+    expect(await screen.findByRole("heading", { name: "Sign in to Videnoa Controller" })).toBeVisible()
   })
 
   it("reports the actual event-stream lifecycle", async () => {
@@ -487,10 +487,10 @@ describe("authenticated Controller shell", () => {
     render(<App />)
     await screen.findByRole("heading", { name: "Tasks" })
 
-    // When/Then: connection events produce honest, explicit status labels.
-    expect(screen.getByText("Controller connecting")).toBeVisible()
+    // When/Then: a healthy stream stays silent while degraded states are explicit.
+    expect(screen.queryByText(/^Controller (connecting|connected)$/)).not.toBeInTheDocument()
     FakeEventSource.latest?.open()
-    expect(await screen.findByText("Controller connected")).toBeVisible()
+    expect(screen.queryByText(/^Controller (connecting|connected)$/)).not.toBeInTheDocument()
     FakeEventSource.latest?.fail(FakeEventSource.CONNECTING)
     expect(await screen.findByText("Controller reconnecting")).toBeVisible()
     FakeEventSource.latest?.fail(FakeEventSource.CLOSED)

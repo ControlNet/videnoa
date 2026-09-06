@@ -114,10 +114,9 @@ export function BatchTaskDialog({ apiClient, onClose, onCreated }: Props) {
 
   return <dialog ref={dialogRef} className="dialog task-dialog batch-task-dialog" aria-labelledby="batch-task-title" onCancel={(event) => { event.preventDefault(); close() }}>
     <form className="task-create-form" onSubmit={(event) => { event.preventDefault(); void (rows === null ? preview() : create()) }}>
-      <header><div><p className="technical-label">{reviewing ? "STEP 2 OF 2 · REVIEW" : "STEP 1 OF 2 · BATCH INTAKE"}</p><h2 ref={titleRef} tabIndex={-1} id="batch-task-title">{reviewing ? "Preview Tasks" : "Add Batch"}</h2></div>
+      <header><div><p className="technical-label">{reviewing ? "STEP 2 OF 2" : "STEP 1 OF 2"}</p><h2 ref={titleRef} tabIndex={-1} id="batch-task-title">{reviewing ? "Preview Tasks" : "Add Batch"}</h2></div>
         <Button variant="outline" size="sm" icon aria-label={reviewing ? "Close Preview Tasks" : "Close Add Batch"} disabled={busy} onClick={close}><X size={16} aria-hidden="true" /></Button>
       </header>
-      <p>{reviewing ? "Review the task paths below before creating this batch." : "Choose input files, output names, a workflow, and priority. Preview the task list next."}</p>
       {error === null ? null : <div className="task-action-error alert alert--danger" role="alert">{error}</div>}
       {reviewing ? <dl className="batch-review-summary">
         <div><dt>Input Pattern</dt><dd>{options.input_pattern}</dd></div>
