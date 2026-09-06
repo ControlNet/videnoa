@@ -640,6 +640,12 @@ try {
         if ($LASTEXITCODE -ne 0) {
             Fail 'cargo build failed'
         }
+        # Honor Cargo's configured target directory for persistent CI build caches.
+        $metadata = & cargo metadata --no-deps --format-version 1
+        if ($LASTEXITCODE -ne 0) {
+            Fail 'cargo metadata failed'
+        }
+        $targetDirectory = ($metadata | ConvertFrom-Json).target_directory
     }
     finally {
         Pop-Location
@@ -685,8 +691,8 @@ try {
     Write-Log "assembling bundle directory: $bundleDir"
     New-Item -ItemType Directory -Path $bundleDir -Force | Out-Null
 
-    $videnoaBinSrc = Join-Path -Path $cloneDir -ChildPath ("target/release/videnoa{0}" -f $exeSuffix)
-    $videnoaDesktopBinSrc = Join-Path -Path $cloneDir -ChildPath ("target/release/videnoa-desktop{0}" -f $exeSuffix)
+    $videnoaBinSrc = Join-Path -Path $targetDirectory -ChildPath ("release/videnoa{0}" -f $exeSuffix)
+    $videnoaDesktopBinSrc = Join-Path -Path $targetDirectory -ChildPath ("release/videnoa-desktop{0}" -f $exeSuffix)
 
     if (-not (Test-Path -LiteralPath $videnoaBinSrc -PathType Leaf)) {
         Fail "missing build output: $videnoaBinSrc"

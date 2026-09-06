@@ -26,6 +26,23 @@ split_archive="$test_root/out/videnoa-linux64-smoke.7z"
 require_file "$split_archive.001"
 "$archive_helper" verify "$split_archive"
 
+# Synthetic payload exercises actual multi-volume storage and integrity checks.
+dd if=/dev/urandom of="$test_root/dist/videnoa/nested/split-payload.bin" bs=1024 count=8 status=none
+stored_archive="$test_root/out/videnoa-stored.7z"
+"$archive_helper" create "$test_root/dist" "$stored_archive" 1k 0
+require_file "$stored_archive.002"
+"$archive_helper" verify "$stored_archive"
+7z x "-o$test_root/extracted" "$stored_archive.001" >/dev/null
+cmp "$test_root/dist/videnoa/nested/split-payload.bin" "$test_root/extracted/videnoa/nested/split-payload.bin"
+mv "$stored_archive.002" "$test_root/missing-volume"
+if "$archive_helper" verify "$stored_archive" >"$test_root/incomplete.stdout" 2>&1; then
+  fail "incomplete split archive verification unexpectedly succeeded"
+fi
+mv "$test_root/missing-volume" "$stored_archive.002"
+if "$archive_helper" create "$test_root/dist" "$test_root/out/invalid.7z" 1k invalid >"$test_root/invalid.stdout" 2>&1; then
+  fail "invalid compression level unexpectedly succeeded"
+fi
+
 single_archive="$test_root/out/videnoa-linux64-single.7z"
 (
   cd "$test_root/dist"

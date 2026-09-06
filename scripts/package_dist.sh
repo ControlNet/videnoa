@@ -431,8 +431,13 @@ cat "$DOWNLOAD_DIR/$LIB_PART_1" "$DOWNLOAD_DIR/$LIB_PART_2" > "$MERGED_LIB_ZIP"
 log "assembling bundle directory: $BUNDLE_DIR"
 mkdir -p "$BUNDLE_DIR"
 
-VIDENOA_BIN_SRC="$CLONE_DIR/target/release/videnoa${EXE_SUFFIX}"
-VIDENOA_DESKTOP_BIN_SRC="$CLONE_DIR/target/release/videnoa-desktop${EXE_SUFFIX}"
+# Honor Cargo's configured target directory so CI can retain compiled dependencies.
+TARGET_DIRECTORY="$(
+  cd "$CLONE_DIR"
+  cargo metadata --no-deps --format-version 1 | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).target_directory'
+)"
+VIDENOA_BIN_SRC="$TARGET_DIRECTORY/release/videnoa${EXE_SUFFIX}"
+VIDENOA_DESKTOP_BIN_SRC="$TARGET_DIRECTORY/release/videnoa-desktop${EXE_SUFFIX}"
 
 if [[ ! -f "$VIDENOA_BIN_SRC" ]]; then
   die "missing build output: $VIDENOA_BIN_SRC"

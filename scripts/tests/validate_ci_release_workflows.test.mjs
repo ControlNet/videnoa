@@ -163,6 +163,22 @@ console.log("[workflow-contracts][positive] complete CI/release matrix: PASS");
 	);
 }
 
+for (const [job, text, expected] of [
+	["package-linux64-smoke", "2000m 0", /2000m 0/],
+	["package-win64-smoke", "-mx=0", /-mx=0/],
+	["package-win64-smoke", "7z t $firstVolume", /7z t/],
+]) {
+	const workflow = structuredClone(loadWorkflow(unitPath));
+	const step = workflow.jobs[job].steps.find((step) => step.run?.includes(text));
+	assert.ok(step, `${job}: missing expected smoke step`);
+	step.run = step.run.replace(text, "");
+	expectContractFailure(
+		`${job}: archive speed/integrity contract omitted (${text})`,
+		() => validateUnitWorkflow(workflow),
+		expected,
+	);
+}
+
 console.log(
 	"[workflow-contracts] all positive and negative workflow contracts passed",
 );

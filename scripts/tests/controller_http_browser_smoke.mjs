@@ -38,6 +38,12 @@ try {
   const context = await browser.newContext()
   const page = await context.newPage()
   page.setDefaultTimeout(15_000)
+  // Observe the application's real SSE messages, independent of status copy.
+  const network = await context.newCDPSession(page)
+  await network.send("Network.enable")
+  const eventNames = []
+  network.on("Network.eventSourceMessageReceived", ({ eventName }) => eventNames.push(eventName))
+  const expectSnapshotEvent = () => expect.poll(() => eventNames.includes("refetch"), { timeout: 15_000 }).toBe(true)
   const errors = []
   page.on("pageerror", (error) => errors.push(error.message))
   await page.goto(origin)
@@ -52,8 +58,10 @@ try {
   const cookies = await context.cookies(origin)
   const session = cookies.find((cookie) => cookie.name === "videnoa_session")
   assert.ok(session && session.httpOnly && !session.secure && session.sameSite === "Strict")
+  eventNames.length = 0
   await page.reload()
-  await expect(page.getByText("Controller connected", { exact: true })).toBeVisible()
+  await expect(page.getByRole("heading", { name: "Tasks", exact: true })).toBeVisible()
+  await expectSnapshotEvent()
 
   // HTTP Settings persistence and scheduler admission controls.
   await page.getByRole("link", { name: "Settings", exact: true }).click()
@@ -90,9 +98,9 @@ try {
   // Real task intake and cancellation, using only synthetic input and no compute.
   await page.getByRole("link", { name: "Tasks", exact: true }).click()
   await page.getByRole("button", { name: "Add Task" }).click()
-  await page.getByRole("textbox", { name: "Input Path", exact: true }).fill("/workspace/media/input.mkv")
-  await page.getByRole("textbox", { name: "Output Path", exact: true }).fill("/workspace/media/output.mp4")
-  await page.getByLabel("Workflow").last().fill("synthetic-http-smoke")
+  await page.getByRole("combobox", { name: "Input Path", exact: true }).fill("/workspace/media/input.mkv")
+  await page.getByRole("combobox", { name: "Output Path", exact: true }).fill("/workspace/media/output.mp4")
+  await page.getByRole("combobox", { name: "Workflow", exact: true }).fill("synthetic-http-smoke")
   const creation = page.waitForResponse((response) => response.url().endsWith("/api/tasks") && response.request().method() === "POST")
   await page.getByRole("button", { name: "Create Task" }).click()
   const response = await creation
@@ -111,7 +119,7 @@ try {
   // Cookie-based HTTP requests still require CSRF proof.
   assert.equal(await page.evaluate(async () => (await fetch("/api/auth/logout", { method: "POST" })).status), 403)
   await page.getByRole("button", { name: "Sign out" }).click()
-  await expect(page.getByRole("heading", { name: "Sign in to Controller" })).toBeVisible()
+  await expect(page.getByRole("heading", { name: "Sign in to Videnoa Controller", exact: true })).toBeVisible()
   await page.getByLabel("Controller password").fill(password)
   await page.getByRole("button", { name: "Sign in", exact: true }).click()
   await expect(page.getByRole("heading", { name: "Tasks", exact: true })).toBeVisible()
@@ -124,11 +132,12 @@ try {
   localOrigin = `http://127.0.0.1:${port}`
   origin = `http://controller-http.test:${port}`
   await healthy()
+  eventNames.length = 0
   await page.goto(`${origin}/settings`)
   await expect(page.getByRole("heading", { name: "Settings", exact: true })).toBeVisible()
   await expect(page.getByLabel("Concurrent uploads")).toHaveValue("2")
   await expect(page.getByRole("button", { name: "Resume scheduler" })).toBeVisible()
-  await expect(page.getByText("Controller connected", { exact: true })).toBeVisible()
+  await expectSnapshotEvent()
   assert.equal(await page.evaluate(async (id) => (await fetch(`/api/tasks/${id}`)).status, task.id), 200)
   assert.deepEqual(errors, [])
   console.log("PASS: real non-secure HTTP browser + Docker setup/login/logout, HttpOnly cookie, CSRF rejection, SSE, Settings/TOML, pause/resume, Worker CRUD, task create/cancel, restart persistence")

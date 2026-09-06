@@ -6,8 +6,10 @@ usage() {
 Create or verify the existing Videnoa distribution archive.
 
 Usage:
-  scripts/package_dist_archive.sh create <dist-root> <archive-path> [volume-size]
+  scripts/package_dist_archive.sh create <dist-root> <archive-path> [volume-size] [compression-level]
   scripts/package_dist_archive.sh verify <archive-path>
+
+Compression defaults to 5 for releases; use 0 for an uncompressed smoke archive.
 EOF
 }
 
@@ -21,10 +23,12 @@ require_7z() {
 }
 
 create_archive() {
-  [[ $# -eq 2 || $# -eq 3 ]] || die "create requires <dist-root> <archive-path> [volume-size]"
+  [[ $# -ge 2 && $# -le 4 ]] || die "create requires <dist-root> <archive-path> [volume-size] [compression-level]"
   local dist_root="$1"
   local archive_path="$2"
   local volume_size="${3:-2000m}"
+  local compression_level="${4:-5}"
+  [[ "$compression_level" =~ ^[0-9]$ ]] || die "compression level must be an integer from 0 to 9"
   local bundle_dir="$dist_root/videnoa"
   local archive_dir
   local bundle_kb
@@ -49,7 +53,7 @@ create_archive() {
   rm -f "$archive_path" "$archive_path".*
   (
     cd "$dist_root"
-    7z a -t7z -mx=5 -md=16m -mmt=1 "-v${volume_size}" "$archive_path" videnoa
+    7z a -t7z "-mx=${compression_level}" -md=16m -mmt=1 "-v${volume_size}" "$archive_path" videnoa
   )
   if [[ ! -f "$archive_path.001" && ! -f "$archive_path" ]]; then
     die "Missing archive output: $archive_path(.001)"

@@ -26,10 +26,17 @@ export function validateUnitWorkflow(workflow) {
 			"scripts/tests/package_dist_archive_test.sh",
 			"$HOME/.cargo/registry",
 			"videnoa-linux64-smoke.7z",
+			"2000m 0",
+			"Swatinem/rust-cache@v2",
+			"CARGO_TARGET_DIR",
 		],
 		"package-win64-smoke": [
 			"scripts/package_dist.ps1",
 			"videnoa-win64-smoke.7z",
+			"-mx=0",
+			"7z t $firstVolume",
+			"Swatinem/rust-cache@v2",
+			"CARGO_TARGET_DIR",
 		],
 		"docker-build-smoke": [
 			"docker build -t videnoa-ci-smoke .",
