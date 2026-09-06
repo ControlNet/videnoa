@@ -21,7 +21,7 @@ fn defaults_match_locked_task_two_settings() {
     assert_eq!(config.scheduler.max_concurrent_downloads.get(), 1);
     assert_eq!(config.timeouts.health.as_secs(), 10);
     assert_eq!(config.timeouts.poll.as_secs(), 5);
-    assert_eq!(config.timeouts.transfer.as_secs(), 300);
+    assert_eq!(config.timeouts.transfer.as_secs(), 900);
     assert_eq!(config.retry.initial.as_secs(), 1);
     assert_eq!(config.retry.maximum.as_secs(), 60);
     assert_eq!(config.retry.max_attempts.get(), 5);

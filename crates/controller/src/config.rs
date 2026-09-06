@@ -40,7 +40,7 @@ pub struct ServerOverride {
 const DEFAULT_MAX_ATTEMPTS: NonZeroU32 = NonZeroU32::MIN.saturating_add(4);
 const SESSION_ABSOLUTE_SECONDS: u64 = 24 * 60 * 60;
 const SESSION_IDLE_SECONDS: u64 = 60 * 60;
-const TRANSFER_TIMEOUT_SECONDS: u64 = 5 * 60;
+const TRANSFER_TIMEOUT_SECONDS: u64 = 15 * 60;
 const RETRY_MAXIMUM_SECONDS: u64 = 60;
 
 #[derive(Clone, Debug, Eq, PartialEq)]

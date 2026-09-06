@@ -77,7 +77,7 @@ impl Default for RawControllerConfig {
             timeouts: RawTimeoutConfig {
                 health: 10,
                 poll: 5,
-                transfer: 300,
+                transfer: super::TRANSFER_TIMEOUT_SECONDS,
             },
             retry: RawRetryConfig {
                 initial_seconds: 1,
