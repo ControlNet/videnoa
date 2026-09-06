@@ -52,6 +52,9 @@ async fn legacy_input_without_content_identity_preserves_metadata_admission() ->
         .execute(fixture.store.database().pool())
         .await?;
 
+    // Legacy compatibility intentionally permits changed bytes when metadata still matches.
+    rewrite_preserving_metadata(&fixture, prepared.task_id).await?;
+
     // When: upload admission evaluates the legacy durable snapshot.
     let outcome = fixture
         .executor()?
@@ -203,5 +206,59 @@ async fn failed_partial_cleanup_still_persists_upload_retry() -> TestResult {
     assert!(outcome.is_err());
     assert_eq!(fixture.task(prepared.task_id).await?.retry.retry_count, 1);
     assert_eq!(server.counters().await.get(Route::DeleteFile), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn changed_bytes_with_identical_metadata_fail_before_any_put() -> TestResult {
+    let server = MockVidenoa::start().await?;
+    let fixture = Fixture::new(&server, 1, 1).await?;
+    let prepared = fixture.reserved_task(vec![37_u8; 12_000]).await?;
+    rewrite_preserving_metadata(&fixture, prepared.task_id).await?;
+    let outcome = fixture
+        .executor()?
+        .upload(prepared.task_id, fixture.now, zero_jitter()?)
+        .await?;
+    assert!(matches!(outcome, UploadOutcome::Failed));
+    let task = fixture.task(prepared.task_id).await?;
+    assert_eq!(
+        task.failure.map(|failure| failure.failure_code),
+        Some(FailureCode::InputChanged)
+    );
+    assert_eq!(server.counters().await.get(Route::Upload), 0);
+    Ok(())
+}
+
+async fn rewrite_preserving_metadata(
+    fixture: &Fixture,
+    task_id: videnoa_controller::domain::TaskId,
+) -> TestResult {
+    use std::io::Write;
+    let task = fixture.task(task_id).await?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(task.request.input_path.as_str())?;
+    let modified = file.metadata()?.modified()?;
+    // Synthetic replacement content, deliberately preserving inode, size and exact mtime.
+    file.write_all(&vec![99_u8; usize::try_from(task.input_size)?])?;
+    file.set_times(std::fs::FileTimes::new().set_modified(modified))?;
+    drop(file);
+    let current = fixture.paths.open_input(task.request.input_path.as_str())?;
+    assert_eq!(
+        Some(videnoa_controller::persistence::InputIdentity::new(
+            current.snapshot().platform_identity()
+        )),
+        task.input_identity
+    );
+    assert_eq!(current.snapshot().length, task.input_size);
+    assert_eq!(current.snapshot().modified, modified);
+    if let Some(expected) = task.input_content_identity {
+        assert_ne!(
+            videnoa_controller::persistence::InputContentIdentity::new(
+                current.snapshot().content_identity()
+            ),
+            expected
+        );
+    }
     Ok(())
 }

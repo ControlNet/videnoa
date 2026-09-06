@@ -10,3 +10,11 @@ When hashing a capability-opened file:
 - Rewind the descriptor before returning it for upload.
 - Re-read descriptor metadata after hashing and fail closed if it changed.
 - Keep Cargo verification serial because Controller integration suites use process and network fixtures.
+
+## Superseding correction (2026-09-07)
+
+See [Controller input scans and transfer inactivity correction](controller-input-scans-transfer-inactivity-2026-09-07.md).
+The historical behavior above is retained as a record. Duplicate intake/upload
+hashes are removed, and upload uses an inactivity watchdog. Any advice above to
+set transfer timeout beyond the complete upload duration is superseded; the
+900-second default now bounds inactivity, not total transfer duration.

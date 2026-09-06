@@ -16,6 +16,8 @@ mod harness_idempotency;
 mod harness_restart;
 #[path = "support/mock_videnoa/mod.rs"]
 mod mock_videnoa;
+#[path = "videnoa_client/upload_activity.rs"]
+mod upload_activity;
 
 use mock_videnoa::server::MockVidenoa;
 use mock_videnoa::{
@@ -333,7 +335,7 @@ async fn transfers_can_exceed_the_poll_request_timeout() -> TestResult {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn upload_still_obeys_the_transfer_timeout() -> TestResult {
+async fn upload_response_headers_stall_after_body_eof() -> TestResult {
     let server = MockVidenoa::start().await?;
     let client = test_client(
         &server,
@@ -342,7 +344,7 @@ async fn upload_still_obeys_the_transfer_timeout() -> TestResult {
         JSON_LIMIT,
     )?;
     let path = FileApiPath::parse("timed-transfer/input.bin")?;
-    let ticket = server.pause(Checkpoint::BeforeAcceptingUpload).await;
+    let ticket = server.pause(Checkpoint::AfterUploadBytesAccepted).await;
     let uploading = tokio::spawn(async move {
         client
             .upload(&path, 4, std::io::Cursor::new(vec![1_u8, 2, 3, 4]))
@@ -351,7 +353,7 @@ async fn upload_still_obeys_the_transfer_timeout() -> TestResult {
     server.await_checkpoint(&ticket).await?;
     let result = uploading.await?;
     server.release(ticket).await?;
-    assert_eq!(result, Err(VidenoaClientError::Timeout));
+    assert_eq!(result, Err(VidenoaClientError::Stall));
     Ok(())
 }
 

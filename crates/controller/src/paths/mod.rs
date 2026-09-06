@@ -5,12 +5,14 @@ use std::time::SystemTime;
 
 use crate::config::PathConfig;
 
-mod boundary;
 mod batch;
 mod batch_pattern;
+mod boundary;
 mod completion;
 pub(crate) use completion::PathSuggestions;
 mod input;
+#[cfg(test)]
+pub(crate) mod input_hash_counts;
 mod input_identity;
 mod output;
 mod publication;
@@ -84,6 +86,7 @@ pub struct RootedInput {
     relative: PathBuf,
     display_path: PathBuf,
     snapshot: InputSnapshot,
+    file: cap_std::fs::File,
 }
 
 pub struct RootedOutput {
@@ -194,6 +197,7 @@ impl PathCapabilities {
             relative,
             display_path: path.to_path_buf(),
             snapshot,
+            file,
         })
     }
 

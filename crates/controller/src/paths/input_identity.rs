@@ -7,6 +7,8 @@ use sha2::{Digest, Sha256};
 use super::{io_error, PathError};
 
 pub(super) fn content_identity(file: &mut File, path: &Path) -> Result<[u8; 16], PathError> {
+    #[cfg(test)]
+    super::input_hash_counts::record(path);
     let mut hasher = Sha256::new();
     let mut buffer = vec![0_u8; 64 * 1024].into_boxed_slice();
     loop {

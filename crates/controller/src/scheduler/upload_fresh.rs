@@ -1,8 +1,7 @@
 use chrono::{DateTime, Utc};
 
-use crate::domain::FailureCode;
 use crate::lifecycle::JitterSample;
-use crate::persistence::{AttemptRecord, InputContentIdentity, InputIdentity, TaskRecord};
+use crate::persistence::{AttemptRecord, TaskRecord};
 use crate::remote::{FileApiPath, VidenoaClient};
 
 use super::{TransferError, TransferExecutor, UploadOutcome};
@@ -21,50 +20,11 @@ impl TransferExecutor {
         &self,
         context: UploadContext<'_>,
     ) -> Result<UploadOutcome, TransferError> {
-        let Ok(rooted) = self
-            .resources
-            .paths
-            .open_input(context.task.request.input_path.as_str())
-        else {
-            return self
-                .upload_input_failure(
-                    context.task,
-                    context.attempt,
-                    FailureCode::InputUnavailable,
-                    context.now,
-                )
-                .await;
-        };
-        let identity = InputIdentity::new(rooted.snapshot().platform_identity());
-        let content_identity = InputContentIdentity::new(rooted.snapshot().content_identity());
-        if rooted.snapshot().length != context.task.input_size
-            || context.task.input_identity != Some(identity)
-            || context
-                .task
-                .input_content_identity
-                .is_some_and(|expected| expected != content_identity)
-            || DateTime::<Utc>::from(rooted.snapshot().modified).timestamp_millis()
-                != context.task.input_mtime.timestamp_millis()
-        {
-            return self
-                .upload_input_failure(
-                    context.task,
-                    context.attempt,
-                    FailureCode::InputChanged,
-                    context.now,
-                )
-                .await;
-        }
-        let file = match rooted.reopen_checked() {
+        let file = match super::upload_input::open_verified(&self.resources.paths, context.task) {
             Ok(file) => tokio::fs::File::from_std(file.into_std()),
-            Err(_) => {
+            Err(code) => {
                 return self
-                    .upload_input_failure(
-                        context.task,
-                        context.attempt,
-                        FailureCode::InputChanged,
-                        context.now,
-                    )
+                    .upload_input_failure(context.task, context.attempt, code, context.now)
                     .await;
             }
         };

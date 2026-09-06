@@ -22,6 +22,7 @@ mod runtime_settings;
 mod transfer_executor;
 mod upload;
 mod upload_fresh;
+pub(crate) mod upload_input;
 
 pub(crate) use checkpoints::noop_observer;
 pub use checkpoints::{TransferCheckpointObserver, TransferCheckpointPoint};

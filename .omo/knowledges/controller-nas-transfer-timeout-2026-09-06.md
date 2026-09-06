@@ -30,3 +30,11 @@
 - `cargo +1.83.0 clippy --locked -p videnoa-controller --all-targets --all-features -- -D warnings`: passed.
 - Workspace fmt, direct rustfmt on transfer/config modules, `bash scripts/tests/controller_docs_test.sh`, and `git diff --check`: passed.
 - Tests use existing mock TCP workers and explicitly synthetic bytes; no real media processing was performed.
+
+## Superseding correction (2026-09-07)
+
+See [Controller input scans and transfer inactivity correction](controller-input-scans-transfer-inactivity-2026-09-07.md).
+The historical behavior above is retained as a record. Duplicate intake/upload
+hashes are removed, and upload uses an inactivity watchdog. Any advice above to
+set transfer timeout beyond the complete upload duration is superseded; the
+900-second default now bounds inactivity, not total transfer duration.

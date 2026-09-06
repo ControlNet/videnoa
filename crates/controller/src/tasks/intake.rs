@@ -127,7 +127,7 @@ impl TaskService {
             .open_output(request.output_path.as_str())
             .map_err(|error| path_error("output_path", &error))?;
         input
-            .reopen_checked()
+            .revalidate_metadata()
             .map_err(|error| path_error("input_path", &error))?;
         output
             .revalidate_missing()

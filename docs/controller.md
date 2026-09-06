@@ -70,10 +70,15 @@ one prefetched task, one upload, one download, health/poll/transfer timeouts of
 10/5/900 seconds, retry delays of 1 through 60 seconds, and five attempts.
 Active tasks are polled again one second after the previous poll completes.
 This cadence is independent of `timeouts.poll_seconds`, which controls the remote
-control-request timeout. `timeouts.transfer_seconds` bounds the entire upload
-request and, for downloads, the wait for response headers and each body chunk.
-It defaults to 900 seconds; increase it if a complete upload needs longer on your
-network. Transfers do not use the short poll timeout. Changed progress is pushed immediately through SSE; unavailable
+control-request timeout. `timeouts.transfer_seconds` is a transfer inactivity
+(stall) timeout. Each non-empty upload body chunk handed to the HTTP transport
+resets it; network backpressure eventually stops these updates. Waiting for upload
+response headers after the body ends remains bounded. Downloads bound response
+header wait and each body-chunk wait independently. The default 900 seconds means
+15 minutes without observable progress, not a 15-minute total upload deadline.
+Continuously progressing transfers can run for hours. Transfers do not use the
+short poll timeout. Connection/TLS establishment retains its separate connect
+bound (`health_seconds` in the runtime timeout mapping). Changed progress is pushed immediately through SSE; unavailable
 workers still follow retry backoff. Existing TOML files need no cadence update.
 
 Authenticated API requests renew the seven-day idle deadline, capped at 30 days
@@ -358,7 +363,12 @@ such as an existing output remain blocking. Removing all rows disables creation.
 Going back and generating another preview resets the selection. Existing outputs,
 unsafe paths, and duplicate output destinations among selected tasks block submission. Preview creates
 no tasks, directories, or files, and does not hash video contents. Actual intake
-independently validates each file and captures its full content identity.
+independently validates each file and captures its full content identity with one
+complete SHA-256 pass. Upload admission performs one further complete hash against
+the durable identity, then streams that same verified, rewound descriptor. Input
+metadata, retained-root identity, and no-follow path checks remain enforced. Batch
+preview remains metadata-only; synchronous creation can still take noticeable
+time for very large files on NAS storage.
 
 `POST /api/tasks/batch-preview` requires authentication and the same session
 Origin/CSRF proof as task creation. Its JSON fields are `input_pattern`,

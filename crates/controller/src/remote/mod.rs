@@ -11,6 +11,7 @@ mod paths;
 mod request_failure;
 mod transfer;
 mod transport;
+mod upload;
 #[path = "compatibility.rs"]
 mod workflow_eligibility;
 

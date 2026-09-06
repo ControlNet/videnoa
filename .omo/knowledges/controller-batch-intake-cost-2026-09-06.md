@@ -8,3 +8,11 @@
 - `spawn_blocking` keeps hashing off the async executor but is awaited per task; it does not introduce batch parallelism or shorten the synchronous response by itself.
 - For total input size S, successful intake reads/hashes approximately 2*S logical bytes before returning, plus metadata/database overhead. OS/NAS caches may reduce physical disk reads but do not eliminate hashing work.
 - This is a source-level diagnosis, not a measured performance profile of the user's deployment. Full-content verification and sequential preparation are the leading suspects for large-video batch latency; no performance patch or real-video test was made.
+
+## Superseding correction (2026-09-07)
+
+See [Controller input scans and transfer inactivity correction](controller-input-scans-transfer-inactivity-2026-09-07.md).
+The historical behavior above is retained as a record. Duplicate intake/upload
+hashes are removed, and upload uses an inactivity watchdog. Any advice above to
+set transfer timeout beyond the complete upload duration is superseded; the
+900-second default now bounds inactivity, not total transfer duration.

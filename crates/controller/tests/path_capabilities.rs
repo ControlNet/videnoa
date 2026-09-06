@@ -122,6 +122,14 @@ fn replacing_a_configured_root_invalidates_accepted_paths() -> TestResult {
         Err(PathError::RootChanged { .. })
     ));
     assert!(matches!(
+        input.revalidate_metadata(),
+        Err(PathError::RootChanged { .. })
+    ));
+    assert!(matches!(
+        input.into_verified_file(),
+        Err(PathError::RootChanged { .. })
+    ));
+    assert!(matches!(
         output.create_new(),
         Err(PathError::RootChanged { .. })
     ));
@@ -146,6 +154,10 @@ fn rooted_input_reopens_only_the_snapshotted_regular_file() -> TestResult {
     // Then: reopening rejects the swap rather than reading outside the root.
     assert!(matches!(
         input.reopen_checked(),
+        Err(PathError::SymlinkComponent { .. } | PathError::InputChanged { .. })
+    ));
+    assert!(matches!(
+        input.into_verified_file(),
         Err(PathError::SymlinkComponent { .. } | PathError::InputChanged { .. })
     ));
     Ok(())

@@ -557,3 +557,16 @@
 - Legacy Linux/Windows package smoke, legacy Docker, both Controller archives, Controller image/content, workflow contracts, Rust/Web, and all fault/load suites passed. Controller archives and image retain exact independent names and GPU-free content constraints.
 - The F4 report and this append-only learning necessarily modify the worktree after the clean audit-start observation; they are reviewer output, not product-source or audit-start dirtiness.
 - F4 is release-readiness approval only. No production release, tag, archive upload, or image publication was performed or claimed. Final verdict: `APPROVE`.
+
+## 2026-09-07 Input scan and transfer inactivity correction
+
+- Full content identity from Task 12 remains required: equal inode, length and
+  mtime do not prove equal bytes. The extra scans came from layering it over
+  metadata-based reopen checks, not from an atomic commit guarantee.
+- Retain the capability-opened, hashed descriptor. Task intake needs one full
+  hash plus cheap revalidation; upload admission needs one durable comparison
+  hash and transfers the same rewound descriptor. Batch preview stays metadata-only.
+- The September 6 whole-upload deadline was an intermediate fix for the short
+  poll timeout bug. It is superseded by an upload-body activity watchdog; every
+  yielded non-empty chunk resets the deadline, and EOF does not disable it.
+- Details and verification: `.omo/knowledges/controller-input-scans-transfer-inactivity-2026-09-07.md`.
