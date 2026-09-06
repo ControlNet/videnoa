@@ -1,0 +1,82 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&family=Manrope:wght@400;500;600;700&display=swap">
+  <style>
+    :root {
+      --bg-deep: oklch(0.095 0.025 260);
+      --surface: oklch(0.155 0.024 260);
+      --elevated: oklch(0.19 0.025 260);
+      --text: oklch(0.96 0.008 260);
+      --muted: oklch(0.72 0.016 260);
+      --quiet: oklch(0.61 0.016 260);
+      --border: oklch(0.29 0.02 260);
+      --border-subtle: oklch(0.23 0.018 260);
+      --accent: oklch(0.66 0.19 292);
+      --accent-wash: oklch(0.22 0.055 292);
+      --healthy: oklch(0.72 0.16 145);
+      --mono: "Geist Mono", "SFMono-Regular", Consolas, monospace;
+    }
+    body {
+      margin: 0;
+      font-family: Manrope, "Avenir Next", "Segoe UI", sans-serif;
+      background: var(--bg-deep);
+      color: var(--text);
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: var(--accent); }
+    a:hover { color: oklch(0.72 0.17 292); }
+  </style>
+</helmet>
+
+<div style="position: relative; display: grid; place-items: center; block-size: 900px; background: var(--bg-deep); overflow: hidden;">
+
+  <!-- a quiet structural field, not a decorative gradient -->
+  <div style="position: absolute; inset: 0; background-image: linear-gradient(oklch(0.29 0.02 260 / 0.16) 1px, transparent 1px), linear-gradient(90deg, oklch(0.29 0.02 260 / 0.16) 1px, transparent 1px); background-size: 56px 56px;"></div>
+  <div style="position: absolute; inset: 40px; border: 1px solid var(--border-subtle);"></div>
+
+  <div style="position: relative; display: flex; flex-direction: column; gap: 22px; inline-size: 396px; padding: 30px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface);">
+
+    <div style="display: flex; align-items: center; gap: 10px;">
+      <div style="display: grid; place-items: center; inline-size: 30px; block-size: 30px; border-radius: 8px; background: var(--accent-wash); color: var(--accent); font-family: var(--mono); font-size: 14px; font-weight: 600;">V</div>
+      <div style="display: flex; flex-direction: column; gap: 1px;">
+        <span style="font-size: 15px; font-weight: 600; letter-spacing: -0.01em;">Videnoa</span>
+        <span style="font-family: var(--mono); font-size: 9px; font-weight: 500; letter-spacing: 0.1em; color: var(--quiet);">CONTROLLER</span>
+      </div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 6px;">
+      <span style="font-size: 20px; font-weight: 600; letter-spacing: -0.015em;">Sign in to Controller</span>
+      <span style="font-size: 12.5px; line-height: 1.55; color: var(--muted);">One administrator password protects every task, worker, and runtime setting on this Controller.</span>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 7px;">
+      <span style="font-size: 11.5px; font-weight: 600; color: var(--muted);">Controller password</span>
+      <div style="display: flex; align-items: center; gap: 9px; block-size: 40px; padding: 0 12px; border: 1px solid var(--accent); border-radius: 8px; background: oklch(0.12 0.022 260); box-shadow: 0 0 0 3px oklch(0.66 0.19 292 / 0.16);">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" style="color: var(--quiet); flex-shrink: 0;"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+        <span style="font-family: var(--mono); font-size: 14px; letter-spacing: 0.18em; color: var(--text); flex-grow: 1;">••••••••••••</span>
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" style="color: var(--quiet); flex-shrink: 0;"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+      </div>
+    </div>
+
+    <div style="display: grid; place-items: center; block-size: 40px; border-radius: 8px; background: var(--accent); color: oklch(0.14 0.03 292); font-size: 13px; font-weight: 700;">Sign in</div>
+
+    <div style="display: flex; align-items: center; gap: 8px; padding-block-start: 18px; border-block-start: 1px solid var(--border-subtle);">
+      <span style="inline-size: 6px; block-size: 6px; border-radius: 50%; background: var(--healthy); box-shadow: 0 0 0 3px oklch(0.72 0.16 145 / 0.14);"></span>
+      <span style="font-size: 11.5px; font-weight: 500; color: var(--muted);">Controller reachable</span>
+      <div style="flex-grow: 1;"></div>
+      <span style="font-family: var(--mono); font-size: 10.5px; color: var(--quiet);">10.0.0.5:8080</span>
+    </div>
+
+  </div>
+</div>
+
+</x-dc>
+</body>
+</html>

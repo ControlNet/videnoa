@@ -1,0 +1,195 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&family=Manrope:wght@400;500;600;700&display=swap">
+  <style>
+    :root {
+      --bg: oklch(0.12 0.022 260);
+      --bg-deep: oklch(0.095 0.025 260);
+      --surface: oklch(0.155 0.024 260);
+      --elevated: oklch(0.19 0.025 260);
+      --text: oklch(0.96 0.008 260);
+      --muted: oklch(0.72 0.016 260);
+      --quiet: oklch(0.61 0.016 260);
+      --border: oklch(0.29 0.02 260);
+      --border-subtle: oklch(0.23 0.018 260);
+      --accent: oklch(0.66 0.19 292);
+      --accent-wash: oklch(0.22 0.055 292);
+      --healthy: oklch(0.72 0.16 145);
+      --danger: oklch(0.7 0.17 25);
+      --mono: "Geist Mono", "SFMono-Regular", Consolas, monospace;
+    }
+    body {
+      margin: 0;
+      font-family: Manrope, "Avenir Next", "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: var(--accent); }
+    a:hover { color: oklch(0.72 0.17 292); }
+  </style>
+</helmet>
+
+<div style="display: grid; grid-template-columns: 56px 372px minmax(0, 1fr); block-size: 900px; background: var(--bg);">
+
+  <!-- icon rail: the split pane needs the horizontal budget -->
+  <div style="display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 14px 0; background: var(--surface); border-inline-end: 1px solid var(--border-subtle);">
+    <div style="display: grid; place-items: center; inline-size: 26px; block-size: 26px; margin-block-end: 10px; border-radius: 7px; background: var(--accent-wash); color: var(--accent); font-family: var(--mono); font-size: 12px; font-weight: 600;">V</div>
+    <div style="display: grid; place-items: center; inline-size: 34px; block-size: 34px; border-radius: 7px; background: var(--accent-wash); color: var(--accent);"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 6h.01M8 6h13M3 12h.01M8 12h13M3 18h.01M8 18h13"/></svg></div>
+    <div style="display: grid; place-items: center; inline-size: 34px; block-size: 34px; border-radius: 7px; color: var(--quiet);"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><path d="M7 7.5h.01M7 17h.01"/></svg></div>
+    <div style="display: grid; place-items: center; inline-size: 34px; block-size: 34px; border-radius: 7px; color: var(--quiet);"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1v.3a2 2 0 1 1-4 0v-.2a1.6 1.6 0 0 0-2.8-1.1l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.6 1.6 0 0 0 3.5 15H3a2 2 0 1 1 0-4h.2A1.6 1.6 0 0 0 4.3 8.2l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 2.7-1.1V4a2 2 0 1 1 4 0v.2a1.6 1.6 0 0 0 2.8 1.1l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0 1.1 2.7h.3a2 2 0 1 1 0 4h-.2a1.6 1.6 0 0 0-1.2 1z"/></svg></div>
+    <div style="flex-grow: 1;"></div>
+    <span style="inline-size: 7px; block-size: 7px; border-radius: 50%; background: var(--healthy); box-shadow: 0 0 0 3px oklch(0.72 0.16 145 / 0.14); margin-block-end: 12px;"></span>
+    <div style="display: grid; place-items: center; inline-size: 34px; block-size: 34px; border-radius: 7px; color: var(--quiet);"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg></div>
+  </div>
+
+  <!-- list pane -->
+  <div style="display: flex; flex-direction: column; min-inline-size: 0; border-inline-end: 1px solid var(--border-subtle); background: var(--bg-deep);">
+    <div style="display: flex; align-items: center; gap: 8px; block-size: 48px; padding: 0 14px; border-block-end: 1px solid var(--border-subtle);">
+      <span style="font-size: 14px; font-weight: 600;">Tasks</span>
+      <span style="font-family: var(--mono); font-size: 11px; color: var(--quiet);">1,284</span>
+      <div style="flex-grow: 1;"></div>
+      <div style="display: grid; place-items: center; inline-size: 26px; block-size: 26px; border: 1px solid var(--border-subtle); border-radius: 5px; color: var(--muted);"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M3 5h18l-7 8v6l-4 2v-8z"/></svg></div>
+      <div style="display: grid; place-items: center; inline-size: 26px; block-size: 26px; border-radius: 5px; background: var(--accent); color: oklch(0.14 0.03 292);"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></div>
+    </div>
+
+    <div style="display: flex; align-items: center; gap: 6px; block-size: 36px; padding: 0 14px; border-block-end: 1px solid var(--border-subtle);">
+      <span style="block-size: 22px; padding: 0 8px; border-radius: 11px; background: var(--accent-wash); color: var(--accent); font-size: 11px; font-weight: 600; line-height: 22px;">Active 12</span>
+      <span style="block-size: 22px; padding: 0 8px; border-radius: 11px; color: var(--quiet); font-size: 11px; font-weight: 500; line-height: 22px;">Queued 37</span>
+      <span style="block-size: 22px; padding: 0 8px; border-radius: 11px; color: var(--quiet); font-size: 11px; font-weight: 500; line-height: 22px;">Failed 3</span>
+      <span style="block-size: 22px; padding: 0 8px; border-radius: 11px; color: var(--quiet); font-size: 11px; font-weight: 500; line-height: 22px;">Done</span>
+    </div>
+
+    <div style="flex-grow: 1; overflow: hidden;">
+      <sc-for list="{{items}}" as="item" hint-placeholder-count="12">
+        <div style="display: flex; flex-direction: column; gap: 5px; padding: 9px 14px; border-block-end: 1px solid var(--border-subtle); background: {{item.bg}}; border-inline-start: 2px solid {{item.edge}};">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="inline-size: 6px; block-size: 6px; border-radius: 50%; flex-shrink: 0; background: {{item.tone}};"></span>
+            <span style="flex-grow: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 500;">{{item.name}}</span>
+            <span style="font-family: var(--mono); font-size: 10.5px; font-weight: 600; color: var(--quiet);">{{item.pctLabel}}</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 11px; font-weight: 500; color: {{item.tone}};">{{item.status}}</span>
+            <span style="font-family: var(--mono); font-size: 10.5px; color: var(--quiet);">{{item.workflow}}</span>
+            <div style="flex-grow: 1;"></div>
+            <span style="font-family: var(--mono); font-size: 10.5px; color: var(--quiet);">{{item.created}}</span>
+          </div>
+          <span style="block-size: 2px; border-radius: 1px; background: var(--elevated); overflow: hidden;">
+            <span style="display: block; block-size: 2px; inline-size: {{item.pct}}; background: {{item.tone}};"></span>
+          </span>
+        </div>
+      </sc-for>
+    </div>
+  </div>
+
+  <!-- detail pane, always mounted -->
+  <div style="display: flex; flex-direction: column; min-inline-size: 0;">
+    <div style="display: flex; align-items: center; gap: 10px; block-size: 48px; padding: 0 20px; border-block-end: 1px solid var(--border-subtle);">
+      <span style="inline-size: 7px; block-size: 7px; border-radius: 50%; background: var(--accent);"></span>
+      <span style="font-size: 14px; font-weight: 600;">S01E12 – Whispers.mkv</span>
+      <span style="font-family: var(--mono); font-size: 11px; color: var(--quiet);">v7</span>
+      <div style="flex-grow: 1;"></div>
+      <div style="block-size: 28px; padding: 0 11px; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); font-size: 12px; font-weight: 600; line-height: 26px;">Cancel task</div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 22px; padding: 20px; overflow: hidden;">
+
+      <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; background: var(--border-subtle); border: 1px solid var(--border-subtle); border-radius: 8px; overflow: hidden;">
+        <div style="display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; background: var(--surface);"><span style="font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.08em; color: var(--quiet);">PROGRESS</span><span style="font-family: var(--mono); font-size: 19px; font-weight: 600; color: var(--accent);">62%</span></div>
+        <div style="display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; background: var(--surface);"><span style="font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.08em; color: var(--quiet);">FRAMES</span><span style="font-family: var(--mono); font-size: 19px; font-weight: 600;">14,880</span></div>
+        <div style="display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; background: var(--surface);"><span style="font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.08em; color: var(--quiet);">FPS</span><span style="font-family: var(--mono); font-size: 19px; font-weight: 600;">23.8</span></div>
+        <div style="display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; background: var(--surface);"><span style="font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.08em; color: var(--quiet);">ETA</span><span style="font-family: var(--mono); font-size: 19px; font-weight: 600;">8m 12s</span></div>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 10px;">
+        <span style="font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.09em; color: var(--quiet);">PIPELINE</span>
+        <div style="display: flex; align-items: center; gap: 0;">
+          <sc-for list="{{stages}}" as="stage" hint-placeholder-count="7">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <div style="display: flex; align-items: center; gap: 6px;">
+                <span style="inline-size: 7px; block-size: 7px; border-radius: 50%; background: {{stage.tone}};"></span>
+                <span style="font-size: 11.5px; font-weight: 500; color: {{stage.text}};">{{stage.label}}</span>
+              </div>
+              <span style="inline-size: 22px; block-size: 1px; background: var(--border);"></span>
+            </div>
+          </sc-for>
+          <div style="display: flex; align-items: center; gap: 6px;">
+            <span style="inline-size: 7px; block-size: 7px; border-radius: 50%; background: var(--elevated);"></span>
+            <span style="font-size: 11.5px; font-weight: 500; color: var(--quiet);">Done</span>
+          </div>
+        </div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 28px;">
+        <div style="display: flex; flex-direction: column; gap: 4px;"><span style="font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.08em; color: var(--quiet);">INPUT PATH</span><span style="font-family: var(--mono); font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">/media/incoming/S01E12 – Whispers.mkv</span></div>
+        <div style="display: flex; flex-direction: column; gap: 4px;"><span style="font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.08em; color: var(--quiet);">OUTPUT PATH</span><span style="font-family: var(--mono); font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">/media/library/S01E12 – Whispers.mp4</span></div>
+        <div style="display: flex; flex-direction: column; gap: 4px;"><span style="font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.08em; color: var(--quiet);">WORKER</span><span style="font-family: var(--mono); font-size: 11.5px; color: var(--muted);">node-east · http://10.0.0.14:3000</span></div>
+        <div style="display: flex; flex-direction: column; gap: 4px;"><span style="font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.08em; color: var(--quiet);">REMOTE JOB</span><span style="font-family: var(--mono); font-size: 11.5px; color: var(--muted);">550e8400-e29b-41d4-a716-446655440099</span></div>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 8px;">
+        <div style="display: flex; align-items: baseline; gap: 8px;">
+          <span style="font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.09em; color: var(--quiet);">ATTEMPTS</span>
+          <span style="font-family: var(--mono); font-size: 10.5px; color: var(--quiet);">1 of 1</span>
+        </div>
+        <div style="display: grid; grid-template-columns: 40px 110px minmax(0, 1fr) 92px; align-items: center; gap: 12px; block-size: 30px; padding: 0 12px; border: 1px solid var(--border-subtle); border-radius: 6px; background: var(--surface); font-family: var(--mono); font-size: 11px; color: var(--muted);">
+          <span style="color: var(--text); font-weight: 600;">#1</span>
+          <span style="color: var(--accent);">processing</span>
+          <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">task/input/opaque.mkv</span>
+          <span style="text-align: end; color: var(--quiet);">started 4m ago</span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+</x-dc>
+<script data-dc-script>
+class Component extends DCLogic {
+  renderVals() {
+    const accent = 'oklch(0.66 0.19 292)';
+    const healthy = 'oklch(0.72 0.16 145)';
+    const danger = 'oklch(0.7 0.17 25)';
+    const quiet = 'oklch(0.61 0.016 260)';
+    const raw = [
+      ['Processing', accent, 62, 'S01E12 – Whispers.mkv', 'anime-2x', '2m ago', true],
+      ['Processing', accent, 41, 'S01E13 – The Long Road.mkv', 'anime-2x', '4m ago', false],
+      ['Downloading', accent, 88, 'S02E04 – Harbour Lights.mkv', 'rife-3x', '6m ago', false],
+      ['Uploading', accent, 23, 'S02E05 – Ashfall.mkv', 'rife-3x', '7m ago', false],
+      ['Verifying', accent, 97, 'S01E09 – Quiet Season.mkv', 'anime-2x', '11m ago', false],
+      ['Publishing', accent, 99, 'S01E08 – Cold Front.mkv', 'anime-2x', '12m ago', false],
+      ['Queued', quiet, 0, 'S02E06 – Driftwood.mkv', 'rife-3x', '14m ago', false],
+      ['Queued', quiet, 0, 'S02E07 – Salt Marsh.mkv', 'rife-3x', '15m ago', false],
+      ['Failed', danger, 34, 'S01E04 – Rainshadow.mkv', 'anime-2x', '22m ago', false],
+      ['Failed', danger, 0, 'S01E05 – Undertow.mkv', 'rife-3x', '31m ago', false],
+      ['Completed', healthy, 100, 'S01E07 – Nightjar.mkv', 'anime-2x', '38m ago', false],
+      ['Completed', healthy, 100, 'S01E06 – Bramble.mkv', 'anime-2x', '44m ago', false],
+    ];
+    const stageNames = ['Queued', 'Reserved', 'Uploading', 'Staged', 'Submitted', 'Processing'];
+    return {
+      items: raw.map(([status, tone, pct, name, workflow, created, selected]) => ({
+        status, tone, name, workflow, created,
+        pct: pct + '%',
+        pctLabel: pct + '%',
+        bg: selected ? 'oklch(0.22 0.055 292)' : 'transparent',
+        edge: selected ? accent : 'transparent',
+      })),
+      stages: stageNames.map((label, index) => ({
+        label,
+        tone: index < 5 ? healthy : accent,
+        text: index < 5 ? 'oklch(0.72 0.016 260)' : 'oklch(0.96 0.008 260)',
+      })),
+    };
+  }
+}
+</script>
+</body>
+</html>
