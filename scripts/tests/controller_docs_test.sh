@@ -57,6 +57,7 @@ for route in \
   '/api/auth/session' \
   '/api/auth/logout' \
   '/api/tasks' \
+  '/api/tasks/batch' \
   '/api/tasks/{id}' \
   '/api/tasks/{id}/cancel' \
   '/api/tasks/{id}/retry' \

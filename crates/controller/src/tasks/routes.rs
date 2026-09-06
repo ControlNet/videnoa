@@ -34,6 +34,7 @@ pub(crate) fn router(auth: AuthService, tasks: TaskService) -> Router {
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
     let writes = Router::new()
         .route("/api/tasks/batch-preview", post(batch_preview))
+        .route("/api/tasks/batch", post(batch_create))
         .route("/api/tasks", post(create_task))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
@@ -93,6 +94,23 @@ async fn batch_preview(
 ) -> Result<Json<super::batch::BatchPreview>, TaskApiError> {
     let Json(request) = payload.map_err(|_| TaskApiError::InvalidRequest)?;
     state.tasks.preview_batch(request).await.map(Json)
+}
+
+async fn batch_create(
+    State(state): State<TaskRouteState>,
+    headers: HeaderMap,
+    payload: Result<Json<super::batch::BatchPreviewRequest>, JsonRejection>,
+) -> Result<(StatusCode, Json<super::batch::BatchCreateResponse>), TaskApiError> {
+    if headers.contains_key(IDEMPOTENCY_HEADER) {
+        return Err(TaskApiError::invalid(
+            "idempotency_key",
+            FieldErrorCode::InvalidValue,
+            "batch creation does not support Idempotency-Key; omit this header",
+        ));
+    }
+    let Json(request) = payload.map_err(|_| TaskApiError::InvalidRequest)?;
+    let (status, response) = state.tasks.create_batch(request).await?;
+    Ok((status, Json(response)))
 }
 
 #[derive(serde::Deserialize)]

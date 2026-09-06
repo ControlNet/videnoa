@@ -1,14 +1,16 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::{
-    FieldErrorCode, InputPath, OutputPath, TaskCreateRequest, TaskSource, WorkflowName,
+    ApiError, ApiErrorCode, FieldErrorCode, IdempotencyKey, InputPath, OutputPath, Task,
+    TaskCreateRequest, TaskSource, WorkflowName,
 };
 
 use super::error::TaskApiError;
-use super::intake::{validate_workflow_priority, TaskService};
+use super::intake::{validate_workflow_priority, IntakeOutcome, TaskService};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -49,7 +51,83 @@ struct BatchPreviewRow {
     output_key: String,
 }
 
+#[derive(Serialize)]
+pub(super) struct BatchCreateResponse {
+    created: usize,
+    failed: usize,
+    items: Vec<BatchCreateRow>,
+}
+
+#[derive(Serialize)]
+struct BatchCreateRow {
+    request: TaskCreateRequest,
+    task: Option<Task>,
+    error: Option<ApiError>,
+}
+
 impl TaskService {
+    pub(super) async fn create_batch(
+        &self,
+        request: BatchPreviewRequest,
+    ) -> Result<(StatusCode, BatchCreateResponse), TaskApiError> {
+        let preview = self.preview_batch(request).await?;
+        if preview.items.is_empty() {
+            return Err(invalid(
+                "input_pattern",
+                "No files matched the input pattern.",
+            ));
+        }
+        let mut response = BatchCreateResponse {
+            created: 0,
+            failed: 0,
+            items: preview
+                .items
+                .into_iter()
+                .map(|row| BatchCreateRow {
+                    request: TaskCreateRequest {
+                        source: TaskSource::Api,
+                        ..row.request
+                    },
+                    task: None,
+                    error: row.error.map(|message| ApiError {
+                        code: ApiErrorCode::InvalidRequest,
+                        message: message.to_owned(),
+                        retryable: false,
+                        field_errors: Vec::new(),
+                    }),
+                })
+                .collect(),
+        };
+        response.failed = response
+            .items
+            .iter()
+            .filter(|row| row.error.is_some())
+            .count();
+        // Gate the entire preview before admitting even the first valid task.
+        if response.failed > 0 {
+            return Ok((StatusCode::BAD_REQUEST, response));
+        }
+        for row in &mut response.items {
+            let key = IdempotencyKey::new(uuid::Uuid::new_v4().to_string());
+            match self.create(key, row.request.clone()).await {
+                Ok(IntakeOutcome::Created(task) | IntakeOutcome::Replayed(task)) => {
+                    row.task = Some(task);
+                    response.created += 1;
+                }
+                Err(error) => {
+                    row.error = Some(error.into_parts().1);
+                    response.failed += 1;
+                }
+            }
+        }
+        let status = if response.failed == 0 {
+            StatusCode::CREATED
+        } else {
+            StatusCode::MULTI_STATUS
+        };
+        Ok((status, response))
+    }
+
     pub(super) async fn preview_batch(
         &self,
         request: BatchPreviewRequest,

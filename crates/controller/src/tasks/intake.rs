@@ -81,6 +81,40 @@ impl TaskService {
         if let Some(outcome) = self.preflight(&key, request_fingerprint).await? {
             return Ok(outcome);
         }
+        let service = self.clone();
+        let task = tokio::task::spawn_blocking(move || service.prepare_task(request))
+            .await
+            .map_err(|_| TaskApiError::Internal)??;
+        let task_id = task.id;
+        let now = task.created_at;
+        let record = IdempotencyRecord {
+            key,
+            request_fingerprint,
+            task_id,
+            created_at: now,
+        };
+        match self
+            .store
+            .insert_task_with_idempotency(&task, &record)
+            .await
+            .map_err(|_| TaskApiError::Internal)?
+        {
+            TaskIngressOutcome::Inserted => {
+                let task = self.load(task_id).await?;
+                self.events.publish(SseEvent::TaskUpdated {
+                    event_id: SseEventId::random(),
+                    task: task.clone(),
+                });
+                Ok(IntakeOutcome::Created(task))
+            }
+            TaskIngressOutcome::Replay(existing) => {
+                Ok(IntakeOutcome::Replayed(self.load(existing).await?))
+            }
+            TaskIngressOutcome::Conflict => Err(TaskApiError::Conflict),
+        }
+    }
+
+    fn prepare_task(&self, request: TaskCreateRequest) -> Result<NewTask, TaskApiError> {
         validate_request(&request)?;
         let input_extension = extension(request.input_path.as_str(), "input_path")?;
         let output_extension = extension(request.output_path.as_str(), "output_path")?;
@@ -115,7 +149,7 @@ impl TaskService {
             ),
             ..request
         };
-        let task = NewTask {
+        Ok(NewTask {
             id: task_id,
             request,
             input_extension: InputExtension::new(input_extension),
@@ -127,32 +161,7 @@ impl TaskService {
                 input.snapshot().content_identity(),
             ),
             created_at: now,
-        };
-        let record = IdempotencyRecord {
-            key,
-            request_fingerprint,
-            task_id,
-            created_at: now,
-        };
-        match self
-            .store
-            .insert_task_with_idempotency(&task, &record)
-            .await
-            .map_err(|_| TaskApiError::Internal)?
-        {
-            TaskIngressOutcome::Inserted => {
-                let task = self.load(task_id).await?;
-                self.events.publish(SseEvent::TaskUpdated {
-                    event_id: SseEventId::random(),
-                    task: task.clone(),
-                });
-                Ok(IntakeOutcome::Created(task))
-            }
-            TaskIngressOutcome::Replay(existing) => {
-                Ok(IntakeOutcome::Replayed(self.load(existing).await?))
-            }
-            TaskIngressOutcome::Conflict => Err(TaskApiError::Conflict),
-        }
+        })
     }
 
     async fn preflight(
@@ -188,7 +197,10 @@ impl TaskService {
     }
 }
 
-pub(super) fn validate_workflow_priority(workflow: &str, priority: i32) -> Result<(), TaskApiError> {
+pub(super) fn validate_workflow_priority(
+    workflow: &str,
+    priority: i32,
+) -> Result<(), TaskApiError> {
     if !(PRIORITY_MIN..=PRIORITY_MAX).contains(&priority) {
         return Err(TaskApiError::invalid(
             "priority",

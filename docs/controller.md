@@ -358,6 +358,37 @@ removal/restoration are disabled once submission starts to preserve the exact ta
 discards that browser state. A batch is not a single database transaction: tasks
 already created remain queued even if another row fails.
 
+### Create a Batch in One Request
+
+`POST /api/tasks/batch` accepts the same JSON fields as `batch-preview` and uses
+the same authentication (Bearer clients need no Origin or CSRF header). It runs
+the full preview first. Invalid options, no matches, scan limits, or any preview
+row error reject the entire request with HTTP 400 **before any task is created**.
+The same limit of 500 matched files applies.
+
+When every preview row is valid, the request creates tasks sequentially and waits
+until all rows have been attempted. Tasks use `source: "api"` and
+`source_reference: null`. The response contains `created`, `failed`, and `items`;
+each item contains its `request`, a created `task` or null, and an `error` or null.
+Errors use the standard API error fields (`code`, `message`, `retryable`, and
+`field_errors`). HTTP 201 means all tasks were created. HTTP 207 means creation
+encountered errors after preview; successful tasks are retained and individual
+results identify the failures. This is not a batch database transaction.
+
+For preview row errors, HTTP 400 returns the same batch response with `created: 0`;
+`failed` counts invalid rows and every `task` is null. Valid rows were not attempted.
+Malformed requests, invalid options, and no matches return the standard error
+envelope instead. File changes after preview are checked again during each intake.
+
+This endpoint does not support retry deduplication; `Idempotency-Key` is rejected
+with HTTP 400 rather than silently ignored. Repeating an unkeyed request can
+create more tasks. Use preview plus individually keyed `POST /api/tasks` requests
+when retries must be deduplicated. Creation reads input content for verification,
+so the synchronous response can take time for large files; it does not wait for
+video processing to finish. There is no background batch operation or status URL.
+
+### Create Individual Tasks
+
 `POST /api/tasks` accepts requests without an `Idempotency-Key` header. Each
 request without a key is a new submission and does not deduplicate retries.
 Clients that need safe retries can supply one `Idempotency-Key` header containing

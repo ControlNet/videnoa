@@ -56,8 +56,8 @@ impl From<MissingPeerMetadata> for TaskApiError {
     }
 }
 
-impl IntoResponse for TaskApiError {
-    fn into_response(self) -> Response {
+impl TaskApiError {
+    pub(super) fn into_parts(self) -> (StatusCode, ApiError) {
         let (status, code, message, field_errors) = match self {
             Self::Unauthorized => (
                 StatusCode::UNAUTHORIZED,
@@ -118,15 +118,19 @@ impl IntoResponse for TaskApiError {
         };
         (
             status,
-            Json(ApiErrorEnvelope {
-                error: ApiError {
-                    code,
-                    message: message.to_owned(),
-                    retryable: false,
-                    field_errors,
-                },
-            }),
+            ApiError {
+                code,
+                message: message.to_owned(),
+                retryable: false,
+                field_errors,
+            },
         )
-            .into_response()
+    }
+}
+
+impl IntoResponse for TaskApiError {
+    fn into_response(self) -> Response {
+        let (status, error) = self.into_parts();
+        (status, Json(ApiErrorEnvelope { error })).into_response()
     }
 }
