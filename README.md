@@ -29,19 +29,6 @@ Videnoa supports super-resolution (Real-ESRGAN / RealCUGAN) and frame interpolat
 - External ONNX Runtime shared library (required), TensorRT shared library (optional, recommended for speed)
 - Dependency bundles are available in [misc files](https://github.com/ControlNet/videnoa/releases/tag/misc)
 
-## Videnoa Controller
-
-`videnoa-controller` is a separate GPU-free NAS coordination service for
-durable task intake, remote multi-Videnoa scheduling, transfer, recovery, and a
-Web operations UI. It does not rename or replace the existing `videnoa` GPU
-service. See the [Controller operations guide](docs/controller.md), the
-[archive first-run guide](README-controller.md), and the
-[example configuration](controller.example.toml).
-
-Controller releases use `controlnet/videnoa-controller:<version>` and `latest`,
-plus independent Linux and Windows archives. Existing Videnoa images and
-archives remain unchanged.
-
 ## Development setup
 
 ### 1) Prepare runtime libraries and models
@@ -95,6 +82,23 @@ docker run --gpus all -p 3000:3000 \
   -v /path/to/media:/data \
   videnoa
 ```
+
+### Videnoa Controller
+
+Manage tasks across Videnoa workers; no GPU required. Replace `$HOME/Videos` with your media directory.
+
+```bash
+mkdir -p ./controller-data
+docker run -d --name videnoa-controller \
+  --user "$(id -u):$(id -g)" \
+  -p 3001:3001 \
+  -v "$PWD/controller-data:/workspace/data" \
+  -v "$HOME/Videos:/media" \
+  controlnet/videnoa-controller:latest
+```
+
+Open `http://localhost:3001`, set an administrator password, and add your Videnoa workers.
+State persists in `./controller-data`; use `/media/...` paths for tasks.
 
 ## Configuration
 
