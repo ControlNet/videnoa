@@ -20,7 +20,7 @@ Package Videnoa distribution folder.
 
 This script will:
 1) clone ControlNet/videnoa
-2) run cargo build --release --workspace
+2) run cargo build --release --locked -p videnoa-app -p videnoa-desktop
 3) download platform assets from GitHub release (lib/bin/models)
 4) assemble a distribution folder named "videnoa"
 
@@ -409,10 +409,10 @@ validate_source_tree "$CLONE_DIR"
 
 build_frontend_assets "$CLONE_DIR"
 
-log "building release workspace"
+log "building release Worker and desktop binaries"
 (
   cd "$CLONE_DIR"
-  cargo build --release --workspace
+  cargo build --release --locked -p videnoa-app -p videnoa-desktop
 )
 
 log "downloading release assets from tag '$RELEASE_TAG'"

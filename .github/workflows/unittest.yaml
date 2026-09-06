@@ -84,6 +84,14 @@ jobs:
       - name: Build web assets
         working-directory: web
         run: npm run build
+      - name: Share Windows web assets
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: worker-web-windows
+          path: web/dist
+          if-no-files-found: error
+          retention-days: 1
 
   controller-rust:
     name: Controller Rust quality and tests
@@ -248,7 +256,8 @@ jobs:
       - name: Cache package Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: ". -> ${{ runner.temp }}/videnoa-package-target"
+          prefix-key: v1-package-target
+          workspaces: ". -> ../videnoa-package-target"
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -270,7 +279,7 @@ jobs:
         run: bash scripts/tests/package_dist_archive_test.sh
       - name: Build package bundle
         env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/videnoa-package-target
+          CARGO_TARGET_DIR: ${{ github.workspace }}/../videnoa-package-target
         run: |
           bash scripts/package_dist.sh --platform linux64 --release-tag misc --output-dir "$RUNNER_TEMP/dist-linux64" --source-dir "$GITHUB_WORKSPACE" --force
       - name: Verify Linux runtime compatibility
@@ -298,7 +307,8 @@ jobs:
       - name: Cache package Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: ". -> ${{ runner.temp }}/videnoa-package-target"
+          prefix-key: v1-package-target
+          workspaces: ". -> ../videnoa-package-target"
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -328,12 +338,20 @@ jobs:
           if (-not (Get-Command aria2c -ErrorAction SilentlyContinue)) {
             Write-Warning 'aria2 not available; package_dist.ps1 will fallback to curl/Invoke-WebRequest'
           }
+      - name: Restore verified Windows web assets
+        uses: actions/download-artifact@v4
+        with:
+          name: worker-web-windows
+          path: web/dist
+      - name: Validate Windows packaging inputs
+        shell: pwsh
+        run: pwsh -File scripts/tests/package_dist_windows_test.ps1 -FrontendDist "$env:GITHUB_WORKSPACE\web\dist"
       - name: Build package bundle
         env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/videnoa-package-target
+          CARGO_TARGET_DIR: ${{ github.workspace }}/../videnoa-package-target
         shell: pwsh
         run: |
-          pwsh -File scripts/package_dist.ps1 -Platform win64 -ReleaseTag misc -OutputDir "$env:RUNNER_TEMP\dist-win64" -SourceDir "$env:GITHUB_WORKSPACE" -Force
+          pwsh -File scripts/package_dist.ps1 -Platform win64 -ReleaseTag misc -OutputDir "$env:RUNNER_TEMP\dist-win64" -SourceDir "$env:GITHUB_WORKSPACE" -FrontendDist "$env:GITHUB_WORKSPACE\web\dist" -Force
       - name: Create split archive (2000MB volumes)
         shell: pwsh
         run: |

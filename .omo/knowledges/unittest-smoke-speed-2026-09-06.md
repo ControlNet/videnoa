@@ -30,3 +30,5 @@
 - Controller Docker HTTP browser smoke also passed on GitHub with the final code.
 - Final run completed successfully: all 14 jobs passed.
 - Windows package smoke passed in 21m57s versus the 27m56s baseline. Full bundle build remained 19m38s; archive creation fell from 7m14s to 5s, and integrity/layout verification took 8s. The dependency cache save passed. Future warm-build gains have not yet been measured.
+
+Correction: a subsequent audit found that the cache action's successful save did not include the actual compilation target directory because the workspace mapping used an absolute path. See `windows-package-build-speed-2026-09-06.md` for the corrected mapping and follow-up verification. The archive timings above remain valid.

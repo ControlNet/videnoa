@@ -9,6 +9,7 @@ param(
     [string]$OutputDir = (Get-Location).Path,
     [string]$WorkDir = '',
     [string]$SourceDir = '',
+    [string]$FrontendDist = '',
     [switch]$KeepWorkDir,
     [switch]$Force,
     [switch]$Help
@@ -23,7 +24,7 @@ Package Videnoa distribution folder (PowerShell).
 
 This script will:
 1) clone ControlNet/videnoa (or use -SourceDir)
-2) run cargo build --release --workspace
+2) run cargo build --release --locked -p videnoa-app -p videnoa-desktop
 3) download platform assets from GitHub release (lib/bin/models)
 4) assemble a distribution folder named "videnoa"
 
@@ -38,6 +39,7 @@ Options:
   -OutputDir <path>        Parent directory for output folder "videnoa" (default: current directory)
   -WorkDir <path>          Working directory (default: temporary directory)
   -SourceDir <path>        Use a local source checkout instead of cloning from GitHub
+  -FrontendDist <path>     Reuse verified frontend assets instead of rebuilding them
   -KeepWorkDir             Keep temporary work directory after completion
   -Force                   Remove existing output "videnoa" folder if present
   -Help                    Show this help message
@@ -94,11 +96,23 @@ function Enable-Tls12ForWebRequests {
 }
 
 function Build-FrontendAssets {
-    param([Parameter(Mandatory = $true)][string]$RepoRoot)
+    param(
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [string]$PrebuiltDist = ''
+    )
 
     $webDir = Join-Path -Path $RepoRoot -ChildPath 'web'
     if (-not (Test-Path -LiteralPath $webDir -PathType Container)) {
         Fail "missing frontend directory: $webDir"
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($PrebuiltDist)) {
+        if (-not (Test-Path -LiteralPath (Join-Path $PrebuiltDist 'index.html') -PathType Leaf)) {
+            Fail "prebuilt frontend is missing index.html: $PrebuiltDist"
+        }
+        Write-Log 'reusing verified frontend assets'
+        Copy-DirectoryContents -SourceDir $PrebuiltDist -DestinationDir (Join-Path $webDir 'dist')
+        return
     }
 
     $lockfilePath = Join-Path -Path $webDir -ChildPath 'package-lock.json'
@@ -631,12 +645,12 @@ try {
 
     Validate-SourceTree -RepoRoot $cloneDir
 
-    Build-FrontendAssets -RepoRoot $cloneDir
+    Build-FrontendAssets -RepoRoot $cloneDir -PrebuiltDist $FrontendDist
 
-    Write-Log 'building release workspace'
+    Write-Log 'building release Worker and desktop binaries'
     Push-Location $cloneDir
     try {
-        & cargo build --release --workspace
+        & cargo build --release --locked -p videnoa-app -p videnoa-desktop
         if ($LASTEXITCODE -ne 0) {
             Fail 'cargo build failed'
         }

@@ -179,6 +179,23 @@ for (const [job, text, expected] of [
 	);
 }
 
+for (const target of ["D:/actions/package-target", "/tmp/package-target", "${{ runner.temp }}/package-target"]) {
+	const workflow = structuredClone(loadWorkflow(unitPath));
+	const cache = workflow.jobs["package-win64-smoke"].steps.find((step) => step.uses === "Swatinem/rust-cache@v2");
+	cache.with.workspaces = `. -> ${target}`;
+	expectContractFailure("absolute cache mapping", () => validateUnitWorkflow(workflow), /cache target must be relative/);
+}
+{
+	const workflow = structuredClone(loadWorkflow(unitPath));
+	workflow.jobs["package-win64-smoke"].steps.find((step) => step.name === "Build package bundle").env.CARGO_TARGET_DIR = "${{ runner.temp }}/different-target";
+	expectContractFailure("cache/build directory mismatch", () => validateUnitWorkflow(workflow), /cache and Cargo target directories differ/);
+}
+{
+	const workflow = structuredClone(loadWorkflow(unitPath));
+	workflow.jobs["web-build-check"].steps = workflow.jobs["web-build-check"].steps.filter((step) => step.uses !== "actions/upload-artifact@v4");
+	expectContractFailure("missing verified frontend artifact", () => validateUnitWorkflow(workflow), /upload-artifact/);
+}
+
 console.log(
 	"[workflow-contracts] all positive and negative workflow contracts passed",
 );

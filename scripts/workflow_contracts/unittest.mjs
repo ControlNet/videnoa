@@ -1,7 +1,10 @@
+import path from "node:path";
 import {
 	requireJob,
 	requireNeeds,
 	requireText,
+	requireValue,
+	expression,
 	validateGraph,
 } from "./common.mjs";
 
@@ -52,6 +55,18 @@ export function validateUnitWorkflow(workflow) {
 	]) {
 		requireNeeds(jobs[name], name, ["rust-tests", "web-build-check"]);
 	}
+	for (const name of ["package-linux64-smoke", "package-win64-smoke"]) {
+		const cache = jobs[name].steps.find((step) => step.uses === "Swatinem/rust-cache@v2");
+		const mapping = cache?.with?.workspaces?.split(" -> ");
+		requireValue(mapping?.length === 2 && mapping[0] === ".", `${name}: invalid cache mapping`);
+		const target = mapping[1];
+		requireValue(!path.posix.isAbsolute(target) && !path.win32.isAbsolute(target) && !target.includes("${"), `${name}: cache target must be relative`);
+		const build = jobs[name].steps.find((step) => step.name === "Build package bundle");
+		requireValue(build?.env?.CARGO_TARGET_DIR === `${expression("github.workspace")}/${target}`, `${name}: cache and Cargo target directories differ`);
+		requireValue(Boolean(cache.with["prefix-key"]), `${name}: corrected cache requires a new prefix`);
+	}
+	requireText(jobs["web-build-check"], "web-build-check", ["actions/upload-artifact@v4", "worker-web-windows", "if-no-files-found"]);
+	requireText(jobs["package-win64-smoke"], "package-win64-smoke", ["actions/download-artifact@v4", "worker-web-windows", "-FrontendDist"]);
 	requireText(requireJob(jobs, "workflow-contracts"), "workflow-contracts", [
 		"npm ci --no-fund",
 		"validate_ci_release_workflows.test.mjs",
