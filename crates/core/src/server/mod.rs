@@ -2371,6 +2371,25 @@ async fn jellyfin_items(
     Ok(Json(serde_json::to_value(items).unwrap_or_default()))
 }
 
+fn job_cancellation_watch(
+    token: CancellationToken,
+) -> (
+    tokio::sync::watch::Receiver<bool>,
+    tokio::task::JoinHandle<()>,
+) {
+    let (tx, rx) = tokio::sync::watch::channel(false);
+    let bridge = tokio::spawn(async move {
+        tokio::select! {
+            _ = token.cancelled() => {
+                let _ = tx.send(true);
+            }
+            // Completion, failure, and unwinding all drop the executor's receiver.
+            _ = tx.closed() => {}
+        }
+    });
+    (rx, bridge)
+}
+
 async fn run_job(state: AppState, job_id: String) {
     let _permit = {
         let cancel_token = {
@@ -2542,14 +2561,7 @@ async fn run_job(state: AppState, job_id: String) {
                     }
                 };
 
-                let (cancel_watch_tx, cancel_watch_rx) = tokio::sync::watch::channel(false);
-                let _cancel_bridge = tokio::spawn({
-                    let token = cancel_token.clone();
-                    async move {
-                        token.cancelled().await;
-                        let _ = cancel_watch_tx.send(true);
-                    }
-                });
+                let (cancel_watch_rx, _cancel_bridge) = job_cancellation_watch(cancel_token);
 
                 SequentialExecutor::execute_with_context_and_debug_hook(
                     &workflow,
@@ -2827,6 +2839,31 @@ mod tests {
 
     fn test_models_dir() -> PathBuf {
         std::env::temp_dir().join("models")
+    }
+
+    #[tokio::test]
+    async fn job_cancellation_bridge_exits_when_execution_drops_its_receiver() {
+        let token = CancellationToken::new();
+        let (rx, bridge) = job_cancellation_watch(token.clone());
+        drop(rx);
+        tokio::time::timeout(Duration::from_secs(1), bridge)
+            .await
+            .expect("completed or failed jobs must not retain a cancellation bridge")
+            .expect("bridge must not panic");
+        assert!(!token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn job_cancellation_bridge_forwards_cancellation() {
+        let token = CancellationToken::new();
+        let (mut rx, bridge) = job_cancellation_watch(token.clone());
+        token.cancel();
+        tokio::time::timeout(Duration::from_secs(1), rx.changed())
+            .await
+            .expect("cancellation must reach the executor")
+            .expect("bridge must publish cancellation before closing");
+        assert!(*rx.borrow());
+        bridge.await.expect("bridge must not panic");
     }
 
     fn test_data_dir() -> PathBuf {

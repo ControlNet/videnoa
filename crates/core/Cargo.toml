@@ -44,6 +44,10 @@ prost-build = "0.14"
 [dev-dependencies]
 tempfile = "3"
 
+[[test]]
+name = "allocator_policy"
+harness = false
+
 [[example]]
 name = "spike"
 path = "examples/spike.rs"

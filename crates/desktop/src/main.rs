@@ -170,6 +170,8 @@ fn detect_startup_locale() -> String {
 }
 
 fn main() {
+    // SAFETY: configure malloc before Tauri and the native inference libraries start threads.
+    unsafe { videnoa_core::runtime::configure_host_memory() };
     videnoa_core::runtime::setup_runtime_libs();
     let startup_data_dir = data_dir(None);
     init_logging(startup_data_dir.clone());

@@ -1,5 +1,10 @@
 # Videnoa idle host memory diagnosis
 
+Follow-up: [allocator experiments and verified fix](videnoa-memory-reclamation-2026-09-06.md)
+confirmed free-heap retention, added job-boundary reclamation and an eight-arena
+startup default, and fixed cancellation resource lifetimes. The historical
+read-only observations below predate those experiments.
+
 ## Scope and evidence
 
 Read-only runtime diagnosis on 2026-09-06, approximately 18:29-18:33 AEST.

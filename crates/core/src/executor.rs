@@ -72,11 +72,9 @@ impl SequentialExecutor {
                 compile_graph_with_debug_hook(graph, registry, ctx, node_debug_callback)?;
 
             let executor = StreamingExecutor::new(DEFAULT_BUFFER_SIZE);
-            let cancel_rx = cancel_rx.unwrap_or_else(|| {
-                let (_tx, rx) = tokio::sync::watch::channel(false);
-                std::mem::forget(_tx);
-                rx
-            });
+            // A closed, false watch means no external cancellation. The watcher
+            // exits on closure; keeping its sender alive would leak one per run.
+            let cancel_rx = cancel_rx.unwrap_or_else(|| tokio::sync::watch::channel(false).1);
 
             let future = executor.execute_pipeline_stages(
                 compiled.decoder,

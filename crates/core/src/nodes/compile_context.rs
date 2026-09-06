@@ -24,6 +24,10 @@ use crate::nodes::video_output::{
     compatible_pixel_format, default_pixel_format_for_codec, EncoderConfig, VideoEncoder,
 };
 
+#[cfg(all(test, target_os = "linux", target_env = "gnu"))]
+#[path = "compile_context_memory_tests.rs"]
+mod memory_tests;
+
 pub struct VideoCompileContext {
     output_width: Cell<u32>,
     output_height: Cell<u32>,
@@ -39,6 +43,22 @@ pub struct VideoCompileContext {
     previous_superres_tile_size: Cell<u32>,
     pending_fi_emit_tensor: RefCell<Option<Arc<AtomicBool>>>,
     trt_cache_dir: PathBuf,
+}
+
+impl Drop for VideoCompileContext {
+    fn drop(&mut self) {
+        // Compilation can fail while the context still owns initialized stages.
+        // Drop their sessions and buffers before asking the allocator to reclaim pages.
+        self.accumulated_stages.get_mut().clear();
+
+        // Repeated inference jobs leave GiB of freed buffers in glibc's thread
+        // arenas. Return those pages at the job boundary, outside the frame loop.
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        // SAFETY: malloc_trim is thread-safe and only releases unused allocator pages.
+        unsafe {
+            libc::malloc_trim(0);
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

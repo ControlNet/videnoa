@@ -6,6 +6,36 @@ use std::process::Command as ProcessCommand;
 
 use tracing::{info, warn};
 
+/// Configure the host allocator at process startup.
+///
+/// A small arena limit keeps repeated inference sessions from spreading live
+/// allocations across hundreds of heaps. Explicit glibc tuning takes precedence.
+///
+/// # Safety
+/// Call before starting threads that can allocate or changing other malloc settings.
+pub unsafe fn configure_host_memory() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        static INIT: std::sync::Once = std::sync::Once::new();
+        INIT.call_once(|| {
+            let explicitly_configured = env::var_os("MALLOC_ARENA_MAX").is_some()
+                || env::var_os("GLIBC_TUNABLES").is_some_and(|value| {
+                    value
+                        .to_string_lossy()
+                        .split(':')
+                        .any(|entry| entry.starts_with("glibc.malloc.arena_max="))
+                });
+            if !explicitly_configured {
+                // SAFETY: the caller guarantees startup ordering. This changes
+                // arena creation, not the number of inference or runtime threads.
+                unsafe {
+                    libc::mallopt(libc::M_ARENA_MAX, 8);
+                }
+            }
+        });
+    }
+}
+
 #[cfg(unix)]
 const ORT_LIB_NAME: &str = "libonnxruntime.so";
 #[cfg(windows)]
