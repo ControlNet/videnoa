@@ -22,3 +22,11 @@
 - Actionlint, Bash syntax, PowerShell parser validation, and `git diff --check` pass.
 
 - p7zip 16.02 re-enables LZMA2 if `-md=16m` accompanies `-mx=0`. Store mode must omit compression dictionary parameters. The archive regression asserts the actual `Method = Copy` listing so this cannot silently regress.
+
+## Hosted verification
+
+- Final code run: https://github.com/ControlNet/videnoa/actions/runs/34031523129 (commit `ff8eb6a`).
+- Linux package smoke passed in 7m40s versus the 41m16s baseline. Its full bundle build took 5m46s, archive creation 21s (previously 30m53s), and integrity/layout verification 2s. The dependency cache save also passed. These are cold-run observations, not a measured warm-cache comparison.
+- Controller Docker HTTP browser smoke also passed on GitHub with the final code.
+- Final run completed successfully: all 14 jobs passed.
+- Windows package smoke passed in 21m57s versus the 27m56s baseline. Full bundle build remained 19m38s; archive creation fell from 7m14s to 5s, and integrity/layout verification took 8s. The dependency cache save passed. Future warm-build gains have not yet been measured.
