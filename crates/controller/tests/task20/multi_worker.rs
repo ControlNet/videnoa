@@ -5,7 +5,9 @@ use crate::mock_videnoa::journal::{
     sanitize_entries, HeaderValueSnapshot, JournalEntry, JournalHeader, JournalOutcome, Route,
 };
 use crate::mock_videnoa::server::MockVidenoa;
-use crate::support::{assert_completed_pipeline, complete_mock_job, ControllerFixture, TestResult};
+use crate::support::{
+    assert_completed_pipeline, complete_mock_job, wait_for_completed, ControllerFixture, TestResult,
+};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn three_worker_real_http_pipeline_uses_all_capacity_without_duplicates() -> TestResult {
@@ -97,6 +99,10 @@ async fn three_worker_real_http_pipeline_uses_all_capacity_without_duplicates() 
     workers[0].release(run_a).await?;
     workers[1].release(run_b).await?;
     workers[2].release(run_c).await?;
+    // Pipeline proof checks the shared temp root, so every peer must finish first.
+    for (task, worker_index) in tasks.iter().zip(&assigned_workers) {
+        wait_for_completed(&fixture, &workers[*worker_index], task).await?;
+    }
     for (task, worker_index) in tasks.iter().zip(assigned_workers) {
         assert_completed_pipeline(
             &fixture,

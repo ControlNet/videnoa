@@ -17,3 +17,13 @@
 - `node scripts/tests/validate_ci_release_workflows.test.mjs` passes all positive and negative contracts.
 - `pwsh -File scripts/tests/package_dist_windows_test.ps1 -FrontendDist web/dist` passes with real built frontend assets. It was also executed locally through the PowerShell 7.4 container.
 - Actionlint, Bash syntax, and `git diff --check` pass.
+
+## Independent CI test race
+
+- The first verification run exposed an existing Task 20 race: the three-worker test called single-task pipeline proof while peer tasks could still be active. That proof checks the entire shared temporary root, so it could fail after one task completed even though other tasks legitimately retained workspaces.
+- Wait for all three tasks to reach completion before performing per-task proof and the unchanged global cleanup assertions. The targeted regression and strict Task 20 Clippy check pass locally; the full Task 20 suite passed all 31 tests locally (`cargo +1.83.0 test --locked -p videnoa-controller --test task20`).
+
+## Cold hosted result
+
+- Run 34033132957: Windows package smoke passed in 16m20s, down from 21m57s. The build/assembly step dropped from 19m38s to 13m7s before any compiled cache hit.
+- Both package jobs passed and saved the corrected caches. The overall run failed only on the independently identified three-worker test race; its fix is included in the next verification run.
