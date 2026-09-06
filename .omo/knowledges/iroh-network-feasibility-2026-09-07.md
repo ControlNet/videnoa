@@ -42,6 +42,50 @@ bidirectional stream. Replacing HTTP with a custom RPC protocol is not required.
 - Upload timeout currently bounds the entire request; download separately bounds
   header/body waits. Slow relay uploads must be evaluated against this asymmetry.
 
+## Follow-up: prioritize TCP forwarding with ecosystem components
+
+The user selected TCP forwarding as the first-phase direction. Prefer evaluating
+`n0-computer/iroh-proxy-utils` before implementing custom transport adaptation.
+This updates the first-phase recommendation above; native HTTP adaptation is
+optional future work rather than a required next step.
+
+- [Repository](https://github.com/n0-computer/iroh-proxy-utils): maintained under
+  the iroh team's organization, with a README explicitly marking its API as work
+  in progress. It is a library with a CLI example, not a complete Videnoa daemon.
+- [Downstream implementation](https://raw.githubusercontent.com/n0-computer/iroh-proxy-utils/main/src/downstream.rs):
+  `ProxyMode::Tcp(EndpointAuthority)` opens an HTTP CONNECT tunnel inside an iroh
+  bidirectional stream, then forwards opaque TCP bytes without parsing the
+  application's requests. `DownstreamProxy` pools iroh connections and exposes
+  `forward_tcp_listener` and `create_tunnel`.
+- `UpstreamProxy` accepts the streams and connects to TCP origins; its pluggable
+  `AuthHandler` must restrict both approved Controller identities and target
+  authority. The [CLI example](https://raw.githubusercontent.com/n0-computer/iroh-proxy-utils/main/examples/cli.rs)
+  uses `AcceptAll` and ephemeral endpoints; do not copy these defaults into a
+  persistent service. Raw TCP forwarding cannot filter individual HTTP routes.
+- The [0.3.0 manifest](https://docs.rs/crate/iroh-proxy-utils/0.3.0/source/Cargo.toml)
+  declares Rust 1.85 but depends on `iroh = "1"`. That package declaration alone
+  does not establish the resolved graph's MSRV: selecting iroh 1.1.0 still
+  requires Rust 1.91. The [changelog](https://raw.githubusercontent.com/n0-computer/iroh-proxy-utils/main/CHANGELOG.md)
+  dates 0.3.0 to June 15, 2026 and records migration to iroh 1.0.
+- [Dumbpipe's README](https://raw.githubusercontent.com/n0-computer/dumbpipe/main/README.md)
+  documents `listen-tcp --host` on the service side and `connect-tcp --addr` on
+  the client side. It is a ready-to-run connectivity tool; this investigation
+  did not establish its suitability for production authorization or supervision.
+
+Proposed first phase: Controller uses a local TCP listener; an iroh-proxy-utils
+downstream forwards to the approved worker endpoint; upstream connects only to
+the configured worker API socket. Separate builds/processes preserve Videnoa's
+current toolchain. For multiple workers, one local listener per worker is the
+simplest mapping, with pooled iroh connections underneath. In containers,
+loopback addresses apply to the containing network namespace, so use a shared
+namespace or a private reachable service address as appropriate.
+
+Existing HTTP URLs can point at the local listener, retaining reqwest, Axum,
+headers, streaming, idempotency, and polling. HTTPS can pass through as bytes,
+but origin hostname/SNI and certificate validation must still match; replacing
+an HTTPS hostname with loopback does not automatically preserve verification.
+No runtime or dependency compatibility tests were run in this follow-up.
+
 ## Verified upstream properties and constraints
 
 [Iroh 1.1.0 crate documentation](https://docs.rs/iroh/1.1.0/iroh/)
