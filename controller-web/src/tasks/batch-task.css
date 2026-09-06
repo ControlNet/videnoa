@@ -20,7 +20,14 @@
 .batch-review-summary dt { color: var(--color-text-muted); margin-block-end: var(--space-1); }
 .batch-review-summary dd { margin: 0; overflow-wrap: anywhere; font-family: var(--font-mono); }
 
-.batch-preview .batch-row-actions { position: sticky; right: 0; min-inline-size: 3.5rem; width: 3.5rem; text-align: center; background: var(--color-background-deep); }
-.batch-preview th.batch-row-actions { z-index: 1; }
+/*
+ * The actions column is frozen so it stays reachable once long paths overflow
+ * at narrow widths. It therefore needs an opaque background -- but it must be
+ * the background of the row it pins to, not a global tone, or it reads as a
+ * dark band bolted onto the table.
+ */
+.batch-preview .batch-row-actions { position: sticky; inset-inline-end: 0; min-inline-size: 3.5rem; inline-size: 3.5rem; text-align: center; background: var(--color-surface); border-inline-start: var(--border-subtle); }
+.batch-preview th.batch-row-actions { z-index: 1; background: var(--color-background-deep); }
+.batch-row--excluded .batch-row-actions { background: var(--color-background-deep); }
 .batch-row--excluded { background: var(--color-background-deep); color: var(--color-text-muted); }
 .batch-row--excluded .batch-row-path { text-decoration: line-through; }
