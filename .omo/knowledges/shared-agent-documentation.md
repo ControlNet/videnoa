@@ -12,3 +12,9 @@
 - Verified the development tip tree was identical before and after rewriting, and checked Git object integrity. Only the development branch changed; the main branch and release tags retained their original object IDs.
 - Published using an explicit expected remote commit lease and synchronized the active checkout. Existing clones must adopt the rewritten history before pushing to avoid reintroducing removed records.
 - Rewriting reachable history does not purge GitHub cached commit views, fork references, or other clones. GitHub Support controls server-side cache and object removal.
+
+## Local verification artifacts
+
+- Removed the previously tracked 24 evidence files and one benchmark file from the Git index while retaining their local contents. Both directories remain ignored.
+- Keep durable conclusions and reproducible verification commands in knowledge documents; treat raw evidence and benchmark outputs as local artifacts.
+- This index cleanup does not remove files from earlier commits.
