@@ -31,6 +31,8 @@ dd if=/dev/urandom of="$test_root/dist/videnoa/nested/split-payload.bin" bs=1024
 stored_archive="$test_root/out/videnoa-stored.7z"
 "$archive_helper" create "$test_root/dist" "$stored_archive" 1k 0
 require_file "$stored_archive.002"
+stored_listing="$(7z l -slt "$stored_archive.001")"
+[[ "$stored_listing" == *"Method = Copy"* ]] || fail "smoke archive unexpectedly enabled compression"
 "$archive_helper" verify "$stored_archive"
 7z x "-o$test_root/extracted" "$stored_archive.001" >/dev/null
 cmp "$test_root/dist/videnoa/nested/split-payload.bin" "$test_root/extracted/videnoa/nested/split-payload.bin"

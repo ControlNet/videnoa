@@ -29,6 +29,11 @@ create_archive() {
   local volume_size="${3:-2000m}"
   local compression_level="${4:-5}"
   [[ "$compression_level" =~ ^[0-9]$ ]] || die "compression level must be an integer from 0 to 9"
+  local compression_args=("-mx=${compression_level}")
+  if [[ "$compression_level" != "0" ]]; then
+    # p7zip 16.02 re-enables LZMA when dictionary options accompany -mx=0.
+    compression_args+=(-md=16m -mmt=1)
+  fi
   local bundle_dir="$dist_root/videnoa"
   local archive_dir
   local bundle_kb
@@ -53,7 +58,7 @@ create_archive() {
   rm -f "$archive_path" "$archive_path".*
   (
     cd "$dist_root"
-    7z a -t7z "-mx=${compression_level}" -md=16m -mmt=1 "-v${volume_size}" "$archive_path" videnoa
+    7z a -t7z "${compression_args[@]}" "-v${volume_size}" "$archive_path" videnoa
   )
   if [[ ! -f "$archive_path.001" && ! -f "$archive_path" ]]; then
     die "Missing archive output: $archive_path(.001)"

@@ -20,3 +20,5 @@
 - `bash scripts/tests/package_dist_archive_test.sh` passes compressed defaults, real uncompressed split/extraction, missing-volume detection, invalid compression, missing output, disk preflight, and compressor-failure checks. Its small payloads and command doubles are synthetic test fixtures.
 - `node scripts/tests/validate_ci_release_workflows.test.mjs` passes positive and negative workflow contracts, including smoke compression and integrity requirements.
 - Actionlint, Bash syntax, PowerShell parser validation, and `git diff --check` pass.
+
+- p7zip 16.02 re-enables LZMA2 if `-md=16m` accompanies `-mx=0`. Store mode must omit compression dictionary parameters. The archive regression asserts the actual `Method = Copy` listing so this cannot silently regress.
