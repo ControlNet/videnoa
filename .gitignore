@@ -2,7 +2,12 @@ target/
 /models/
 trt_cache/
 ort-dist/
-.omo/
+# Share project knowledge; keep local agent state and artifacts private.
+/.omo/*
+!/.omo/knowledges/
+!/.omo/notepads/
+!/.omo/plans/
+!/.omo/drafts/
 *.onnx
 /data/
 /lib/
@@ -441,3 +446,24 @@ $RECYCLE.BIN/
 
 # Generated Claude Design canvas payload (regenerate with seed-canvas.mjs)
 controller-web/design/videnoa-controller-redesign.html
+
+# Credentials and private key material
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+credentials.json
+.htpasswd
+.netrc
+.pgpass
+id_rsa
+id_ed25519
+*.secret
+token.json
+secrets.yml
+secrets.yaml
+.boto
+.s3cfg
+kubeconfig

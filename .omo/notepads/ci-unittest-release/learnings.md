@@ -1,0 +1,14 @@
+- Documented Task 1 workflow skeletons with required non-master and master triggers, top-level permissions, and release concurrency guard for future logic expansion.
+- Added Task 2 insights: rust-tests job now installs protobuf-compiler and runs cargo tests for core/app, while web-build-check leverages Node 18 to install dependencies and build under web/.
+- Added Workflow Task 2 fix: created a python step that generates missing `examples/spike*.rs` stubs before running the Rust tests so CI can finish despite absent example sources.
+- Task 3 release gate now extracts versions from app/core/desktop Cargo manifests via Python tomllib and hard-fails on any mismatch before release flow continues.
+- The publish decision is now explicit (`publish=true|false`) based on exact tag probing with `gh release view "<version>"`, and downstream quality checks are conditional on that output.
+- Release preflight now reuses the workflow-only spike stub strategy before `cargo test -p videnoa-core -p videnoa-app`, then runs `web` build (`npm ci --no-fund && npm run build`) only when publishing.
+- Task 3 correction: quality-gate stub generation must target repository-root `examples/` and include all required spike files (`spike.rs`, `spike_async.rs`, `spike_trt.rs`, `spike_iobinding.rs`) to match baseline mitigation.
+- Learned that linux packaging must reuse scripts/package_dist.sh and archive dist-linux64/videnoa into videnoa-linux64-${{ needs.version-gate.outputs.version }}.zip before upload to keep release parity with windows build.
+- Added dockerhub-publish as a publish-gated job (`needs: [version-gate, quality-gate]`) so Docker pushes run only for unreleased versions that already passed quality checks.
+- DockerHub preflight should fail early when `DOCKERHUB_USERNAME` or `DOCKERHUB_TOKEN` is missing, before invoking login/build actions.
+- Added a publish-gated `github-release` aggregation job that downloads linux/windows zips, then creates `<version>` releases or uploads with `--clobber` when the tag already exists to keep reruns resilient.
+- Added release outcome observability layering with explicit summary jobs for both publish=false and publish=true paths so maintainers can immediately see tag, publish gate value, and final status in `$GITHUB_STEP_SUMMARY`.
+- Release verification should assert both contracts, not just one: GitHub release must exist with non-empty assets (`gh release view ... --json assets`) and DockerHub tags (`controlnet/videnoa:<version>` and `:latest`) must be pullable.
+- Final blocker fix: zip commands should target the `videnoa` directory itself (`zip -r ... videnoa` / `Compress-Archive -Path $bundleDir`) so extraction keeps the root folder, and `release-verify` should fail unless both expected asset names are present.

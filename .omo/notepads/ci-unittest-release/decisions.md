@@ -1,0 +1,14 @@
+- Chose to keep workflow skeletons minimal with placeholder jobs so downstream tasks can add real jobs without conflicting structure; earliest gating handled via top-level permissions and concurrency.
+- Decided Task 2 should depend on actions-rs/toolchain for Rust setup and Node 18 via actions/setup-node to keep tooling deterministic before running the prescribed test/build commands.
+- Decided to keep repository untouched by using a transient python stub-creation step within the workflow so the mandated Cargo command succeeds even without the upstream example files.
+- Decided version-gate should treat app/core/desktop crate versions as a single release contract and fail fast when any manifest diverges.
+- Decided release tag format stays exactly `<version>` (no `v` prefix) and gate publish behavior on exact tag existence via `gh release view "<version>"`.
+- Decided quality-gate remains ubuntu-only and is conditionally executed from `needs.version-gate.outputs.publish == 'true'` to avoid unnecessary test/build runs on already-released versions.
+- Decided quality-gate spike stubs should be generated only at root `examples/` with the four required filenames so CI preflight aligns with Task 2 baseline constraints without touching source manifests.
+- Added package-linux64 job right after the quality gate, using the shared package_dist.sh artifacts and a zip step so we can upload the linux bundle as videnoa-linux64-${{ needs.version-gate.outputs.version }}.zip without touching future release jobs.
+- Decided dockerhub-publish should use explicit credential preflight checks plus `docker/setup-buildx-action`, `docker/login-action`, and `docker/build-push-action` to keep failure signals clear and implementation standard.
+- Decided Docker tags for this task are fixed to `controlnet/videnoa:${{ needs.version-gate.outputs.version }}` and `controlnet/videnoa:latest` to match release contract and future aggregation dependencies.
+- Decided release publication uses `gh` with tag `${{ needs.version-gate.outputs.version }}` (no `v`), creating a non-draft release on first run and falling back to asset upload overwrite on reruns.
+- Decided to add a dedicated `release-skipped` job (`if: needs.version-gate.outputs.publish != 'true'`) instead of overloading existing jobs, preserving current release logic while making non-publish outcomes explicit.
+- Decided `release-verify` runs only on publish=true and depends on `github-release` so verification executes strictly after all publish-path jobs complete, without modifying version-gate/quality/package/publish job semantics.
+- Decided archive creation must preserve a top-level `videnoa/` folder on both Linux and Windows artifacts, and release verification must assert explicit linux/win asset filenames rather than a generic non-empty assets check.

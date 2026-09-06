@@ -1,0 +1,2 @@
+# Release workflow notes
+- 2026-02-23: Added package-win64 job that runs on windows-latest, packages via `scripts/package_dist.ps1` with explicit Platform win64, archives into `videnoa-win64-<version>.zip`, and uploads the artifact so downstream release steps receive a consistent filename. Job gated on `version-gate` publish output and `quality-gate` success to reuse the resolved version and ensure binaries match the verified code.
