@@ -21,7 +21,7 @@ fn defaults_match_locked_task_two_settings() {
     assert_eq!(config.scheduler.max_concurrent_downloads.get(), 1);
     assert_eq!(config.timeouts.health.as_secs(), 10);
     assert_eq!(config.timeouts.poll.as_secs(), 5);
-    assert_eq!(config.timeouts.transfer.as_secs(), 900);
+    assert_eq!(config.timeouts.transfer.as_secs(), 300);
     assert_eq!(config.retry.initial.as_secs(), 1);
     assert_eq!(config.retry.maximum.as_secs(), 60);
     assert_eq!(config.retry.max_attempts.get(), 5);
@@ -33,6 +33,7 @@ fn omitted_auth_settings_and_example_use_long_lived_sessions() {
         let config = ControllerConfig::from_toml(source).expect("valid configuration");
         assert_eq!(config.auth.session_absolute.as_secs(), 2_592_000);
         assert_eq!(config.auth.session_idle.as_secs(), 604_800);
+        assert_eq!(config.timeouts.transfer.as_secs(), 300);
         let saved = config.to_toml().expect("serialize configuration");
         let restored = ControllerConfig::from_toml(&saved).expect("reload configuration");
         assert_eq!(restored.auth.session_absolute, config.auth.session_absolute);

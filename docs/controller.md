@@ -67,15 +67,15 @@ not as a required installation step. Raw TOML accepts exactly these sections:
 Unknown fields are rejected. Defaults are loopback port 3001, non-Secure
 cookies, 30-day absolute sessions, seven-day idle sessions, one compute slot,
 one prefetched task, one upload, one download, health/poll/transfer timeouts of
-10/5/900 seconds, retry delays of 1 through 60 seconds, and five attempts.
+10/5/300 seconds, retry delays of 1 through 60 seconds, and five attempts.
 Active tasks are polled again one second after the previous poll completes.
 This cadence is independent of `timeouts.poll_seconds`, which controls the remote
 control-request timeout. `timeouts.transfer_seconds` is a transfer inactivity
 (stall) timeout. Each non-empty upload body chunk handed to the HTTP transport
 resets it; network backpressure eventually stops these updates. Waiting for upload
 response headers after the body ends remains bounded. Downloads bound response
-header wait and each body-chunk wait independently. The default 900 seconds means
-15 minutes without observable progress, not a 15-minute total upload deadline.
+header wait and each body-chunk wait independently. The shared upload/download default is 300 seconds (five minutes) without
+observable progress. Existing explicit `transfer_seconds` values remain unchanged.
 Continuously progressing transfers can run for hours. Transfers do not use the
 short poll timeout. Connection/TLS establishment retains its separate connect
 bound (`health_seconds` in the runtime timeout mapping). Changed progress is pushed immediately through SSE; unavailable

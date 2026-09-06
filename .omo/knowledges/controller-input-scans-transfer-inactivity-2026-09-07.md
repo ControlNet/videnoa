@@ -156,3 +156,15 @@ Full Controller suite: 534 passed, 0 failed, 1 ignored
 across 49 test harnesses; command exited 0. The ignored test is the
 existing opt-in production Argon2 contention stress test. Validation ran on Linux;
 no Windows execution or real NAS throughput benchmark was performed.
+
+## Follow-up: restore the shared 300-second default
+
+After the inactivity correction, the temporary 900-second default is no longer
+needed. The shared upload/download `transfer_seconds` default and example are
+restored to 300 seconds (five minutes without observable progress). This supersedes
+the default value recorded above; inactivity semantics are unchanged. Existing
+explicit deployed configuration values are preserved.
+
+Verification: `cargo +1.98.0 test --locked -p videnoa-controller --test config_defaults_contract --test config_contract --test videnoa_client`,
+`cargo +1.98.0 fmt --all -- --check`, and
+`bash scripts/tests/controller_docs_test.sh` should all pass.

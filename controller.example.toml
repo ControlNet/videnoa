@@ -17,7 +17,7 @@ max_concurrent_downloads = 1
 [timeouts]
 health_seconds = 10
 poll_seconds = 5
-transfer_seconds = 900
+transfer_seconds = 300
 
 [retry]
 initial_seconds = 1
