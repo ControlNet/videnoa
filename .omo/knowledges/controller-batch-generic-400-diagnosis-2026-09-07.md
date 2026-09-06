@@ -28,3 +28,33 @@ error. No NAS request body, headers, or deployed image version was available, so
 the precise root cause remains unconfirmed. Next evidence: caller type, deployed
 version, sanitized request JSON, and Content-Type; never collect authentication
 headers/cookies. No runtime or diagnostic behavior was changed in this investigation.
+
+## Confirmed cause and follow-up implementation
+
+The supplied request included `source_reference`, which was not part of the batch
+request schema. The unknown-field rejection explains the generic 400.
+
+Batch preview and creation now accept optional `source_reference` and preserve it
+on each generated request and persisted task. It shares single-task validation:
+nonempty and at most 512 UTF-8 bytes when supplied; omitted/null means no reference.
+Validation runs before preview scans or task admission. Both keyed and unkeyed
+creation use the same propagation path, with no SQLite migration.
+
+The field participates in keyed batch fingerprints when present. Serialization
+omits None so historical fingerprint bytes stay unchanged; omitted and explicit
+null remain equivalent. Changing a supplied reference with the same key conflicts.
+
+Regression coverage uses synthetic media and test-only source references. Tests
+cover preview, multiple unkeyed tasks, persisted task detail, keyed creation and
+restart replay, changed-reference conflict, omitted/null compatibility, exact
+historical fingerprint bytes, and early field-specific rejection of invalid values.
+
+Verification commands (expect passing tests and no lint/format errors):
+
+```sh
+cargo test --locked -p videnoa-controller --test task_api
+cargo test --locked -p videnoa-controller --lib
+cargo fmt --all -- --check
+cargo clippy --locked -p videnoa-controller --all-targets --all-features -- -D warnings
+bash scripts/tests/controller_docs_test.sh
+```

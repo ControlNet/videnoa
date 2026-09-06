@@ -214,3 +214,72 @@ async fn batch_create_reports_partial_database_failure_after_preview() -> TestRe
     connection.close().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn batch_source_reference_reaches_preview_and_every_persisted_task() -> TestResult {
+    let fixture = fixture().await?;
+    fs::copy(&fixture.input, fixture.input.with_file_name("second.MKV"))?;
+    let mut body = options();
+    body["source_reference"] = json!("ani-rss:test-only/动画:S03E11");
+    for (route, status) in [
+        ("/api/tasks/batch-preview", StatusCode::OK),
+        ("/api/tasks/batch", StatusCode::CREATED),
+    ] {
+        let response = fixture
+            .router
+            .clone()
+            .oneshot(fixture.session.request("POST", route, Some(&body))?)
+            .await?;
+        assert_eq!(response.status(), status);
+        let response = json_body(response).await?;
+        let items = response["items"].as_array().ok_or("missing items")?;
+        assert_eq!(items.len(), 2);
+        for item in items {
+            assert_eq!(
+                item["request"]["source_reference"],
+                body["source_reference"]
+            );
+            if status == StatusCode::CREATED {
+                assert_eq!(item["task"]["source_reference"], body["source_reference"]);
+                let id = item["task"]["id"].as_str().ok_or("missing task id")?;
+                let detail = fixture
+                    .router
+                    .clone()
+                    .oneshot(
+                        fixture
+                            .session
+                            .request("GET", &format!("/api/tasks/{id}"), None)?,
+                    )
+                    .await?;
+                assert_eq!(
+                    json_body(detail).await?["task"]["source_reference"],
+                    body["source_reference"]
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn invalid_batch_source_reference_rejects_before_any_task_creation() -> TestResult {
+    let fixture = fixture().await?;
+    for value in [json!(""), json!("界".repeat(171))] {
+        let mut body = options();
+        body["source_reference"] = value;
+        for route in ["/api/tasks/batch-preview", "/api/tasks/batch"] {
+            let response = fixture
+                .router
+                .clone()
+                .oneshot(fixture.session.request("POST", route, Some(&body))?)
+                .await?;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(
+                json_body(response).await?["error"]["field_errors"][0]["field"],
+                "source_reference"
+            );
+        }
+        assert_eq!(task_count(&fixture).await?, 0);
+    }
+    Ok(())
+}

@@ -5,12 +5,14 @@ use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::{
-    ApiError, ApiErrorCode, FieldErrorCode, IdempotencyKey, InputPath, OutputPath, Task,
-    TaskCreateRequest, TaskSource, WorkflowName,
+    ApiError, ApiErrorCode, FieldErrorCode, IdempotencyKey, InputPath, OutputPath, SourceReference,
+    Task, TaskCreateRequest, TaskSource, WorkflowName,
 };
 
 use super::error::TaskApiError;
-use super::intake::{validate_workflow_priority, IntakeOutcome, TaskService};
+use super::intake::{
+    validate_source_reference, validate_workflow_priority, IntakeOutcome, TaskService,
+};
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -22,6 +24,8 @@ pub(super) struct BatchPreviewRequest {
     middle_extension: String,
     workflow: String,
     priority: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_reference: Option<SourceReference>,
 }
 
 #[derive(Deserialize, Serialize, PartialEq)]
@@ -190,7 +194,7 @@ impl TaskService {
                 workflow: WorkflowName::new(&options.workflow),
                 priority: options.priority,
                 source: TaskSource::Manual,
-                source_reference: None,
+                source_reference: options.source_reference.clone(),
             };
             let mut error = naming_error;
             if error.is_none() && self.paths.check_preview_input(&input).is_err() {
@@ -238,6 +242,7 @@ fn invalid(field: &'static str, message: &'static str) -> TaskApiError {
 
 fn validate_options(options: &BatchPreviewRequest) -> Result<(), TaskApiError> {
     validate_workflow_priority(&options.workflow, options.priority)?;
+    validate_source_reference(options.source_reference.as_ref())?;
     if options.output_mode == OutputMode::BesideInput && options.naming_mode == NamingMode::Original
     {
         return Err(invalid(

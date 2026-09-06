@@ -213,7 +213,13 @@ pub(super) fn validate_workflow_priority(
 
 fn validate_request(request: &TaskCreateRequest) -> Result<(), TaskApiError> {
     validate_workflow_priority(request.workflow.as_str(), request.priority)?;
-    if let Some(reference) = &request.source_reference {
+    validate_source_reference(request.source_reference.as_ref())
+}
+
+pub(super) fn validate_source_reference(
+    reference: Option<&crate::domain::SourceReference>,
+) -> Result<(), TaskApiError> {
+    if let Some(reference) = reference {
         bounded_string(
             reference.as_str(),
             "source_reference",

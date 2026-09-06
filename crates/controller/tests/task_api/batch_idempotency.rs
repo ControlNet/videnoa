@@ -226,3 +226,59 @@ async fn batch_keys_are_separate_from_single_tasks_and_unkeyed_requests() -> Tes
     assert_eq!(task_count(&fixture).await?, 4);
     Ok(())
 }
+
+#[tokio::test]
+async fn keyed_batch_source_reference_is_persisted_replayed_and_fingerprinted() -> TestResult {
+    let mut fixture = fixture().await?;
+    let mut body = options();
+    body["source_reference"] = json!("ani-rss:test-only:S03E11");
+    let response = fixture
+        .router
+        .clone()
+        .oneshot(keyed(&fixture, &body)?)
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let original = json_body(response).await?;
+    assert_eq!(
+        original["items"][0]["task"]["source_reference"],
+        body["source_reference"]
+    );
+    super::support::restart_router(&mut fixture).await?;
+    let replay = fixture
+        .router
+        .clone()
+        .oneshot(keyed(&fixture, &body)?)
+        .await?;
+    assert_eq!(replay.status(), StatusCode::OK);
+    assert_eq!(json_body(replay).await?, original);
+    body["source_reference"] = json!("ani-rss:test-only:S03E12");
+    let conflict = fixture
+        .router
+        .clone()
+        .oneshot(keyed(&fixture, &body)?)
+        .await?;
+    assert_eq!(conflict.status(), StatusCode::CONFLICT);
+    assert_eq!(task_count(&fixture).await?, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn absent_and_null_batch_source_reference_share_an_idempotency_fingerprint() -> TestResult {
+    let fixture = fixture().await?;
+    let mut body = options();
+    let response = fixture
+        .router
+        .clone()
+        .oneshot(keyed(&fixture, &body)?)
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    body["source_reference"] = Value::Null;
+    let replay = fixture
+        .router
+        .clone()
+        .oneshot(keyed(&fixture, &body)?)
+        .await?;
+    assert_eq!(replay.status(), StatusCode::OK);
+    assert!(json_body(replay).await?["items"][0]["task"]["source_reference"].is_null());
+    Ok(())
+}

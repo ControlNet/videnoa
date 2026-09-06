@@ -142,3 +142,19 @@ fn replay(
     );
     Ok((status, response))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::BatchPreviewRequest;
+
+    #[test]
+    fn absent_source_reference_preserves_historical_fingerprint_bytes() {
+        let historical = r#"{"input_pattern":"input/*.mkv","output_mode":"beside_input","output_directory":null,"naming_mode":"insert_extension","middle_extension":"AI","workflow":"test-only-workflow","priority":1}"#;
+        let request: BatchPreviewRequest =
+            serde_json::from_str(historical).expect("historical request");
+        assert_eq!(
+            serde_json::to_string(&request).expect("fingerprint input"),
+            historical
+        );
+    }
+}

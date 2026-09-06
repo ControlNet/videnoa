@@ -374,7 +374,9 @@ time for very large files on NAS storage.
 Origin/CSRF proof as task creation. Its JSON fields are `input_pattern`,
 `output_mode` (`beside_input` or `directory`), `output_directory` (string or null),
 `naming_mode` (`insert_extension` or `original`), `middle_extension`, `workflow`,
-and integer `priority`. It returns `{items:[{request,error,validation_error,output_key}]}`,
+integer `priority`, and optional `source_reference` (string or null). A supplied
+reference must contain 1 to 512 UTF-8 bytes and is copied unchanged into every
+preview task. It returns `{items:[{request,error,validation_error,output_key}]}`,
 where `request` is a manual task creation body and `error` is null or a conflict
 explanation for the full preview. `validation_error` retains each row's independent
 path/naming error before duplicate detection; `output_key` is the server's
@@ -402,7 +404,11 @@ The same limit of 500 matched files applies.
 
 When every preview row is valid, the request creates tasks sequentially and waits
 until all rows have been attempted. Tasks use `source: "api"` and
-`source_reference: null`. The response contains `created`, `failed`, and `items`;
+the supplied `source_reference` on every task; omitting it or passing null keeps
+`source_reference: null`. When using an Idempotency-Key, a supplied reference is
+part of the request fingerprint: changing it returns HTTP 409. Omission and null
+remain equivalent and preserve compatibility with historical batch fingerprints.
+The response contains `created`, `failed`, and `items`;
 each item contains its `request`, a created `task` or null, and an `error` or null.
 Errors use the standard API error fields (`code`, `message`, `retryable`, and
 `field_errors`). HTTP 201 means all tasks were created. HTTP 207 means creation
