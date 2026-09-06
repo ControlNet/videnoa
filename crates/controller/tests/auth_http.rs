@@ -108,7 +108,10 @@ async fn login(fixture: &Fixture, password: &str) -> TestResult<(String, String)
     assert!(set_cookie.contains("HttpOnly"));
     assert!(set_cookie.contains("SameSite=Strict"));
     assert!(set_cookie.contains("Path=/"));
-    assert!(set_cookie.contains("Max-Age=86400"));
+    assert!(set_cookie.contains(&format!(
+        "Max-Age={}",
+        fixture.auth.session_absolute_seconds()
+    )));
     assert!(!set_cookie.contains("Secure"));
     let csrf = response
         .headers()
@@ -414,5 +417,61 @@ async fn passive_session_validation_does_not_extend_idle_expiry() -> TestResult 
 
     assert_eq!(validated.last_used_at, baseline.last_used_at);
     assert_eq!(validated.idle_expires_at, baseline.idle_expires_at);
+    Ok(())
+}
+
+#[tokio::test]
+async fn default_sessions_renew_for_seven_days_but_never_beyond_thirty_days() -> TestResult {
+    let fixture = Fixture::new().await?;
+    fixture.auth.reconfigure(ControllerConfig::default().auth)?;
+    let (cookie, _) = login(&fixture, PASSWORD).await?;
+    let token = cookie
+        .strip_prefix(&format!("{SESSION_COOKIE}="))
+        .ok_or_else(|| std::io::Error::other("unexpected cookie name"))?;
+    let initial = fixture.auth.validate_session_at(token, Utc::now()).await?;
+    assert_eq!(
+        initial.absolute_expires_at,
+        initial.created_at + ChronoDuration::days(30)
+    );
+    assert_eq!(
+        initial.idle_expires_at,
+        initial.created_at + ChronoDuration::days(7)
+    );
+
+    for day in [6, 12, 18, 24, 29] {
+        let now = initial.created_at + ChronoDuration::days(day);
+        let renewed = fixture.auth.authenticate_session_at(token, now).await?;
+        assert_eq!(
+            renewed.idle_expires_at,
+            (now + ChronoDuration::days(7)).min(initial.absolute_expires_at)
+        );
+        assert_eq!(renewed.absolute_expires_at, initial.absolute_expires_at);
+    }
+    assert!(fixture
+        .auth
+        .authenticate_session_at(token, initial.absolute_expires_at)
+        .await
+        .is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn default_sessions_expire_after_seven_days_without_api_activity() -> TestResult {
+    let fixture = Fixture::new().await?;
+    fixture.auth.reconfigure(ControllerConfig::default().auth)?;
+    let (cookie, _) = login(&fixture, PASSWORD).await?;
+    let token = cookie
+        .strip_prefix(&format!("{SESSION_COOKIE}="))
+        .ok_or_else(|| std::io::Error::other("unexpected cookie name"))?;
+    let initial = fixture.auth.validate_session_at(token, Utc::now()).await?;
+    fixture
+        .auth
+        .validate_session_at(token, initial.created_at + ChronoDuration::days(6))
+        .await?;
+    assert!(fixture
+        .auth
+        .authenticate_session_at(token, initial.idle_expires_at)
+        .await
+        .is_err());
     Ok(())
 }

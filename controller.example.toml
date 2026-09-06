@@ -4,8 +4,8 @@ port = 3001
 
 [auth]
 secure_cookie = false
-session_absolute_seconds = 86400
-session_idle_seconds = 3600
+session_absolute_seconds = 2592000
+session_idle_seconds = 604800
 
 [scheduler]
 paused = false

@@ -64,8 +64,8 @@ impl Default for RawControllerConfig {
             },
             auth: RawAuthConfig {
                 secure_cookie: false,
-                session_absolute_seconds: 86_400,
-                session_idle_seconds: 3_600,
+                session_absolute_seconds: super::SESSION_ABSOLUTE_SECONDS,
+                session_idle_seconds: super::SESSION_IDLE_SECONDS,
             },
             scheduler: RawSchedulerConfig {
                 paused: false,

@@ -65,7 +65,7 @@ not as a required installation step. Raw TOML accepts exactly these sections:
 | `retry` | `initial_seconds`, `maximum_seconds`, `max_attempts` |
 
 Unknown fields are rejected. Defaults are loopback port 3001, non-Secure
-cookies, 24-hour absolute sessions, one-hour idle sessions, one compute slot,
+cookies, 30-day absolute sessions, seven-day idle sessions, one compute slot,
 one prefetched task, one upload, one download, health/poll/transfer timeouts of
 10/5/900 seconds, retry delays of 1 through 60 seconds, and five attempts.
 Active tasks are polled again one second after the previous poll completes.
@@ -75,6 +75,13 @@ request and, for downloads, the wait for response headers and each body chunk.
 It defaults to 900 seconds; increase it if a complete upload needs longer on your
 network. Transfers do not use the short poll timeout. Changed progress is pushed immediately through SSE; unavailable
 workers still follow retry backoff. Existing TOML files need no cadence update.
+
+Authenticated API requests renew the seven-day idle deadline, capped at 30 days
+from login. Passive SSE checks do not renew it. Existing explicit auth settings
+remain unchanged: set `auth.session_absolute_seconds = 2592000` and
+`auth.session_idle_seconds = 604800` through Web Settings or the configuration
+file (restart after manual edits). Log in again to receive the longer absolute
+lifetime; increasing the policy does not extend an existing session's deadline.
 
 `data/controller.toml` is the sole persisted Controller configuration source.
 The in-memory `ControllerConfig` is the active runtime configuration.

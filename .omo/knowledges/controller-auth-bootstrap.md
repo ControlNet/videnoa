@@ -13,8 +13,8 @@
 
 ## Browser session lifetime (verified 2026-09-07)
 
-- Default absolute lifetime is 86,400 seconds (24 hours); idle lifetime is
-  3,600 seconds (one hour), configured by `auth.session_absolute_seconds`
+- Default absolute lifetime is 2,592,000 seconds (30 days); idle lifetime is
+  604,800 seconds (seven days), configured by `auth.session_absolute_seconds`
   and `auth.session_idle_seconds`. Deployed overrides may differ.
 - Authenticated API requests, including the session endpoint, extend idle
   expiry to the earlier of now plus the idle duration or absolute expiry.
@@ -26,3 +26,24 @@
   the session; clearing cookies, logout, or credential rotation can invalidate it.
 - Sources: `config/raw.rs`, `auth/session.rs`, `auth/http.rs`, and
   `operations/events.rs` under `crates/controller/src`.
+
+## Extended defaults (2026-09-07)
+
+- Typed defaults and TOML defaults share the same session lifetime constants.
+- Existing explicit TOML values are preserved. To adopt the new policy, set
+  `auth.session_absolute_seconds = 2592000` and
+  `auth.session_idle_seconds = 604800` in Web Settings, or edit the persisted
+  configuration and restart. Log in again for the longer absolute lifetime.
+- Historical SQLite migration defaults remain unchanged because those settings
+  columns are no longer configuration authority.
+- Regression tests cover default parsing, example configuration, serialization,
+  cookie lifetime, idle renewal, passive checks, and exact expiration boundaries.
+- Verification commands (all tests should pass; formatting and Clippy should
+  exit successfully without warnings):
+
+```sh
+cargo test --locked -p videnoa-controller --test config_defaults_contract --test config_contract --test auth_http
+cargo test --locked -p videnoa-controller --test config_bootstrap --test config_persistence --test auth_bootstrap --test auth_policy_reconfigure
+cargo fmt --all -- --check
+cargo clippy --locked -p videnoa-controller --all-targets -- -D warnings
+```
