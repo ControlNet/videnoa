@@ -46,7 +46,7 @@ async fn final_symlink_is_ambiguous_without_touching_its_target() -> TestResult 
     let (fixture, prepared, destination) =
         publishing_task(&server, &output, PublicationIntent::direct()).await?;
     let sentinel = fixture.output_root.join("final-symlink-sentinel");
-    tokio::fs::write(&sentinel, b"sentinel bytes").await?;
+    tokio::fs::write(&sentinel, &output).await?;
     std::os::unix::fs::symlink(&sentinel, &destination)?;
 
     // When: recovery inspects the final leaf without following it.
@@ -57,7 +57,7 @@ async fn final_symlink_is_ambiguous_without_touching_its_target() -> TestResult 
     assert!(std::fs::symlink_metadata(&destination)?
         .file_type()
         .is_symlink());
-    assert_eq!(tokio::fs::read(&sentinel).await?, b"sentinel bytes");
+    assert_eq!(tokio::fs::read(&sentinel).await?, output);
     assert_ambiguous(&fixture, &prepared).await?;
     Ok(())
 }

@@ -1,6 +1,5 @@
 use std::path::{Component, Path, PathBuf};
 
-use cap_fs_ext::DirExt;
 use cap_std::fs::Dir;
 use glob::{MatchOptions, Pattern};
 
@@ -30,7 +29,7 @@ impl PathCapabilities {
             return Err("Enter an input pattern of 1 to 4096 bytes.");
         }
         let absolute = self
-            .media_path(Path::new(pattern), &self.inputs)
+            .media_spelling(Path::new(pattern), &self.inputs)
             .map_err(|_| "Input pattern is unsafe or points into private Controller storage.")?;
         let mut base = PathBuf::new();
         let mut segments = Vec::new();
@@ -55,8 +54,11 @@ impl PathCapabilities {
                 .map_err(|_| "Input must be a safe, accessible regular file.")?;
             return Ok(vec![base]);
         }
-        self.media_path(&base, &self.inputs)
-            .map_err(|_| "Input directory is private.")?;
+        // Parse the caller's glob before resolving aliases: target directory names
+        // may themselves contain literal brackets or braces.
+        let base = self
+            .media_path(&base, &self.inputs)
+            .map_err(|_| "Input directory is private or unavailable.")?;
         let patterns = segments
             .iter()
             .map(|segment| super::batch_pattern::compile(segment))
@@ -69,6 +71,7 @@ impl PathCapabilities {
             paths: self,
             entries: 0,
             matches: std::collections::BTreeSet::new(),
+            visited: std::collections::HashSet::new(),
         };
         scan.walk(&directory, &base, &segments, &patterns, 0, 0)?;
         root.ensure_current()
@@ -83,6 +86,7 @@ struct Scan<'a> {
     paths: &'a PathCapabilities,
     entries: usize,
     matches: std::collections::BTreeSet<PathBuf>,
+    visited: std::collections::HashSet<(PathBuf, usize)>,
 }
 
 impl Scan<'_> {
@@ -97,6 +101,9 @@ impl Scan<'_> {
     ) -> Result<(), &'static str> {
         if depth > MAX_DEPTH {
             return Err("Pattern exceeds 64 directory levels. Narrow the input pattern.");
+        }
+        if !self.visited.insert((path.to_owned(), index)) {
+            return Ok(());
         }
         let recursive = segments[index] == "**";
         if recursive && index + 1 < segments.len() {
@@ -128,15 +135,13 @@ impl Scan<'_> {
             if !matches {
                 continue;
             }
-            let child = path.join(name);
-            if self.paths.media_path(&child, &self.paths.inputs).is_err() {
+            let Ok(child) = self.paths.media_path(&path.join(name), &self.paths.inputs) else {
                 continue;
-            }
-            let metadata = directory
-                .symlink_metadata(name)
+            };
+            let metadata = std::fs::symlink_metadata(&child)
                 .map_err(|_| "A matched path changed while scanning.")?;
             if metadata.file_type().is_symlink() {
-                continue;
+                return Err("A matched path changed while scanning.");
             }
             if metadata.is_file() && index + 1 == segments.len() {
                 self.matches.insert(child);
@@ -144,9 +149,11 @@ impl Scan<'_> {
                     return Err("Pattern matches more than 500 files. Narrow the input pattern.");
                 }
             } else if metadata.is_dir() && (recursive || index + 1 < segments.len()) {
-                let nested = directory
-                    .open_dir_nofollow(name)
+                let nested_root = Root::open(&child)
                     .map_err(|_| "A matched directory is unsafe or unavailable.")?;
+                let nested = nested_root
+                    .clone_directory()
+                    .map_err(|_| "A matched directory is unavailable.")?;
                 self.walk(
                     &nested,
                     &child,

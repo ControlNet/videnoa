@@ -116,10 +116,10 @@ fn task_symlinks_cannot_expose_controller_data() -> TestResult {
         .paths
         .reopen_output(workspace.directory.path().join("alias/output.mp4"));
 
-    // Then: capability traversal rejects the symlink before any state is exposed.
-    assert!(matches!(input, Err(PathError::SymlinkComponent { .. })));
-    assert!(matches!(output, Err(PathError::SymlinkComponent { .. })));
-    assert!(matches!(recovery, Err(PathError::SymlinkComponent { .. })));
+    // Then: resolved private targets are rejected before any state is exposed.
+    assert!(matches!(input, Err(PathError::OutsideRoots { .. })));
+    assert!(matches!(output, Err(PathError::OutsideRoots { .. })));
+    assert!(matches!(recovery, Err(PathError::OutsideRoots { .. })));
     Ok(())
 }
 
@@ -170,13 +170,13 @@ fn external_symlinks_and_replaced_parents_are_rejected() -> TestResult {
         workspace
             .paths
             .open_input(media.path().join("private-alias/private.mkv")),
-        Err(PathError::SymlinkComponent { .. })
+        Err(PathError::OutsideRoots { .. })
     ));
     assert!(matches!(
         workspace
             .paths
             .open_output(media.path().join("private-alias/output.mp4")),
-        Err(PathError::SymlinkComponent { .. })
+        Err(PathError::OutsideRoots { .. })
     ));
     let parent = media.path().join("season");
     fs::create_dir(&parent)?;
@@ -232,5 +232,39 @@ fn external_fifo_is_rejected_before_open_can_block() -> TestResult {
         receiver.recv_timeout(std::time::Duration::from_secs(2))?,
         "FIFO intake blocked or was accepted"
     );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn media_links_resolve_to_stable_input_and_output_targets() -> TestResult {
+    use std::io::{Read, Write};
+    let workspace = Workspace::new()?;
+    let media = TempDir::new_in(std::env::current_dir()?)?;
+    let other = TempDir::new_in(std::env::current_dir()?)?;
+    fs::write(media.path().join("episode.mkv"), b"synthetic media")?;
+    let alias = workspace.directory.path().join("Bangumi");
+    std::os::unix::fs::symlink(media.path(), &alias)?;
+    let input = workspace.paths.open_input(alias.join("episode.mkv"))?;
+    let output = workspace
+        .paths
+        .open_output(alias.join("new/episode.AI.mkv"))?;
+    assert_eq!(input.display_path(), media.path().join("episode.mkv"));
+    assert_eq!(
+        output.display_path(),
+        media.path().join("new/episode.AI.mkv")
+    );
+    fs::remove_file(&alias)?;
+    std::os::unix::fs::symlink(other.path(), &alias)?;
+    let mut bytes = Vec::new();
+    input.into_verified_file()?.read_to_end(&mut bytes)?;
+    assert_eq!(bytes, b"synthetic media");
+    output.create_new()?.write_all(&bytes)?;
+    assert_eq!(fs::read(media.path().join("new/episode.AI.mkv"))?, bytes);
+    assert!(!other.path().join("new").exists());
+    assert!(matches!(
+        output.create_new(),
+        Err(PathError::OutputExists { .. })
+    ));
     Ok(())
 }

@@ -123,12 +123,12 @@ impl PathCapabilities {
         let inputs = config
             .input_roots
             .iter()
-            .map(|path| Root::open(path))
+            .map(|path| Root::open_media(path))
             .collect::<Result<_, _>>()?;
         let outputs: Vec<Root> = config
             .output_roots
             .iter()
-            .map(|path| Root::open(path))
+            .map(|path| Root::open_media(path))
             .collect::<Result<_, _>>()?;
         let temp = Root::open(&config.temp_root)?;
         let data = Root::open(&config.data_root)?;
@@ -206,7 +206,7 @@ impl PathCapabilities {
     /// # Errors
     /// Returns a typed path error for escapes, symbolic components, or collisions.
     pub fn open_output(&self, path: impl AsRef<Path>) -> Result<RootedOutput, PathError> {
-        let path = self.media_path(path.as_ref(), &self.outputs)?;
+        let path = self.media_output_path(path.as_ref())?;
         let path = path.as_path();
         let (root, relative) = select_root(&self.outputs, path)?;
         let leaf =

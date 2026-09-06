@@ -3,7 +3,7 @@ use std::path::{Component, Path, PathBuf};
 use super::{PathCapabilities, PathError, Root};
 
 impl PathCapabilities {
-    pub(super) fn media_path(&self, path: &Path, roots: &[Root]) -> Result<PathBuf, PathError> {
+    pub(super) fn media_spelling(&self, path: &Path, roots: &[Root]) -> Result<PathBuf, PathError> {
         self.data.ensure_current()?;
         self.temp.ensure_current()?;
         let path = if path.is_absolute() {
@@ -25,11 +25,71 @@ impl PathCapabilities {
             }
             root.display_path().join(path)
         };
+        super::root::validate_absolute(&path)?;
+        if path
+            .components()
+            .any(|part| matches!(part, Component::ParentDir))
+        {
+            return Err(PathError::InvalidPath { path });
+        }
         let path: PathBuf = path.components().collect();
         if reserved(&path, self.data.display_path()) || reserved(&path, self.temp.display_path()) {
             return Err(PathError::OutsideRoots { path });
         }
         Ok(path)
+    }
+
+    pub(super) fn media_output_path(&self, path: &Path) -> Result<PathBuf, PathError> {
+        let path = self.media_spelling(path, &self.outputs)?;
+        let leaf = path
+            .file_name()
+            .ok_or_else(|| PathError::InvalidPath { path: path.clone() })?;
+        let parent = path
+            .parent()
+            .ok_or_else(|| PathError::InvalidPath { path: path.clone() })?;
+        // A final output link is an existing destination, never a new write target
+        // or proof that this task published the linked file.
+        Ok(self.media_path(parent, &self.outputs)?.join(leaf))
+    }
+
+    pub(super) fn media_path(&self, path: &Path, roots: &[Root]) -> Result<PathBuf, PathError> {
+        let path = self.media_spelling(path, roots)?;
+        let resolved = resolve_media_path(&path)?;
+        if reserved(&resolved, self.data.display_path())
+            || reserved(&resolved, self.temp.display_path())
+        {
+            return Err(PathError::OutsideRoots { path });
+        }
+        Ok(resolved)
+    }
+}
+
+// Resolve the existing prefix, retaining missing output components or glob segments.
+// Actual I/O still opens the resolved path with descriptor-backed no-follow checks.
+pub(super) fn resolve_media_path(path: &Path) -> Result<PathBuf, PathError> {
+    let mut ancestor = path;
+    let mut suffix = Vec::new();
+    loop {
+        match std::fs::symlink_metadata(ancestor) {
+            Ok(_) => {
+                let mut resolved = std::fs::canonicalize(ancestor)
+                    .map_err(|source| super::io_error(ancestor, source))?;
+                for component in suffix.iter().rev() {
+                    resolved.push(component);
+                }
+                return Ok(normalize_resolved(resolved));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let leaf = ancestor.file_name().ok_or_else(|| PathError::InvalidPath {
+                    path: path.to_owned(),
+                })?;
+                suffix.push(leaf);
+                ancestor = ancestor.parent().ok_or_else(|| PathError::InvalidPath {
+                    path: path.to_owned(),
+                })?;
+            }
+            Err(source) => return Err(super::io_error(ancestor, source)),
+        }
     }
 }
 
@@ -60,4 +120,27 @@ fn windows_spelling(path: &Path) -> String {
             .unwrap_or(&spelling)
             .to_owned()
     }
+}
+
+#[cfg(not(windows))]
+fn normalize_resolved(path: PathBuf) -> PathBuf {
+    path
+}
+
+#[cfg(windows)]
+fn normalize_resolved(path: PathBuf) -> PathBuf {
+    use std::path::Prefix;
+    let mut components = path.components();
+    let Some(Component::Prefix(prefix)) = components.next() else {
+        return path;
+    };
+    let mut result = match prefix.kind() {
+        Prefix::VerbatimDisk(drive) => PathBuf::from(format!("{}:", char::from(drive))),
+        Prefix::VerbatimUNC(server, share) => PathBuf::from(r"\\").join(server).join(share),
+        _ => return path,
+    };
+    for component in components {
+        result.push(component.as_os_str());
+    }
+    result
 }

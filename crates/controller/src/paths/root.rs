@@ -22,6 +22,24 @@ impl Root {
         &self.ambient_path
     }
 
+    pub(super) fn open_media(path: &Path) -> Result<Self, PathError> {
+        let path = if path.is_absolute() {
+            path.to_owned()
+        } else {
+            std::env::current_dir()
+                .map_err(|source| io_error(path, source))?
+                .join(path)
+        };
+        validate_absolute(&path)?;
+        if path
+            .components()
+            .any(|part| matches!(part, Component::ParentDir))
+        {
+            return Err(PathError::InvalidPath { path });
+        }
+        Self::open(&super::boundary::resolve_media_path(&path)?)
+    }
+
     pub(super) fn open(path: &Path) -> Result<Self, PathError> {
         let ambient_path = if path.is_absolute() {
             path.to_path_buf()
@@ -182,7 +200,7 @@ pub(super) fn select_root(roots: &[Root], path: &Path) -> Result<(Root, PathBuf)
     Ok((Root::open(&anchor)?, relative.to_path_buf()))
 }
 
-fn validate_absolute(path: &Path) -> Result<(), PathError> {
+pub(super) fn validate_absolute(path: &Path) -> Result<(), PathError> {
     #[cfg(not(windows))]
     let malformed = path.to_string_lossy().contains('\\');
     #[cfg(windows)]

@@ -76,3 +76,10 @@ Controller access. The shipped image defaults to UID/GID 10001:10001, subject to
 deployment overrides. No deployment evidence was available to choose among these
 causes. Do not collect full docker inspect output (which can include secrets);
 limit inspection to Config.User and Mounts. Never retain pasted credentials.
+
+## Superseded media symlink restriction
+
+The reported NAS directory was confirmed to be a symlink. The user's subsequent
+request removes blanket rejection of media links. See
+[Controller media symlink support](controller-media-symlinks-2026-09-07.md): media
+aliases now resolve to real targets, while private storage isolation remains.

@@ -185,9 +185,12 @@ The entire `<workspace>/data/**` subtree is private and forbidden for task input
 output, and recovery capabilities, including indirect symlink paths.
 
 Input must be an existing regular file with an extension. Output is an exact,
-caller-selected missing leaf with an extension. Parent traversal, symlink
-components, changed file identity/content, non-regular input, and existing or
-racing output fail closed. Controller never overwrites or auto-renames output.
+caller-selected missing leaf with an extension. Media symlinks are resolved at
+admission and tasks store their real target paths.
+Retargeting an alias does not redirect an admitted task. Parent traversal,
+changed file identity/content, non-regular input, and existing or
+racing output fail closed. Controller never overwrites or auto-renames output. An existing final output
+symlink counts as an occupied destination; only output parent links are resolved.
 
 Downloaded bytes are verified in private UUID task directories under `data`.
 Publication first attempts atomic no-replace rename. If it returns `EXDEV`
@@ -322,7 +325,8 @@ truncated:bool}`; values are absolute Controller-visible paths and kinds are
 `directory` or `file`. Directory values end in the platform path separator. Empty
 prefix lists the workspace; relative prefixes resolve there, while absolute
 prefixes browse the process filesystem namespace. Private data/temp subtrees,
-symlinks, traversal, and non-regular files are excluded. Browsing creates no files
+private aliases, traversal, and non-regular files are excluded; media links are
+supported. Browsing creates no files
 and never reads file contents. Each request examines at most 4096 directory entries
 and returns at most 100 matches with `Cache-Control: no-store`. Large directories
 can produce truncated results; a missing suggestion never invalidates a manually
@@ -382,7 +386,8 @@ explanation for the full preview. `validation_error` retains each row's independ
 path/naming error before duplicate detection; `output_key` is the server's
 platform-aware destination comparison key. These let the UI recalculate duplicate
 conflicts for selected rows without losing unrelated path errors.
-Scanning excludes private storage and symlinks, stops at 20,000 examined entries
+Scanning resolves media links, deduplicates real file targets, and skips directory
+cycles and private storage. It stops at 20,000 examined entries
 or 64 directory levels, and accepts at most 500 matches. Narrow the pattern if a
 limit is reached; no partial scan is silently accepted.
 
@@ -545,7 +550,7 @@ curl --fail http://127.0.0.1:3001/api/health
 - `401`: credential is missing, expired, revoked, or invalid.
 - `403` mutation: valid Origin or current CSRF proof is missing.
 - Path rejection: use accessible media outside private `data`; remove
-  traversal and symlink components.
+  traversal or links resolving into private Controller storage.
 - Worker offline: verify network/TLS, Videnoa health, persistent data, and
   workflow compatibility.
 - Output exists: preserve it and create a task with a different output path.

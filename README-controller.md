@@ -66,8 +66,8 @@ paths. The workspace is only Controller's working location, not a media sandbox.
 The entire `<workspace>/data/**` subtree is private and forbidden for task input,
 output, and recovery capabilities, including indirect symlink paths.
 
-Input must be a regular file. Parent traversal, unsafe symlink components, changed
-input identity, and existing or racing output fail closed. Input and output
+Input must be a regular file. Media symlinks are resolved to real target paths at
+admission. Parent traversal, changed input identity, and existing or racing output fail closed. Input and output
 extensions may differ.
 
 Downloaded bytes are verified in private UUID task directories under `data`.
@@ -300,7 +300,7 @@ Published images are `controlnet/videnoa-controller:<version>` and
 - Health works but readiness fails: finish administrator setup, authenticate,
   and inspect readiness before admitting tasks.
 - A path is rejected: use process-accessible task media outside `./data`,
-  remove traversal and symlink components, and preserve existing destinations.
+  remove traversal, check resolved link targets, and preserve existing destinations.
 - A worker stays offline or incompatible: verify its credential-free HTTP(S)
   URL, Videnoa health, persistent data, and exact workflow interface.
 - Output already exists: preserve it and create a new task with another path.

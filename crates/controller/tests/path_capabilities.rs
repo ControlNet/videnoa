@@ -78,7 +78,7 @@ fn relative_roots_resolve_from_the_process_directory() -> TestResult {
 }
 
 #[test]
-fn root_with_a_symlinked_ancestor_is_rejected() -> TestResult {
+fn media_root_with_a_symlinked_ancestor_is_resolved() -> TestResult {
     // Given: a configured root reached through a symlinked ancestor directory.
     let directory = TempDir::new()?;
     let actual = directory.path().join("actual");
@@ -94,8 +94,8 @@ fn root_with_a_symlinked_ancestor_is_rejected() -> TestResult {
         temp_root: actual,
     });
 
-    // Then: ambient traversal is rejected before a root capability is retained.
-    assert!(matches!(result, Err(PathError::SymlinkComponent { .. })));
+    // Then: media roots accept links and retain the resolved directory capability.
+    result?.check_ready()?;
     Ok(())
 }
 
@@ -164,14 +164,14 @@ fn rooted_input_reopens_only_the_snapshotted_regular_file() -> TestResult {
 }
 
 #[test]
-fn input_rejects_traversal_symlink_components_and_non_files() -> TestResult {
+fn input_accepts_media_links_but_rejects_traversal_and_non_files() -> TestResult {
     // Given: an outside file, a symlinked directory, and a real directory below the input root.
     let fixture = Fixture::new()?;
     fs::write(fixture.outside.join("secret.mkv"), b"outside")?;
     create_dir_symlink(&fixture.outside, &fixture.input.join("linked"))?;
     fs::create_dir(fixture.input.join("folder"))?;
 
-    // When: each invalid path is mapped as a local input.
+    // When: media aliases and invalid paths are mapped as local inputs.
     let traversal = fixture
         .capabilities
         .open_input(fixture.input.join("../outside/secret.mkv"));
@@ -183,9 +183,9 @@ fn input_rejects_traversal_symlink_components_and_non_files() -> TestResult {
         .open_input(fixture.input.join("folder"));
     let windows = fixture.capabilities.open_input("C:\\outside\\secret.mkv");
 
-    // Then: no invalid spelling or object reaches a readable file handle.
+    // Then: valid media links resolve, while traversal and non-files are rejected.
     assert!(matches!(traversal, Err(PathError::InvalidPath { .. })));
-    assert!(matches!(symlink, Err(PathError::SymlinkComponent { .. })));
+    assert_eq!(symlink?.display_path(), fixture.outside.join("secret.mkv"));
     assert!(matches!(directory, Err(PathError::InputNotRegular { .. })));
     assert!(matches!(windows, Err(PathError::InvalidPath { .. })));
     Ok(())

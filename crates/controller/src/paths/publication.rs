@@ -21,7 +21,7 @@ impl PathCapabilities {
     /// # Errors
     /// Returns a typed path error for escapes, symbolic components, or changed roots.
     pub fn reopen_output(&self, path: impl AsRef<Path>) -> Result<RootedOutput, PathError> {
-        let path = self.media_path(path.as_ref(), &self.outputs)?;
+        let path = self.media_output_path(path.as_ref())?;
         let path = path.as_path();
         let (root, relative) = select_root(&self.outputs, path)?;
         let leaf =

@@ -196,7 +196,8 @@ async fn batch_preview_validates_options_auth_and_limits() -> TestResult {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn batch_preview_skips_private_storage_and_symlinks() -> TestResult {
+async fn batch_preview_resolves_links_deduplicates_targets_and_skips_private_storage() -> TestResult
+{
     let fixture = fixture().await?;
     let root = fixture.input.parent().ok_or("missing parent")?;
     let workspace = root.parent().ok_or("missing workspace")?;
@@ -206,7 +207,41 @@ async fn batch_preview_skips_private_storage_and_symlinks() -> TestResult {
     )?;
     std::os::unix::fs::symlink(workspace.join("data"), root.join("alias"))?;
     std::os::unix::fs::symlink(&fixture.input, root.join("linked.MKV"))?;
+    std::os::unix::fs::symlink(root, root.join("cycle"))?;
     let result = preview(&fixture, &options("**/*.MKV")).await?;
     assert_eq!(result["items"].as_array().ok_or("missing items")?.len(), 1);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn batch_creation_accepts_a_linked_media_directory_and_persists_real_paths() -> TestResult {
+    let fixture = fixture().await?;
+    let root = fixture.input.parent().ok_or("input parent")?;
+    let workspace = root.parent().ok_or("workspace")?;
+    let actual = workspace.join("[Media]{season}");
+    fs::create_dir(&actual)?;
+    fs::copy(&fixture.input, actual.join("source.MKV"))?;
+    std::os::unix::fs::symlink("[Media]{season}", workspace.join("Bangumi"))?;
+    let response = fixture
+        .router
+        .clone()
+        .oneshot(fixture.session.request(
+            "POST",
+            "/api/tasks/batch",
+            Some(&options("Bangumi/*.MKV")),
+        )?)
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = json_body(response).await?;
+    assert_eq!(body["created"], 1);
+    assert_eq!(
+        body["items"][0]["task"]["input_path"],
+        actual.join("source.MKV").to_str().ok_or("input path")?
+    );
+    assert_eq!(
+        body["items"][0]["task"]["output_path"],
+        actual.join("source.AI.MKV").to_str().ok_or("output path")?
+    );
     Ok(())
 }

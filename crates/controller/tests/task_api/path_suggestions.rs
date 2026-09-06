@@ -101,14 +101,14 @@ async fn completion_requires_authentication_and_rejects_invalid_queries() -> Tes
 
 #[cfg(unix)]
 #[tokio::test]
-async fn completion_never_follows_symlinks_or_lists_private_aliases() -> TestResult {
+async fn completion_accepts_media_links_but_excludes_private_aliases() -> TestResult {
     let fixture = fixture().await?;
     let input = fixture.input.parent().ok_or("input parent missing")?;
     let workspace = input.parent().ok_or("workspace missing")?;
     std::os::unix::fs::symlink(workspace.join("data"), input.join("private-link"))?;
     std::os::unix::fs::symlink(&fixture.input, input.join("file-link.mkv"))?;
     let result = suggestions(&fixture, "input/", "input").await?;
-    assert_eq!(result["items"].as_array().ok_or("missing items")?.len(), 1);
+    assert_eq!(result["items"].as_array().ok_or("missing items")?.len(), 2);
     let response = fixture
         .router
         .clone()
