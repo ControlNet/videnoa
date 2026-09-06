@@ -19,3 +19,8 @@
 .batch-review-summary > div:first-child { flex: 1 1 16rem; }
 .batch-review-summary dt { color: var(--color-text-muted); margin-block-end: var(--space-1); }
 .batch-review-summary dd { margin: 0; overflow-wrap: anywhere; font-family: var(--font-mono); }
+
+.batch-preview .batch-row-actions { position: sticky; right: 0; min-inline-size: 3.5rem; width: 3.5rem; text-align: center; background: var(--color-background-deep); }
+.batch-preview th.batch-row-actions { z-index: 1; }
+.batch-row--excluded { background: var(--color-background-deep); color: var(--color-text-muted); }
+.batch-row--excluded .batch-row-path { text-decoration: line-through; }

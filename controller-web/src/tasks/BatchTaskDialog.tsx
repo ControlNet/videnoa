@@ -1,11 +1,11 @@
-import { ArrowLeft, Eye, Layers, X } from "lucide-react"
+import { ArrowLeft, Eye, Layers, RotateCcw, Trash2, X } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 
 import type { ApiClient } from "../api/client"
 import { taskCreateResponseSchema } from "../api/taskSchemas"
 import { Button } from "../ui/Button"
 import { ManualTaskField } from "./ManualTaskField"
-import { batchError, batchPreviewSchema, initialBatchOptions, type BatchOptions, type BatchRow } from "./batchTask"
+import { batchError, batchPreviewSchema, batchRowErrors, initialBatchOptions, type BatchOptions, type BatchRow } from "./batchTask"
 import { beginSubmission } from "./submissionIntent"
 import "./batch-task.css"
 
@@ -25,8 +25,11 @@ export function BatchTaskDialog({ apiClient, onClose, onCreated }: Props) {
   const busyRef = useRef(false)
   const reviewing = rows !== null
   const created = rows?.filter((row) => row.status === "created").length ?? 0
-  const complete = rows !== null && rows.length > 0 && created === rows.length
-  const canCreate = rows !== null && rows.length > 0 && rows.every((row) => row.error === null) && !complete
+  const selected = rows?.filter((row) => !row.excluded) ?? []
+  const rowErrors = batchRowErrors(rows ?? [])
+  const conflicts = selected.filter((row) => rowErrors.get(row.request.input_path) !== null).length
+  const complete = selected.length > 0 && created === selected.length
+  const canCreate = selected.length > 0 && conflicts === 0 && !complete
 
   useEffect(() => {
     dialogRef.current?.showModal()
@@ -42,6 +45,11 @@ export function BatchTaskDialog({ apiClient, onClose, onCreated }: Props) {
     if (busyRef.current || started) return
     setRows(null)
     setError(null)
+  }
+
+  function toggleRow(inputPath: string) {
+    if (busyRef.current || started) return
+    setRows((current) => current?.map((row) => row.request.input_path === inputPath ? { ...row, excluded: !row.excluded } : row) ?? null)
   }
 
   function update(patch: Partial<BatchOptions>) {
@@ -64,7 +72,7 @@ export function BatchTaskDialog({ apiClient, onClose, onCreated }: Props) {
       const preview = await apiClient.request("api/tasks/batch-preview", {
         method: "POST", json: { ...options, priority: Number(options.priority) }, schema: batchPreviewSchema,
       })
-      setRows(preview.items.map((row) => ({ ...row, intent: beginSubmission(null, row.request), status: "ready", submissionError: null })))
+      setRows(preview.items.map((row) => ({ ...row, excluded: false, intent: beginSubmission(null, row.request), status: "ready", submissionError: null })))
     } catch (cause) {
       setError(batchError(cause))
     } finally {
@@ -84,7 +92,7 @@ export function BatchTaskDialog({ apiClient, onClose, onCreated }: Props) {
       for (let index = 0; index < next.length; index += 1) {
         const row = next[index]
         if (row === undefined) continue
-        if (row.status === "created") continue
+        if (row.excluded || row.status === "created") continue
         next[index] = { ...row, status: "creating", submissionError: null }
         setRows([...next])
         try {
@@ -141,12 +149,19 @@ export function BatchTaskDialog({ apiClient, onClose, onCreated }: Props) {
         </div>
       </fieldset>}
       {rows === null ? null : <section className="batch-preview" aria-label="Batch preview">
-        {!started && rows.some((row) => row.error !== null) ? <p>Resolve the conflicts below before creating tasks. Go back to change the batch settings.</p> : null}
-        <p role="status">{started ? `${created} of ${rows.length} tasks created` : `${rows.length} matching files · ${rows.filter((row) => row.error !== null).length} conflicts`}</p>
+        {!started && conflicts > 0 ? <p>Remove conflicting tasks below or go back to change the batch settings.</p> : null}
+        <p role="status">{started ? `${created} of ${selected.length} tasks created` : `${rows.length} matching files · ${selected.length} selected · ${rows.length - selected.length} removed · ${conflicts} conflicts`}</p>
+        {rows.length > 0 && selected.length === 0 ? <p>All tasks are removed. Restore at least one task to create this batch.</p> : null}
         {rows.length === 0 ? <p>No files matched. Adjust the input pattern and preview again.</p> : <div className="batch-preview-scroll" tabIndex={0} role="region" aria-label="Preview task paths">
-          <table><thead><tr><th scope="col">Input Path</th><th scope="col">Output Path</th><th scope="col">Status</th></tr></thead>
-            <tbody>{rows.map((row) => <tr key={row.request.input_path}>
-              <td>{row.request.input_path}</td><td>{row.request.output_path}</td><td>{row.error ?? row.submissionError ?? ({ ready: "Ready", creating: "Creating…", created: "Created", failed: "Failed" }[row.status])}</td>
+          <table><thead><tr><th scope="col">Input Path</th><th scope="col">Output Path</th><th scope="col">Status</th><th scope="col" className="batch-row-actions">Actions</th></tr></thead>
+            <tbody>{rows.map((row) => <tr key={row.request.input_path} className={row.excluded ? "batch-row--excluded" : undefined}>
+              <td className="batch-row-path">{row.request.input_path}</td><td className="batch-row-path">{row.request.output_path}</td><td>{row.excluded ? "Removed" : rowErrors.get(row.request.input_path) ?? row.submissionError ?? ({ ready: "Ready", creating: "Creating…", created: "Created", failed: "Failed" }[row.status])}</td>
+              <td className="batch-row-actions"><Button variant="outline" size="sm" icon disabled={busy || started}
+                aria-label={`${row.excluded ? "Restore" : "Remove"} task ${row.request.input_path}`}
+                title={row.excluded ? "Restore task" : "Remove task"}
+                onClick={() => toggleRow(row.request.input_path)}>
+                {row.excluded ? <RotateCcw size={15} aria-hidden="true" /> : <Trash2 size={15} aria-hidden="true" />}
+              </Button></td>
             </tr>)}</tbody>
           </table>
         </div>}
@@ -157,7 +172,7 @@ export function BatchTaskDialog({ apiClient, onClose, onCreated }: Props) {
         <span className="spacer" />
         {!reviewing ? <Button variant="primary" type="submit" disabled={busy}><Eye size={16} aria-hidden="true" />{busy ? "Previewing…" : "Preview Tasks"}</Button>
           : complete ? <Button variant="primary" onClick={close}>Done</Button>
-            : <Button variant="primary" type="submit" disabled={busy || !canCreate}><Layers size={16} aria-hidden="true" />{busy ? `Creating ${created}/${rows.length}…` : started ? "Retry Remaining" : "Create Tasks"}</Button>}
+            : <Button variant="primary" type="submit" disabled={busy || !canCreate}><Layers size={16} aria-hidden="true" />{busy ? `Creating ${created}/${selected.length}…` : started ? "Retry Remaining" : "Create Tasks"}</Button>}
       </footer>
     </form>
   </dialog>

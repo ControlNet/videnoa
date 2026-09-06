@@ -79,6 +79,22 @@ async fn batch_preview_reports_collisions_existing_outputs_and_original_names() 
     let result = preview(&fixture, &request).await?;
     for row in result["items"].as_array().ok_or("missing items")? {
         assert_eq!(row["error"], "Multiple inputs map to this output path.");
+        assert!(row["validation_error"].is_null());
+        assert_eq!(row["output_key"], result["items"][0]["output_key"]);
+    }
+    let duplicate_output = fixture
+        .output
+        .parent()
+        .ok_or("missing output parent")?
+        .join("source.AI.MKV");
+    fs::copy(&fixture.input, &duplicate_output)?;
+    let occupied = preview(&fixture, &request).await?;
+    for row in occupied["items"].as_array().ok_or("missing items")? {
+        assert_eq!(row["error"], "Multiple inputs map to this output path.");
+        assert_eq!(
+            row["validation_error"],
+            "Output already exists and will not be overwritten."
+        );
     }
     request["input_pattern"] = json!("input/*.MKV");
     request["naming_mode"] = json!("original");

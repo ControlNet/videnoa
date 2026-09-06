@@ -45,6 +45,8 @@ pub(super) struct BatchPreview {
 struct BatchPreviewRow {
     request: TaskCreateRequest,
     error: Option<&'static str>,
+    validation_error: Option<&'static str>,
+    output_key: String,
 }
 
 impl TaskService {
@@ -99,12 +101,18 @@ impl TaskService {
             } else {
                 output.to_string_lossy().into_owned()
             };
-            if let Some(previous) = outputs.insert(key, items.len()) {
+            let validation_error = error;
+            if let Some(previous) = outputs.insert(key.clone(), items.len()) {
                 let previous: &mut BatchPreviewRow = &mut items[previous];
                 previous.error = Some("Multiple inputs map to this output path.");
                 error = previous.error;
             }
-            items.push(BatchPreviewRow { request, error });
+            items.push(BatchPreviewRow {
+                request,
+                error,
+                validation_error,
+                output_key: key,
+            });
         }
         Ok(BatchPreview { items })
     }

@@ -325,8 +325,14 @@ The dialog has two steps. **Add Batch** contains the settings and a single
 showing the input/output table, conflicts, workflow, and priority. Only this screen
 has **Create Tasks**. Use **Back** to return to the saved settings and generate a
 new preview; no tasks are created by previewing or going back. Preview errors keep
-the settings screen open. Existing outputs,
-unsafe paths, and duplicate output destinations block submission. Preview creates
+the settings screen open. Each preview row has a **Remove task** button that
+marks it as removed with muted text and struck-through paths. Click **Restore task**
+on the same row to include it again. Removed rows stay visible but are never
+submitted. Counts and conflicts apply to the selected rows; removing one of two
+duplicate destinations resolves that duplicate conflict, while independent errors
+such as an existing output remain blocking. Removing all rows disables creation.
+Going back and generating another preview resets the selection. Existing outputs,
+unsafe paths, and duplicate output destinations among selected tasks block submission. Preview creates
 no tasks, directories, or files, and does not hash video contents. Actual intake
 independently validates each file and captures its full content identity.
 
@@ -334,17 +340,21 @@ independently validates each file and captures its full content identity.
 Origin/CSRF proof as task creation. Its JSON fields are `input_pattern`,
 `output_mode` (`beside_input` or `directory`), `output_directory` (string or null),
 `naming_mode` (`insert_extension` or `original`), `middle_extension`, `workflow`,
-and integer `priority`. It returns `{items:[{request,error}]}`, where `request`
-is a manual task creation body and `error` is null or a conflict explanation.
+and integer `priority`. It returns `{items:[{request,error,validation_error,output_key}]}`,
+where `request` is a manual task creation body and `error` is null or a conflict
+explanation for the full preview. `validation_error` retains each row's independent
+path/naming error before duplicate detection; `output_key` is the server's
+platform-aware destination comparison key. These let the UI recalculate duplicate
+conflicts for selected rows without losing unrelated path errors.
 Scanning excludes private storage and symlinks, stops at 20,000 examined entries
 or 64 directory levels, and accepts at most 500 matches. Narrow the pattern if a
 limit is reached; no partial scan is silently accepted.
 
-Batch creation submits the exact previewed rows through `POST /api/tasks`, each
+Batch creation submits the selected preview rows through `POST /api/tasks`, each
 with a stable independent idempotency key. Creation pauses on the first failure;
 **Retry Remaining** skips successful rows and replays the remaining requests with
-the same keys, including after a lost response on LAN HTTP. **Back** is disabled
-once submission starts to preserve the exact task list and retry keys. Keep the dialog open to retain retry state; closing or reloading
+the same keys, including after a lost response on LAN HTTP. **Back** and row
+removal/restoration are disabled once submission starts to preserve the exact task list and retry keys. Keep the dialog open to retain retry state; closing or reloading
 discards that browser state. A batch is not a single database transaction: tasks
 already created remain queued even if another row fails.
 
