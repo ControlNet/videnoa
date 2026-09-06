@@ -27,3 +27,13 @@
 - Verify open/protected/disabled states, restart persistence, bad and missing Bearer credentials, cookie expiry and revocation, config secrecy, files/previews/WebSockets, concurrent setup and rotation, and desktop behavior.
 - Future implementation gates: `cargo test --locked -p videnoa-core`, `cargo fmt --all -- --check`, `cargo clippy --locked -p videnoa-core -p videnoa-app --all-targets -- -D warnings`, `npm --prefix web test`, `npm --prefix web run lint`, and `npm --prefix web run build`, using the environment from AGENTS.md.
 - This assessment used source inspection only; no runtime tests were run.
+
+## Confirmed scope and WebSocket coverage
+
+- The user confirmed that Controller Add Worker and Edit Worker must expose a password input and persist the worker credential for outbound authentication. Keep the design close to existing Controller patterns.
+- Distinguish server-side password verification from outbound credentials: the service can store a one-way hash, but Controller needs a retrievable worker credential to send the required Bearer password. Its own administrator password hash storage cannot directly satisfy that requirement.
+- The ordinary service has one WebSocket route: `/api/jobs/{id}/ws`. It pushes `progress` (current/total frames, FPS, ETA) and `node_debug_value` (node identity, textual value preview, truncation metadata).
+- The browser job store subscribes to one active job at a time, updates progress and node runtime previews, and closes the old subscription when switching jobs. The API client retries disconnected sockets up to three times with a two-second delay.
+- The server currently checks job/channel existence before upgrade, with no authentication or Origin check. Incoming application messages are ignored; this socket does not submit or cancel jobs, transfer files, or carry preview image bytes.
+- Controller queries worker progress through HTTP `GET /api/jobs/{id}`. Its own WebUI uses SSE via `/api/events`, not the worker WebSocket.
+- Authentication integration therefore has a small WebSocket surface: authenticate the handshake, validate browser Origin, and revoke already-open connections when access policy or session validity changes. Background inference should continue when a viewer disconnects.
