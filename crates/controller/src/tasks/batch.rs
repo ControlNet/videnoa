@@ -12,7 +12,7 @@ use crate::domain::{
 use super::error::TaskApiError;
 use super::intake::{validate_workflow_priority, IntakeOutcome, TaskService};
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct BatchPreviewRequest {
     input_pattern: String,
@@ -24,14 +24,14 @@ pub(super) struct BatchPreviewRequest {
     priority: i32,
 }
 
-#[derive(Deserialize, PartialEq)]
+#[derive(Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 enum OutputMode {
     BesideInput,
     Directory,
 }
 
-#[derive(Deserialize, PartialEq)]
+#[derive(Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 enum NamingMode {
     InsertExtension,
@@ -45,24 +45,24 @@ pub(super) struct BatchPreview {
 
 #[derive(Serialize)]
 struct BatchPreviewRow {
-    request: TaskCreateRequest,
+    pub(super) request: TaskCreateRequest,
     error: Option<&'static str>,
     validation_error: Option<&'static str>,
     output_key: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub(super) struct BatchCreateResponse {
-    created: usize,
-    failed: usize,
-    items: Vec<BatchCreateRow>,
+    pub(super) created: usize,
+    pub(super) failed: usize,
+    pub(super) items: Vec<BatchCreateRow>,
 }
 
-#[derive(Serialize)]
-struct BatchCreateRow {
-    request: TaskCreateRequest,
-    task: Option<Task>,
-    error: Option<ApiError>,
+#[derive(Serialize, Deserialize)]
+pub(super) struct BatchCreateRow {
+    pub(super) request: TaskCreateRequest,
+    pub(super) task: Option<Task>,
+    pub(super) error: Option<ApiError>,
 }
 
 impl axum::response::IntoResponse for BatchCreateResponse {
@@ -99,6 +99,35 @@ impl TaskService {
         &self,
         request: BatchPreviewRequest,
     ) -> Result<(StatusCode, BatchCreateResponse), TaskApiError> {
+        let mut response = self.prepare_batch_response(request).await?;
+        if response.failed > 0 {
+            return Ok((StatusCode::BAD_REQUEST, response));
+        }
+        for row in &mut response.items {
+            let key = IdempotencyKey::new(uuid::Uuid::new_v4().to_string());
+            match self.create(key, row.request.clone()).await {
+                Ok(IntakeOutcome::Created(task) | IntakeOutcome::Replayed(task)) => {
+                    row.task = Some(task);
+                    response.created += 1;
+                }
+                Err(error) => {
+                    row.error = Some(error.into_parts().1);
+                    response.failed += 1;
+                }
+            }
+        }
+        let status = if response.failed == 0 {
+            StatusCode::CREATED
+        } else {
+            StatusCode::MULTI_STATUS
+        };
+        Ok((status, response))
+    }
+
+    pub(super) async fn prepare_batch_response(
+        &self,
+        request: BatchPreviewRequest,
+    ) -> Result<BatchCreateResponse, TaskApiError> {
         let preview = self.preview_batch(request).await?;
         if preview.items.is_empty() {
             return Err(invalid(
@@ -132,29 +161,7 @@ impl TaskService {
             .iter()
             .filter(|row| row.error.is_some())
             .count();
-        // Gate the entire preview before admitting even the first valid task.
-        if response.failed > 0 {
-            return Ok((StatusCode::BAD_REQUEST, response));
-        }
-        for row in &mut response.items {
-            let key = IdempotencyKey::new(uuid::Uuid::new_v4().to_string());
-            match self.create(key, row.request.clone()).await {
-                Ok(IntakeOutcome::Created(task) | IntakeOutcome::Replayed(task)) => {
-                    row.task = Some(task);
-                    response.created += 1;
-                }
-                Err(error) => {
-                    row.error = Some(error.into_parts().1);
-                    response.failed += 1;
-                }
-            }
-        }
-        let status = if response.failed == 0 {
-            StatusCode::CREATED
-        } else {
-            StatusCode::MULTI_STATUS
-        };
-        Ok((status, response))
+        Ok(response)
     }
 
     pub(super) async fn preview_batch(

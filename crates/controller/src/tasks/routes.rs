@@ -101,15 +101,15 @@ async fn batch_create(
     headers: HeaderMap,
     payload: Result<Json<super::batch::BatchPreviewRequest>, JsonRejection>,
 ) -> Result<(StatusCode, super::batch::BatchCreateResponse), TaskApiError> {
-    if headers.contains_key(IDEMPOTENCY_HEADER) {
-        return Err(TaskApiError::invalid(
-            "idempotency_key",
-            FieldErrorCode::InvalidValue,
-            "batch creation does not support Idempotency-Key; omit this header",
-        ));
-    }
+    let key = headers
+        .contains_key(IDEMPOTENCY_HEADER)
+        .then(|| idempotency_key(&headers))
+        .transpose()?;
     let Json(request) = payload.map_err(|_| TaskApiError::InvalidRequest)?;
-    let (status, response) = state.tasks.create_batch(request).await?;
+    let (status, response) = match key {
+        Some(key) => state.tasks.create_keyed_batch(key, request).await?,
+        None => state.tasks.create_batch(request).await?,
+    };
     Ok((status, response))
 }
 

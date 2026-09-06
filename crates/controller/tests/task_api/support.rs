@@ -110,7 +110,7 @@ impl SessionClient {
 #[cfg(debug_assertions)]
 fn assets(directory: &Path) -> TestResult<FrontendAssets> {
     let assets = directory.join("assets");
-    fs::create_dir(&assets)?;
+    fs::create_dir_all(&assets)?;
     fs::write(assets.join("index.html"), "<main>controller</main>")?;
     Ok(FrontendAssets::from_dist(assets)?)
 }
@@ -162,39 +162,7 @@ async fn fixture_with_busy_timeout_option(busy_timeout: Option<Duration>) -> Tes
         .insert_administrator_credential(FAST_TEST_PASSWORD_HASH, chrono::Utc::now())
         .await
         .context("seeding task API fixture credential")?;
-    let auth_config = AuthConfig {
-        secure_cookie: false,
-        session_absolute: Duration::from_secs(86_400),
-        session_idle: Duration::from_secs(3_600),
-    };
-    let path_config = PathConfig {
-        input_roots: vec![directory.path().to_path_buf()],
-        output_roots: vec![directory.path().to_path_buf()],
-        data_root,
-        temp_root,
-    };
-    let auth = AuthService::new(auth_config.clone(), store.clone())?;
-    let paths = PathCapabilities::open(&path_config)?;
-    let scheduler = Scheduler::load(store.clone()).context("loading task API fixture scheduler")?;
-    let config = ControllerConfig {
-        auth: auth_config,
-        paths: path_config,
-        ..ControllerConfig::default()
-    };
-    store
-        .config_manager()
-        .initialize(config.clone(), Some(directory.path().to_path_buf()));
-    let operations = OperationsState::new(OperationsDependencies {
-        auth: auth.clone(),
-        store: store.clone(),
-        scheduler,
-        paths: paths.clone(),
-        config,
-        events: EventHub::new(),
-        payload_limits: PayloadLimits::new(1024 * 1024, 4096)?,
-    });
-    let tasks = TaskService::new(store, paths);
-    let router = controller_app_router(&assets(directory.path())?, auth, tasks, operations);
+    let router = reopen_router(directory.path(), store)?;
     let session = SessionClient::login(&router, false)
         .await
         .map_err(|error| format!("logging in task API fixture session: {error}"))?;
@@ -263,4 +231,57 @@ pub(super) async fn json_body(response: axum::response::Response) -> TestResult<
     Ok(serde_json::from_slice(
         &to_bytes(response.into_body(), usize::MAX).await?,
     )?)
+}
+
+fn reopen_router(directory: &Path, store: Store) -> TestResult<Router> {
+    let auth_config = AuthConfig {
+        secure_cookie: false,
+        session_absolute: Duration::from_secs(86_400),
+        session_idle: Duration::from_secs(3_600),
+    };
+    let path_config = PathConfig {
+        input_roots: vec![directory.to_path_buf()],
+        output_roots: vec![directory.to_path_buf()],
+        data_root: directory.join("data"),
+        temp_root: directory.join("temp"),
+    };
+    let auth = AuthService::new(auth_config.clone(), store.clone())?;
+    let paths = PathCapabilities::open(&path_config)?;
+    let scheduler = Scheduler::load(store.clone()).context("loading task API fixture scheduler")?;
+    let config = ControllerConfig {
+        auth: auth_config,
+        paths: path_config,
+        ..ControllerConfig::default()
+    };
+    store
+        .config_manager()
+        .initialize(config.clone(), Some(directory.to_path_buf()));
+    let operations = OperationsState::new(OperationsDependencies {
+        auth: auth.clone(),
+        store: store.clone(),
+        scheduler,
+        paths: paths.clone(),
+        config,
+        events: EventHub::new(),
+        payload_limits: PayloadLimits::new(1024 * 1024, 4096)?,
+    });
+    let tasks = TaskService::new(store, paths);
+    Ok(controller_app_router(
+        &assets(directory)?,
+        auth,
+        tasks,
+        operations,
+    ))
+}
+
+pub(super) async fn restart_router(fixture: &mut Fixture) -> TestResult {
+    let root = fixture
+        .input
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("missing workspace")?;
+    let database = Database::open(DatabaseOptions::new(root.join("controller.sqlite3"))).await?;
+    fixture.router = reopen_router(root, Store::new(database))?;
+    fixture.session = SessionClient::login(&fixture.router, false).await?;
+    Ok(())
 }

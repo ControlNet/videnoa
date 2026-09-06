@@ -388,19 +388,31 @@ each item contains its `request`, a created `task` or null, and an `error` or nu
 Errors use the standard API error fields (`code`, `message`, `retryable`, and
 `field_errors`). HTTP 201 means all tasks were created. HTTP 207 means creation
 encountered errors after preview; successful tasks are retained and individual
-results identify the failures. This is not a batch database transaction.
+results identify the failures. Unkeyed requests retain each task as it is created.
 
 For preview row errors, HTTP 400 returns the same batch response with `created: 0`;
 `failed` counts invalid rows and every `task` is null. Valid rows were not attempted.
 Malformed requests, invalid options, and no matches return the standard error
 envelope instead. File changes after preview are checked again during each intake.
 
-This endpoint does not support retry deduplication; `Idempotency-Key` is rejected
-with HTTP 400 rather than silently ignored. Repeating an unkeyed request can
-create more tasks. Use preview plus individually keyed `POST /api/tasks` requests
-when retries must be deduplicated. Creation reads input content for verification,
-so the synchronous response can take time for large files; it does not wait for
-video processing to finish. There is no background batch operation or status URL.
+`Idempotency-Key` is optional and follows the same header validation as
+`POST /api/tasks` (one header, 1–255 visible ASCII bytes). Repeating the same key
+and request returns the original batch membership and response without rescanning
+files or creating tasks, including after a Controller restart. A successful replay
+returns HTTP 200; a stored partial result remains HTTP 207. Reusing the key with
+different options returns HTTP 409. Batch keys are scoped separately from individual
+task keys. Without a key, every request remains an independent submission.
+
+For keyed requests, task inserts and the batch response commit together. A database
+failure saving the response rolls back the entire transaction. Preview/validation
+rejections before admission do not consume the key. A stored 207 result is final
+for that key: retry failed items separately or use a new key with a pattern selecting
+only those items. Replaying does not refresh task status; query `/api/tasks/{id}`
+for current status. Keep the same options when retrying, even if files have changed.
+
+Creation reads input content for verification, so the synchronous response can
+take time for large files; it does not wait for video processing to finish.
+There is no background batch operation or status URL.
 
 ### Create Individual Tasks
 

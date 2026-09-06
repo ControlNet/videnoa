@@ -22,7 +22,7 @@ const SOURCE_REFERENCE_MAX_BYTES: usize = 512;
 pub struct TaskService {
     store: Store,
     pub(super) paths: PathCapabilities,
-    events: EventHub,
+    pub(super) events: EventHub,
 }
 
 pub(crate) enum IntakeOutcome {
@@ -114,7 +114,7 @@ impl TaskService {
         }
     }
 
-    fn prepare_task(&self, request: TaskCreateRequest) -> Result<NewTask, TaskApiError> {
+    pub(super) fn prepare_task(&self, request: TaskCreateRequest) -> Result<NewTask, TaskApiError> {
         validate_request(&request)?;
         let input_extension = extension(request.input_path.as_str(), "input_path")?;
         let output_extension = extension(request.output_path.as_str(), "output_path")?;

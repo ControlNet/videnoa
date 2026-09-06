@@ -5,7 +5,7 @@ use axum::Json;
 use crate::auth::{AuthError, MissingPeerMetadata};
 use crate::domain::{ApiError, ApiErrorCode, ApiErrorEnvelope, FieldError, FieldErrorCode};
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) enum TaskApiError {
     Unauthorized,
     RateLimited,

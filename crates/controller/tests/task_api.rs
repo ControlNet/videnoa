@@ -15,3 +15,6 @@ mod batch_wildcards;
 mod intake_contract;
 #[path = "task_api/path_suggestions.rs"]
 mod path_suggestions;
+
+#[path = "task_api/batch_idempotency.rs"]
+mod batch_idempotency;

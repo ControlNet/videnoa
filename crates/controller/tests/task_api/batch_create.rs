@@ -6,13 +6,13 @@ use tower::ServiceExt;
 
 use super::support::{bearer_request, fixture, json_body, request, Fixture, TestResult};
 
-fn options() -> Value {
+pub(super) fn options() -> Value {
     json!({"input_pattern": "input/*.MKV", "output_mode": "directory",
         "output_directory": "output", "naming_mode": "insert_extension",
         "middle_extension": "AI", "workflow": "anime-upscale", "priority": 7})
 }
 
-async fn task_count(fixture: &Fixture) -> TestResult<Value> {
+pub(super) async fn task_count(fixture: &Fixture) -> TestResult<Value> {
     let response = fixture
         .router
         .clone()
@@ -143,14 +143,12 @@ async fn batch_create_requires_auth_and_session_csrf() -> TestResult {
 }
 
 #[tokio::test]
-async fn batch_create_rejects_explicit_keys_and_excessive_matches_without_writes() -> TestResult {
+async fn batch_create_rejects_invalid_keys_and_excessive_matches_without_writes() -> TestResult {
     let fixture = fixture().await?;
     let mut request = fixture
         .session
         .request("POST", "/api/tasks/batch", Some(&options()))?;
-    request
-        .headers_mut()
-        .insert("idempotency-key", "unsupported-batch-key".parse()?);
+    request.headers_mut().insert("idempotency-key", "".parse()?);
     let response = fixture.router.clone().oneshot(request).await?;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(

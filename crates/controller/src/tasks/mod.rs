@@ -1,5 +1,6 @@
 mod error;
 mod batch;
+mod batch_idempotency;
 mod fingerprint;
 mod intake;
 pub(crate) mod mapping;
