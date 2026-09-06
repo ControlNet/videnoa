@@ -13,6 +13,9 @@ use crate::scheduler::{Scheduler, TransferExecutor};
 
 mod recovery_scan;
 
+// Poll cadence is independent of remote request timeout policy.
+const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(1);
+
 const RECOVERY_PAGE_SIZE: NonZeroU16 = match NonZeroU16::new(256) {
     Some(value) => value,
     None => NonZeroU16::MIN,
@@ -53,8 +56,6 @@ impl Orchestrator {
         shutdown: ShutdownCoordinator,
         events: &EventHub,
     ) -> Self {
-        let poll_interval =
-            Duration::from_secs(scheduler.runtime_settings().timeout_settings().poll_seconds);
         Self {
             store,
             scheduler,
@@ -62,7 +63,7 @@ impl Orchestrator {
             transfers,
             shutdown,
             wakeups: events.subscribe_wakeups(),
-            poll_interval,
+            poll_interval: DEFAULT_POLL_INTERVAL,
             recovery_page_size: RECOVERY_PAGE_SIZE,
         }
     }

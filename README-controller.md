@@ -105,6 +105,10 @@ rejected. Defaults are loopback port 3001, non-Secure cookies for trusted local
 HTTP, 24-hour absolute sessions, one-hour idle sessions, one compute slot, one
 prefetched task, one upload, one download, health/poll/transfer timeouts of
 10/5/300 seconds, retry delays of 1 through 60 seconds, and five attempts.
+Active tasks are polled again one second after the previous poll completes.
+This cadence is independent of `timeouts.poll_seconds`, which controls the remote
+request timeout. Changed progress is pushed immediately through SSE; unavailable
+workers still follow retry backoff. Existing TOML files need no cadence update.
 
 Plain HTTP on a trusted LAN is a supported deployment, including access through
 a LAN IP address or hostname. Setup, login, task operations, Workers, Settings,

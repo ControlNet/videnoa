@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use chrono::Utc;
 use tokio::sync::broadcast;
 use tokio::task::JoinSet;
-use tokio::time::{interval, Instant, MissedTickBehavior};
+use tokio::time::{sleep_until, Instant};
 
 use crate::domain::{TaskId, TaskStatus};
 
@@ -20,11 +20,10 @@ impl Orchestrator {
         let mut active = HashSet::new();
         let mut not_before = HashMap::new();
         self.fill(&mut stages, &mut active, &not_before).await?;
-        let mut poll = interval(self.poll_interval);
-        poll.set_missed_tick_behavior(MissedTickBehavior::Delay);
-        poll.tick().await;
+        let mut next_scan = Instant::now() + self.poll_interval;
 
         loop {
+            let deadline = next_wakeup(next_scan, not_before.values().copied());
             tokio::select! {
                 () = cancellation.cancelled() => break,
                 received = self.wakeups.recv() => {
@@ -33,9 +32,10 @@ impl Orchestrator {
                     }
                     self.fill(&mut stages, &mut active, &not_before).await?;
                 }
-                _ = poll.tick() => {
+                () = sleep_until(deadline) => {
                     let now = Instant::now();
                     not_before.retain(|_, deadline| *deadline > now);
+                    next_scan = now + self.poll_interval;
                     self.fill(&mut stages, &mut active, &not_before).await?;
                 }
                 joined = stages.join_next(), if !stages.is_empty() => {
@@ -127,5 +127,42 @@ impl Orchestrator {
                 Some(deadline) => deadline > now,
                 None => worker.health_retry_count > 0,
             })
+    }
+}
+
+fn next_wakeup(next_scan: Instant, deadlines: impl Iterator<Item = Instant>) -> Instant {
+    deadlines
+        .min()
+        .map_or(next_scan, |deadline| deadline.min(next_scan))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime_loop::DEFAULT_POLL_INTERVAL;
+
+    #[tokio::test(start_paused = true)]
+    async fn completed_poll_wakes_at_one_second_deadline_without_extra_scan_delay() {
+        let start = Instant::now();
+        let first_scan = start + DEFAULT_POLL_INTERVAL;
+        // A response arriving just after the scan must not wait for the next two ticks.
+        tokio::time::advance(std::time::Duration::from_millis(100)).await;
+        let due = Instant::now() + DEFAULT_POLL_INTERVAL;
+        assert_eq!(due - start, std::time::Duration::from_millis(1100));
+        sleep_until(next_wakeup(first_scan, [due].into_iter())).await;
+        assert_eq!(Instant::now(), first_scan);
+        let second_scan = Instant::now() + DEFAULT_POLL_INTERVAL;
+        sleep_until(next_wakeup(second_scan, [due].into_iter())).await;
+        assert_eq!(Instant::now(), due);
+    }
+
+    #[test]
+    fn idle_scan_and_earliest_task_deadline_are_bounded() {
+        let now = Instant::now();
+        let scan = now + DEFAULT_POLL_INTERVAL;
+        assert_eq!(next_wakeup(scan, std::iter::empty()), scan);
+        let early = now + std::time::Duration::from_millis(200);
+        assert_eq!(next_wakeup(scan, [scan, early, now].into_iter()), now);
+        assert_eq!(next_wakeup(scan, [scan, early].into_iter()), early);
     }
 }
