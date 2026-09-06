@@ -67,20 +67,27 @@ cargo build --release --workspace
 
 ## Docker
 
-Build image:
+### Videnoa Worker
+
+Use the prebuilt Docker Hub image on Linux x86-64 with a compatible NVIDIA GPU, driver, and [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html). CUDA and TensorRT are included; no local build or host CUDA installation is needed.
+
+Place your models in `./models` and replace `$HOME/Videos` with your media directory:
+
+```bash
+mkdir -p ./models ./trt_cache
+docker run --gpus all -p 3000:3000 \
+  -v "$PWD/models:/app/models" \
+  -v "$PWD/trt_cache:/app/trt_cache" \
+  -v "$HOME/Videos:/data" \
+  controlnet/videnoa:latest
+```
+
+Open `http://localhost:3000`; use `/data/...` paths for media. TensorRT builds engine caches on first use and reuses `./trt_cache` on subsequent runs.
+
+To build locally instead, run the following and replace `controlnet/videnoa:latest` above with `videnoa`:
 
 ```bash
 docker build -t videnoa .
-```
-
-Run server:
-
-```bash
-docker run --gpus all -p 3000:3000 \
-  -v ./models:/app/models \
-  -v ./trt_cache:/app/trt_cache \
-  -v /path/to/media:/data \
-  videnoa
 ```
 
 ### Videnoa Controller
