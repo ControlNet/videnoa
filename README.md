@@ -158,3 +158,8 @@ cargo build --release --workspace
 Configure an optional password in WebUI Settings. Controller workers support saved
 access passwords. See [password access and recovery](docs/password-access.md) for
 API authentication, session settings, public WebSocket behavior, and local recovery.
+
+## Iroh worker connectivity
+
+See [Iroh setup and authentication](docs/iroh.md) for Endpoint ID registration,
+persistent identities, password behavior, and verification commands.

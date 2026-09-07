@@ -25,6 +25,7 @@ use uuid::Uuid;
 pub mod auth;
 mod files;
 mod idempotency;
+pub mod iroh;
 mod persistence;
 
 #[cfg(test)]
@@ -77,6 +78,8 @@ pub struct AppState {
 }
 
 struct AppStateInner {
+    iroh: iroh::Runtime,
+    settings_lock: tokio::sync::Mutex<()>,
     auth: std::result::Result<auth::AuthService, String>,
     jobs: DashMap<String, Job>,
     jobs_persistence: Option<JobsPersistence>,
@@ -171,6 +174,8 @@ impl AppState {
         Self {
             inner: Arc::new(AppStateInner {
                 auth,
+                iroh: iroh::Runtime::default(),
+                settings_lock: tokio::sync::Mutex::new(()),
                 jobs,
                 jobs_persistence,
                 gpu_semaphore: Arc::new(Semaphore::new(1)),
@@ -607,8 +612,9 @@ pub fn app_router(state: AppState) -> Router {
     app_router_with_static(state, None)
 }
 
-pub fn app_router_with_static(state: AppState, static_dir: Option<&StdPath>) -> Router {
-    let api = Router::new()
+pub fn api_router(state: AppState) -> Router {
+    Router::new()
+        .route("/api/iroh", get(iroh::status))
         .route("/api/about", get(about))
         .route("/api/config", get(get_config).put(update_config))
         .route("/api/performance/current", get(get_performance_current))
@@ -665,8 +671,11 @@ pub fn app_router_with_static(state: AppState, static_dir: Option<&StdPath>) -> 
             "/api/auth/password",
             axum::routing::put(auth::set_password).delete(auth::disable),
         )
-        .with_state(state);
+        .with_state(state)
+}
 
+pub fn app_router_with_static(state: AppState, static_dir: Option<&StdPath>) -> Router {
+    let api = api_router(state);
     #[cfg(not(debug_assertions))]
     {
         let _ = static_dir;
@@ -1266,6 +1275,12 @@ async fn update_config(
     State(state): State<AppState>,
     Json(payload): Json<AppConfig>,
 ) -> Result<Json<AppConfig>, AppError> {
+    let _settings = state.inner.settings_lock.lock().await;
+    if payload.iroh.enabled && !state.iroh_password_enabled()? {
+        return Err(AppError::BadRequest(
+            "Set a worker password before enabling iroh".into(),
+        ));
+    }
     payload
         .auth
         .validate()
@@ -1279,7 +1294,11 @@ async fn update_config(
     payload.save_to_path(&state.inner.config_path)?;
     auth.reconfigure(payload.auth.clone())?;
     *config = payload.clone();
-
+    drop(config);
+    state
+        .reconcile_iroh()
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
     Ok(Json(payload))
 }
 
@@ -2820,6 +2839,7 @@ pub fn app_state_with_config(
 
 #[cfg(test)]
 mod tests {
+    mod iroh_tests;
     use super::*;
     use crate::debug_event::NodeDebugValueEvent;
     use crate::types::PortType;
@@ -3252,6 +3272,7 @@ mod tests {
         let mut app = app_router(state);
 
         let updated = AppConfig {
+            iroh: crate::config::IrohConfig::default(),
             auth: crate::config::AuthConfig::default(),
             paths: crate::config::PathsConfig {
                 models_dir: PathBuf::from("models_custom"),

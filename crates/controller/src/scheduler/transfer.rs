@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::domain::{SchedulerStatus, WorkerId};
+use crate::domain::{SchedulerStatus, TaskId, WorkerId};
 
 use super::TransferLimitError;
 
@@ -12,6 +12,7 @@ struct TransferState {
     uploads: u16,
     downloads: u16,
     uploading_workers: BTreeSet<WorkerId>,
+    publishing_tasks: BTreeSet<TaskId>,
 }
 
 #[derive(Clone, Debug)]
@@ -30,6 +31,12 @@ pub struct DownloadPermit {
     state: Arc<Mutex<TransferState>>,
 }
 
+#[derive(Debug)]
+pub(super) struct PublicationPermit {
+    state: Arc<Mutex<TransferState>>,
+    task_id: TaskId,
+}
+
 impl TransferCoordinator {
     /// Creates independent upload/download pools and a per-worker upload guard.
     ///
@@ -46,6 +53,7 @@ impl TransferCoordinator {
                 uploads: 0,
                 downloads: 0,
                 uploading_workers: BTreeSet::new(),
+                publishing_tasks: BTreeSet::new(),
             })),
         })
     }
@@ -58,6 +66,7 @@ impl TransferCoordinator {
                 uploads: 0,
                 downloads: 0,
                 uploading_workers: BTreeSet::new(),
+                publishing_tasks: BTreeSet::new(),
             })),
         }
     }
@@ -82,6 +91,16 @@ impl TransferCoordinator {
         })
     }
 
+    pub(super) fn try_publish(&self, task_id: TaskId) -> Option<PublicationPermit> {
+        if !lock(&self.state).publishing_tasks.insert(task_id) {
+            return None;
+        }
+        Some(PublicationPermit {
+            state: Arc::clone(&self.state),
+            task_id,
+        })
+    }
+
     #[must_use]
     pub fn try_download(&self) -> Option<DownloadPermit> {
         let mut state = lock(&self.state);
@@ -100,6 +119,12 @@ impl Drop for UploadPermit {
         let mut state = lock(&self.state);
         state.uploads = state.uploads.saturating_sub(1);
         state.uploading_workers.remove(&self.worker_id);
+    }
+}
+
+impl Drop for PublicationPermit {
+    fn drop(&mut self) {
+        lock(&self.state).publishing_tasks.remove(&self.task_id);
     }
 }
 

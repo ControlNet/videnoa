@@ -31,6 +31,12 @@ impl TransferExecutor {
         now: DateTime<Utc>,
         jitter: JitterSample,
     ) -> Result<PublicationOutcome, TransferError> {
+        // Keep duplicate finalizers from interpreting an in-flight rename as missing input.
+        let _permit = self
+            .resources
+            .coordinator
+            .try_publish(task_id)
+            .ok_or(TransferError::Busy)?;
         let (mut task, mut attempt) = self.snapshots(task_id).await?;
         Self::require_retry_due(&task, &attempt, now)?;
         match task.status {

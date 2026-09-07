@@ -51,7 +51,7 @@ export function WorkerTable(props: WorkerTableProps) {
                 <td className="grow-cell">
                   <span className="worker-identity">
                     <strong title={worker.name}>{worker.name}</strong>
-                    <code title={worker.api_url}>{worker.api_url}</code>
+                    <code title={worker.endpoint_id ?? worker.api_url}>{worker.transport === "iroh" ? `iroh · ${worker.endpoint_id}` : worker.api_url}</code>
                   </span>
                 </td>
                 <td>

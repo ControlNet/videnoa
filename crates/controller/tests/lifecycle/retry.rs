@@ -202,3 +202,23 @@ fn typed_publication_ambiguity_allows_explicit_retry() {
     );
     assert!(publication.info().retryable);
 }
+
+#[test]
+fn historical_input_changed_is_manually_retryable_even_when_marked_terminal() {
+    assert_eq!(
+        Lifecycle::retry_mode(&failure(
+            FailureStage::Upload,
+            FailureCode::InputChanged,
+            false
+        )),
+        RetryMode::Resume(ResumeStage::Uploading)
+    );
+    assert_eq!(
+        Lifecycle::retry_mode(&failure(
+            FailureStage::Processing,
+            FailureCode::InputChanged,
+            false
+        )),
+        RetryMode::Blocked
+    );
+}

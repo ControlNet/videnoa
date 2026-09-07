@@ -190,3 +190,45 @@ test("removing one duplicate clears only the duplicate conflict", async ({ page 
   await expect(dialog.getByRole("button", { name: "Create Tasks" })).toBeDisabled()
   await expect(dialog.getByRole("status")).toContainText("2 selected · 0 removed · 2 conflicts")
 })
+
+for (const width of [1280, 375]) {
+  test(`Jellyfin suffix keeps its label and submits the preview at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 })
+    await installPagedApi(page, requestJournal(), 1)
+    const previews: unknown[] = []
+    const request = { ...requests[0], output_path: "/media/Series/E01 - AI 4K.mkv" }
+    await page.route("**/api/tasks/batch-preview", async (route) => {
+      previews.push(route.request().postDataJSON())
+      await fulfillJson(route, { items: [{ request, error: null }] })
+    })
+    const submissions: unknown[] = []
+    await page.route("**/api/tasks", async (route) => {
+      submissions.push(route.request().postDataJSON())
+      await fulfillJson(route, task(1))
+    })
+    await page.goto("/tasks")
+    await page.getByRole("button", { name: "Add Batch", exact: true }).click()
+    const dialog = page.getByRole("dialog")
+    const format = dialog.getByRole("combobox", { name: "Filename Format" })
+    await expect(format).toHaveValue("insert_extension")
+    await format.selectOption("jellyfin_version_suffix")
+    await expect(dialog.getByLabel("Version Label", { exact: true })).toHaveValue("AI")
+    await dialog.getByLabel("Version Label", { exact: true }).fill("AI 4K")
+    await dialog.getByRole("combobox", { name: "Output Mode" }).selectOption("directory")
+    await expect(format).toHaveValue("jellyfin_version_suffix")
+    await dialog.getByRole("combobox", { name: "Output Mode" }).selectOption("beside_input")
+    await expect(format).toHaveValue("jellyfin_version_suffix")
+    await expect(dialog.getByLabel("Version Label", { exact: true })).toHaveValue("AI 4K")
+    await expect(dialog.getByText("Example: Re Zero S03E01 - AI 4K.mkv")).toBeVisible()
+    expect((await new AxeBuilder({ page }).include('dialog[open]').analyze()).violations).toEqual([])
+    await page.screenshot({ path: `../.omo/evidence/controller-batch-tasks/jellyfin-${width}.png` })
+    await dialog.getByRole("combobox", { name: "Input Pattern", exact: true }).fill("/media/**/*.mkv")
+    await dialog.getByRole("combobox", { name: "Workflow", exact: true }).fill("anime")
+    await dialog.getByRole("button", { name: "Preview Tasks", exact: true }).click()
+    await expect(dialog.getByRole("cell", { name: request.output_path, exact: true })).toBeVisible()
+    expect(previews[0]).toMatchObject({ naming_mode: "jellyfin_version_suffix", middle_extension: "AI 4K", output_mode: "beside_input" })
+    await dialog.getByRole("button", { name: "Create Tasks" }).click()
+    await expect(dialog.getByRole("status")).toContainText("1 of 1 tasks created")
+    expect(submissions).toEqual([request])
+  })
+}

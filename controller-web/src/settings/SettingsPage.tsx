@@ -24,13 +24,14 @@ type DegradedReconnect = {
 export function SettingsPage({ apiClient }: SettingsPageProps) {
   const data = useSettingsData(apiClient)
   const settings = data.settings
-  const actionsEnabled = !data.mutating && !data.loading
+  const actionsEnabled = !data.mutating && !data.loading && data.error === null
+  const [editorGeneration, setEditorGeneration] = useState(0)
   const [saveReceipt, setSaveReceipt] = useState<SettingsSaveReceipt | null>(null)
   const [degradedReconnect, setDegradedReconnect] = useState<DegradedReconnect | null>(null)
 
   async function save(request: SettingsUpdateRequest): Promise<boolean> {
     const previousSettings = data.settings
-    if (previousSettings === null) return false
+    if (previousSettings === null || !actionsEnabled) return false
     const result = await data.save(request)
     if (!result.ok) {
       const endpointChanged = previousSettings.server.host !== request.server.host
@@ -41,6 +42,7 @@ export function SettingsPage({ apiClient }: SettingsPageProps) {
         : null)
       return false
     }
+    setEditorGeneration((generation) => generation + 1)
     const nextSettings = result.settings
     const endpointChanged = previousSettings.server.host !== nextSettings.server.host
       || previousSettings.server.port !== nextSettings.server.port
@@ -79,7 +81,7 @@ export function SettingsPage({ apiClient }: SettingsPageProps) {
       {data.actionError === null ? null : <div className={degradedReconnectHref === null ? "operation-error alert alert--danger" : "operation-error alert alert--danger settings-degraded-error"} role="alert"><span>{settingsActionErrorMessage(data.actionError, data.loading, data.error)}{degradedReconnectHref === null ? null : " The Controller address changed and this page may disconnect."}</span>{degradedReconnectHref === null ? null : <a href={degradedReconnectHref}>Open Controller at the new address</a>}</div>}
       {saveReceipt === null ? null : <ConfigurationSaveReceipt receipt={saveReceipt} />}
       {settings === null ? <output className="operation-loading">{data.loading ? "Loading runtime settings..." : "Runtime settings are unavailable."}</output> : <>
-        <SettingsEditor key={settings.version} settings={settings} actionError={data.actionError} onSave={save} />
+        <SettingsEditor key={editorGeneration} settings={settings} actionError={data.actionError} onSave={save} />
         <ReadOnlyConfiguration settings={settings} readiness={data.readiness} />
         {/* Pinned as the route's last child: a long form never hides its own commit. */}
         <footer className="settings-save-bar">

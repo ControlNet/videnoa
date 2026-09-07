@@ -16,6 +16,7 @@ impl VidenoaClient {
     where
         W: AsyncWrite + Unpin,
     {
+        self.ensure_transport().await?;
         // Bound header wait and each body read separately so an active download
         // can exceed the short control-request deadline.
         let response = stalled(
@@ -24,7 +25,7 @@ impl VidenoaClient {
                 .send(),
         )
         .await?
-        .map_err(|error| classify_download_start(&error))?;
+        .map_err(|error| self.transport_failure(classify_download_start(&error)))?;
         ensure_success(response.status())?;
         self.copy_download(response, writer).await
     }

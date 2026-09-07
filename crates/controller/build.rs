@@ -39,6 +39,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     for path in [
         "../../controller-web/src",
+        "../../controller-web/public",
         "../../controller-web/index.html",
         "../../controller-web/package.json",
         "../../controller-web/package-lock.json",

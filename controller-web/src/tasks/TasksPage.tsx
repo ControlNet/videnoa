@@ -83,6 +83,7 @@ export function TasksPage({ apiClient }: TasksPageProps) {
       <TaskToolbar
         query={query}
         search={search}
+        workerNames={workerNames}
         onQueryChange={updateQuery}
         onSearchChange={setSearch}
         heading={<h1>Tasks</h1>}

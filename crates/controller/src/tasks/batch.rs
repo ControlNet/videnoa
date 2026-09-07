@@ -39,6 +39,7 @@ enum OutputMode {
 #[serde(rename_all = "snake_case")]
 enum NamingMode {
     InsertExtension,
+    JellyfinVersionSuffix,
     Original,
 }
 
@@ -258,9 +259,10 @@ fn validate_options(options: &BatchPreviewRequest) -> Result<(), TaskApiError> {
     {
         return Err(invalid("output_directory", "Enter an output directory."));
     }
-    if options.naming_mode == NamingMode::InsertExtension {
+    if options.naming_mode != NamingMode::Original {
         let middle = &options.middle_extension;
-        if middle.is_empty()
+        if (options.naming_mode == NamingMode::JellyfinVersionSuffix && middle.trim() != middle)
+            || middle.is_empty()
             || middle.len() > 64
             || middle.starts_with('.')
             || middle.ends_with(['.', ' '])
@@ -268,7 +270,12 @@ fn validate_options(options: &BatchPreviewRequest) -> Result<(), TaskApiError> {
                 .chars()
                 .any(|ch| ch.is_control() || "/\\:*?\"<>|".contains(ch))
         {
-            return Err(invalid("middle_extension", "Enter 1 to 64 bytes without path separators, reserved filename characters, or leading/trailing dots."));
+            let message = if options.naming_mode == NamingMode::JellyfinVersionSuffix {
+                "Enter a version label of 1 to 64 bytes without surrounding whitespace, path separators, reserved filename characters, or leading/trailing dots."
+            } else {
+                "Enter 1 to 64 bytes without path separators, reserved filename characters, or leading/trailing dots."
+            };
+            return Err(invalid("middle_extension", message));
         }
     }
     Ok(())
@@ -290,10 +297,14 @@ fn output_path(input: &Path, options: &BatchPreviewRequest) -> (PathBuf, Option<
     if options.naming_mode == NamingMode::Original {
         return (directory.join(filename), None);
     }
+    let separator = match options.naming_mode {
+        NamingMode::JellyfinVersionSuffix => " - ",
+        NamingMode::InsertExtension | NamingMode::Original => ".",
+    };
     let stem = input.file_stem().unwrap_or_default().to_string_lossy();
     (
         directory.join(format!(
-            "{stem}.{}.{}",
+            "{stem}{separator}{}.{}",
             options.middle_extension,
             extension.to_string_lossy()
         )),

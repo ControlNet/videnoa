@@ -355,7 +355,21 @@ Patterns resolve in the Controller filesystem namespace just like task
 paths. Choose outputs beside each input or in one Output Directory; both path
 fields and Workflow support the existing dropdown completion. Filenames use
 `<original stem>.<middle extension>.<original extension>` (for example,
-`E01.AI.mkv`). Original filenames are available only with a separate output
+`E01.AI.mkv`). Choose **Jellyfin version suffix** to generate
+`<original stem> - <version label>.<original extension>`, for example
+`Re Zero S03E01 - AI.mkv`. **Version Label** defaults to `AI`; custom labels
+such as `AI 4K` are supported. Labels must contain 1 to 64 UTF-8 bytes with no
+surrounding whitespace, leading/trailing dots, control characters, path separators,
+or reserved filename characters. This appends to the complete existing stem,
+including any existing version label; source files are never renamed.
+Changing Output Mode preserves the selected naming format, except Original
+filename resets when switching beside the input.
+
+Episode auto-grouping is implemented in Jellyfin 12 (verified against 12.0 RC7).
+Keep both versions in the same season folder of a TV library. The new naming
+format alone does not add episode auto-grouping to older Jellyfin servers.
+See [the upstream implementation](https://github.com/jellyfin/jellyfin/pull/16828).
+Original filenames are available only with a separate output
 directory. Workflow and priority apply to every task.
 
 The dialog has two steps. **Add Batch** contains the settings and a single
@@ -373,16 +387,24 @@ Going back and generating another preview resets the selection. Existing outputs
 unsafe paths, and duplicate output destinations among selected tasks block submission. Preview creates
 no tasks, directories, or files, and does not hash video contents. Actual intake
 independently validates each file and captures its full content identity with one
-complete SHA-256 pass. Upload admission performs one further complete hash against
-the durable identity, then streams that same verified, rewound descriptor. Input
-metadata, retained-root identity, and no-follow path checks remain enforced. Batch
-preview remains metadata-only; synchronous creation can still take noticeable
-time for very large files on NAS storage.
+complete SHA-256 pass. Upload opens the current file without hashing it again or
+comparing its content, modification time, or filesystem identity with intake.
+The current size is persisted before transfer for upload framing and restart
+recovery. Files replaced or edited while queued are accepted. Root confinement,
+regular-file checks, and remote transfer-size checks remain enforced. Avoid
+writing the source while it is actively being uploaded. Batch preview remains
+metadata-only; synchronous creation can still take noticeable time for very large
+files on NAS storage.
+
+Historical upload failures with code `input_changed` support the task detail's
+Retry action, including records originally marked `retryable=false`. Manual retry
+resumes upload using the current file at the existing input path; no database
+migration or new task is required. These failed tasks do not automatically restart.
 
 `POST /api/tasks/batch-preview` requires authentication and the same session
 Origin/CSRF proof as task creation. Its JSON fields are `input_pattern`,
 `output_mode` (`beside_input` or `directory`), `output_directory` (string or null),
-`naming_mode` (`insert_extension` or `original`), `middle_extension`, `workflow`,
+`naming_mode` (`insert_extension`, `jellyfin_version_suffix`, or `original`), `middle_extension`, `workflow`,
 integer `priority`, and optional `source_reference` (string or null). A supplied
 reference must contain 1 to 512 UTF-8 bytes and is copied unchanged into every
 preview task. It returns `{items:[{request,error,validation_error,output_key}]}`,
@@ -391,6 +413,8 @@ explanation for the full preview. `validation_error` retains each row's independ
 path/naming error before duplicate detection; `output_key` is the server's
 platform-aware destination comparison key. These let the UI recalculate duplicate
 conflicts for selected rows without losing unrelated path errors.
+`middle_extension` supplies the version label for `jellyfin_version_suffix` as well
+as the middle extension for `insert_extension`; it is ignored for `original`.
 Scanning resolves media links, deduplicates real file targets, and skips directory
 cycles and private storage. It stops at 20,000 examined entries
 or 64 directory levels, and accepts at most 500 matches. Narrow the pattern if a

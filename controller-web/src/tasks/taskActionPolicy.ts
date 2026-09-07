@@ -22,7 +22,9 @@ export function canCancelTask(task: Task): boolean {
 }
 
 export function canRetryTask(task: Task): boolean {
-  if (task.status !== "failed" || task.failure?.retryable !== true) return false
+  if (task.status !== "failed" || task.failure === null) return false
+  if (task.failure.failure_code === "input_changed" && task.failure.failure_stage === "upload") return true
+  if (!task.failure.retryable) return false
   return isSupportedRetryPair(task.failure.failure_code, task.failure.failure_stage)
 }
 
@@ -53,9 +55,12 @@ function isSupportedRetryPair(code: FailureCode, stage: FailureStage): boolean {
 
 export function failureGuidance(code: FailureCode, stage: FailureStage): FailureGuidance {
   switch (code) {
+    case "input_changed":
+      return stage === "upload"
+        ? { kind: "stage_retry", message: "Retry uploads the current file at the existing input path. Changes since task creation are accepted." }
+        : { kind: "blocked", message: "This input failure cannot be retried from its recorded stage." }
     case "output_exists":
     case "input_unavailable":
-    case "input_changed":
       return {
         kind: "new_task",
         message: "Changing an input or output path, including resolving an output collision, requires creating a new task. Retry never changes paths.",

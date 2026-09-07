@@ -133,16 +133,20 @@ export function BatchTaskDialog({ apiClient, onClose, onCreated }: Props) {
       </dl> : <fieldset className="batch-task-fields" disabled={busy || started}>
         <ManualTaskField apiClient={apiClient} enabled={!busy && !started} idPrefix="batch" label="Input Pattern" name="input_pattern" value={options.input_pattern} error={undefined} inputRef={inputRef} onChange={(input_pattern) => update({ input_pattern })} />
         <p className="batch-help">{"Use * for filenames, ? for one character, ** for nested directories, or *.{mkv,mp4} for multiple formats. Up to 500 files."}</p>
-        <label className="field"><span>Output Mode</span><select value={options.output_mode} onChange={(event) => update({ output_mode: event.target.value as BatchOptions["output_mode"], naming_mode: "insert_extension" })}>
+        <label className="field"><span>Output Mode</span><select value={options.output_mode} onChange={(event) => update({ output_mode: event.target.value as BatchOptions["output_mode"], naming_mode: event.target.value === "beside_input" && options.naming_mode === "original" ? "insert_extension" : options.naming_mode })}>
           <option value="beside_input">Beside each input file</option><option value="directory">One output directory</option>
         </select></label>
         {options.output_mode === "directory" ? <ManualTaskField apiClient={apiClient} enabled={!busy && !started} idPrefix="batch" label="Output Directory" name="output_path" value={options.output_directory} error={undefined} inputRef={outputRef} onChange={(output_directory) => update({ output_directory })} /> : null}
         <div className="batch-field-pair">
           <label className="field"><span>Filename Format</span><select value={options.naming_mode} onChange={(event) => update({ naming_mode: event.target.value as BatchOptions["naming_mode"] })}>
-            <option value="insert_extension">stem.middle.extension</option><option value="original" disabled={options.output_mode !== "directory"}>Original filename</option>
+            <option value="insert_extension">stem.middle.extension</option><option value="jellyfin_version_suffix">Jellyfin version suffix</option><option value="original" disabled={options.output_mode !== "directory"}>Original filename</option>
           </select></label>
-          {options.naming_mode === "insert_extension" ? <label className="field"><span>Middle Extension</span><input value={options.middle_extension} maxLength={64} autoComplete="off" spellCheck={false} onChange={(event) => update({ middle_extension: event.target.value })} /></label> : null}
+          {options.naming_mode !== "original" ? <label className="field"><span>{options.naming_mode === "jellyfin_version_suffix" ? "Version Label" : "Middle Extension"}</span><input aria-describedby={options.naming_mode === "jellyfin_version_suffix" ? "batch-version-help" : undefined} value={options.middle_extension} maxLength={64} autoComplete="off" spellCheck={false} onChange={(event) => update({ middle_extension: event.target.value })} /></label> : null}
         </div>
+        {options.naming_mode === "jellyfin_version_suffix" ? <p className="batch-help" id="batch-version-help">
+          Example: Re Zero S03E01 - {options.middle_extension}.mkv<br />
+          Appends to the existing filename stem. Episode auto-grouping requires Jellyfin 12 with both versions in the same season folder of a TV library.
+        </p> : null}
         <div className="batch-field-pair">
           <ManualTaskField apiClient={apiClient} enabled={!busy && !started} idPrefix="batch" label="Workflow" name="workflow" value={options.workflow} error={undefined} inputRef={workflowRef} onChange={(workflow) => update({ workflow })} />
           <label className="field"><span>Priority</span><input type="number" min={-100} max={100} step={1} value={options.priority} onChange={(event) => update({ priority: event.target.value })} /></label>

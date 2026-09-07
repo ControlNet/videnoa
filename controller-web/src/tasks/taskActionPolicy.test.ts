@@ -28,6 +28,17 @@ const task = {
 } as const satisfies Task
 
 describe("task lifecycle action policy", () => {
+  it("allows manual retry of historical input changes marked nonretryable", () => {
+    const failed = {
+      ...task, status: "failed",
+      failure: { failure_stage: "upload", failure_code: "input_changed", message: "input changed", retryable: false },
+    } as const
+    expect(canRetryTask(failed)).toBe(true)
+    expect(failureGuidance("input_changed", "upload").kind).toBe("stage_retry")
+    expect(canRetryTask({ ...failed, status: "uploading" })).toBe(false)
+    expect(canRetryTask({ ...failed, failure: { ...failed.failure, failure_stage: "processing" } })).toBe(false)
+  })
+
   it("allows cancellation only from queued through verifying", () => {
     // Given/When: every boundary status is evaluated.
     const allowed = ["queued", "reserved", "uploading", "staged", "submitting", "processing", "remote_completed", "downloading", "verifying"] as const

@@ -324,3 +324,15 @@ retain that diagnostic for newly recorded failures. See
 [Operational diagnostics](docs/controller.md#operational-diagnostics) for log
 commands and operation names. When piping `docker logs`, use `2>&1` so stderr is
 included in the filter.
+
+## Iroh worker connectivity
+
+Set a worker service password, enable Iroh in its Settings page, and copy its
+Endpoint ID. In Controller, select Iroh when adding a worker and enter the ID and
+that password. No ticket, public IP, or proxy port is needed. Update the saved
+Controller password manually after changing it on the worker. Removing the worker
+password disables iroh and closes its tunnels; rotation preserves existing tunnels.
+
+Preserve each application's persistent data directory, including its private
+`iroh.key`. See [Iroh setup and authentication](docs/iroh.md) in the source
+repository for protocol details and verification commands.

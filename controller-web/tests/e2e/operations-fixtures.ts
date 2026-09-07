@@ -3,6 +3,7 @@ import { z } from "zod"
 
 import { type SettingsResponse, settingsUpdateRequestSchema } from "../../src/api/settingsSchemas"
 import { type Worker, workerCreateRequestSchema, workerUpdateRequestSchema } from "../../src/api/workerSchemas"
+import { dispatchEvent } from "./tasks-fixtures"
 
 const settingsVersionRequestSchema = z.object({ version: z.number().int().nonnegative() }).strict()
 
@@ -14,7 +15,7 @@ const session = {
   idle_expires_at: "2030-01-01T00:00:00Z",
 } as const
 
-const workerTemplate: Worker = {
+export const workerTemplate: Worker = {
   id: "d2719a65-16d5-4e97-a756-d8f782769144",
   version: 4,
   name: "render-east",
@@ -40,7 +41,7 @@ const workerTemplate: Worker = {
   last_error: "health probe timed out",
 }
 
-const settingsTemplate: SettingsResponse = {
+export const settingsTemplate: SettingsResponse = {
   version: 7,
   paths: {
     workspace: "/srv/videnoa/workspace",
@@ -82,6 +83,20 @@ export type OperationalApi = {
   readonly staleNextSettingsSave: () => void
   readonly staleNextWorkerUpdate: () => void
   readonly unauthenticateNextMutation: () => void
+}
+
+export async function dispatchWorkerUpdate(page: Page, worker: Worker): Promise<void> {
+  await dispatchEvent(page, "worker_updated", {
+    type: "worker_updated",
+    data: { event_id: "550e8400-e29b-41d4-a716-446655440009", worker },
+  })
+}
+
+export async function dispatchSchedulerUpdate(page: Page, scheduler: SettingsResponse["scheduler"]): Promise<void> {
+  await dispatchEvent(page, "scheduler_updated", {
+    type: "scheduler_updated",
+    data: { event_id: "550e8400-e29b-41d4-a716-44665544000a", scheduler },
+  })
 }
 
 export async function installOperationalReadRoutes(page: Page): Promise<void> {

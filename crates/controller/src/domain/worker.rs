@@ -38,6 +38,7 @@ pub struct WorkerSummary {
     pub id: WorkerId,
     pub version: u64,
     pub name: WorkerName,
+    #[serde(flatten, with = "endpoint_fields")]
     pub api_url: WorkerApiUrl,
     pub enabled: bool,
     pub online: bool,
@@ -59,6 +60,7 @@ pub struct WorkerCreateRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password: Option<super::SecretString>,
     pub name: WorkerName,
+    #[serde(flatten, with = "endpoint_fields")]
     pub api_url: WorkerApiUrl,
     pub enabled: bool,
     pub compute_slots: ComputeSlots,
@@ -75,6 +77,7 @@ pub struct WorkerUpdateRequest {
     pub password: Option<Option<super::SecretString>>,
     pub version: u64,
     pub name: WorkerName,
+    #[serde(flatten, with = "endpoint_fields")]
     pub api_url: WorkerApiUrl,
     pub enabled: bool,
     pub compute_slots: ComputeSlots,
@@ -100,4 +103,60 @@ fn password_change<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<Option<super::SecretString>>, D::Error> {
     Option::<super::SecretString>::deserialize(deserializer).map(Some)
+}
+
+// Preserve legacy HTTP wire fields while exposing native iroh registration fields.
+mod endpoint_fields {
+    use super::WorkerApiUrl;
+    use serde::Deserialize;
+
+    #[derive(Deserialize)]
+    struct Fields {
+        transport: Option<String>,
+        api_url: Option<String>,
+        endpoint_id: Option<String>,
+    }
+    pub fn serialize<S: serde::Serializer>(
+        value: &WorkerApiUrl,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(None)?;
+        if let Some(id) = value.iroh_id() {
+            map.serialize_entry("transport", "iroh")?;
+            map.serialize_entry("endpoint_id", &id.to_string())?;
+        } else {
+            map.serialize_entry("api_url", value.as_url().as_str())?;
+        }
+        map.end()
+    }
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<WorkerApiUrl, D::Error> {
+        let fields = Fields::deserialize(deserializer)?;
+        let uri = match (
+            fields.transport.as_deref(),
+            fields.api_url,
+            fields.endpoint_id,
+        ) {
+            (None | Some("http"), Some(url), None)
+                if url.starts_with("http://") || url.starts_with("https://") =>
+            {
+                url
+            }
+            (Some("iroh"), None, Some(id)) => {
+                let id = id
+                    .trim()
+                    .parse::<videnoa_transport::EndpointId>()
+                    .map_err(serde::de::Error::custom)?;
+                format!("iroh://{id}/")
+            }
+            _ => {
+                return Err(serde::de::Error::custom(
+                    "provide HTTP api_url or transport=iroh with endpoint_id",
+                ))
+            }
+        };
+        WorkerApiUrl::parse(&uri).map_err(serde::de::Error::custom)
+    }
 }

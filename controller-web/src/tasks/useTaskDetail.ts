@@ -4,6 +4,10 @@ import { type ApiClient, ApiClientError } from "../api/client"
 import { type TaskDetail, taskDetailSchema } from "../api/taskSchemas"
 import { appTaskUpdateStore } from "../events/taskUpdates"
 
+/** The Controller's default and maximum attempt page, from `PageLimit`. */
+const attemptPageSize = 100
+const attemptPageMaximum = 500
+
 type DetailOwner = {
   readonly taskId: string
   readonly generation: number
@@ -22,6 +26,25 @@ export type TaskDetailData = {
   readonly loadingMore: boolean
   readonly loadMore: () => void
   readonly reload: () => void
+}
+
+/*
+ * Restores attempts that the refreshed window could not reach.
+ *
+ * One request cannot exceed the Controller's page maximum, so an operator who
+ * expanded beyond it would otherwise watch the list shrink on every update.
+ * Attempt history is append-only and ordered newest first, which makes anything
+ * behind the freshly read head immutable: carrying the entries the response did
+ * not contain rebuilds the full window in order, with no second request and no
+ * gap. The authoritative `total` still bounds the result.
+ */
+function withRetainedAttempts(value: TaskDetail, retained: TaskDetail | null): TaskDetail {
+  if (retained === null || retained.task.id !== value.task.id) return value
+  const refreshed = new Set(value.attempts.map((attempt) => attempt.id))
+  const carried = retained.attempts.filter((attempt) => !refreshed.has(attempt.id))
+  if (carried.length === 0) return value
+  const attempts = [...value.attempts, ...carried].slice(0, value.total)
+  return { ...value, attempts, limit: attempts.length, offset: 0 }
 }
 
 export function useTaskDetail(apiClient: ApiClient, taskId: string): TaskDetailData {
@@ -70,7 +93,7 @@ export function useTaskDetail(apiClient: ApiClient, taskId: string): TaskDetailD
     const request = { controller: new AbortController(), owner, offset } satisfies HistoryRequest
     historyRequestRef.current = request
     setLoadingMore(true)
-    void apiClient.request(`api/tasks/${owner.taskId}?limit=100&offset=${offset}`, { schema: taskDetailSchema, signal: request.controller.signal }).then(
+    void apiClient.request(`api/tasks/${owner.taskId}?limit=${attemptPageSize}&offset=${offset}`, { schema: taskDetailSchema, signal: request.controller.signal }).then(
       (value) => {
         if (!ownsHistoryRequest(request) || value.task.id !== owner.taskId || value.offset !== offset) return
         const activeDetail = detailRef.current
@@ -107,23 +130,47 @@ export function useTaskDetail(apiClient: ApiClient, taskId: string): TaskDetailD
   useEffect(() => {
     const owner = { taskId, generation } satisfies DetailOwner
     const controller = new AbortController()
-    detailRef.current = null
-    detailOwnerRef.current = null
+    /*
+     * Selecting a different task invalidates what is on screen; refreshing the
+     * one already shown does not.
+     *
+     * A processing task reports an update roughly every second, and clearing the
+     * detail on each of those unmounted the whole inspector down to a loading
+     * line. That collapsed the drawer's scroll height, so the browser clamped
+     * scrollTop to zero and the operator was thrown back to the top once a
+     * second. A refresh therefore swaps its content in place and lets React
+     * reconcile the fields that actually changed; only a genuine selection
+     * change falls back to the loading state.
+     */
+    const isSelectionChange = detailRef.current?.task.id !== taskId
+    if (isSelectionChange) {
+      detailRef.current = null
+      detailOwnerRef.current = null
+    }
     abortHistoryRequest()
     queueMicrotask(() => {
-      if (!controller.signal.aborted && selectedTaskId.current === owner.taskId && generationRef.current === owner.generation) {
+      if (controller.signal.aborted || selectedTaskId.current !== owner.taskId || generationRef.current !== owner.generation) return
+      setError(null)
+      setLoadingMore(false)
+      if (isSelectionChange) {
         setDetail(null)
-        setError(null)
         setLoading(true)
-        setLoadingMore(false)
       }
     })
-    void apiClient.request(`api/tasks/${owner.taskId}?limit=100&offset=0`, { schema: taskDetailSchema, signal: controller.signal }).then(
+    /*
+     * A refresh re-reads the window the operator has open, not just its first
+     * page: re-requesting the default page collapsed an expanded history back to
+     * 100 attempts on every update.
+     */
+    const retained = isSelectionChange ? null : detailRef.current
+    const limit = Math.min(Math.max(retained?.attempts.length ?? attemptPageSize, attemptPageSize), attemptPageMaximum)
+    void apiClient.request(`api/tasks/${owner.taskId}?limit=${limit}&offset=0`, { schema: taskDetailSchema, signal: controller.signal }).then(
       (value) => {
         if (controller.signal.aborted || selectedTaskId.current !== owner.taskId || generationRef.current !== owner.generation) return
-        detailRef.current = value
+        const next = withRetainedAttempts(value, retained)
+        detailRef.current = next
         detailOwnerRef.current = owner
-        setDetail(value)
+        setDetail(next)
         setLoading(false)
       },
       (reason: unknown) => {

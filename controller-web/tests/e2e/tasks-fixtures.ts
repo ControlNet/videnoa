@@ -93,6 +93,28 @@ export function taskDetail(taskValue: Task, attempts: readonly TaskAttempt[] = [
   return { task: taskValue, attempts: [...attempts], total: attempts.length, limit: 100, offset: 0 }
 }
 
+/** One persisted attempt, for suites that need a detail long enough to scroll. */
+export function attempt(taskId: string, index: number): TaskAttempt {
+  const identifier = (offset: number) => `00000000-0000-4000-8000-${String(offset + index).padStart(12, "0")}`
+  return {
+    id: identifier(900),
+    task_id: taskId,
+    attempt_number: index,
+    worker_id: null,
+    status: "processing",
+    submission_key: identifier(800),
+    remote_job_id: null,
+    remote_input_path: null,
+    remote_output_path: null,
+    progress: { percent: 40, processed_frames: 100, total_frames: 250, frames_per_second: 12, eta_seconds: 30, bytes_transferred: null, bytes_total: null },
+    retry: { retry_count: 0, next_retry_at: null },
+    failure: null,
+    created_at: "2026-09-07T00:00:00Z",
+    started_at: "2026-09-07T00:00:01Z",
+    completed_at: null,
+  }
+}
+
 export async function installPagedApi(page: Page, journal: RequestJournal, total = 20_000): Promise<void> {
   await installSession(page)
   await page.route("**/api/status-counts", async (route) => {
@@ -110,8 +132,8 @@ export async function installPagedApi(page: Page, journal: RequestJournal, total
   })
 }
 
-export async function installLiveApi(page: Page, journal: RequestJournal, initialTask: Task) {
-  let currentTask = initialTask
+/** Replaces EventSource with a dispatchable stub, so a suite can deliver exact SSE deltas. */
+export async function installTestEventSource(page: Page): Promise<void> {
   await page.addInitScript(() => {
     class TestEventSource extends EventTarget {
       static readonly CLOSED = 2
@@ -124,6 +146,20 @@ export async function installLiveApi(page: Page, journal: RequestJournal, initia
     }
     Object.defineProperty(window, "EventSource", { value: TestEventSource })
   })
+}
+
+export async function dispatchEvent(page: Page, name: string, payload: unknown): Promise<void> {
+  await page.evaluate(({ name: eventName, payload: body }) => {
+    const events = Reflect.get(window, "testEventSource")
+    if (events instanceof EventTarget) {
+      events.dispatchEvent(new MessageEvent(eventName, { data: JSON.stringify(body) }))
+    }
+  }, { name, payload })
+}
+
+export async function installLiveApi(page: Page, journal: RequestJournal, initialTask: Task) {
+  let currentTask = initialTask
+  await installTestEventSource(page)
   await installAuthenticatedSession(page)
   await page.route("**/api/status-counts", async (route) => {
     journal.counts.push(route.request().url())
@@ -142,15 +178,10 @@ export async function installLiveApi(page: Page, journal: RequestJournal, initia
 }
 
 export async function dispatchTaskUpdate(page: Page, taskUpdate: Task): Promise<void> {
-  await page.evaluate((incoming) => {
-    const events = Reflect.get(window, "testEventSource")
-    if (events instanceof EventTarget) {
-      events.dispatchEvent(new MessageEvent("task_updated", { data: JSON.stringify({
-        type: "task_updated",
-        data: { event_id: "550e8400-e29b-41d4-a716-446655440003", task: incoming },
-      }) }))
-    }
-  }, taskUpdate)
+  await dispatchEvent(page, "task_updated", {
+    type: "task_updated",
+    data: { event_id: "550e8400-e29b-41d4-a716-446655440003", task: taskUpdate },
+  })
 }
 
 export async function capture(page: Page, name: string): Promise<void> {

@@ -23,6 +23,7 @@ export function AccessSettings({ config, onChange }: { config: AuthConfig; onCha
     setBusy(true); setError(null); setSuccess(false);
     try {
       const next = await authRequest('/api/auth/password', disable ? 'DELETE' : 'PUT', disable ? undefined : { password, password_confirmation: confirmation });
+      window.dispatchEvent(new Event("videnoa-password-changed"));
       accept(next); setPassword(''); setConfirmation(''); setConfirmDisable(false); setSuccess(true);
     } catch (err) { setError(err instanceof Error ? err.message : 'requestFailed'); }
     finally { setBusy(false); }

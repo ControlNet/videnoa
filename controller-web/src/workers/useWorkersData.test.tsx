@@ -1,9 +1,10 @@
 import { act, renderHook, waitFor } from "@testing-library/react"
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 
 import { createApiClient } from "../api/client"
 import type { Worker } from "../api/workerSchemas"
 import { appInvalidationStore } from "../events/store"
+import { appWorkerUpdateStore } from "../events/workerUpdates"
 import { useWorkersData } from "./useWorkersData"
 
 const worker: Worker = {
@@ -31,6 +32,87 @@ const worker: Worker = {
   updated_at: "2030-01-01T00:01:00Z",
   last_error: null,
 }
+
+function listApiClient() {
+  const requests: Request[] = []
+  const fetcher: typeof fetch = async (input, init) => {
+    const request = new Request(input, init)
+    requests.push(request)
+    return Response.json({ items: [worker], total: 1 })
+  }
+  return { apiClient: createApiClient({ fetcher, onUnauthorized: () => undefined }), requests }
+}
+
+describe("worker deltas", () => {
+  it("preserves two worker deltas queued before either state update runs", async () => {
+    // Synthetic test-only workers expose stale-list overwrites across microtasks.
+    const other = { ...worker, id: "550e8400-e29b-41d4-a716-446655440001", name: "render-west" }
+    const apiClient = createApiClient({
+      fetcher: async () => Response.json({ items: [worker, other], total: 2 }),
+      onUnauthorized: () => undefined,
+    })
+    const { result } = renderHook(() => useWorkersData(apiClient))
+    await waitFor(() => expect(result.current.workers?.items).toHaveLength(2))
+    const pending: VoidFunction[] = []
+    const microtasks = vi.spyOn(globalThis, "queueMicrotask").mockImplementation((callback) => pending.push(callback))
+    try {
+      act(() => appWorkerUpdateStore.publish({ ...worker, version: 5, online: false }))
+      act(() => appWorkerUpdateStore.publish({ ...other, version: 5, online: false }))
+      expect(pending).toHaveLength(2)
+      act(() => pending.forEach((callback) => callback()))
+      expect(result.current.workers?.items.map((item) => item.online)).toEqual([false, false])
+    } finally {
+      microtasks.mockRestore()
+    }
+  })
+
+  it("replaces a listed worker in place without another request", async () => {
+    // Given: one loaded worker reported online.
+    const { apiClient, requests } = listApiClient()
+    const { result } = renderHook(() => useWorkersData(apiClient))
+    await waitFor(() => expect(result.current.workers?.items).toHaveLength(1))
+    const readsAfterLoad = requests.filter((request) => request.method === "GET").length
+
+    // When: the event stream reports it offline at a newer version.
+    act(() => appWorkerUpdateStore.publish({ ...worker, version: 5, online: false, last_error: "probe timed out" }))
+
+    // Then: the row carries the new health and the list was not refetched.
+    await waitFor(() => expect(result.current.workers?.items[0]?.online).toBe(false))
+    expect(result.current.workers?.items[0]?.last_error).toBe("probe timed out")
+    expect(requests.filter((request) => request.method === "GET")).toHaveLength(readsAfterLoad)
+  })
+
+  it("ignores a delta that is not newer than the listed version", async () => {
+    // Given: one loaded worker at version 4.
+    const { apiClient, requests } = listApiClient()
+    const { result } = renderHook(() => useWorkersData(apiClient))
+    await waitFor(() => expect(result.current.workers?.items).toHaveLength(1))
+    const readsAfterLoad = requests.filter((request) => request.method === "GET").length
+
+    // When: a delta arrives at the same version with contradictory health, as a
+    // late event can after the list has already been read.
+    act(() => appWorkerUpdateStore.publish({ ...worker, version: 4, online: false }))
+
+    // Then: the listed representation stands and nothing is refetched.
+    await waitFor(() => expect(requests.filter((request) => request.method === "GET")).toHaveLength(readsAfterLoad))
+    expect(result.current.workers?.items[0]?.online).toBe(true)
+  })
+
+  it("refetches once for a worker the route has never listed", async () => {
+    // Given: one loaded worker.
+    const { apiClient, requests } = listApiClient()
+    const { result } = renderHook(() => useWorkersData(apiClient))
+    await waitFor(() => expect(result.current.workers?.items).toHaveLength(1))
+    const readsAfterLoad = requests.filter((request) => request.method === "GET").length
+
+    // When: a delta names a worker that is not in the list, so its position and
+    // the total are not the client's to decide.
+    act(() => appWorkerUpdateStore.publish({ ...worker, id: "550e8400-e29b-41d4-a716-446655440077", name: "render-west" }))
+
+    // Then: exactly one bounded list read settles it.
+    await waitFor(() => expect(requests.filter((request) => request.method === "GET")).toHaveLength(readsAfterLoad + 1))
+  })
+})
 
 describe("worker data requests", () => {
   it("refetches authoritative workers after a stale mutation", async () => {

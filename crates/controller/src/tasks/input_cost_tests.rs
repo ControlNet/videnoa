@@ -7,7 +7,7 @@ use crate::config::ControllerConfig;
 use crate::domain::{IdempotencyKey, TaskCreateRequest};
 use crate::paths::{input_hash_counts::count, PathCapabilities};
 use crate::persistence::{Database, DatabaseOptions, Store};
-use crate::scheduler::upload_input::open_verified;
+use crate::scheduler::upload_input::open_current;
 
 use super::intake::{IntakeOutcome, TaskService};
 
@@ -29,7 +29,7 @@ async fn fixture() -> Result<(TempDir, TaskService, Store), Box<dyn std::error::
 }
 
 #[tokio::test]
-async fn intake_and_upload_each_hash_once_and_transfer_starts_at_byte_zero() -> TestResult {
+async fn upload_skips_hashing_and_transfer_starts_at_byte_zero() -> TestResult {
     let (directory, service, store) = fixture().await?;
     let input = directory.path().join("input.mkv");
     // Synthetic test-only content spans multiple hashing buffers.
@@ -48,17 +48,17 @@ async fn intake_and_upload_each_hash_once_and_transfer_starts_at_byte_zero() -> 
     };
     assert_eq!(count(&input), 1, "intake must hash only once");
     let record = store.task(task.id).await?.ok_or("task missing")?;
-    let mut file = open_verified(&service.paths, &record)
+    // Synthetic test-only replacement is smaller and contains different bytes.
+    let bytes = vec![99_u8; 100_000];
+    std::fs::write(&input, &bytes)?;
+    let (mut file, size) = open_current(&service.paths, &record)
         .map_err(|_| std::io::Error::other("upload verification failed"))?;
-    assert_eq!(
-        count(&input),
-        2,
-        "upload admission must add exactly one hash"
-    );
+    assert_eq!(count(&input), 1, "upload must not hash input contents");
     let mut uploaded = Vec::new();
     file.read_to_end(&mut uploaded)?;
     assert_eq!(uploaded, bytes);
-    assert_eq!(count(&input), 2, "actual transfer must not rehash");
+    assert_eq!(size, bytes.len() as u64);
+    assert_eq!(count(&input), 1, "actual transfer must not rehash");
     Ok(())
 }
 

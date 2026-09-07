@@ -122,6 +122,10 @@ fn dependency_tree_excludes_gpu_and_model_runtime_crates() -> TestResult {
             "videnoa-controller",
             "--edges",
             "normal,build",
+            "--prefix",
+            "none",
+            "--format",
+            "{p}",
         ])
         .current_dir(workspace_root())
         .output()?;
@@ -129,10 +133,20 @@ fn dependency_tree_excludes_gpu_and_model_runtime_crates() -> TestResult {
     let tree = String::from_utf8(output.stdout)?.to_ascii_lowercase();
 
     // When: forbidden GPU and model-runtime package names are checked.
-    for forbidden in ["videnoa-core", "ort ", "cuda", "cudnn", "tensorrt"] {
+    for forbidden in [
+        "videnoa-core",
+        "ort",
+        "ort-sys",
+        "cuda",
+        "cudnn",
+        "tensorrt",
+    ] {
         // Then: no direct or transitive Controller dependency contains them.
         assert!(
-            !tree.contains(forbidden),
+            !tree
+                .lines()
+                .filter_map(|line| line.split_whitespace().next())
+                .any(|name| name == forbidden || name.starts_with(&format!("{forbidden}-"))),
             "forbidden dependency found: {forbidden}\n{tree}"
         );
     }
@@ -156,12 +170,32 @@ fn dependency_tree_activates_only_sqlite_sqlx_driver() -> TestResult {
     assert!(output.status.success(), "cargo tree failed");
     let tree = String::from_utf8(output.stdout)?.to_ascii_lowercase();
 
-    // When/Then: SQLite is active without SQLx's network database or RSA chains.
+    let sqlx_output = Command::new(env!("CARGO"))
+        .args([
+            "tree",
+            "-p",
+            "sqlx",
+            "--locked",
+            "--edges",
+            "normal,build,dev,features",
+        ])
+        .current_dir(workspace_root())
+        .output()?;
+    assert!(sqlx_output.status.success());
+    let sqlx_tree = String::from_utf8(sqlx_output.stdout)?.to_ascii_lowercase();
+    for forbidden in ["pem-rfc7468", "rsa v"] {
+        assert!(
+            !sqlx_tree.contains(forbidden),
+            "unexpected SQLx cryptography dependency: {forbidden}"
+        );
+    }
+
+    // Iroh legitimately adds identity cryptography; network SQLx drivers remain forbidden.
     assert!(
         tree.contains("sqlx-sqlite"),
         "SQLite driver missing\n{tree}"
     );
-    for forbidden in ["sqlx-mysql", "sqlx-postgres", "pem-rfc7468", "rsa v"] {
+    for forbidden in ["sqlx-mysql", "sqlx-postgres"] {
         assert!(
             !tree.contains(forbidden),
             "forbidden SQLx dependency found: {forbidden}\n{tree}"

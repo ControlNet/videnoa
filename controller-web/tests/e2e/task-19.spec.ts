@@ -60,6 +60,19 @@ test("restores focus to the worker edit trigger and contains the narrow dialog",
       overflowY: getComputedStyle(element).overflowY,
     }
   })).toEqual({ contained: true, overflowY: "auto" })
+  // The dialog carries its own controls, including the segmented connection type,
+  // so it is scanned while open rather than only in its closed state.
+  await expectNoSeriousViolations(page)
+
+  // And the segmented control answers a real pointer, which is only observable
+  // in a browser: jsdom does no hit testing, so a segment that swallowed the
+  // click would still pass every unit test.
+  await expect(page.getByRole("radio", { name: "HTTP / HTTPS" })).toBeChecked()
+  await page.getByRole("radio", { name: "Iroh" }).click()
+  await expect(page.getByRole("radio", { name: "Iroh" })).toBeChecked()
+  await expect(page.getByLabel("Worker Endpoint ID")).toBeVisible()
+  await page.getByRole("radio", { name: "HTTP / HTTPS" }).click()
+  await expect(page.getByLabel("Worker API URL")).toBeVisible()
   await page.getByRole("button", { name: "Close worker form" }).click()
   await expect(editTrigger).toBeFocused()
 })

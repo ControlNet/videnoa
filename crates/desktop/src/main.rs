@@ -225,6 +225,7 @@ fn main() {
             #[cfg(not(debug_assertions))]
             let static_path: Option<&Path> = None;
 
+            let iroh_state = state.clone();
             let router = app_router_with_static(state, static_path);
 
             let listener = TcpListener::bind("127.0.0.1:0")?;
@@ -232,6 +233,9 @@ fn main() {
             let port = listener.local_addr()?.port();
 
             tauri::async_runtime::spawn(async move {
+                if let Err(error) = iroh_state.reconcile_iroh().await {
+                    error!(%error, "Failed to start iroh");
+                }
                 let listener = match tokio::net::TcpListener::from_std(listener) {
                     Ok(listener) => listener,
                     Err(err) => {

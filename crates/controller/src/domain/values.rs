@@ -73,6 +73,8 @@ pub enum WorkerUrlError {
     Credentials,
     #[error("worker API URL must not contain a query or fragment")]
     QueryOrFragment,
+    #[error("worker iroh endpoint ID is invalid")]
+    InvalidEndpointId,
 }
 
 impl WorkerApiUrl {
@@ -84,6 +86,18 @@ impl WorkerApiUrl {
         let mut url = Url::parse(value).map_err(WorkerUrlError::Malformed)?;
         match url.scheme() {
             "http" | "https" => {}
+            "iroh" => {
+                let id = url
+                    .host_str()
+                    .ok_or(WorkerUrlError::InvalidEndpointId)?
+                    .parse::<videnoa_transport::EndpointId>()
+                    .map_err(|_| WorkerUrlError::InvalidEndpointId)?;
+                if url.port().is_some() || !matches!(url.path(), "" | "/") {
+                    return Err(WorkerUrlError::InvalidEndpointId);
+                }
+                url.set_host(Some(&id.to_string()))
+                    .map_err(WorkerUrlError::Malformed)?;
+            }
             _ => return Err(WorkerUrlError::UnsupportedScheme),
         }
         if !url.username().is_empty() || url.password().is_some() {
@@ -95,6 +109,13 @@ impl WorkerApiUrl {
         let normalized = format!("{}/", url.path().trim_end_matches('/'));
         url.set_path(&normalized);
         Ok(Self(url))
+    }
+
+    #[must_use]
+    pub fn iroh_id(&self) -> Option<videnoa_transport::EndpointId> {
+        (self.0.scheme() == "iroh")
+            .then(|| self.0.host_str()?.parse().ok())
+            .flatten()
     }
 
     #[must_use]

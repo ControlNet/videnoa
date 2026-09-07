@@ -18,6 +18,33 @@ impl RecoveryScan {
 }
 
 impl Store {
+    // Persist the size before PUT so crash recovery checks the uploaded version of the input.
+    pub(crate) async fn refresh_upload_size(
+        &self,
+        task: &TaskRecord,
+        size: u64,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<super::CasOutcome, PersistenceError> {
+        let result = sqlx::query(
+            "UPDATE tasks SET input_size = ?, version = version + 1, updated_at_ms = ?
+             WHERE id = ? AND version = ? AND status = 'uploading'
+               AND cancel_requested_at_ms IS NULL",
+        )
+        .bind(sqlite_u64("input_size", size)?)
+        .bind(timestamp(now))
+        .bind(task.id.to_string())
+        .bind(sqlite_u64("task_version", task.version)?)
+        .execute(self.database.pool())
+        .await?;
+        Ok(if result.rows_affected() == 1 {
+            super::CasOutcome::Applied {
+                new_version: task.version + 1,
+            }
+        } else {
+            super::CasOutcome::Conflict
+        })
+    }
+
     /// # Errors
     /// Returns an error when `SQLite` access or task encoding fails.
     pub async fn insert_task(&self, task: &NewTask) -> Result<(), PersistenceError> {

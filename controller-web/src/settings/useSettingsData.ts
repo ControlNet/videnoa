@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore } from "react"
+import { useEffect, useRef, useState, useSyncExternalStore } from "react"
 
 import { type ApiClient, ApiClientError } from "../api/client"
 import {
@@ -8,6 +8,7 @@ import {
   type SettingsUpdateRequest,
   settingsResponseSchema,
 } from "../api/settingsSchemas"
+import { appSchedulerUpdateStore } from "../events/schedulerUpdates"
 import { appInvalidationStore } from "../events/store"
 
 export type SettingsData = {
@@ -29,6 +30,8 @@ export type SettingsMutationResult =
 
 export function useSettingsData(apiClient: ApiClient): SettingsData {
   const invalidation = useSyncExternalStore(appInvalidationStore.subscribe, appInvalidationStore.snapshot)
+  const update = useSyncExternalStore(appSchedulerUpdateStore.subscribe, appSchedulerUpdateStore.snapshot)
+  const appliedUpdateGeneration = useRef(appSchedulerUpdateStore.snapshot().generation)
   const [settings, setSettings] = useState<SettingsResponse | null>(null)
   const [readiness, setReadiness] = useState<Readiness | null>(null)
   const [loading, setLoading] = useState(true)
@@ -60,7 +63,7 @@ export function useSettingsData(apiClient: ApiClient): SettingsData {
       (reason: unknown) => {
         if (controller.signal.aborted) return
         if (!(reason instanceof ApiClientError)) throw reason
-        setSettings(null)
+        // Keep any mounted draft available while the authoritative refresh is retried.
         setReadiness(null)
         setError(reason.code === "network_failure" ? "Controller could not be reached." : "Controller could not load settings.")
         setLoading(false)
@@ -68,6 +71,26 @@ export function useSettingsData(apiClient: ApiClient): SettingsData {
     )
     return () => controller.abort()
   }, [apiClient, invalidation.generation, retryGeneration])
+
+  /*
+   * A scheduler delta is shown at once and then reconciled by one bounded read.
+   *
+   * Both halves are needed. The delta carries the new scheduler status but no
+   * settings version, and every mutation on this route sends one, so keeping
+   * only the merged value would make the next save or pause answer 409. The
+   * read supplies the coherent version. The editor reconciles untouched fields
+   * while retaining unsaved edits and notifying the operator of remote changes.
+   */
+  useEffect(() => {
+    if (update.generation <= appliedUpdateGeneration.current) return
+    appliedUpdateGeneration.current = update.generation
+    const incoming = update.scheduler
+    if (incoming === null) return
+    queueMicrotask(() => {
+      setSettings((current) => (current === null ? current : { ...current, scheduler: incoming }))
+      setRetryGeneration((generation) => generation + 1)
+    })
+  }, [update.generation, update.scheduler])
 
   async function mutate(request: () => Promise<SettingsResponse>): Promise<SettingsMutationResult> {
     setMutating(true)

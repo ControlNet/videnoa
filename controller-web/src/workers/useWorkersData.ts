@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore } from "react"
+import { useEffect, useRef, useState, useSyncExternalStore } from "react"
 
 import { type ApiClient, ApiClientError } from "../api/client"
 import {
@@ -11,6 +11,8 @@ import {
   workerSchema,
 } from "../api/workerSchemas"
 import { appInvalidationStore } from "../events/store"
+import { appTaskUpdateStore } from "../events/taskUpdates"
+import { appWorkerUpdateStore } from "../events/workerUpdates"
 
 export type WorkersData = {
   readonly workers: WorkerList | null
@@ -28,6 +30,10 @@ export type WorkersData = {
 
 export function useWorkersData(apiClient: ApiClient): WorkersData {
   const invalidation = useSyncExternalStore(appInvalidationStore.subscribe, appInvalidationStore.snapshot)
+  const update = useSyncExternalStore(appWorkerUpdateStore.subscribe, appWorkerUpdateStore.snapshot)
+  const taskUpdate = useSyncExternalStore(appTaskUpdateStore.subscribe, appTaskUpdateStore.snapshot)
+  const appliedUpdateGeneration = useRef(appWorkerUpdateStore.snapshot().generation)
+  const appliedTaskGeneration = useRef(appTaskUpdateStore.snapshot().generation)
   const [workers, setWorkers] = useState<WorkerList | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -61,6 +67,58 @@ export function useWorkersData(apiClient: ApiClient): WorkersData {
     )
     return () => controller.abort()
   }, [apiClient, invalidation.generation, retryGeneration])
+
+  /*
+   * A worker delta carries the whole authoritative DTO, so a known worker is
+   * replaced in place and costs no request. A worker this page has never seen is
+   * a different matter: the Controller decides list order and total, so that
+   * takes one bounded refetch rather than a guessed position.
+   */
+  useEffect(() => {
+    if (update.generation <= appliedUpdateGeneration.current) return
+    appliedUpdateGeneration.current = update.generation
+    const incoming = update.worker
+    if (incoming === null) return
+    if (workers === null || loading) {
+      queueMicrotask(() => setRetryGeneration((generation) => generation + 1))
+      return
+    }
+    const current = workers.items.find((worker) => worker.id === incoming.id)
+    queueMicrotask(() => {
+      if (current === undefined) {
+        setRetryGeneration((generation) => generation + 1)
+        return
+      }
+      setWorkers((previous) => {
+        if (previous === null) return previous
+        const latest = previous.items.find((worker) => worker.id === incoming.id)
+        if (latest === undefined || incoming.version <= latest.version) return previous
+        return {
+          ...previous,
+          items: previous.items.map((worker) => (worker.id === incoming.id ? incoming : worker)),
+        }
+      })
+    })
+  }, [loading, update.generation, update.worker, workers])
+
+  /*
+   * Slot usage is not on the worker row. `WorkerCapacity` is derived from the
+   * tasks assigned to a worker, so a task moving through its lifecycle changes
+   * this table without changing any worker's version -- and no worker delta is
+   * published for it. A task delta therefore takes one bounded list read.
+   *
+   * That costs one request per task event while this route is mounted, roughly
+   * one a second per actively processing task. It is accepted deliberately:
+   * recomputing capacity here would duplicate the Controller's own counting,
+   * and an operator watching this table is watching it for these numbers. The
+   * read keeps the rendered list, so nothing blanks while it is in flight.
+   */
+  useEffect(() => {
+    if (taskUpdate.generation <= appliedTaskGeneration.current) return
+    appliedTaskGeneration.current = taskUpdate.generation
+    if (taskUpdate.task === null) return
+    queueMicrotask(() => setRetryGeneration((generation) => generation + 1))
+  }, [taskUpdate.generation, taskUpdate.task])
 
   async function mutate(request: () => Promise<unknown>): Promise<boolean> {
     setMutating(true)

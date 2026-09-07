@@ -2,7 +2,7 @@ import type { TaskDetail } from "../api/taskSchemas"
 import { Button } from "../ui/Button"
 import { formatBytes, formatDate, formatDuration } from "./format"
 import { Detail, TaskAttempts } from "./TaskAttempts"
-import type { FailureGuidance } from "./taskActionPolicy"
+import { canRetryTask, type FailureGuidance } from "./taskActionPolicy"
 
 type TaskDetailContentProps = {
   readonly detail: TaskDetail
@@ -69,7 +69,7 @@ export function TaskDetailContent({ detail, guidance, loadingMore, onLoadMore }:
             <dl className="detail-grid">
               <Detail label="Stage" value={detail.task.failure.failure_stage} />
               <Detail label="Code" value={detail.task.failure.failure_code} mono />
-              <Detail label="Retryable" value={detail.task.failure.retryable ? "Yes" : "No"} />
+              <Detail label="Manual Retry" value={canRetryTask(detail.task) ? "Available" : "Unavailable"} />
             </dl>
             <p className="copy-value">{detail.task.failure.message}</p>
             {guidance === null ? null : <p className="failure-guidance">{guidance.message}</p>}

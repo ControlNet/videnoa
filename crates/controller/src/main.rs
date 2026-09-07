@@ -69,10 +69,7 @@ async fn main() -> anyhow::Result<()> {
 
 async fn run_controller(cli: Cli) -> anyhow::Result<()> {
     let workspace = std::env::current_dir()?.canonicalize()?;
-    let data_root = ConfigBootstrap::prepare_data_root(&workspace)?;
-    let database =
-        Database::open(DatabaseOptions::new(data_root.join("controller.sqlite3"))).await?;
-    let store = Store::new(database);
+    let store = open_store(&workspace).await?;
     let config = load_configuration(&workspace, &store, &cli)?;
     let address = SocketAddr::new(config.server.host, config.server.port);
     let paths = PathCapabilities::open(&config.paths)?;
@@ -164,8 +161,17 @@ async fn run_controller(cli: Cli) -> anyhow::Result<()> {
             runtime_result?;
         }
     }
+    videnoa_controller::remote::shutdown_iroh().await;
     tracing::info!("Controller shutdown completed");
     Ok(())
+}
+
+async fn open_store(workspace: &Path) -> anyhow::Result<Store> {
+    let data_root = ConfigBootstrap::prepare_data_root(workspace)?;
+    videnoa_controller::remote::configure_iroh(&data_root)?;
+    let database =
+        Database::open(DatabaseOptions::new(data_root.join("controller.sqlite3"))).await?;
+    Ok(Store::new(database))
 }
 
 fn load_configuration(

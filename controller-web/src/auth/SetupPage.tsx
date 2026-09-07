@@ -74,7 +74,7 @@ export function SetupPage({ setup }: SetupPageProps) {
           <span className="brand-mark">V</span>
           <span className="boundary-line" />
         </div>
-        <h1 id="setup-title">Set up Controller access</h1>
+        <h1 id="setup-title">Set up Videnoa Controller access</h1>
         <p className="login-summary">Create the administrator password for this private coordination surface.</p>
 
         <form className="login-form" noValidate onSubmit={handleSubmit}>

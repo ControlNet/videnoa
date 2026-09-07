@@ -165,7 +165,7 @@ impl TransferExecutor {
                     TaskStatus::Uploading,
                     FailureStage::Upload,
                     code,
-                    "local input changed after task admission",
+                    "local input is unavailable or is not a permitted regular file",
                 ),
                 now,
             )

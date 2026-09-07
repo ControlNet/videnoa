@@ -4,6 +4,7 @@ use super::{ClientConfigError, Health, PayloadLimits, RemoteTimeouts, VidenoaCli
 
 #[derive(Clone)]
 pub struct VidenoaClient {
+    pub(super) tunnel: Option<std::sync::Arc<super::iroh::Lease>>,
     pub(super) base_url: WorkerApiUrl,
     pub(super) http: reqwest::Client,
     pub(super) authorization: Option<reqwest::header::HeaderValue>,
@@ -34,6 +35,13 @@ impl VidenoaClient {
         limits: PayloadLimits,
         password: Option<&crate::domain::SecretString>,
     ) -> Result<Self, ClientConfigError> {
+        let (tunnel, base_url) = if let Some(peer) = base_url.iroh_id() {
+            let password = password.ok_or(ClientConfigError::HttpClient)?;
+            let (lease, local_url) = super::iroh::Lease::bind(peer, password)?;
+            (Some(lease), local_url)
+        } else {
+            (None, base_url)
+        };
         let authorization = if let Some(password) = password {
             let mut value = reqwest::header::HeaderValue::from_bytes(
                 format!("Bearer {}", password.expose()).as_bytes(),
@@ -44,7 +52,13 @@ impl VidenoaClient {
         } else {
             None
         };
-        let http = reqwest::Client::builder()
+        let builder = reqwest::Client::builder();
+        let builder = if tunnel.is_some() {
+            builder.no_proxy()
+        } else {
+            builder
+        };
+        let http = builder
             .connect_timeout(timeouts.connect)
             .pool_max_idle_per_host(8)
             .redirect(reqwest::redirect::Policy::none())
@@ -56,6 +70,7 @@ impl VidenoaClient {
             .build()
             .map_err(|_| ClientConfigError::HttpClient)?;
         Ok(Self {
+            tunnel,
             base_url,
             http,
             authorization,

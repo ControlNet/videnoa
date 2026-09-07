@@ -84,7 +84,7 @@ test("first visit setup validates, authenticates, and survives reload", async ({
   await page.goto("/settings")
 
   // When: validation rejects a mismatch and the matching setup pair is submitted.
-  await expect(page.getByRole("heading", { name: "Set up Controller access" })).toBeVisible()
+  await expect(page.getByRole("heading", { name: "Set up Videnoa Controller access" })).toBeVisible()
   await page.screenshot({ path: `${bootstrapEvidenceDir}/setup-desktop.png`, fullPage: false, scale: "css" })
   await page.getByLabel("Create password").fill("synthetic-passphrase")
   await page.getByLabel("Confirm password").fill("different-passphrase")

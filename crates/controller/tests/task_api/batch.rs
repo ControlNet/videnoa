@@ -245,3 +245,132 @@ async fn batch_creation_accepts_a_linked_media_directory_and_persists_real_paths
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn jellyfin_suffix_preview_and_batch_create_preserve_paths() -> TestResult {
+    let fixture = fixture().await?;
+    let media = tempfile::tempdir()?;
+    // Synthetic intake files; no decoding or real media jobs are involved.
+    for name in ["Re Zero S03E01.mkv", "动画.S03E02 - Original.MKV"] {
+        fs::write(media.path().join(name), b"synthetic suffix intake fixture")?;
+    }
+    let mut body = options(&format!("{}/*", media.path().display()));
+    body["naming_mode"] = json!("jellyfin_version_suffix");
+    for (mode, label) in [("beside_input", "AI"), ("directory", "AI 4K")] {
+        body["output_mode"] = json!(mode);
+        body["output_directory"] = json!("output");
+        body["middle_extension"] = json!(label);
+        let result = preview(&fixture, &body).await?;
+        let items = result["items"].as_array().ok_or("missing items")?;
+        assert_eq!(items.len(), 2);
+        for item in items {
+            assert!(item["error"].is_null());
+            let input =
+                std::path::Path::new(item["request"]["input_path"].as_str().ok_or("input")?);
+            let directory = if mode == "beside_input" {
+                media.path()
+            } else {
+                fixture.output.parent().ok_or("output parent")?
+            };
+            let expected = directory.join(format!(
+                "{} - {label}.{}",
+                input.file_stem().ok_or("stem")?.to_string_lossy(),
+                input.extension().ok_or("extension")?.to_string_lossy()
+            ));
+            assert_eq!(
+                item["request"]["output_path"],
+                expected.to_str().ok_or("UTF8")?
+            );
+        }
+        let response = fixture
+            .router
+            .clone()
+            .oneshot(
+                fixture
+                    .session
+                    .request("POST", "/api/tasks/batch", Some(&body))?,
+            )
+            .await?;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let created = json_body(response).await?;
+        assert_eq!(created["created"], 2);
+        for (index, item) in items.iter().enumerate() {
+            assert_eq!(
+                created["items"][index]["task"]["output_path"],
+                item["request"]["output_path"]
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn jellyfin_suffix_rejects_invalid_labels_and_existing_outputs() -> TestResult {
+    let fixture = fixture().await?;
+    let mut body = options("input/*.MKV");
+    body["naming_mode"] = json!("jellyfin_version_suffix");
+    for label in [
+        String::new(),
+        " ".to_owned(),
+        " AI".to_owned(),
+        "AI ".to_owned(),
+        "../AI".to_owned(),
+        "AI\\4K".to_owned(),
+        "AI?".to_owned(),
+        "AI\n".to_owned(),
+        ".AI".to_owned(),
+        "AI.".to_owned(),
+        "界".repeat(22),
+    ] {
+        body["middle_extension"] = json!(label);
+        for route in ["/api/tasks/batch-preview", "/api/tasks/batch"] {
+            let response = fixture
+                .router
+                .clone()
+                .oneshot(fixture.session.request("POST", route, Some(&body))?)
+                .await?;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(
+                json_body(response).await?["error"]["field_errors"][0]["field"],
+                "middle_extension"
+            );
+        }
+    }
+    body["middle_extension"] = json!("AI");
+    fs::copy(
+        &fixture.input,
+        fixture.input.with_file_name("source - AI.MKV"),
+    )?;
+    body["input_pattern"] = json!("input/source.MKV");
+    let result = preview(&fixture, &body).await?;
+    assert_eq!(
+        result["items"][0]["validation_error"],
+        "Output already exists and will not be overwritten."
+    );
+    let response = fixture
+        .router
+        .clone()
+        .oneshot(
+            fixture
+                .session
+                .request("POST", "/api/tasks/batch", Some(&body))?,
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(response).await?["created"], 0);
+
+    let nested = fixture.input.parent().ok_or("input parent")?.join("season");
+    fs::create_dir(&nested)?;
+    fs::copy(&fixture.input, nested.join("source.MKV"))?;
+    body["input_pattern"] = json!("input/**/source.MKV");
+    body["output_mode"] = json!("directory");
+    body["output_directory"] = json!("output");
+    let result = preview(&fixture, &body).await?;
+    let items = result["items"].as_array().ok_or("items")?;
+    assert_eq!(items.len(), 2);
+    for item in items {
+        assert_eq!(item["error"], "Multiple inputs map to this output path.");
+        assert_eq!(item["output_key"], items[0]["output_key"]);
+    }
+    Ok(())
+}
