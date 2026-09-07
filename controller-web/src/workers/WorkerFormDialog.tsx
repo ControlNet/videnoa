@@ -10,7 +10,7 @@ import {
   workerUpdateRequestSchema,
 } from "../api/workerSchemas"
 import { Button } from "../ui/Button"
-import { CheckField, Field } from "../ui/Field"
+import { CheckField, Field, SegmentedField } from "../ui/Field"
 import { workerActionMessage, workerServerFieldErrors } from "./workerErrors"
 
 type WorkerFormDialogProps = {
@@ -120,10 +120,13 @@ export function WorkerFormDialog(props: WorkerFormDialogProps) {
         </header>
         {props.actionError === null ? null : <div className="operation-error alert alert--danger" role="alert">{workerActionMessage(props.actionError)}</div>}
         <Field ref={firstInputRef} id="worker-name" label="Worker name" name="name" autoComplete="off" spellCheck={false} value={fields.name} error={nameError} onChange={(event) => setFields({ ...fields, name: event.currentTarget.value })} />
-        <label htmlFor="worker-transport">Connection type</label>
-        <select id="worker-transport" value={fields.transport} onChange={(event) => setFields({ ...fields, transport: event.currentTarget.value as "http" | "iroh", apiUrl: "" })}>
-          <option value="http">HTTP / HTTPS</option><option value="iroh">Iroh</option>
-        </select>
+        <SegmentedField
+          name="transport"
+          label="Connection type"
+          value={fields.transport}
+          options={[{ value: "http", label: "HTTP / HTTPS" }, { value: "iroh", label: "Iroh" }]}
+          onChange={(transport) => setFields({ ...fields, transport, apiUrl: "" })}
+        />
         <Field ref={apiUrlRef} id="worker-api-url" label={fields.transport === "iroh" ? "Worker Endpoint ID" : "Worker API URL"} name={fields.transport === "iroh" ? "endpoint_id" : "api_url"} type={fields.transport === "iroh" ? "text" : "url"} autoComplete="off" spellCheck={false} value={fields.apiUrl} error={urlError} onChange={(event) => setFields({ ...fields, apiUrl: event.currentTarget.value })} />
         <div className="worker-password-field">
           <Field ref={passwordRef} id="worker-password" label={fields.transport === "iroh" ? "Access password" : "Access password (optional)"} name="password" type={showPassword ? "text" : "password"} autoComplete="new-password" spellCheck={false} value={fields.password} disabled={fields.clearPassword} error={fieldErrors.password ?? serverFields.password} onChange={(event) => setFields({ ...fields, password: event.currentTarget.value })} />

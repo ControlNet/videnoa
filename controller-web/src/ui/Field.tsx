@@ -38,6 +38,54 @@ export function Field({ id, label, error, hint, ...input }: InputFieldProps) {
   )
 }
 
+type SegmentedOption<Value extends string> = {
+  readonly value: Value
+  readonly label: string
+}
+
+type SegmentedFieldProps<Value extends string> = {
+  readonly name: string
+  readonly label: string
+  readonly value: Value
+  readonly options: readonly SegmentedOption<Value>[]
+  readonly onChange: (value: Value) => void
+}
+
+/**
+ * One choice among a closed set of peers, with every option visible.
+ *
+ * A set this small does not belong behind a dropdown: collapsing it hides most
+ * of the decision and charges a click to see the rest. It matters more when the
+ * choice changes what a later field means, because then the selection is the
+ * explanation for what the form is asking next.
+ *
+ * Radios rather than buttons. The group is a single tab stop, arrow keys move
+ * within it, the legend names it, and assistive technology announces position
+ * in the set -- all of that is the platform's, and none of it survives being
+ * rebuilt out of buttons and `aria-pressed`.
+ */
+export function SegmentedField<Value extends string>({ name, label, value, options, onChange }: SegmentedFieldProps<Value>) {
+  return (
+    <fieldset className="field field--segmented">
+      <legend>{label}</legend>
+      <div className="segmented">
+        {options.map((option) => (
+          <label key={option.value} className={option.value === value ? "segment segment--selected" : "segment"}>
+            <input
+              type="radio"
+              name={name}
+              value={option.value}
+              checked={option.value === value}
+              onChange={() => onChange(option.value)}
+            />
+            <span>{option.label}</span>
+          </label>
+        ))}
+      </div>
+    </fieldset>
+  )
+}
+
 type CheckFieldProps = {
   readonly id: string
   readonly name: string

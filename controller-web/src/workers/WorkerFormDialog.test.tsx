@@ -37,7 +37,10 @@ it('registers an iroh Endpoint ID and password without an HTTP URL', async () =>
   const onCreate = vi.fn().mockResolvedValue(false)
   render(<WorkerFormDialog worker={null} open submitting={false} actionError={null} onClose={vi.fn()} onCreate={onCreate} onUpdate={vi.fn()} />)
   fireEvent.change(screen.getByLabelText('Worker name'), { target: { value: 'iroh worker' } })
-  fireEvent.change(screen.getByLabelText('Connection type'), { target: { value: 'iroh' } })
+  // Both connection types are on screen, so choosing one is a click, not a menu.
+  expect(screen.getByRole('radio', { name: 'HTTP / HTTPS' })).toBeChecked()
+  fireEvent.click(screen.getByRole('radio', { name: 'Iroh' }))
+  expect(screen.getByRole('radio', { name: 'Iroh' })).toBeChecked()
   fireEvent.change(screen.getByLabelText('Worker Endpoint ID'), { target: { value: endpointId } })
   fireEvent.click(screen.getByRole('button', { name: 'Save Worker' }))
   expect(onCreate).not.toHaveBeenCalled()

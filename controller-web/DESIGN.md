@@ -101,6 +101,7 @@ Routes compose from one shared vocabulary in `src/ui/`. A route-specific rule th
 
 - **Button** (`ui/Button.tsx`): `primary`, `outline`, `ghost`, `danger` variants at `md`/`sm`, plus a square `icon` form that requires an explicit label. Active state translates 1px; reduced motion removes it.
 - **Field** (`ui/Field.tsx`): visible label, control, and programmatically associated error. `CheckField` covers boolean policy. No placeholder-as-label anywhere in the product, and nothing but the label contributes to a control's accessible name.
+- **SegmentedField** (`ui/Field.tsx`): a closed set of two or three options with all of them on screen, sized to `--control-field` so it lines up with the text inputs around it. Built on native radios: one tab stop, arrow keys within the group, the legend names it, and position in the set is announced. Reach for it over a dropdown whenever the set is small and the choice governs a later field -- collapsing it would hide the reason the form asks what it asks next.
 - **Chip** (`ui/Chip.tsx`): `SelectChip` and `TextChip` wrap a native `select`/`input` in compact chrome so keyboard behaviour, form semantics and assistive-technology reporting stay the platform's. An engaged filter is shown by accent border and wash. `shortLabel` shortens visible text without changing the accessible name.
 - **Status** (`ui/Status.tsx`): dot plus exact label in one of four tones. The live halo is reserved for a verified open stream.
 - **Scroll frame** (`.scroll-frame` + `.scroll-controls`): the named overflow region and its boundary-aware controls.
@@ -197,6 +198,11 @@ Routes compose from one shared vocabulary in `src/ui/`. A route-specific rule th
 - **Licence**: the link is an obligation, not a convenience. AGPL-3.0 section 13 requires that whoever interacts with the program over a network be offered its corresponding source, which is why the stamp survives the collapse to the narrow identity bar.
 - **Failure**: nothing renders until the read lands, and a failed read stays silent. Identification must never put an error in front of an operator working a queue.
 - **Accessibility**: the accessible name carries product, version and purpose because the visible text is a bare version string; the hit target is 24px tall although the type is 9.5px.
+
+### Worker Intake Form
+- **Structure**: name, connection type, address, access password, compute slots and scheduling policy, in that order -- identity, then how to reach it, then what it may be given.
+- **Connection type**: a `SegmentedField`, not a dropdown. The choice rewrites the field beneath it (`Worker API URL` becomes `Worker Endpoint ID`) and makes the password mandatory rather than optional, so it is the explanation for what the form asks next and stays visible. Two options behind a dropdown also cost two interactions to reveal two words.
+- **Dismissal**: the header close control is the only one. A footer `Dismiss` beside `Save Worker` repeated it exactly.
 
 ### Worker Operations Surface
 
