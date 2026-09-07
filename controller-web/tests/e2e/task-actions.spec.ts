@@ -181,13 +181,16 @@ test("refreshes a processing task in place without remounting or rescrolling its
   await expect(pane).toContainText("Showing 12 of 12")
 
   // And: the operator has scrolled the drawer away from the top, and the rendered
-  // content element is stamped so a remount can be detected.
-  await pane.evaluate((element) => {
+  // content element is stamped so a remount can be detected. Webfonts are settled
+  // first, because a face arriving mid-test reflows the drawer on its own.
+  await page.evaluate(() => document.fonts.ready)
+  const scrolled = await pane.evaluate((element) => {
     element.scrollTop = 400
     const content = element.querySelector(".task-detail-content")
     if (content !== null) Reflect.set(content, "testMountMarker", "original")
+    return element.scrollTop
   })
-  expect(await pane.evaluate((element) => element.scrollTop)).toBeGreaterThan(200)
+  expect(scrolled).toBeGreaterThan(200)
 
   // When: the task reports a newer representation, as a processing task does about once a second.
   const updated = task(5, { status: "processing", version: 5, progress: { ...initial.progress, percent: 61 } })
@@ -198,7 +201,14 @@ test("refreshes a processing task in place without remounting or rescrolling its
   // Then: the refreshed fields were reconciled into the surviving content element,
   // so the drawer never collapsed to a loading line and kept the scroll position.
   expect(await pane.evaluate((element) => Reflect.get(element.querySelector(".task-detail-content") ?? {}, "testMountMarker"))).toBe("original")
-  expect(await pane.evaluate((element) => element.scrollTop)).toBe(400)
+  /*
+   * Near-equality, not equality: scroll anchoring is deliberately left on, so
+   * Chrome may shift scrollTop a few pixels to keep the anchored content under
+   * the operator's eye when a value above it changes width. The defect being
+   * guarded is a reset to the top, which the surviving mount marker and this
+   * tolerance both rule out.
+   */
+  expect(Math.abs(await pane.evaluate((element) => element.scrollTop) - scrolled)).toBeLessThan(40)
 })
 
 test("keeps an expanded attempt window across a live update", async ({ page }) => {
