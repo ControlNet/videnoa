@@ -139,7 +139,8 @@ test("operates workers and runtime settings with safe failures", async ({ page }
   releaseStaleSettings()
   await expect(page.getByRole("alert")).toContainText("Current values were reloaded")
   await expect(page.getByRole("button", { name: "Save and apply settings" })).toBeEnabled()
-  await page.getByLabel("Concurrent uploads").fill("5")
+  await expect(page.getByLabel("Concurrent uploads")).toHaveValue("5")
+  await expect(page.getByText(/Your unsaved edits are preserved/)).toBeVisible()
   await page.getByLabel("Server port").fill("4555")
   await page.getByRole("button", { name: "Save and apply settings" }).click()
   await expect(page.locator(".settings-save-receipt")).toContainText("Settings saved and applied")
@@ -327,6 +328,7 @@ test("shows a scheduler pause made elsewhere without a manual reload", async ({ 
   })
   await page.goto("/settings")
   await expect(page.getByText("Scheduler running")).toBeVisible()
+  await page.getByLabel("Server port").fill("4555")
 
   // When: the scheduler is paused elsewhere -- another browser, or the API -- which
   // the Controller publishes on the event stream.
@@ -337,6 +339,9 @@ test("shows a scheduler pause made elsewhere without a manual reload", async ({ 
   // Then: this session shows the new state and offers the matching action.
   await expect(page.getByText("Scheduler paused")).toBeVisible()
   await expect(page.getByRole("button", { name: "Resume scheduler" })).toBeVisible()
+  await expect(page.getByText(/Your unsaved edits are preserved/)).toBeVisible()
+  await expect(page.getByLabel("Server port")).toHaveValue("4555")
+  await expect(page.getByLabel("Server port")).toBeFocused()
 })
 
 test("refreshes derived worker capacity when a task moves", async ({ page }) => {

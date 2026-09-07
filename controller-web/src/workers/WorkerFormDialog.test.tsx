@@ -50,3 +50,23 @@ it('registers an iroh Endpoint ID and password without an HTTP URL', async () =>
   expect(onCreate.mock.calls[0]?.[0]).toMatchObject({ transport: 'iroh', endpoint_id: endpointId, password: 'test-only-iroh-password' })
   expect(onCreate.mock.calls[0]?.[0]).not.toHaveProperty('api_url')
 })
+
+it.each([false, true])('restores password editing after switching cleared HTTP credentials to iroh (replace=%s)', async (replace) => {
+  // Synthetic public ID and credential; no remote Worker is contacted.
+  const onUpdate = vi.fn().mockResolvedValue(false)
+  render(<WorkerFormDialog worker={worker} open submitting={false} actionError={null} onClose={vi.fn()} onCreate={vi.fn()} onUpdate={onUpdate} />)
+  fireEvent.click(screen.getByLabelText('Clear saved password'))
+  fireEvent.click(screen.getByRole('radio', { name: 'Iroh' }))
+  expect(screen.queryByLabelText('Clear saved password')).not.toBeInTheDocument()
+  const password = screen.getByLabelText('Access password')
+  expect(password).toBeEnabled()
+  if (replace) fireEvent.change(password, { target: { value: 'test-only-replacement' } })
+  fireEvent.change(screen.getByLabelText('Worker Endpoint ID'), { target: { value: 'a'.repeat(64) } })
+  fireEvent.click(screen.getByRole('button', { name: 'Save Worker' }))
+  await waitFor(() => expect(onUpdate).toHaveBeenCalledOnce())
+  if (replace) expect(onUpdate.mock.calls[0]?.[1]).toHaveProperty('password', 'test-only-replacement')
+  else expect(onUpdate.mock.calls[0]?.[1]).not.toHaveProperty('password')
+  fireEvent.click(screen.getByRole('radio', { name: 'HTTP / HTTPS' }))
+  expect(screen.getByLabelText('Clear saved password')).not.toBeChecked()
+  expect(screen.getByLabelText('Access password (optional)')).toBeEnabled()
+})
