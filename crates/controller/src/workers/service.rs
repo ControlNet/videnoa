@@ -31,6 +31,9 @@ impl WorkerRegistry {
         now: DateTime<Utc>,
     ) -> Result<WorkerRecord, WorkerRegistryError> {
         validate_password(request.password.as_ref())?;
+        if request.api_url.iroh_id().is_some() && request.password.is_none() {
+            return Err(WorkerRegistryError::InvalidPassword);
+        }
         let name = normalized_name(&request.name)?;
         let worker = NewWorker {
             password: request.password,
@@ -78,6 +81,15 @@ impl WorkerRegistry {
             .ok_or(WorkerRegistryError::NotFound)?;
         if request.version != current.version {
             return Err(WorkerRegistryError::Conflict);
+        }
+        if request.api_url.iroh_id().is_some()
+            && request
+                .password
+                .as_ref()
+                .unwrap_or(&current.password)
+                .is_none()
+        {
+            return Err(WorkerRegistryError::InvalidPassword);
         }
         let update = WorkerUpdate {
             password: request.password,

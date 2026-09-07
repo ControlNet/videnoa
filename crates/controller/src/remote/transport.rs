@@ -6,6 +6,22 @@ use serde::de::DeserializeOwned;
 use super::{VidenoaClient, VidenoaClientError};
 
 impl VidenoaClient {
+    pub(super) async fn ensure_transport(&self) -> Result<(), VidenoaClientError> {
+        if let Some(tunnel) = &self.tunnel {
+            tokio::time::timeout(self.timeouts.connect, Box::pin(tunnel.ready()))
+                .await
+                .map_err(|_| VidenoaClientError::Timeout)??;
+        }
+        Ok(())
+    }
+
+    pub(super) fn transport_failure(&self, fallback: VidenoaClientError) -> VidenoaClientError {
+        self.tunnel
+            .as_ref()
+            .and_then(|lease| lease.failure())
+            .unwrap_or(fallback)
+    }
+
     pub(super) fn endpoint(&self, segments: &[&str]) -> Result<Url, VidenoaClientError> {
         let mut url = self.base_url.as_url().clone();
         let mut path = url
@@ -17,7 +33,10 @@ impl VidenoaClient {
         Ok(url)
     }
 
-    pub(super) fn authenticated(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    pub(super) fn authenticated(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> reqwest::RequestBuilder {
         match &self.authorization {
             Some(value) => request.header(reqwest::header::AUTHORIZATION, value.clone()),
             None => request,
@@ -35,11 +54,12 @@ impl VidenoaClient {
         &self,
         request: reqwest::RequestBuilder,
     ) -> Result<Response, VidenoaClientError> {
+        self.ensure_transport().await?;
         request
             .timeout(self.timeouts.request)
             .send()
             .await
-            .map_err(|error| classify_reqwest(&error))
+            .map_err(|error| self.transport_failure(classify_reqwest(&error)))
     }
 
     pub(super) async fn json<T: DeserializeOwned>(

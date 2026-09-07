@@ -471,3 +471,6 @@ kubeconfig
 # Private service authentication state
 auth.sqlite3*
 auth.lock
+
+# Persistent iroh identity ownership lock
+iroh.lock

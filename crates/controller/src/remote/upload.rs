@@ -27,6 +27,7 @@ impl VidenoaClient {
     where
         R: AsyncRead + Send + Unpin + 'static,
     {
+        self.ensure_transport().await?;
         let (activity, progress) = watch::channel(Instant::now());
         let local_error = Arc::new(AtomicBool::new(false));
         let read_error = local_error.clone();
@@ -54,7 +55,7 @@ impl VidenoaClient {
                 if local_error.load(Ordering::Relaxed) {
                     VidenoaClientError::LocalIo
                 } else {
-                    classify_reqwest(&error)
+                    self.transport_failure(classify_reqwest(&error))
                 }
             })?;
         self.json(response).await

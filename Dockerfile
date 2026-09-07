@@ -25,45 +25,36 @@
 # =============================================================================
 
 # ---------------------------------------------------------------------------
-# Stage 1: Build the Rust workspace
+# Stage 1: Build the WebUI and Rust workspace
 # ---------------------------------------------------------------------------
+FROM node:24-bookworm-slim AS worker-web
+WORKDIR /build/web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --no-fund
+COPY web/ ./
+COPY presets/ /build/presets/
+RUN npm run build
+
 FROM rust:1.98.0-bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         pkg-config \
+        cmake \
         libssl-dev \
         libclang-dev \
         protobuf-compiler \
-        nodejs \
-        npm \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
 
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 
-COPY crates/core/Cargo.toml crates/core/Cargo.toml
-COPY crates/app/Cargo.toml crates/app/Cargo.toml
-COPY crates/desktop/Cargo.toml crates/desktop/Cargo.toml
-COPY crates/controller/Cargo.toml crates/controller/Cargo.toml
-
-RUN mkdir -p crates/core/src && echo "" > crates/core/src/lib.rs \
-    && mkdir -p crates/app/src && echo "" > crates/app/src/lib.rs \
-    && echo "fn main() {}" > crates/app/src/main.rs \
-    && mkdir -p crates/desktop/src && echo "fn main() {}" > crates/desktop/src/main.rs \
-    && mkdir -p crates/controller/src && echo "" > crates/controller/src/lib.rs \
-    && echo "fn main() {}" > crates/controller/src/main.rs
-
-RUN cargo build --release --locked -p videnoa-app --bin videnoa 2>/dev/null || true
-
-COPY web/ web/
+COPY --from=worker-web /build/web/dist/ web/dist/
 COPY presets/ presets/
-RUN cd web && npm install && npm run build
-
-RUN rm -rf crates/*/src
 
 COPY crates/ crates/
 
+ENV VIDENOA_WEB_PREBUILT=1
 RUN cargo build --release --locked -p videnoa-app --bin videnoa
 
 # ---------------------------------------------------------------------------

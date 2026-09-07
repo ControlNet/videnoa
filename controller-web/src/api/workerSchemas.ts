@@ -17,19 +17,32 @@ export const workerApiUrlSchema = z.string().refine((value) => {
 
 const workerPasswordSchema = z.string().refine((value) => value.length > 0 && new TextEncoder().encode(value).length <= 1024 && !/\p{Cc}/u.test(value), "Enter 1 to 1024 UTF-8 bytes without control characters.")
 
-export const workerCreateRequestSchema = z
+const workerCreateBaseSchema = z
   .object({
     name: z.string().refine((value) => value.trim().length > 0, "Enter a worker name."),
-    api_url: workerApiUrlSchema,
+    api_url: workerApiUrlSchema.optional(),
+    transport: z.enum(["http", "iroh"]).optional(),
+    endpoint_id: z.string().regex(/^[0-9a-fA-F]{64}$/, "Enter the 64-character Endpoint ID, not a ticket.").optional(),
     enabled: z.boolean(),
     compute_slots: positiveU16Schema,
     password: workerPasswordSchema.optional(),
   })
   .strict()
 
-export const workerUpdateRequestSchema = workerCreateRequestSchema
+function validateEndpoint(value: { transport?: string | undefined; api_url?: string | undefined; endpoint_id?: string | undefined }, ctx: z.RefinementCtx) {
+  if (value.transport === "iroh") {
+    if (!value.endpoint_id || value.api_url !== undefined) ctx.addIssue({ code: "custom", path: ["endpoint_id"], message: "Provide an Endpoint ID without an HTTP URL." })
+  } else if (!value.api_url || value.endpoint_id !== undefined) {
+    ctx.addIssue({ code: "custom", path: ["api_url"], message: "Provide an HTTP(S) URL." })
+  }
+}
+export const workerCreateRequestSchema = workerCreateBaseSchema.superRefine((value, ctx) => {
+  validateEndpoint(value, ctx)
+  if (value.transport === "iroh" && !value.password) ctx.addIssue({ code: "custom", path: ["password"], message: "Iroh requires the worker password." })
+})
+export const workerUpdateRequestSchema = workerCreateBaseSchema
   .extend({ version: unsignedIntegerSchema, password: workerPasswordSchema.nullable().optional() })
-  .strict()
+  .strict().superRefine(validateEndpoint)
 
 const workflowSummarySchema = z
   .object({
@@ -56,7 +69,9 @@ export const workerSchema = z
     id: z.string().uuid(),
     version: unsignedIntegerSchema,
     name: z.string(),
-    api_url: workerApiUrlSchema,
+    api_url: workerApiUrlSchema.optional(),
+    transport: z.enum(["http", "iroh"]).optional(),
+    endpoint_id: z.string().regex(/^[0-9a-fA-F]{64}$/, "Enter the 64-character Endpoint ID, not a ticket.").optional(),
     enabled: z.boolean(),
     online: z.boolean(),
     compute_slots: positiveU16Schema,
@@ -74,7 +89,7 @@ export const workerSchema = z
     last_error: z.string().nullable(),
     has_password: z.boolean().optional(),
   })
-  .strict()
+  .strict().superRefine(validateEndpoint)
 
 export const workerListSchema = z
   .object({
