@@ -47,3 +47,80 @@ async fn processing_retry_verifies_terminal_remote_cleanup() -> TestResult {
     remote.server.abort();
     Ok(())
 }
+
+#[tokio::test]
+async fn historical_terminal_input_change_can_be_retried_via_api() -> TestResult {
+    use videnoa_controller::domain::{
+        AttemptId, FailureCode, FailureStage, SubmissionKey, TaskStatus,
+    };
+    use videnoa_controller::lifecycle::{
+        AdvanceCommand, LifecycleFailure, LifecycleService, ReserveCommand,
+    };
+    let fixture = Fixture::new().await?;
+    let remote = retry_remote(Ok(retry_job(RemoteJobId::random()))).await?;
+    let worker_id = create_online_retry_worker(&fixture, remote.address).await?;
+    let task_id = super::task_support::create_api_task(&fixture, "historical-input-change").await?;
+    let service = LifecycleService::new(fixture.store.clone());
+    let attempt_id = AttemptId::random();
+    service
+        .reserve(&ReserveCommand {
+            task_id,
+            expected_task_version: 0,
+            worker_id,
+            attempt_id,
+            submission_key: SubmissionKey::random(),
+            reserved_at: chrono::Utc::now(),
+        })
+        .await?;
+    let task = fixture.store.task(task_id).await?.ok_or("task missing")?;
+    let attempt = fixture
+        .store
+        .attempt(attempt_id)
+        .await?
+        .ok_or("attempt missing")?;
+    service
+        .advance(
+            &task,
+            &attempt,
+            AdvanceCommand::StartUpload,
+            chrono::Utc::now(),
+        )
+        .await?;
+    let task = fixture.store.task(task_id).await?.ok_or("task missing")?;
+    let attempt = fixture
+        .store
+        .attempt(attempt_id)
+        .await?
+        .ok_or("attempt missing")?;
+    service
+        .fail(
+            &task,
+            Some(&attempt),
+            LifecycleFailure::terminal(
+                TaskStatus::Uploading,
+                FailureStage::Upload,
+                FailureCode::InputChanged,
+                "historical test-only input change",
+            ),
+            chrono::Utc::now(),
+        )
+        .await?;
+    let failed = fixture.store.task(task_id).await?.ok_or("task missing")?;
+    assert!(!failed.failure.as_ref().ok_or("failure missing")?.retryable);
+    let response = fixture
+        .router
+        .clone()
+        .oneshot(Fixture::request(
+            "POST",
+            &format!("/api/tasks/{task_id}/retry"),
+            Some(&json!({"version": failed.version})),
+        )?)
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(json_body(response).await?["status"], "uploading");
+    let retried = fixture.store.task(task_id).await?.ok_or("task missing")?;
+    assert!(retried.failure.is_none());
+    assert_eq!(retried.attempt_count, 1);
+    remote.server.abort();
+    Ok(())
+}

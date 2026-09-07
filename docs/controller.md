@@ -387,11 +387,19 @@ Going back and generating another preview resets the selection. Existing outputs
 unsafe paths, and duplicate output destinations among selected tasks block submission. Preview creates
 no tasks, directories, or files, and does not hash video contents. Actual intake
 independently validates each file and captures its full content identity with one
-complete SHA-256 pass. Upload admission performs one further complete hash against
-the durable identity, then streams that same verified, rewound descriptor. Input
-metadata, retained-root identity, and no-follow path checks remain enforced. Batch
-preview remains metadata-only; synchronous creation can still take noticeable
-time for very large files on NAS storage.
+complete SHA-256 pass. Upload opens the current file without hashing it again or
+comparing its content, modification time, or filesystem identity with intake.
+The current size is persisted before transfer for upload framing and restart
+recovery. Files replaced or edited while queued are accepted. Root confinement,
+regular-file checks, and remote transfer-size checks remain enforced. Avoid
+writing the source while it is actively being uploaded. Batch preview remains
+metadata-only; synchronous creation can still take noticeable time for very large
+files on NAS storage.
+
+Historical upload failures with code `input_changed` support the task detail's
+Retry action, including records originally marked `retryable=false`. Manual retry
+resumes upload using the current file at the existing input path; no database
+migration or new task is required. These failed tasks do not automatically restart.
 
 `POST /api/tasks/batch-preview` requires authentication and the same session
 Origin/CSRF proof as task creation. Its JSON fields are `input_pattern`,

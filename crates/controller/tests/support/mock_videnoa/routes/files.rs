@@ -119,6 +119,14 @@ async fn stat(
             .or_else(|| is_dir.then_some((0, false, true)));
         (sequence, metadata)
     };
+    if let Some(fault) = state.take_response_fault(Route::Stat).await {
+        let status =
+            StatusCode::from_u16(fault.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        let response = super::raw_json_response(status, fault.body);
+        let journal = journal_request(&parts, &body, Route::Stat, sequence, BTreeMap::new());
+        record(&state, journal, status, JournalOutcome::FaultStatus).await;
+        return response;
+    }
     let (status, response) = match metadata {
         Some((size, is_file, is_dir)) => {
             let Ok(size) = u64::try_from(size) else {

@@ -20,13 +20,34 @@ impl TransferExecutor {
         &self,
         context: UploadContext<'_>,
     ) -> Result<UploadOutcome, TransferError> {
-        let file = match super::upload_input::open_verified(&self.resources.paths, context.task) {
-            Ok(file) => tokio::fs::File::from_std(file.into_std()),
-            Err(code) => {
-                return self
-                    .upload_input_failure(context.task, context.attempt, code, context.now)
-                    .await;
+        let (file, size) =
+            match super::upload_input::open_current(&self.resources.paths, context.task) {
+                Ok((file, size)) => (tokio::fs::File::from_std(file.into_std()), size),
+                Err(code) => {
+                    return self
+                        .upload_input_failure(context.task, context.attempt, code, context.now)
+                        .await;
+                }
+            };
+        let mut task = context.task.clone();
+        if size != task.input_size {
+            match self
+                .resources
+                .store
+                .refresh_upload_size(&task, size, context.now)
+                .await?
+            {
+                crate::persistence::CasOutcome::Applied { new_version } => {
+                    task.input_size = size;
+                    task.version = new_version;
+                    task.updated_at = context.now;
+                }
+                crate::persistence::CasOutcome::Conflict => return Err(TransferError::Conflict),
             }
+        }
+        let context = UploadContext {
+            task: &task,
+            ..context
         };
         let uploaded = context
             .client

@@ -1,4 +1,4 @@
-use videnoa_controller::domain::{FailureCode, TaskStatus};
+use videnoa_controller::domain::TaskStatus;
 use videnoa_controller::lifecycle::JitterSample;
 use videnoa_controller::persistence::SettingsUpdate;
 use videnoa_controller::scheduler::UploadOutcome;
@@ -42,7 +42,7 @@ async fn upload_persists_exact_opaque_paths_after_exact_stat() -> TestResult {
 }
 
 #[tokio::test]
-async fn legacy_input_without_content_identity_preserves_metadata_admission() -> TestResult {
+async fn legacy_input_without_content_identity_uploads_current_content() -> TestResult {
     // Given: a pre-migration reserved task whose content identity is absent.
     let server = MockVidenoa::start().await?;
     let fixture = Fixture::new(&server, 1, 1).await?;
@@ -52,7 +52,7 @@ async fn legacy_input_without_content_identity_preserves_metadata_admission() ->
         .execute(fixture.store.database().pool())
         .await?;
 
-    // Legacy compatibility intentionally permits changed bytes when metadata still matches.
+    // Synthetic test-only bytes differ from the original admission content.
     rewrite_preserving_metadata(&fixture, prepared.task_id).await?;
 
     // When: upload admission evaluates the legacy durable snapshot.
@@ -61,7 +61,7 @@ async fn legacy_input_without_content_identity_preserves_metadata_admission() ->
         .upload(prepared.task_id, fixture.now, zero_jitter()?)
         .await?;
 
-    // Then: unchanged legacy work retains its metadata-based upload behavior.
+    // Then: legacy work uploads the current content.
     assert!(matches!(outcome, UploadOutcome::Staged(_)));
     assert_eq!(server.counters().await.get(Route::Upload), 1);
     Ok(())
@@ -155,30 +155,28 @@ async fn paused_scheduler_cannot_commit_upload_admission() -> TestResult {
 }
 
 #[tokio::test]
-async fn changed_input_closes_upload_with_nonretryable_failure() -> TestResult {
+async fn replaced_input_uploads_current_size_and_content() -> TestResult {
     // Given: a reserved task whose rooted input is replaced before upload admission.
     let server = MockVidenoa::start().await?;
     let fixture = Fixture::new(&server, 1, 1).await?;
     let prepared = fixture.reserved_task(vec![37_u8; 12_000]).await?;
     let input = fixture.task(prepared.task_id).await?.request.input_path;
     tokio::fs::remove_file(input.as_str()).await?;
-    tokio::fs::write(input.as_str(), vec![41_u8; 12_000]).await?;
+    tokio::fs::write(input.as_str(), vec![41_u8; 15_000]).await?;
 
-    // When: the executor reopens and verifies the durable input snapshot.
+    // When: the executor opens the current input for upload.
     let outcome = fixture
         .executor()?
         .upload(prepared.task_id, fixture.now, zero_jitter()?)
         .await?;
 
-    // Then: both rows close without issuing a PUT for changed input bytes.
-    assert!(matches!(outcome, UploadOutcome::Failed));
+    // Then: replacement is accepted and the current size is durable for recovery.
+    assert!(matches!(outcome, UploadOutcome::Staged(_)));
     let task = fixture.task(prepared.task_id).await?;
-    assert_eq!(task.status, TaskStatus::Failed);
-    assert_eq!(
-        task.failure.map(|failure| failure.failure_code),
-        Some(FailureCode::InputChanged)
-    );
-    assert_eq!(server.counters().await.get(Route::Upload), 0);
+    assert_eq!(task.status, TaskStatus::Staged);
+    assert_eq!(task.input_size, 15_000);
+    assert!(task.failure.is_none());
+    assert_eq!(server.counters().await.get(Route::Upload), 1);
     Ok(())
 }
 
@@ -210,7 +208,7 @@ async fn failed_partial_cleanup_still_persists_upload_retry() -> TestResult {
 }
 
 #[tokio::test]
-async fn changed_bytes_with_identical_metadata_fail_before_any_put() -> TestResult {
+async fn changed_bytes_with_identical_metadata_upload_successfully() -> TestResult {
     let server = MockVidenoa::start().await?;
     let fixture = Fixture::new(&server, 1, 1).await?;
     let prepared = fixture.reserved_task(vec![37_u8; 12_000]).await?;
@@ -219,13 +217,10 @@ async fn changed_bytes_with_identical_metadata_fail_before_any_put() -> TestResu
         .executor()?
         .upload(prepared.task_id, fixture.now, zero_jitter()?)
         .await?;
-    assert!(matches!(outcome, UploadOutcome::Failed));
+    assert!(matches!(outcome, UploadOutcome::Staged(_)));
     let task = fixture.task(prepared.task_id).await?;
-    assert_eq!(
-        task.failure.map(|failure| failure.failure_code),
-        Some(FailureCode::InputChanged)
-    );
-    assert_eq!(server.counters().await.get(Route::Upload), 0);
+    assert!(task.failure.is_none());
+    assert_eq!(server.counters().await.get(Route::Upload), 1);
     Ok(())
 }
 
@@ -260,5 +255,117 @@ async fn rewrite_preserving_metadata(
             expected
         );
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn resized_upload_recovery_uses_persisted_current_size() -> TestResult {
+    use crate::mock_videnoa::faults::ResponseFault;
+    let server = MockVidenoa::start().await?;
+    let fixture = Fixture::new(&server, 1, 1).await?;
+    let prepared = fixture.reserved_task(vec![3_u8; 12_000]).await?;
+    let input = fixture.task(prepared.task_id).await?.request.input_path;
+    // Synthetic test-only content changes length after intake.
+    tokio::fs::write(input.as_str(), vec![4_u8; 15_000]).await?;
+    server
+        .set_fault(Fault::Response(ResponseFault {
+            route: Route::Stat,
+            status: 500,
+            body: Vec::new(),
+        }))
+        .await;
+    let first = fixture
+        .executor()?
+        .upload(prepared.task_id, fixture.now, zero_jitter()?)
+        .await?;
+    assert!(matches!(first, UploadOutcome::RetryScheduled { .. }));
+    assert_eq!(fixture.task(prepared.task_id).await?.input_size, 15_000);
+    let journal = server.journal().await;
+    let uploaded = journal
+        .iter()
+        .find(|entry| entry.route == Route::Upload)
+        .ok_or("upload missing")?;
+    assert_eq!(uploaded.body, vec![4_u8; 15_000]);
+    let second = fixture
+        .executor()?
+        .upload(
+            prepared.task_id,
+            fixture.now + chrono::Duration::seconds(1),
+            zero_jitter()?,
+        )
+        .await?;
+    assert!(matches!(second, UploadOutcome::Staged(_)));
+    assert_eq!(server.counters().await.get(Route::Upload), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn historical_input_changed_retries_with_current_file() -> TestResult {
+    use videnoa_controller::domain::{FailureCode, FailureStage};
+    use videnoa_controller::lifecycle::{LifecycleFailure, LifecycleService};
+    let server = MockVidenoa::start().await?;
+    let fixture = Fixture::new(&server, 1, 1).await?;
+    let prepared = fixture.reserved_task(vec![3_u8; 12_000]).await?;
+    fixture.mark_uploading(&prepared).await?;
+    let service = LifecycleService::new(fixture.store.clone());
+    let task = fixture.task(prepared.task_id).await?;
+    let attempt = fixture.attempt(prepared.attempt_id).await?;
+    service
+        .fail(
+            &task,
+            Some(&attempt),
+            LifecycleFailure::terminal(
+                TaskStatus::Uploading,
+                FailureStage::Upload,
+                FailureCode::InputChanged,
+                "historical test-only input change",
+            ),
+            fixture.now,
+        )
+        .await?;
+    let failed = fixture.task(prepared.task_id).await?;
+    assert!(!failed.failure.as_ref().ok_or("failure missing")?.retryable);
+    let attempt = fixture.attempt(prepared.attempt_id).await?;
+    service
+        .retry_downstream(&failed, &attempt, fixture.now)
+        .await?;
+    tokio::fs::write(task.request.input_path.as_str(), vec![4_u8; 15_000]).await?;
+    let outcome = fixture
+        .executor()?
+        .upload(prepared.task_id, fixture.now, zero_jitter()?)
+        .await?;
+    assert!(matches!(outcome, UploadOutcome::Staged(_)));
+    assert_eq!(fixture.task(prepared.task_id).await?.input_size, 15_000);
+    let journal = server.journal().await;
+    let uploaded = journal
+        .iter()
+        .find(|entry| entry.route == Route::Upload)
+        .ok_or("upload missing")?;
+    assert_eq!(uploaded.body, vec![4_u8; 15_000]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn missing_input_still_fails_before_upload() -> TestResult {
+    let server = MockVidenoa::start().await?;
+    let fixture = Fixture::new(&server, 1, 1).await?;
+    let prepared = fixture.reserved_task(vec![3_u8; 12_000]).await?;
+    let task = fixture.task(prepared.task_id).await?;
+    tokio::fs::remove_file(task.request.input_path.as_str()).await?;
+    let outcome = fixture
+        .executor()?
+        .upload(prepared.task_id, fixture.now, zero_jitter()?)
+        .await?;
+    assert!(matches!(outcome, UploadOutcome::Failed));
+    assert_eq!(
+        fixture
+            .task(prepared.task_id)
+            .await?
+            .failure
+            .ok_or("failure missing")?
+            .failure_code,
+        videnoa_controller::domain::FailureCode::InputUnavailable
+    );
+    assert_eq!(server.counters().await.get(Route::Upload), 0);
     Ok(())
 }

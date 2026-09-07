@@ -33,6 +33,12 @@ pub enum RetryMode {
 impl Lifecycle {
     #[must_use]
     pub const fn retry_mode(failure: &FailureInfo) -> RetryMode {
+        // Older versions marked input changes terminal; users may now retry current content.
+        if matches!(failure.failure_code, FailureCode::InputChanged)
+            && matches!(failure.failure_stage, FailureStage::Upload)
+        {
+            return RetryMode::Resume(ResumeStage::Uploading);
+        }
         if !failure.retryable {
             return RetryMode::Blocked;
         }

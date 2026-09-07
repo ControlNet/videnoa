@@ -2,7 +2,9 @@ use std::path::Path;
 
 use cap_std::fs::File;
 
-use super::{content_identity, identity, io_error, InputSnapshot, PathError, RootedInput};
+use super::{
+    content_identity, identity, io_error, InputSnapshot, PathCapabilities, PathError, RootedInput,
+};
 
 impl RootedInput {
     #[must_use]
@@ -16,7 +18,7 @@ impl RootedInput {
     }
 
     /// Rechecks the retained descriptor and capability path without reading content.
-    /// The admission digest is verified again at upload admission, not at task commit.
+    /// This protects task intake while its initial snapshot is being recorded.
     ///
     /// # Errors
     /// Returns a path error if the root, path, or descriptor metadata changed.
@@ -28,7 +30,7 @@ impl RootedInput {
     }
 
     /// Returns the same rewound descriptor hashed by `open_input`, after cheap revalidation.
-    /// Callers must compare its snapshot with the durable task before starting a PUT.
+    /// This helper retains snapshot semantics; current-file uploads use `open_current_input`.
     ///
     /// # Errors
     /// Returns a path error if the retained input no longer matches its capability path.
@@ -98,5 +100,19 @@ impl RootedInput {
             });
         }
         Ok(file)
+    }
+}
+
+impl PathCapabilities {
+    /// Opens the current regular input without hashing or comparing admission metadata.
+    pub(crate) fn open_current_input(&self, path: &Path) -> Result<(File, u64), PathError> {
+        let path = self.media_path(path, &self.inputs)?;
+        let (root, relative) = super::select_root(&self.inputs, &path)?;
+        let file = root.open_file(&relative, false)?;
+        let metadata = file.metadata().map_err(|source| io_error(&path, source))?;
+        if !metadata.is_file() {
+            return Err(PathError::InputNotRegular { path });
+        }
+        Ok((file, metadata.len()))
     }
 }
