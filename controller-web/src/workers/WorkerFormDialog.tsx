@@ -129,7 +129,6 @@ export function WorkerFormDialog(props: WorkerFormDialogProps) {
         <CheckField id="worker-enabled" name="enabled" label="Enabled for scheduling" checked={fields.enabled} onChange={(enabled) => setFields({ ...fields, enabled })} />
         <footer>
           <span className="spacer" />
-          <Button variant="outline" onClick={props.onClose}>Dismiss</Button>
           <Button variant="primary" type="submit" disabled={props.submitting}>{props.submitting ? "Saving..." : "Save Worker"}</Button>
         </footer>
       </form>
