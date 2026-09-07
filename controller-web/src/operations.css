@@ -171,15 +171,33 @@
   background: var(--color-danger);
 }
 
-.worker-error {
-  max-inline-size: 15rem;
+/*
+ * Pinned, not content-sized.
+ *
+ * This column carries arbitrary text that appears and disappears on exactly the
+ * live update an operator watches: a worker coming back online clears its error.
+ * Content-sized, that collapsed the column by 61px and pushed every column
+ * between here and the name cell sideways, which read as the whole table
+ * jumping. A fixed width absorbs the change locally; the full message stays in
+ * `title`, so nothing is lost to the ellipsis.
+ *
+ * The selector is compound on purpose: `.data-table td` is more specific than a
+ * bare `.worker-error`, so the shared 20rem cap silently beat this rule's own
+ * limit for as long as it was written that way.
+ */
+.data-table.worker-table td.worker-error {
+  /* Floor and ceiling both: in auto table layout a specified cell width is only
+   * a preference, and the greedy name column shrinks everything else to content. */
+  min-inline-size: 10rem;
+  max-inline-size: 10rem;
   overflow: hidden;
   color: var(--color-text-quiet);
   font-size: var(--type-chip);
   text-overflow: ellipsis;
 }
 
-.worker-error--present {
+/* Compound for the same reason: `.data-table td` sets a colour of its own. */
+.data-table.worker-table td.worker-error--present {
   color: var(--color-danger);
 }
 

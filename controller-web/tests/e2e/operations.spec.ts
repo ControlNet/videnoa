@@ -258,8 +258,11 @@ test("shows a worker coming back online without a manual reload", async ({ page 
   await expect(workerTable.getByText("Offline")).toBeVisible()
   await expect(page.getByText("health probe timed out")).toBeVisible()
 
-  // And: every DOM change anywhere in the document is recorded from here on.
+  // And: with webfonts settled -- a face arriving mid-test reflows the table on
+  // its own -- the column geometry is captured, along with every DOM change.
   await page.evaluate(() => document.fonts.ready)
+  const columnEdges = () => page.evaluate(() => Array.from(document.querySelectorAll("tbody tr:first-child td"), (cell) => ({ cls: cell.className, left: Math.round(cell.getBoundingClientRect().left) })))
+  const edgesBefore = await columnEdges()
   await page.evaluate(() => {
     const counts = { childList: 0, other: 0 }
     const observer = new MutationObserver((mutations) => {
@@ -294,6 +297,22 @@ test("shows a worker coming back online without a manual reload", async ({ page 
    * so it is asserted rather than left to inspection.
    */
   expect(await page.evaluate(() => Reflect.get(window, "domMutations"))).toMatchObject({ childList: 0 })
+
+  /*
+   * And the table held still. This update clears the worker's last error, and
+   * while that column was content-sized its collapse pushed every column
+   * between it and the name cell sideways by 61px -- what an operator saw as
+   * the table jumping. The pinned column now absorbs the change exactly, and
+   * nothing else moves by more than the 2px that separates `Offline` from
+   * `Online`.
+   */
+  const edgesAfter = await columnEdges()
+  const errorColumn = (edges: readonly { readonly cls: string; readonly left: number }[]) =>
+    edges.find(({ cls }) => cls.includes("worker-error"))?.left
+  expect(errorColumn(edgesAfter)).toBe(errorColumn(edgesBefore))
+  for (const [index, cell] of edgesBefore.entries()) {
+    expect(Math.abs((edgesAfter[index]?.left ?? 0) - cell.left), cell.cls).toBeLessThanOrEqual(2)
+  }
 })
 
 test("shows a scheduler pause made elsewhere without a manual reload", async ({ page }) => {
