@@ -188,8 +188,8 @@ test("keeps task actions contained at narrow viewport width", async ({ page }) =
   await page.getByRole("button", { name: /Open task/ }).click()
 
   // Then: the document does not overflow horizontally and blocked guidance remains visible.
-  await expect(page.getByText(/Inspect the destination and staging artifact/)).toBeVisible()
-  await page.getByText(/Inspect the destination and staging artifact/).scrollIntoViewIfNeeded()
+  await expect(page.getByText(/Inspect the destination and verified temporary file/)).toBeVisible()
+  await page.getByText(/Inspect the destination and verified temporary file/).scrollIntoViewIfNeeded()
   await page.screenshot({
     path: "../.omo/evidence/videnoa-controller/task-19/playwright-report/screenshots/task-17/task-actions/narrow-ambiguous-retry-blocked.png",
     animations: "disabled",
