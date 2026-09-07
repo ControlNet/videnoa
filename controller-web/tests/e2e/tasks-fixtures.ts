@@ -93,6 +93,28 @@ export function taskDetail(taskValue: Task, attempts: readonly TaskAttempt[] = [
   return { task: taskValue, attempts: [...attempts], total: attempts.length, limit: 100, offset: 0 }
 }
 
+/** One persisted attempt, for suites that need a detail long enough to scroll. */
+export function attempt(taskId: string, index: number): TaskAttempt {
+  const identifier = (offset: number) => `00000000-0000-4000-8000-${String(offset + index).padStart(12, "0")}`
+  return {
+    id: identifier(900),
+    task_id: taskId,
+    attempt_number: index,
+    worker_id: null,
+    status: "processing",
+    submission_key: identifier(800),
+    remote_job_id: null,
+    remote_input_path: null,
+    remote_output_path: null,
+    progress: { percent: 40, processed_frames: 100, total_frames: 250, frames_per_second: 12, eta_seconds: 30, bytes_transferred: null, bytes_total: null },
+    retry: { retry_count: 0, next_retry_at: null },
+    failure: null,
+    created_at: "2026-09-07T00:00:00Z",
+    started_at: "2026-09-07T00:00:01Z",
+    completed_at: null,
+  }
+}
+
 export async function installPagedApi(page: Page, journal: RequestJournal, total = 20_000): Promise<void> {
   await installSession(page)
   await page.route("**/api/status-counts", async (route) => {

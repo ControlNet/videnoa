@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test"
 
-import { dispatchTaskUpdate, fulfillJson, installLiveApi, requestJournal, task, taskDetail } from "./tasks-fixtures"
+import { attempt, dispatchTaskUpdate, fulfillJson, installLiveApi, requestJournal, task, taskDetail } from "./tasks-fixtures"
 
 test("opens authoritative detail and sends current versions for cancel and retry", async ({ page }) => {
   // Given: a processing row with persisted attempt detail and action routes.
@@ -165,6 +165,73 @@ test("refetches authoritative detail after a selected task event", async ({ page
   // Then: detail is fetched again instead of trusting the list event as authoritative.
   await expect(page.getByRole("region", { name: "Task Detail" })).toContainText("61%")
   expect(detailRequests).toBeGreaterThanOrEqual(2)
+})
+
+test("refreshes a processing task in place without remounting or rescrolling its detail", async ({ page }) => {
+  // Given: a selected processing task whose detail is long enough to scroll.
+  const journal = requestJournal()
+  const initial = task(5, { status: "processing", version: 4 })
+  const attempts = Array.from({ length: 12 }, (_, index) => attempt(initial.id, index))
+  await installLiveApi(page, journal, initial)
+  let detail = taskDetail(initial, attempts)
+  await page.route(`**/api/tasks/${initial.id}?*`, async (route) => fulfillJson(route, detail))
+  await page.goto("/tasks")
+  await page.getByRole("button", { name: /Open task/ }).click()
+  const pane = page.getByRole("region", { name: "Task Detail" })
+  await expect(pane).toContainText("Showing 12 of 12")
+
+  // And: the operator has scrolled the drawer away from the top, and the rendered
+  // content element is stamped so a remount can be detected.
+  await pane.evaluate((element) => {
+    element.scrollTop = 400
+    const content = element.querySelector(".task-detail-content")
+    if (content !== null) Reflect.set(content, "testMountMarker", "original")
+  })
+  expect(await pane.evaluate((element) => element.scrollTop)).toBeGreaterThan(200)
+
+  // When: the task reports a newer representation, as a processing task does about once a second.
+  const updated = task(5, { status: "processing", version: 5, progress: { ...initial.progress, percent: 61 } })
+  detail = taskDetail(updated, attempts)
+  await dispatchTaskUpdate(page, updated)
+  await expect(pane).toContainText("61%")
+
+  // Then: the refreshed fields were reconciled into the surviving content element,
+  // so the drawer never collapsed to a loading line and kept the scroll position.
+  expect(await pane.evaluate((element) => Reflect.get(element.querySelector(".task-detail-content") ?? {}, "testMountMarker"))).toBe("original")
+  expect(await pane.evaluate((element) => element.scrollTop)).toBe(400)
+})
+
+test("keeps an expanded attempt window across a live update", async ({ page }) => {
+  // Given: a task with more persisted history than one page, served by a faithful
+  // bounded pager so the client's own limit and offset choices are what is tested.
+  const journal = requestJournal()
+  const initial = task(5, { status: "processing", version: 4 })
+  const history = Array.from({ length: 250 }, (_, index) => attempt(initial.id, index))
+  let current = initial
+  await installLiveApi(page, journal, initial)
+  await page.route(`**/api/tasks/${initial.id}?*`, async (route) => {
+    const url = new URL(route.request().url())
+    const limit = Number(url.searchParams.get("limit"))
+    const offset = Number(url.searchParams.get("offset"))
+    await fulfillJson(route, { task: current, attempts: history.slice(offset, offset + limit), total: history.length, limit, offset })
+  })
+  await page.goto("/tasks")
+  await page.getByRole("button", { name: /Open task/ }).click()
+  const pane = page.getByRole("region", { name: "Task Detail" })
+  await expect(pane).toContainText("Showing 100 of 250")
+
+  // And: the operator has explicitly loaded a second page of attempts.
+  await pane.getByRole("button", { name: "Load more attempts" }).click()
+  await expect(pane).toContainText("Showing 200 of 250")
+
+  // When: the task reports a newer representation.
+  current = task(5, { status: "processing", version: 5, progress: { ...initial.progress, percent: 61 } })
+  await dispatchTaskUpdate(page, current)
+  await expect(pane).toContainText("61%")
+
+  // Then: the refresh re-read the window that was open instead of collapsing it
+  // back to the first page, so the loaded history is still there.
+  await expect(pane).toContainText("Showing 200 of 250")
 })
 
 test("keeps task actions contained at narrow viewport width", async ({ page }) => {
