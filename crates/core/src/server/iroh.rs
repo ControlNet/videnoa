@@ -118,6 +118,7 @@ impl AppState {
                     _ = axum::serve(listener, router.into_make_service_with_connect_info::<std::net::SocketAddr>()) => {},
                 }
             });
+            tracing::info!(endpoint_id = %server.id(), "iroh enabled");
             runtime.server = Some(server);
             runtime.api_stop = Some(stop);
             runtime.api_task = Some(task);
