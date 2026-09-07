@@ -44,3 +44,56 @@ sources cannot be compiled by the host GNU compiler. These are tooling limitatio
 not Windows compilation or runtime acceptance. The actual GitHub Actions Windows
 Rust job remains the authoritative verification; its post-push result will be
 recorded separately rather than predicted here.
+
+## Post-push verification
+
+Code commits:
+- 3b29087: classify tunnel authentication during health probes.
+- 96e068448b53c14ea7fe8ea57801f9148fc99b9d: Windows dependency resolution.
+
+Run: https://github.com/ControlNet/videnoa/actions/runs/34091257601
+Windows Rust job **passed**:
+https://github.com/ControlNet/videnoa/actions/runs/34091257601/job/101645016795
+The completed job log confirms successful execution of:
+- authentication_rotation_and_shutdown_preserve_tcp_semantics;
+- sse_is_delivered_incrementally_and_arbitrary_targets_are_rejected;
+- reset_disables_persisted_iroh_without_replacing_identity;
+- iroh_password_and_api_lifecycle.
+
+This proves Windows compilation and automated loopback iroh execution, including
+password lifecycle and streaming. It does not prove Windows deployment over real
+NAT/CGNAT or public-relay paths. Different-network NAT, CGNAT, forced-relay behavior,
+representative large-video throughput/control latency, and production Windows
+network conditions remain release acceptance gaps.
+
+Linux validation passed:
+- transport: 4 passed, 1 ignored (public N0 test not repeated);
+- Controller: 563 passed, 1 ignored;
+- core --lib --tests: 628 passed, 10 ignored;
+- all-workspace/all-targets/all-features Clippy with -D warnings;
+- web: 192 tests, lint and build;
+- controller-web: 146 tests, lint and build;
+- cargo fmt --all -- --check and git diff --check.
+
+Commands used:
+```bash
+CARGO_TARGET_DIR=/tmp/videnoa-iroh-target cargo test --locked -p videnoa-transport
+CARGO_TARGET_DIR=/tmp/videnoa-iroh-target RUST_TEST_THREADS=2 cargo test --locked -p videnoa-controller
+CARGO_TARGET_DIR=/tmp/videnoa-iroh-target RUST_TEST_THREADS=2 cargo test --locked -p videnoa-core --lib --tests
+CARGO_TARGET_DIR=/tmp/videnoa-iroh-target cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+npm --prefix web test
+npm --prefix web run lint
+npm --prefix web run build
+npm --prefix controller-web test
+npm --prefix controller-web run lint
+npm --prefix controller-web run build
+cargo fmt --all -- --check
+git diff --check
+```
+
+CI status when recording this evidence: Windows/Ubuntu Rust matrix jobs, both
+Web build jobs, Controller web quality/E2E and workflow contracts passed.
+Controller Rust quality/tests and package/Docker jobs were still running; the
+whole workflow was not yet green. No new failed job had been reported. The old
+Windows archive failure was separately inspected and had the same wmi type
+mismatch; its replacement archive job must be judged by its own final result.
