@@ -34,7 +34,15 @@ impl TransferExecutor {
             worker.password.as_ref(),
         )?;
         let workspace = FileApiPath::parse(&task.id.to_string())?;
-        match client.delete_file(&workspace).await {
+        let deleted = client.delete_file(&workspace).await;
+        if let Err(error) = &deleted {
+            if *error != VidenoaClientError::NotFound {
+                tracing::warn!(task_id = %task.id, attempt_id = %attempt.attempt.id,
+                    %worker_id, operation = "cleanup.delete_remote_workspace", reason = %error,
+                    "Task stage operation failed");
+            }
+        }
+        match deleted {
             Ok(()) | Err(VidenoaClientError::NotFound) => {
                 self.checkpoint(TransferCheckpointPoint::RemoteDeleteSucceeded)
                     .await;

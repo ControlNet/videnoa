@@ -316,3 +316,11 @@ Published images are `controlnet/videnoa-controller:<version>` and
 
 Worker access passwords can be configured in **Add Worker** and **Edit Worker**.
 See [password access](docs/password-access.md#controller-workers) for update and storage behavior.
+
+
+For verification/publication failures, logs now identify the failed operation and
+safe filesystem cause, including OS error codes when available. Task details
+retain that diagnostic for newly recorded failures. See
+[Operational diagnostics](docs/controller.md#operational-diagnostics) for log
+commands and operation names. When piping `docker logs`, use `2>&1` so stderr is
+included in the filter.

@@ -3,6 +3,7 @@ use chrono::{DateTime, Utc};
 use crate::domain::{TaskId, TaskStatus};
 use crate::lifecycle::{AutomaticRetry, DownstreamFailure, JitterSample};
 
+use super::diagnostics::OperationError;
 use super::{
     PublicationOutcome, RetryResult, TransferCheckpointPoint, TransferError, TransferExecutor,
 };
@@ -28,10 +29,12 @@ impl TransferExecutor {
         Self::require_retry_due(&task, &attempt, now)?;
         self.checkpoint(TransferCheckpointPoint::BeforeLocalCleanup)
             .await;
-        if remove_task_workspace(&self.resources.paths, task.id)
-            .await
-            .is_err()
-        {
+        if let Err(error) = remove_task_workspace(&self.resources.paths, task.id).await {
+            OperationError::new("cleanup.remove_local_workspace", error).log(
+                task.id,
+                Some(attempt.attempt.id),
+                task.status,
+            );
             return self
                 .cleanup_retry(
                     &task,

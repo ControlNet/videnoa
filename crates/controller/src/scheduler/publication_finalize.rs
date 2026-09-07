@@ -5,6 +5,7 @@ use chrono::{DateTime, Utc};
 use crate::paths::{PathError, PublicationArtifact, RootedOutput, TempArtifact};
 use crate::persistence::{AttemptRecord, TaskRecord};
 
+use super::diagnostics::{Diagnose, OperationError};
 use super::publication_artifact::matches_file;
 use super::publication_failure::ExpectedPublication;
 use super::TransferCheckpointPoint;
@@ -20,45 +21,64 @@ impl TransferExecutor {
         expected: ExpectedPublication,
         now: DateTime<Utc>,
     ) -> Result<bool, TransferError> {
+        let ambiguous = |error| self.fail_ambiguous(task, attempt, now, error);
+        let failed = |error| self.fail_publication(task, attempt, now, error);
         self.checkpoint(TransferCheckpointPoint::BeforeDestinationStaging)
             .await;
-        let Ok(Some((source_file, _))) = source.open_read() else {
-            return self.fail_ambiguous(task, attempt, now).await;
+        let source_file = match source.open_read() {
+            Ok(Some((file, _))) => file,
+            Ok(None) => return ambiguous(OperationError::conflict("rename.source_missing")).await,
+            Err(error) => return ambiguous(OperationError::new("rename.open_source", error)).await,
         };
         match matches_file(source_file, expected.size, expected.sha256).await {
             Ok(true) => {}
-            Ok(false) => return self.fail_ambiguous(task, attempt, now).await,
-            Err(_) => return self.fail_publication(task, attempt, now).await,
+            Ok(false) => {
+                return ambiguous(OperationError::conflict("rename.source_content_mismatch")).await
+            }
+            Err(error) => return failed(OperationError::new("rename.hash_source", error)).await,
         }
-        let Ok(finalizer) = output.prepare_publication(source) else {
-            return self.fail_ambiguous(task, attempt, now).await;
+        let finalizer = match output.prepare_publication(source) {
+            Ok(finalizer) => finalizer,
+            Err(error) => return ambiguous(OperationError::new("rename.prepare", error)).await,
         };
         match finalizer.rename_noreplace() {
             Ok(()) => {
                 self.checkpoint(TransferCheckpointPoint::PublicationFinalized)
                     .await;
-                require_parent_sync(finalizer.sync_parents())?;
+                require_parent_sync(finalizer.sync_parents())
+                    .at("rename.sync_parents")
+                    .map_err(|error| error.logged(task.id, attempt.attempt.id, task.status))?;
                 let final_file = match output.open_final() {
                     Ok(PublicationArtifact::Regular(final_file)) => final_file,
-                    Ok(PublicationArtifact::Missing | PublicationArtifact::NonRegular) | Err(_) => {
-                        return self.fail_ambiguous(task, attempt, now).await;
+                    Ok(PublicationArtifact::Missing | PublicationArtifact::NonRegular) => {
+                        return ambiguous(OperationError::conflict(
+                            "rename.final_missing_or_not_regular",
+                        ))
+                        .await;
+                    }
+                    Err(error) => {
+                        return ambiguous(OperationError::new("rename.open_final", error)).await
                     }
                 };
                 match matches_file(final_file, expected.size, expected.sha256).await {
                     Ok(true) => Ok(true),
-                    Ok(false) => self.fail_ambiguous(task, attempt, now).await,
-                    Err(_) => self.fail_publication(task, attempt, now).await,
+                    Ok(false) => {
+                        ambiguous(OperationError::conflict("rename.final_content_mismatch")).await
+                    }
+                    Err(error) => failed(OperationError::new("rename.hash_final", error)).await,
                 }
             }
-            Err(PathError::Io { source, .. }) if source.kind() == ErrorKind::AlreadyExists => {
-                self.fail_ambiguous(task, attempt, now).await
+            Err(error @ PathError::Io { .. }) if matches!(&error, PathError::Io { source, .. } if source.kind() == ErrorKind::AlreadyExists) => {
+                ambiguous(OperationError::new("rename.noreplace", error)).await
             }
             Err(PathError::CrossFilesystemPublication { .. }) => {
                 self.move_publication(output, source, task, attempt, expected, now)
                     .await
             }
-            Err(PathError::Io { .. }) => self.fail_publication(task, attempt, now).await,
-            Err(_) => self.fail_ambiguous(task, attempt, now).await,
+            Err(error @ PathError::Io { .. }) => {
+                failed(OperationError::new("rename.noreplace", error)).await
+            }
+            Err(error) => ambiguous(OperationError::new("rename.noreplace", error)).await,
         }
     }
 }

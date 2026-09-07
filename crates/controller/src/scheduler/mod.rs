@@ -2,6 +2,7 @@
 mod checkpoints;
 mod cleanup;
 mod cleanup_remote;
+mod diagnostics;
 #[path = "error.rs"]
 mod dispatch_error;
 mod download;

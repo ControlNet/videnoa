@@ -1,9 +1,9 @@
 use chrono::{DateTime, Utc};
 
 use crate::lifecycle::{DownstreamFailure, LifecycleFailure, LifecycleService};
-use crate::paths::PathError;
 use crate::persistence::{AttemptRecord, Sha256Digest, TaskRecord};
 
+use super::diagnostics::OperationError;
 use super::{TransferError, TransferExecutor};
 
 #[derive(Clone, Copy)]
@@ -18,15 +18,14 @@ impl TransferExecutor {
         task: &TaskRecord,
         attempt: &AttemptRecord,
         now: DateTime<Utc>,
+        diagnostic: OperationError,
     ) -> Result<bool, TransferError> {
+        diagnostic.log_failure(task.id, attempt.attempt.id, task.status);
         LifecycleService::new(self.resources.store.clone())
             .fail(
                 task,
                 Some(attempt),
-                LifecycleFailure::downstream(
-                    DownstreamFailure::Verification,
-                    "verified artifact does not match durable evidence",
-                ),
+                LifecycleFailure::downstream(DownstreamFailure::Verification, diagnostic.summary()),
                 now,
             )
             .await?;
@@ -37,23 +36,22 @@ impl TransferExecutor {
         &self,
         task: &TaskRecord,
         attempt: &AttemptRecord,
-        _error: PathError,
         now: DateTime<Utc>,
+        diagnostic: OperationError,
     ) -> Result<bool, TransferError> {
         if task.status == crate::domain::TaskStatus::Verifying {
+            diagnostic.log_failure(task.id, attempt.attempt.id, task.status);
             LifecycleService::new(self.resources.store.clone())
                 .fail(
                     task,
                     Some(attempt),
-                    LifecycleFailure::publication_admission(
-                        "publication destination capability could not be opened",
-                    ),
+                    LifecycleFailure::publication_admission(diagnostic.summary()),
                     now,
                 )
                 .await?;
             return Ok(false);
         }
-        self.fail_publication(task, attempt, now).await
+        self.fail_publication(task, attempt, now, diagnostic).await
     }
 
     pub(super) async fn fail_publication(
@@ -61,15 +59,14 @@ impl TransferExecutor {
         task: &TaskRecord,
         attempt: &AttemptRecord,
         now: DateTime<Utc>,
+        diagnostic: OperationError,
     ) -> Result<bool, TransferError> {
+        diagnostic.log_failure(task.id, attempt.attempt.id, task.status);
         LifecycleService::new(self.resources.store.clone())
             .fail(
                 task,
                 Some(attempt),
-                LifecycleFailure::downstream(
-                    DownstreamFailure::Publication,
-                    "publication filesystem operation failed",
-                ),
+                LifecycleFailure::downstream(DownstreamFailure::Publication, diagnostic.summary()),
                 now,
             )
             .await?;
@@ -81,14 +78,14 @@ impl TransferExecutor {
         task: &TaskRecord,
         attempt: &AttemptRecord,
         now: DateTime<Utc>,
+        diagnostic: OperationError,
     ) -> Result<bool, TransferError> {
+        diagnostic.log_failure(task.id, attempt.attempt.id, task.status);
         LifecycleService::new(self.resources.store.clone())
             .fail(
                 task,
                 Some(attempt),
-                LifecycleFailure::publication_ambiguous(
-                    "durable publication evidence does not identify owned output bytes",
-                ),
+                LifecycleFailure::publication_ambiguous(diagnostic.summary()),
                 now,
             )
             .await?;

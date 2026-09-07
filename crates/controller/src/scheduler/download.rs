@@ -6,6 +6,7 @@ use crate::lifecycle::{
 use crate::remote::{sibling_output_path, FileApiPath, VidenoaClient};
 use chrono::{DateTime, Utc};
 
+use super::diagnostics::OperationError;
 use super::{
     download_artifact::{download_artifact, recover_verified, DownloadArtifact},
     DownloadOutcome, RetryResult, TransferCheckpointPoint, TransferError, TransferExecutor,
@@ -62,7 +63,7 @@ impl TransferExecutor {
             | TaskStatus::Failed
             | TaskStatus::Cancelled => return Err(TransferError::Conflict),
         }
-        let Ok((workspace, recovered)) = self.recover_local_artifact(&task).await else {
+        let Ok((workspace, recovered)) = self.recover_local_artifact(&task, &attempt).await else {
             return self.download_retry(&task, &attempt, now, jitter).await;
         };
         let artifact = if let Some(artifact) = recovered {
@@ -99,7 +100,7 @@ impl TransferExecutor {
             match artifact {
                 Ok(artifact) => artifact,
                 Err(error) => {
-                    log_download_failure(task_id, &error);
+                    log_download_failure(&task, &attempt, error);
                     return self.download_retry(&task, &attempt, now, jitter).await;
                 }
             }
@@ -123,13 +124,26 @@ impl TransferExecutor {
     async fn recover_local_artifact(
         &self,
         task: &crate::persistence::TaskRecord,
+        attempt: &crate::persistence::AttemptRecord,
     ) -> Result<(crate::paths::TempWorkspace, Option<VerifiedArtifact>), TransferError> {
+        let log = |error| {
+            OperationError::new("download.recover_local_artifact", error).logged(
+                task.id,
+                attempt.attempt.id,
+                task.status,
+            )
+        };
         let workspace = self
             .resources
             .paths
-            .temp_workspace(task.id, true)?
-            .ok_or(TransferError::MissingEvidence)?;
-        let recovered = recover_verified(&workspace, task.output_extension.as_str()).await?;
+            .temp_workspace(task.id, true)
+            .map_err(TransferError::from)
+            .map_err(log)?
+            .ok_or(TransferError::MissingEvidence)
+            .map_err(log)?;
+        let recovered = recover_verified(&workspace, task.output_extension.as_str())
+            .await
+            .map_err(log)?;
         Ok((workspace, recovered))
     }
 
@@ -205,10 +219,14 @@ async fn download_stat(
     }
 }
 
-fn log_download_failure(task_id: TaskId, error: &TransferError) {
-    if let TransferError::Remote(remote) = error {
-        tracing::warn!(%task_id, error = %remote, "Download failed");
-    } else {
-        tracing::warn!(%task_id, error = %error, "Download artifact preparation failed");
-    }
+fn log_download_failure(
+    task: &crate::persistence::TaskRecord,
+    attempt: &crate::persistence::AttemptRecord,
+    error: TransferError,
+) {
+    OperationError::new("download.prepare_artifact", error).log(
+        task.id,
+        Some(attempt.attempt.id),
+        task.status,
+    );
 }

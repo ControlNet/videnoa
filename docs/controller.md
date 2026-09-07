@@ -641,3 +641,37 @@ Each archive root contains only `LICENSE`, `README-controller.md`,
 `controller.example.toml`, and the platform executable. Frontend assets are
 embedded. Linux packaging uses `scripts/package_controller.sh`; native Windows
 packaging uses `scripts/package_controller.ps1`.
+
+
+## Operational diagnostics
+
+Controller writes timestamped logs to stderr, captured by Docker. Include stderr
+when filtering by task ID:
+
+```bash
+docker logs --timestamps videnoa 2>&1 | grep -F '3cffbc6b-89e6-46f4-b98f-931b43d9ef2e'
+```
+
+Verification/publication failures emit an ERROR with `task_id`, `attempt_id`,
+`stage`, `operation`, and `reason`. Filesystem errors also include `io_kind` and
+`raw_os_error` when available; the reason includes the OS-provided explanation.
+The subsequent lifecycle log confirms whether the Failed state was committed.
+Task details retain the operation and safe cause in `failure.message` for new
+verification/publication failures. Existing generic failure messages cannot be
+reconstructed retroactively; a new manual retry records its current failure.
+
+Operation names distinguish, for example:
+
+- `copy.create_pending_marker`: could not create the temporary ownership record.
+- `copy.sync_destination_parent`: syncing the destination directory failed.
+- `copy.marker_missing`: the final file exists without a copy ownership record.
+- `copy.prefix_content_mismatch`: an interrupted destination differs from the source.
+- `rename.noreplace`: the no-overwrite rename failed.
+
+Download artifact recovery/preparation and local/remote cleanup errors also emit
+operation-specific WARN diagnostics before applying the existing retry policy.
+These diagnostics are visible at the default log level. Raw paths, URLs, headers,
+response bodies, and arbitrary nested error text are not logged; correlate task
+IDs with task details for paths. An OS-less custom I/O error reports its kind,
+not its potentially sensitive embedded message. Remote transport errors retain
+the client's existing typed classifications rather than raw HTTP error chains.

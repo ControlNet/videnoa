@@ -240,3 +240,50 @@ async fn legacy_cross_mount_failure_upgrade_enables_only_publication_retry() -> 
     upgraded.pool().close().await;
     Ok(())
 }
+
+#[tokio::test]
+async fn marker_creation_failure_preserves_operation_and_followup_ambiguity_reason() -> TestResult {
+    use videnoa_controller::lifecycle::LifecycleService;
+    // Synthetic filesystem fault: a directory occupies the pending-marker leaf.
+    let server = MockVidenoa::start().await?;
+    let bytes = b"synthetic diagnostic source".repeat(1024);
+    let (fixture, prepared) = crossed(&server, &bytes).await?;
+    let workspace = fixture.temp_root.join(prepared.task_id.to_string());
+    std::fs::create_dir(workspace.join("publication-copy.pending"))?;
+    assert_eq!(
+        publish(&fixture, &prepared).await?,
+        PublicationOutcome::Failed
+    );
+    let failed = fixture.task(prepared.task_id).await?;
+    let failure = failed.failure.as_ref().unwrap();
+    assert_eq!(failure.failure_code, FailureCode::PublicationFailed);
+    assert!(
+        failure.message.contains("copy.create_pending_marker"),
+        "{}",
+        failure.message
+    );
+    assert!(failure.message.contains("io_kind="), "{}", failure.message);
+    assert!(failure.message.contains("os_error="), "{}", failure.message);
+    let destination = output_path(&fixture, &prepared).await?;
+    assert_eq!(std::fs::metadata(&destination)?.len(), 0);
+    assert_eq!(
+        std::fs::read(verified_path(&fixture.temp_root, prepared.task_id))?,
+        bytes
+    );
+    LifecycleService::new(fixture.store.clone())
+        .retry_downstream(
+            &failed,
+            &fixture.attempt(prepared.attempt_id).await?,
+            fixture.now,
+        )
+        .await?;
+    assert_eq!(
+        publish(&fixture, &prepared).await?,
+        PublicationOutcome::Failed
+    );
+    let failure = fixture.task(prepared.task_id).await?.failure.unwrap();
+    assert_eq!(failure.failure_code, FailureCode::PublicationAmbiguous);
+    assert_eq!(failure.message, "copy.marker_missing: evidence_conflict");
+    assert_eq!(std::fs::metadata(&destination)?.len(), 0);
+    Ok(())
+}
