@@ -15,6 +15,7 @@ fn build_frontend_assets_for_release() {
     }
 
     println!("cargo:rerun-if-changed=../../web/src");
+    println!("cargo:rerun-if-changed=../../web/public");
     println!("cargo:rerun-if-changed=../../web/index.html");
     println!("cargo:rerun-if-changed=../../web/package.json");
     println!("cargo:rerun-if-changed=../../web/package-lock.json");
