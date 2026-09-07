@@ -32,8 +32,11 @@ configuration; the iroh status reports the failure.
 Both applications store `iroh.key` and its ownership lock `iroh.lock` in their
 existing persistent data directory. Keep this directory on the deployment's
 persistent volume. Do not copy an identity into concurrently running instances.
-Disabling iroh preserves its identity. Invalid existing identity files produce
-an error rather than silently changing the Endpoint ID.
+Disabling iroh preserves its identity files but releases the in-memory identity
+and file lock. While disabled, Worker does not initialize an endpoint, access
+identity files, or run discovery/relay connections; status queries show no
+Endpoint ID. Enabling it again loads the same identity. Invalid existing identity
+files produce an error on enable rather than silently changing the Endpoint ID.
 
 The key is private runtime state, excluded from git, and is not returned by APIs
 or displayed in the UI. The Endpoint ID is public. Do not put passwords or key

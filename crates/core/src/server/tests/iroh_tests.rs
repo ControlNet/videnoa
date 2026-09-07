@@ -2,6 +2,43 @@ use super::*;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[tokio::test]
+async fn disabled_iroh_status_does_not_create_identity() -> anyhow::Result<()> {
+    let root = tempfile::tempdir()?;
+    let state = test_state_with_data_dir(root.path().to_path_buf());
+    assert!(!state.inner.config.read().await.iroh.enabled);
+    for _ in 0..3 {
+        state.reconcile_iroh().await?;
+        let Json(status) = iroh::status(State(state.clone())).await.unwrap();
+        let status = serde_json::to_value(status)?;
+        assert_eq!(status["enabled"], false);
+        assert_eq!(status["running"], false);
+        assert!(status["endpoint_id"].is_null());
+        assert!(status["error"].is_null());
+        assert!(state.iroh_addr().await.is_none());
+        assert!(!root.path().join("iroh.key").exists());
+        assert!(!root.path().join("iroh.lock").exists());
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn disabled_iroh_status_does_not_open_existing_identity() -> anyhow::Result<()> {
+    let root = tempfile::tempdir()?;
+    let identity = videnoa_transport::Identity::open(root.path())?;
+    let state = test_state_with_data_dir(root.path().to_path_buf());
+    state.reconcile_iroh().await?;
+    // Holding the identity lock makes any attempt to open it fail.
+    let Json(status) = iroh::status(State(state.clone())).await.unwrap();
+    let status = serde_json::to_value(status)?;
+    assert_eq!(status["running"], false);
+    assert!(status["endpoint_id"].is_null());
+    assert!(status["error"].is_null());
+    assert!(state.iroh_addr().await.is_none());
+    drop(identity);
+    Ok(())
+}
+
+#[tokio::test]
 async fn iroh_password_and_api_lifecycle() -> anyhow::Result<()> {
     let state = test_state();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -62,6 +99,48 @@ async fn iroh_password_and_api_lifecycle() -> anyhow::Result<()> {
     )
     .await??;
     assert!(response.starts_with(b"HTTP/1.1 200"));
+    let mut disabled_stream = client.tunnel(addr, password).await?;
+    config.iroh.enabled = false;
+    assert!(http
+        .put(format!("{url}/api/config"))
+        .bearer_auth(password)
+        .json(&config)
+        .send()
+        .await?
+        .status()
+        .is_success());
+    assert!(state.iroh_addr().await.is_none());
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(5), disabled_stream.read_u8())
+            .await?
+            .is_err()
+    );
+    // Disabled status must not reacquire the released identity lock.
+    {
+        let stored = videnoa_transport::Identity::open(&state.inner.data_dir)?;
+        assert_eq!(stored.id(), identity);
+        let status: serde_json::Value = http
+            .get(format!("{url}/api/iroh"))
+            .bearer_auth(password)
+            .send()
+            .await?
+            .json()
+            .await?;
+        assert_eq!(status["running"], false);
+        assert!(status["endpoint_id"].is_null());
+        assert!(status["error"].is_null());
+    }
+    config.iroh.enabled = true;
+    assert!(http
+        .put(format!("{url}/api/config"))
+        .bearer_auth(password)
+        .json(&config)
+        .send()
+        .await?
+        .status()
+        .is_success());
+    let addr = state.iroh_addr().await.expect("iroh restarted");
+    assert_eq!(addr.id, identity);
     // A retained raw tunnel remains usable after rotation; new streams need the new password.
     // Test-only in-memory job exercises WebSocket pushes without running inference.
     state.inner.jobs.insert(
@@ -157,7 +236,7 @@ async fn iroh_password_and_api_lifecycle() -> anyhow::Result<()> {
         .await?
         .json()
         .await?;
-    assert_eq!(status["endpoint_id"], identity.to_string());
+    assert!(status["endpoint_id"].is_null());
     assert_eq!(status["running"], false);
     client.shutdown().await;
     state.shutdown_iroh().await;

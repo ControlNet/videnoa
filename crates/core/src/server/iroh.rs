@@ -19,7 +19,23 @@ struct RuntimeInner {
     identity: Option<Identity>,
     server: Option<Server>,
     api_stop: Option<CancellationToken>,
+    api_task: Option<tokio::task::JoinHandle<()>>,
     error: Option<String>,
+}
+impl RuntimeInner {
+    async fn shutdown(&mut self) {
+        if let Some(stop) = self.api_stop.take() {
+            stop.cancel();
+        }
+        if let Some(server) = self.server.take() {
+            server.shutdown().await;
+        }
+        if let Some(task) = self.api_task.take() {
+            let _ = task.await;
+        }
+        self.identity = None;
+        self.error = None;
+    }
 }
 impl Drop for RuntimeInner {
     fn drop(&mut self) {
@@ -65,13 +81,7 @@ impl AppState {
         let enabled = self.inner.config.read().await.iroh.enabled;
         let mut runtime = self.inner.iroh.inner.lock().await;
         if !enabled {
-            if let Some(stop) = runtime.api_stop.take() {
-                stop.cancel();
-            }
-            if let Some(server) = runtime.server.take() {
-                server.shutdown().await;
-            }
-            runtime.error = None;
+            runtime.shutdown().await;
             return Ok(());
         }
         let auth = self
@@ -102,7 +112,7 @@ impl AppState {
             let stop = CancellationToken::new();
             let stopped = stop.clone();
             let router = api_router(self.clone());
-            tokio::spawn(async move {
+            let task = tokio::spawn(async move {
                 tokio::select! {
                     _ = stopped.cancelled() => {},
                     _ = axum::serve(listener, router.into_make_service_with_connect_info::<std::net::SocketAddr>()) => {},
@@ -110,6 +120,7 @@ impl AppState {
             });
             runtime.server = Some(server);
             runtime.api_stop = Some(stop);
+            runtime.api_task = Some(task);
             anyhow::Ok(())
         }.await;
         runtime.error = result.as_ref().err().map(ToString::to_string);
@@ -118,12 +129,7 @@ impl AppState {
 
     pub async fn shutdown_iroh(&self) {
         let mut runtime = self.inner.iroh.inner.lock().await;
-        if let Some(stop) = runtime.api_stop.take() {
-            stop.cancel();
-        }
-        if let Some(server) = runtime.server.take() {
-            server.shutdown().await;
-        }
+        runtime.shutdown().await;
     }
 
     pub(super) async fn disable_iroh_persisted(&self) -> Result<(), AppError> {
@@ -143,13 +149,16 @@ impl AppState {
 
 pub(super) async fn status(State(state): State<AppState>) -> Result<Json<IrohStatus>, AppError> {
     let enabled = state.inner.config.read().await.iroh.enabled;
-    let mut runtime = state.inner.iroh.inner.lock().await;
-    if runtime.identity.is_none() {
-        match Identity::open(&state.inner.data_dir) {
-            Ok(identity) => runtime.identity = Some(identity),
-            Err(error) => runtime.error = Some(error.to_string()),
-        }
+    if !enabled {
+        return Ok(Json(IrohStatus {
+            enabled: false,
+            running: false,
+            endpoint_id: None,
+            error: None,
+        }));
     }
+    // Status reads never initialize transport or access identity files.
+    let runtime = state.inner.iroh.inner.lock().await;
     Ok(Json(IrohStatus {
         enabled,
         running: runtime.server.is_some(),
