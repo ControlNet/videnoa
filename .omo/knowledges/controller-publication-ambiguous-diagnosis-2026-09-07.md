@@ -31,3 +31,14 @@ repair. The workspace is `<temp_root>/<task_id>/`; relevant files include
 `output.<extension>.verified` and `publication-copy.evidence`. Preserve these
 files and any final output. Do not delete artifacts or reset database state just
 to bypass ambiguity. No production behavior was changed during this diagnosis.
+
+## Publication timing follow-up
+
+The copy loop in `scheduler/publication_copy.rs` uses 64 KiB buffers and has no
+total-duration or inactivity deadline. `scheduler/recovery_dispatch.rs` awaits
+publication directly; the orchestration scan timer does not cancel active stages.
+HTTP `transfer_seconds` does not bound local publication copying or hashing.
+Shutdown cancellation aborts orchestration stage tasks in `recovery_scan.rs`;
+process termination and filesystem errors can still interrupt publication.
+An underlying network filesystem can have its own timeout/error behavior.
+The reported ambiguity therefore does not establish a Controller copy timeout.
