@@ -60,6 +60,7 @@ describe("task Source and Failure Stage controls", () => {
       <TaskToolbar
         query={parseTaskQuery(new URLSearchParams())}
         search=""
+        workerNames={new Map()}
         onQueryChange={onQueryChange}
         onSearchChange={() => undefined}
       />,

@@ -2,7 +2,14 @@ import { mkdir, writeFile } from "node:fs/promises"
 
 import { expect, test } from "@playwright/test"
 
-import { installOperationalApi } from "./operations-fixtures"
+import {
+  dispatchSchedulerUpdate,
+  dispatchWorkerUpdate,
+  installOperationalApi,
+  settingsTemplate,
+  workerTemplate,
+} from "./operations-fixtures"
+import { dispatchTaskUpdate, installTestEventSource, task } from "./tasks-fixtures"
 
 const evidenceDir = "../.omo/evidence/videnoa-controller/task-19/playwright-report/screenshots/task-18/workers-settings"
 
@@ -240,4 +247,97 @@ test("operates workers and runtime settings with safe failures", async ({ page }
     "Offline worker: health probe timed out remained visible independently from enabled policy.",
     "Unauthenticated worker enable mutation -> 401 unauthorized replaced the shell with the captured safe sign-in surface; no credential or request proof was rendered.",
   ].join("\n"), "utf8")
+})
+
+test("shows a worker coming back online without a manual reload", async ({ page }) => {
+  // Given: an authenticated Workers route showing a worker the Controller reports offline.
+  await installTestEventSource(page)
+  await installOperationalApi(page)
+  await page.goto("/workers")
+  const workerTable = page.getByRole("table")
+  await expect(workerTable.getByText("Offline")).toBeVisible()
+  await expect(page.getByText("health probe timed out")).toBeVisible()
+
+  // And: every DOM change anywhere in the document is recorded from here on.
+  await page.evaluate(() => document.fonts.ready)
+  await page.evaluate(() => {
+    const counts = { childList: 0, other: 0 }
+    const observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        if (mutation.type === "childList") counts.childList += 1
+        else counts.other += 1
+      }
+    })
+    observer.observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true })
+    Reflect.set(window, "domMutations", counts)
+  })
+
+  // When: a health probe brings the worker online, which the Controller publishes
+  // as a full worker DTO on the event stream.
+  await dispatchWorkerUpdate(page, {
+    ...workerTemplate,
+    version: workerTemplate.version + 1,
+    online: true,
+    last_error: null,
+    last_seen_at: "2026-09-03T10:05:00Z",
+    updated_at: "2026-09-03T10:05:00Z",
+  })
+
+  // Then: the row reflects the new health in place, with no reload and no refetch.
+  await expect(workerTable.getByText("Online")).toBeVisible()
+  await expect(page.getByText("health probe timed out")).toBeHidden()
+
+  /*
+   * And the delta was patched into the existing DOM rather than rebuilding it:
+   * not one node was added, removed or moved anywhere in the document. That is
+   * what keeps a live worker row from taking scroll position or focus with it,
+   * so it is asserted rather than left to inspection.
+   */
+  expect(await page.evaluate(() => Reflect.get(window, "domMutations"))).toMatchObject({ childList: 0 })
+})
+
+test("shows a scheduler pause made elsewhere without a manual reload", async ({ page }) => {
+  // Given: an authenticated Settings route with the scheduler running, and a
+  // Controller that will answer the next read with the paused settings.
+  await installTestEventSource(page)
+  let settings = settingsTemplate
+  await installOperationalApi(page)
+  await page.route("**/api/settings", async (route) => {
+    if (route.request().method() !== "GET") return route.fallback()
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(settings) })
+  })
+  await page.goto("/settings")
+  await expect(page.getByText("Scheduler running")).toBeVisible()
+
+  // When: the scheduler is paused elsewhere -- another browser, or the API -- which
+  // the Controller publishes on the event stream.
+  const paused = { ...settingsTemplate.scheduler, paused: true }
+  settings = { ...settingsTemplate, version: settingsTemplate.version + 1, scheduler: paused }
+  await dispatchSchedulerUpdate(page, paused)
+
+  // Then: this session shows the new state and offers the matching action.
+  await expect(page.getByText("Scheduler paused")).toBeVisible()
+  await expect(page.getByRole("button", { name: "Resume scheduler" })).toBeVisible()
+})
+
+test("refreshes derived worker capacity when a task moves", async ({ page }) => {
+  // Given: an authenticated Workers route showing two of four slots used.
+  await installTestEventSource(page)
+  let worker = workerTemplate
+  await installOperationalApi(page)
+  await page.route("**/api/workers", async (route) => {
+    if (route.request().method() !== "GET") return route.fallback()
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: [worker], total: 1 }) })
+  })
+  await page.goto("/workers")
+  const workerTable = page.getByRole("table")
+  await expect(workerTable.getByText("2 / 4")).toBeVisible()
+
+  // When: a task starts processing on that worker. Capacity is derived from tasks
+  // rather than the worker row, so no worker delta is published for it.
+  worker = { ...workerTemplate, capacity: { ...workerTemplate.capacity, used_slots: 3, available_slots: 1, processing_tasks: 3 } }
+  await dispatchTaskUpdate(page, task(5, { status: "processing", worker_id: workerTemplate.id }))
+
+  // Then: the table settles on the new usage from one bounded list read.
+  await expect(workerTable.getByText("3 / 4")).toBeVisible()
 })

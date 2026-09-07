@@ -105,6 +105,13 @@ export const workerDeleteResponseSchema = z
   })
   .strict()
 
+export const workerUpdatedEventSchema = z
+  .object({
+    type: z.literal("worker_updated"),
+    data: z.object({ event_id: z.string().uuid(), worker: workerSchema }).strict(),
+  })
+  .strict()
+
 export type Worker = z.infer<typeof workerSchema>
 export type WorkerCreateRequest = z.infer<typeof workerCreateRequestSchema>
 export type WorkerList = z.infer<typeof workerListSchema>

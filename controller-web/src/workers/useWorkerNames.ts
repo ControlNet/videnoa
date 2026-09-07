@@ -1,8 +1,9 @@
-import { useEffect, useState, useSyncExternalStore } from "react"
+import { useEffect, useRef, useState, useSyncExternalStore } from "react"
 
 import type { ApiClient } from "../api/client"
 import { workerListSchema } from "../api/workerSchemas"
 import { appInvalidationStore } from "../events/store"
+import { appWorkerUpdateStore } from "../events/workerUpdates"
 
 const noWorkerNames: ReadonlyMap<string, string> = new Map()
 
@@ -19,6 +20,8 @@ const noWorkerNames: ReadonlyMap<string, string> = new Map()
  */
 export function useWorkerNames(apiClient: ApiClient): ReadonlyMap<string, string> {
   const invalidation = useSyncExternalStore(appInvalidationStore.subscribe, appInvalidationStore.snapshot)
+  const update = useSyncExternalStore(appWorkerUpdateStore.subscribe, appWorkerUpdateStore.snapshot)
+  const appliedUpdateGeneration = useRef(appWorkerUpdateStore.snapshot().generation)
   const [names, setNames] = useState<ReadonlyMap<string, string>>(noWorkerNames)
 
   useEffect(() => {
@@ -36,6 +39,26 @@ export function useWorkerNames(apiClient: ApiClient): ReadonlyMap<string, string
     )
     return () => controller.abort()
   }, [apiClient, invalidation.generation])
+
+  /*
+   * A worker delta names exactly one worker, which is the whole content of this
+   * map, so it is applied without a request. An identical name returns the same
+   * map instance: renaming nothing must not re-render the task table.
+   */
+  useEffect(() => {
+    if (update.generation <= appliedUpdateGeneration.current) return
+    appliedUpdateGeneration.current = update.generation
+    const incoming = update.worker
+    if (incoming === null) return
+    queueMicrotask(() => {
+      setNames((current) => {
+        if (current.get(incoming.id) === incoming.name) return current
+        const next = new Map(current)
+        next.set(incoming.id, incoming.name)
+        return next
+      })
+    })
+  }, [update.generation, update.worker])
 
   return names
 }

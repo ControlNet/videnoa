@@ -16,6 +16,7 @@ describe("task surface accessibility", () => {
       <TaskToolbar
         query={parseTaskQuery(new URLSearchParams())}
         search=""
+        workerNames={new Map()}
         onQueryChange={() => undefined}
         onSearchChange={() => undefined}
       />,
@@ -24,14 +25,61 @@ describe("task surface accessibility", () => {
     // When: assistive and browser form metadata is inspected.
     const search = screen.getByLabelText("Search task paths")
     const workflow = screen.getByLabelText("Workflow")
-    const worker = screen.getByLabelText("Worker ID")
 
     // Then: every text filter is named, avoids autofill, and disables harmful correction.
-    for (const [input, name] of [[search, "search"], [workflow, "workflow"], [worker, "worker"]] as const) {
+    for (const [input, name] of [[search, "search"], [workflow, "workflow"]] as const) {
       expect(input).toHaveAttribute("name", name)
       expect(input).toHaveAttribute("autocomplete", "off")
       expect(input).toHaveAttribute("spellcheck", "false")
     }
+  })
+
+  it("filters by worker name while submitting the identifier the Controller matches", () => {
+    // Given: a toolbar that knows two registered workers, listed out of order.
+    const onQueryChange = vi.fn()
+    const workerNames = new Map([
+      ["00000000-0000-4000-8000-000000000002", "render-west"],
+      ["00000000-0000-4000-8000-000000000001", "render-east"],
+    ])
+    render(
+      <TaskToolbar
+        query={parseTaskQuery(new URLSearchParams())}
+        search=""
+        workerNames={workerNames}
+        onQueryChange={onQueryChange}
+        onSearchChange={() => undefined}
+      />,
+    )
+
+    // Then: the filter offers names in name order, which is what the table shows.
+    const worker = screen.getByRole("combobox", { name: "Worker" })
+    expect([...worker.querySelectorAll("option")].map((option) => option.textContent))
+      .toEqual(["Any", "render-east", "render-west"])
+
+    // When: the operator picks a worker by name.
+    fireEvent.change(worker, { target: { value: "00000000-0000-4000-8000-000000000001" } })
+
+    // Then: the identifier travels to the query and pagination resets.
+    expect(onQueryChange).toHaveBeenCalledWith({ worker: "00000000-0000-4000-8000-000000000001", offset: 0 })
+  })
+
+  it("keeps a selected worker selectable after it stops being registered", () => {
+    // Given: a query filtered by a worker the Controller no longer lists.
+    render(
+      <TaskToolbar
+        query={parseTaskQuery(new URLSearchParams("worker=00000000-0000-4000-8000-00000000dead"))}
+        search=""
+        workerNames={new Map()}
+        onQueryChange={() => undefined}
+        onSearchChange={() => undefined}
+      />,
+    )
+
+    // Then: it keeps an option of its own, so the active filter is not silently widened.
+    const worker = screen.getByRole("combobox", { name: "Worker" })
+    expect(worker).toHaveValue("00000000-0000-4000-8000-00000000dead")
+    expect([...worker.querySelectorAll("option")].map((option) => option.textContent))
+      .toEqual(["Any", "00000000 (unregistered)"])
   })
 
   it("announces counter and empty-result changes politely", () => {

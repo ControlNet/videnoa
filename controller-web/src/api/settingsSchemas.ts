@@ -85,6 +85,13 @@ export const settingsResponseSchema = z
   })
   .strict()
 
+export const schedulerUpdatedEventSchema = z
+  .object({
+    type: z.literal("scheduler_updated"),
+    data: z.object({ event_id: z.string().uuid(), scheduler: schedulerStatusSchema }).strict(),
+  })
+  .strict()
+
 export const readinessSchema = z
   .object({
     status: z.enum(["ready", "not_ready"]),

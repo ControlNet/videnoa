@@ -79,6 +79,60 @@ describe("task detail history ownership", () => {
   })
 })
 
+describe("task detail refresh window", () => {
+  it("keeps attempts beyond the page maximum when a refresh cannot re-read them", async () => {
+    // Given: a task with more persisted history than one page can carry, expanded
+    // to 600 attempts through five explicit next-page actions.
+    const { apiClient, requests } = controlledApiClient()
+    const originalTask = task(taskAId, "/media/task-a.mkv", 1)
+    const updatedTask = task(taskAId, "/media/task-a.mkv", 2)
+    const total = 700
+    const history = Array.from({ length: total }, (_, index) => attempt(originalTask, total - index))
+    const { result } = renderHook(() => useTaskDetail(apiClient, taskAId))
+    await respondTo(requests, taskAId, 0, detail(originalTask, history.slice(0, 100), total))
+    await waitFor(() => expect(result.current.detail?.attempts).toHaveLength(100))
+    for (let offset = 100; offset < 600; offset += 100) {
+      act(() => result.current.loadMore())
+      await respondTo(requests, taskAId, offset, detail(originalTask, history.slice(offset, offset + 100), total, offset))
+      await waitFor(() => expect(result.current.detail?.attempts).toHaveLength(offset + 100))
+    }
+
+    // When: SSE invalidates detail, so the refresh asks for the open window and is
+    // clamped to what one request may return.
+    act(() => appTaskUpdateStore.publish(updatedTask))
+    await waitFor(() => expect(requestsFor(requests, taskAId, 0)).toHaveLength(2))
+    const refresh = findRequest(requests, taskAId, 0)
+    expect(refresh.url.searchParams.get("limit")).toBe("500")
+    await act(async () => {
+      refresh.respond(detail(updatedTask, history.slice(0, 500), total))
+      await Promise.resolve()
+    })
+
+    // Then: the refreshed head is authoritative and the attempts it could not
+    // reach are carried, so the operator never sees fewer than they expanded to.
+    await waitFor(() => expect(result.current.detail?.task.version).toBe(2))
+    expect(result.current.detail?.attempts.map(({ id }) => id)).toEqual(history.slice(0, 600).map(({ id }) => id))
+  })
+
+  it("re-reads only the default page when nothing has been expanded", async () => {
+    // Given: a freshly opened task detail showing its first page.
+    const { apiClient, requests } = controlledApiClient()
+    const originalTask = task(taskAId, "/media/task-a.mkv", 1)
+    const updatedTask = task(taskAId, "/media/task-a.mkv", 2)
+    const newest = attempt(originalTask, 2)
+    const { result } = renderHook(() => useTaskDetail(apiClient, taskAId))
+    await respondTo(requests, taskAId, 0, detail(originalTask, [newest], 2))
+    await waitFor(() => expect(result.current.detail?.task.version).toBe(1))
+
+    // When: SSE invalidates detail.
+    act(() => appTaskUpdateStore.publish(updatedTask))
+
+    // Then: the refresh stays at the default page rather than growing the request.
+    await waitFor(() => expect(requestsFor(requests, taskAId, 0)).toHaveLength(2))
+    expect(findRequest(requests, taskAId, 0).url.searchParams.get("limit")).toBe("100")
+  })
+})
+
 function controlledApiClient() {
   const requests: PendingRequest[] = []
   const fetcher: typeof fetch = (input, init) => {
@@ -112,8 +166,9 @@ function requestsFor(requests: readonly PendingRequest[], taskId: string, offset
   return requests.filter((request) => request.url.pathname === `/api/tasks/${taskId}` && request.url.searchParams.get("offset") === String(offset))
 }
 
-function detail(taskValue: Task, attempts: readonly TaskAttempt[], total: number): TaskDetail {
-  return { task: taskValue, attempts: [...attempts], total, limit: 100, offset: 0 }
+/* `offset` defaults to 0 so a page answered at the wrong offset is rejected, which is what the ownership tests assert. */
+function detail(taskValue: Task, attempts: readonly TaskAttempt[], total: number, offset = 0): TaskDetail {
+  return { task: taskValue, attempts: [...attempts], total, limit: 100, offset }
 }
 
 function task(id: string, inputPath: string, version: number): Task {
