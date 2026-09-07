@@ -11,6 +11,7 @@ import {
   workerSchema,
 } from "../api/workerSchemas"
 import { appInvalidationStore } from "../events/store"
+import { appTaskUpdateStore } from "../events/taskUpdates"
 import { appWorkerUpdateStore } from "../events/workerUpdates"
 
 export type WorkersData = {
@@ -30,7 +31,9 @@ export type WorkersData = {
 export function useWorkersData(apiClient: ApiClient): WorkersData {
   const invalidation = useSyncExternalStore(appInvalidationStore.subscribe, appInvalidationStore.snapshot)
   const update = useSyncExternalStore(appWorkerUpdateStore.subscribe, appWorkerUpdateStore.snapshot)
+  const taskUpdate = useSyncExternalStore(appTaskUpdateStore.subscribe, appTaskUpdateStore.snapshot)
   const appliedUpdateGeneration = useRef(appWorkerUpdateStore.snapshot().generation)
+  const appliedTaskGeneration = useRef(appTaskUpdateStore.snapshot().generation)
   const [workers, setWorkers] = useState<WorkerList | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -93,6 +96,25 @@ export function useWorkersData(apiClient: ApiClient): WorkersData {
       })
     })
   }, [loading, update.generation, update.worker, workers])
+
+  /*
+   * Slot usage is not on the worker row. `WorkerCapacity` is derived from the
+   * tasks assigned to a worker, so a task moving through its lifecycle changes
+   * this table without changing any worker's version -- and no worker delta is
+   * published for it. A task delta therefore takes one bounded list read.
+   *
+   * That costs one request per task event while this route is mounted, roughly
+   * one a second per actively processing task. It is accepted deliberately:
+   * recomputing capacity here would duplicate the Controller's own counting,
+   * and an operator watching this table is watching it for these numbers. The
+   * read keeps the rendered list, so nothing blanks while it is in flight.
+   */
+  useEffect(() => {
+    if (taskUpdate.generation <= appliedTaskGeneration.current) return
+    appliedTaskGeneration.current = taskUpdate.generation
+    if (taskUpdate.task === null) return
+    queueMicrotask(() => setRetryGeneration((generation) => generation + 1))
+  }, [taskUpdate.generation, taskUpdate.task])
 
   async function mutate(request: () => Promise<unknown>): Promise<boolean> {
     setMutating(true)

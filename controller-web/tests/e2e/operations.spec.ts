@@ -2,8 +2,14 @@ import { mkdir, writeFile } from "node:fs/promises"
 
 import { expect, test } from "@playwright/test"
 
-import { dispatchWorkerUpdate, installOperationalApi, workerTemplate } from "./operations-fixtures"
-import { installTestEventSource } from "./tasks-fixtures"
+import {
+  dispatchSchedulerUpdate,
+  dispatchWorkerUpdate,
+  installOperationalApi,
+  settingsTemplate,
+  workerTemplate,
+} from "./operations-fixtures"
+import { dispatchTaskUpdate, installTestEventSource, task } from "./tasks-fixtures"
 
 const evidenceDir = "../.omo/evidence/videnoa-controller/task-19/playwright-report/screenshots/task-18/workers-settings"
 
@@ -288,4 +294,50 @@ test("shows a worker coming back online without a manual reload", async ({ page 
    * so it is asserted rather than left to inspection.
    */
   expect(await page.evaluate(() => Reflect.get(window, "domMutations"))).toMatchObject({ childList: 0 })
+})
+
+test("shows a scheduler pause made elsewhere without a manual reload", async ({ page }) => {
+  // Given: an authenticated Settings route with the scheduler running, and a
+  // Controller that will answer the next read with the paused settings.
+  await installTestEventSource(page)
+  let settings = settingsTemplate
+  await installOperationalApi(page)
+  await page.route("**/api/settings", async (route) => {
+    if (route.request().method() !== "GET") return route.fallback()
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(settings) })
+  })
+  await page.goto("/settings")
+  await expect(page.getByText("Scheduler running")).toBeVisible()
+
+  // When: the scheduler is paused elsewhere -- another browser, or the API -- which
+  // the Controller publishes on the event stream.
+  const paused = { ...settingsTemplate.scheduler, paused: true }
+  settings = { ...settingsTemplate, version: settingsTemplate.version + 1, scheduler: paused }
+  await dispatchSchedulerUpdate(page, paused)
+
+  // Then: this session shows the new state and offers the matching action.
+  await expect(page.getByText("Scheduler paused")).toBeVisible()
+  await expect(page.getByRole("button", { name: "Resume scheduler" })).toBeVisible()
+})
+
+test("refreshes derived worker capacity when a task moves", async ({ page }) => {
+  // Given: an authenticated Workers route showing two of four slots used.
+  await installTestEventSource(page)
+  let worker = workerTemplate
+  await installOperationalApi(page)
+  await page.route("**/api/workers", async (route) => {
+    if (route.request().method() !== "GET") return route.fallback()
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: [worker], total: 1 }) })
+  })
+  await page.goto("/workers")
+  const workerTable = page.getByRole("table")
+  await expect(workerTable.getByText("2 / 4")).toBeVisible()
+
+  // When: a task starts processing on that worker. Capacity is derived from tasks
+  // rather than the worker row, so no worker delta is published for it.
+  worker = { ...workerTemplate, capacity: { ...workerTemplate.capacity, used_slots: 3, available_slots: 1, processing_tasks: 3 } }
+  await dispatchTaskUpdate(page, task(5, { status: "processing", worker_id: workerTemplate.id }))
+
+  // Then: the table settles on the new usage from one bounded list read.
+  await expect(workerTable.getByText("3 / 4")).toBeVisible()
 })

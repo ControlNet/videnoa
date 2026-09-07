@@ -41,7 +41,7 @@ export const workerTemplate: Worker = {
   last_error: "health probe timed out",
 }
 
-const settingsTemplate: SettingsResponse = {
+export const settingsTemplate: SettingsResponse = {
   version: 7,
   paths: {
     workspace: "/srv/videnoa/workspace",
@@ -89,6 +89,13 @@ export async function dispatchWorkerUpdate(page: Page, worker: Worker): Promise<
   await dispatchEvent(page, "worker_updated", {
     type: "worker_updated",
     data: { event_id: "550e8400-e29b-41d4-a716-446655440009", worker },
+  })
+}
+
+export async function dispatchSchedulerUpdate(page: Page, scheduler: SettingsResponse["scheduler"]): Promise<void> {
+  await dispatchEvent(page, "scheduler_updated", {
+    type: "scheduler_updated",
+    data: { event_id: "550e8400-e29b-41d4-a716-44665544000a", scheduler },
   })
 }
 
