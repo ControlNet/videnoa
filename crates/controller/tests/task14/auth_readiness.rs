@@ -11,6 +11,7 @@ use super::support::{connected_request, json_body, Fixture, TestResult, PASSWORD
 async fn operational_routes_require_authentication() -> TestResult {
     let fixture = Fixture::new().await?;
     for uri in [
+        "/api/about",
         "/api/workers",
         "/api/settings",
         "/api/status-counts",

@@ -485,6 +485,18 @@ pub struct HealthResponse {
     pub status: String,
 }
 
+/// Build identity of the running server.
+///
+/// The frontend is embedded in this binary, so a bundle-side constant would
+/// only restate what the build already knows -- and it would be wrong in
+/// development, where a proxied dev bundle may be talking to any build.
+#[derive(Serialize)]
+pub struct AboutResponse {
+    pub name: String,
+    pub version: String,
+    pub source_url: String,
+}
+
 #[derive(Serialize)]
 pub struct ErrorResponse {
     pub error: String,
@@ -597,6 +609,7 @@ pub fn app_router(state: AppState) -> Router {
 
 pub fn app_router_with_static(state: AppState, static_dir: Option<&StdPath>) -> Router {
     let api = Router::new()
+        .route("/api/about", get(about))
         .route("/api/config", get(get_config).put(update_config))
         .route("/api/performance/current", get(get_performance_current))
         .route("/api/performance/overview", get(get_performance_overview))
@@ -674,6 +687,19 @@ pub fn app_router_with_static(state: AppState, static_dir: Option<&StdPath>) -> 
 async fn health() -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok".to_string(),
+    })
+}
+
+/// Reports the build identity of this server.
+///
+/// Authenticated on purpose. `/api/health` answers without a session so a probe
+/// can confirm the port is alive; a precise build fingerprint is a different
+/// thing and belongs behind the same gate as the rest of the application.
+async fn about() -> Json<AboutResponse> {
+    Json(AboutResponse {
+        name: "Videnoa".to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        source_url: "https://github.com/ControlNet/videnoa".to_string(),
     })
 }
 
@@ -3159,6 +3185,26 @@ mod tests {
         }
 
         false
+    }
+
+    #[tokio::test]
+    async fn test_about_endpoint_reports_build_identity() {
+        let mut app = test_router();
+        let req = Request::builder()
+            .uri("/api/about")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = send_request(&mut app, req).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["name"], "Videnoa");
+        assert_eq!(json["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(json["source_url"], "https://github.com/ControlNet/videnoa");
     }
 
     #[tokio::test]

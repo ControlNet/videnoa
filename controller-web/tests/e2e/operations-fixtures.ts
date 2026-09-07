@@ -85,6 +85,8 @@ export type OperationalApi = {
 }
 
 export async function installOperationalReadRoutes(page: Page): Promise<void> {
+  await page.route("**/api/about", async (route) =>
+    json(route, { name: "Videnoa Controller", version: "0.0.0-test", source_url: "https://github.com/ControlNet/videnoa" }))
   await page.route("**/api/workers", async (route) => json(route, { items: [workerTemplate], total: 1 }))
   await page.route("**/api/settings", async (route) => json(route, settingsTemplate))
   await page.route("**/api/readiness", async (route) => json(route, readiness))
@@ -106,6 +108,8 @@ export async function installOperationalApi(page: Page): Promise<OperationalApi>
   })
   await page.route("**/api/auth/setup", async (route) => json(route, { initialized: true }))
   await page.route("**/api/auth/session", async (route) => json(route, session, 200, { "x-csrf-token": "session-proof" }))
+  await page.route("**/api/about", async (route) =>
+    json(route, { name: "Videnoa Controller", version: "0.0.0-test", source_url: "https://github.com/ControlNet/videnoa" }))
   await page.route("**/api/readiness", async (route) => json(route, readiness))
   await page.route("**/api/workers", async (route) => {
     if (route.request().method() === "GET") {

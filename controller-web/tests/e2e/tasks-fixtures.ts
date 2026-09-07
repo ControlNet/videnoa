@@ -42,6 +42,9 @@ export async function installAuthenticatedSession(page: Page): Promise<void> {
    * need real workers register their own route afterwards, which wins.
    */
   await page.route("**/api/workers", async (route) => fulfillJson(route, { items: [], total: 0 }))
+  /* Same hazard: the shell reads its build stamp on every route. */
+  await page.route("**/api/about", async (route) =>
+    fulfillJson(route, { name: "Videnoa Controller", version: "0.0.0-test", source_url: "https://github.com/ControlNet/videnoa" }))
 }
 
 export function task(index: number, overrides: Partial<Task> = {}): Task {

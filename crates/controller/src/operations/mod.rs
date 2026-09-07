@@ -1,3 +1,4 @@
+mod about;
 mod events;
 #[path = "error.rs"]
 mod request_failure;
@@ -111,6 +112,7 @@ impl OperationsState {
 
 pub(crate) fn router(state: OperationsState) -> Router {
     let reads = Router::new()
+        .route("/api/about", get(about::get))
         .route("/api/workers", get(workers::list))
         .route("/api/settings", get(settings::get))
         .route("/api/status-counts", get(status::counts))

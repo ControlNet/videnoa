@@ -6,6 +6,31 @@ use super::support::{json_body, Fixture, TestResult};
 use super::task_support::task_body;
 
 #[tokio::test]
+async fn about_reports_the_build_identity_of_this_binary() -> TestResult {
+    // Given: a running Controller.
+    let fixture = Fixture::new().await?;
+
+    // When: the build identity endpoint is requested.
+    let response = fixture
+        .router
+        .clone()
+        .oneshot(Fixture::request("GET", "/api/about", None)?)
+        .await?;
+
+    // Then: it names itself, its own package version, and where its source is.
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        json_body(response).await?,
+        json!({
+            "name": "Videnoa Controller",
+            "version": env!("CARGO_PKG_VERSION"),
+            "source_url": "https://github.com/ControlNet/videnoa"
+        })
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn status_counts_materialize_every_status_for_empty_database() -> TestResult {
     // Given: a fresh Controller database with no tasks.
     let fixture = Fixture::new().await?;

@@ -124,10 +124,10 @@ Routes compose from one shared vocabulary in `src/ui/`. A route-specific rule th
 - **Security**: password exists only in component and request memory and is cleared after success.
 
 ### Application Frame
-- **Structure**: product identity, primary navigation, service state, sign-out action, scrolling route main.
+- **Structure**: product identity, primary navigation, service state, sign-out action, build stamp, scrolling route main.
 - **States**: authenticated, recoverable sign-out failure, and session-expired. A failed sign-out keeps the authenticated frame mounted and focuses a retryable alert; expiry replaces the entire frame with login.
 - **Accessibility**: labelled primary navigation; current route uses `aria-current="page"`; route changes focus the main landmark.
-- **Layout**: a 200px rail at desktop carrying a compact product mark, three navigation items, connection state and sign-out. Below 48rem the rail becomes a top identity bar and navigation moves to a bottom tab bar; exactly one navigation is mounted at a time.
+- **Layout**: a 200px rail at desktop carrying a compact product mark, three navigation items, connection state, sign-out and the build stamp. Below 48rem the rail becomes a top identity bar and navigation moves to a bottom tab bar; exactly one navigation is mounted at a time.
 
 ### Application Error Boundary
 - **Structure**: isolated recovery panel with an explicit interruption message and primary retry action.
@@ -183,10 +183,17 @@ Routes compose from one shared vocabulary in `src/ui/`. A route-specific rule th
 - **Concurrency**: cancel and retry send the displayed version. HTTP 409 triggers exactly one selected-detail refetch plus one bounded current-page and count refresh before another action.
 
 ### Connection Status
-- **Structure**: indicator plus explicit lifecycle text and `/api/events` technical label.
-- **States**: connecting before EventSource opens, connected after `open` or a valid event, reconnecting after a recoverable stream error, and unavailable after closure or missing EventSource support.
-- **Accessibility**: status changes are announced politely and every state has explicit text; green is used only for a verified open stream.
+- **Structure**: indicator plus explicit lifecycle text. The region stays mounted but renders nothing while the stream is healthy: a working connection is the assumption, so only its loss is worth an operator's attention.
+- **States**: connecting and connected are silent; reconnecting after a recoverable stream error and unavailable after closure or missing EventSource support are shown.
+- **Accessibility**: status changes are announced politely and every rendered state has explicit text; colour never carries the state alone.
 - **Motion**: no decorative pulse.
+
+### Build Stamp
+- **Structure**: the rail's last child, below `Sign out`: the running version as one quiet monospace line that is itself the link to the source repository.
+- **Authority**: `GET /api/about` is authoritative. The version identifies the Controller binary rather than the bundle, so a proxied development frontend still reports the server it is driving.
+- **Licence**: the link is an obligation, not a convenience. AGPL-3.0 section 13 requires that whoever interacts with the program over a network be offered its corresponding source, which is why the stamp survives the collapse to the narrow identity bar.
+- **Failure**: nothing renders until the read lands, and a failed read stays silent. Identification must never put an error in front of an operator working a queue.
+- **Accessibility**: the accessible name carries product, version and purpose because the visible text is a bare version string; the hit target is 24px tall although the type is 9.5px.
 
 ### Worker Operations Surface
 

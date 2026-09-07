@@ -294,14 +294,16 @@ durable evidence. Do not delete, rename, overwrite, or force retry either path.
 ## API Reference
 
 All JSON DTOs reject unknown fields. Health and setup status are public. Setup is
-available only before initialization. Readiness, tasks, workers, settings,
-counts, SSE, and logout require session or Bearer authentication after setup.
+available only before initialization. Build identity, readiness, tasks, workers,
+settings, counts, SSE, and logout require session or Bearer authentication after
+setup.
 
 ### Health and Authentication
 
 | Method | Route | Result |
 |---|---|---|
 | `GET` | `/api/health` | `200 {"status":"ok"}` |
+| `GET` | `/api/about` | Authenticated `{"name","version","source_url"}` for the running binary |
 | `GET` | `/api/readiness` | Authenticated readiness checks |
 | `GET` | `/api/auth/setup` | `{"initialized":bool}` |
 | `POST` | `/api/auth/setup` | First credential plus login response; valid Origin required |

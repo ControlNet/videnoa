@@ -138,6 +138,31 @@
   font-weight: 500;
 }
 
+/*
+ * The build stamp closes the rail. It is the quietest thing in the frame, so it
+ * sits below the sign-out control rather than displacing it, and it is a link
+ * because AGPL-3.0 section 13 makes offering the source an obligation of
+ * serving this page, not a courtesy.
+ */
+.build-info {
+  display: inline-flex;
+  align-self: flex-start;
+  align-items: center;
+  /* WCAG 2.2 target size: the text is deliberately tiny, the hit area is not. */
+  min-block-size: 1.5rem;
+  padding: 0 var(--space-2);
+  color: var(--color-text-quiet);
+  font-family: var(--font-mono);
+  font-size: var(--type-micro);
+  letter-spacing: 0.05em;
+  text-decoration: none;
+}
+
+.build-info:hover {
+  color: var(--color-text-muted);
+  text-decoration: underline;
+}
+
 .shell-main {
   display: flex;
   flex-direction: column;
@@ -287,6 +312,12 @@
   }
 
   .connection-status {
+    padding: 0;
+  }
+
+  /* The rail collapses to a bar, so the stamp loses its own line and its inset. */
+  .build-info {
+    align-self: center;
     padding: 0;
   }
 

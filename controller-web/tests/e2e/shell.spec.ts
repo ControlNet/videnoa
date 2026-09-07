@@ -146,6 +146,11 @@ test("login, protected navigation, reload, narrow layout, and logout", async ({ 
   // When: the operator signs in and uses every shell route.
   await signIn(page)
   await page.screenshot({ path: `${evidenceDir}/shell-desktop.png`, fullPage: true })
+  const buildStamp = page.getByRole("link", { name: "Videnoa Controller 0.0.0-test, source repository" })
+  await expect(buildStamp).toBeVisible()
+  await expect(buildStamp).toHaveText("v0.0.0-test")
+  await expect(buildStamp).toHaveAttribute("href", "https://github.com/ControlNet/videnoa")
+  await expect(buildStamp).toHaveAttribute("rel", "noopener noreferrer")
   await page.getByRole("link", { name: "Workers" }).click()
   await expect(page).toHaveURL(/\/workers$/)
   await expect(page.getByText("render-east")).toBeVisible()
@@ -158,6 +163,8 @@ test("login, protected navigation, reload, narrow layout, and logout", async ({ 
   await page.setViewportSize({ width: 375, height: 812 })
   await expect(page.locator(".connection-status")).toBeVisible()
   await expect(page.locator(".connection-status")).toContainText("Controller")
+  // The source offer is a licence obligation, so it survives the collapse to a bar.
+  await expect(buildStamp).toBeVisible()
   await page.screenshot({ path: `${evidenceDir}/shell-narrow.png`, fullPage: true })
 
   // Then: navigation remains usable, storage contains no auth material, and logout protects routes.

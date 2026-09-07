@@ -35,7 +35,7 @@ pub use runtime_policy::{
     SettingsResponse, SettingsUpdateRequest, TimeoutSettingsDto,
 };
 pub use system::{
-    HealthResponse, ReadinessCheck, ReadinessResponse, SseEvent, TaskStatusCount,
+    AboutResponse, HealthResponse, ReadinessCheck, ReadinessResponse, SseEvent, TaskStatusCount,
     TaskStatusCountsResponse,
 };
 pub use task_metrics::TaskProgress;

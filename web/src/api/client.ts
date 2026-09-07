@@ -108,6 +108,25 @@ export function healthCheck(): Promise<{ status: string }> {
   return request<{ status: string }>('/api/health');
 }
 
+// ─── About ───────────────────────────────────────────────────────────────────
+
+export interface AboutResponse {
+  name: string;
+  version: string;
+  source_url: string;
+}
+
+/**
+ * Build identity of the server this session is talking to.
+ *
+ * Read from the server rather than the bundle: in production the frontend is
+ * embedded in the binary so the two agree, but in development a proxied dev
+ * bundle may be talking to any build, and the question is about the server.
+ */
+export function getAbout(): Promise<AboutResponse> {
+  return request<AboutResponse>('/api/about');
+}
+
 // ─── Nodes ───────────────────────────────────────────────────────────────────
 
 export function listNodes(): Promise<NodeDescriptor[]> {

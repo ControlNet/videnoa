@@ -11,6 +11,7 @@ import { Button } from "../ui/Button"
 import { Status, type Tone } from "../ui/Status"
 import { useMediaQuery } from "../ui/useMediaQuery"
 import { WorkersPage } from "../workers/WorkersPage"
+import { BuildInfo } from "./BuildInfo"
 import "./shell.css"
 
 type AppShellProps = {
@@ -92,6 +93,7 @@ export function AppShell({ apiClient, logout }: AppShellProps) {
               <span>{signOutLabel}</span>
             </Button>
           )}
+          <BuildInfo apiClient={apiClient} />
         </div>
       </aside>
 

@@ -11,6 +11,20 @@ pub struct HealthResponse {
     pub status: HealthStatus,
 }
 
+/// Build identity of the running Controller binary.
+///
+/// The frontend is embedded in this binary, so a bundle-side constant would
+/// only restate what the build already knows -- and it would be wrong in
+/// development, where a proxied dev bundle may be talking to any build. The
+/// server is therefore the authority for what it is.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AboutResponse {
+    pub name: String,
+    pub version: String,
+    pub source_url: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReadinessCheck {

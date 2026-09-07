@@ -298,6 +298,7 @@ async fn http_routes_protect_business_apis_but_keep_health_and_websocket_public(
         .unwrap();
     let router = super::super::app_router(state.clone());
     for endpoint in [
+        "/api/about",
         "/api/jobs",
         "/api/config",
         "/api/nodes",
