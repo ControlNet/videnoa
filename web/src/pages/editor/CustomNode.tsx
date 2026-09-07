@@ -114,6 +114,33 @@ function isStreamPort(port: PortDescriptor): boolean {
   return port.direction === 'stream';
 }
 
+function isNvencCodec(codec: unknown): boolean {
+  return codec === 'hevc_nvenc' || codec === 'h264_nvenc';
+}
+
+function isVisibleVideoOutputPort(
+  port: PortDescriptor,
+  params: Record<string, string | number | boolean>,
+): boolean {
+  const nvenc = isNvencCodec(params.codec ?? 'libx265');
+  if (port.name === 'crf' || port.name === 'x265_preset') return !nvenc;
+  if (port.name === 'cq_value' || port.name === 'nvenc_preset') return nvenc;
+  return true;
+}
+
+function videoOutputPixelFormats(codec: unknown): readonly string[] {
+  if (codec === 'hevc_nvenc') return ['p010le', 'yuv420p'];
+  if (codec === 'h264_nvenc' || codec === 'libx264') return ['yuv420p'];
+  return ['yuv420p10le', 'yuv420p'];
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
+export function defaultPixelFormat(codec: string): string {
+  if (codec === 'hevc_nvenc') return 'p010le';
+  if (codec === 'h264_nvenc' || codec === 'libx264') return 'yuv420p';
+  return 'yuv420p10le';
+}
+
 function InlineHandle({
   port,
   direction,
@@ -229,9 +256,16 @@ function ParamEditorControl({
 
   const handleChange = useCallback(
     (newValue: string | number | boolean) => {
+      if (nodeType === 'VideoOutput' && port.name === 'codec' && typeof newValue === 'string') {
+        updateNodeParams(nodeId, {
+          codec: newValue,
+          pixel_format: defaultPixelFormat(newValue),
+        });
+        return;
+      }
       updateNodeParams(nodeId, { [port.name]: newValue });
     },
-    [nodeId, port.name, updateNodeParams],
+    [nodeId, nodeType, port.name, updateNodeParams],
   );
 
   if (port.name === 'model_path') {
@@ -244,7 +278,9 @@ function ParamEditorControl({
     );
   }
 
-  const enumOpts = port.enum_options;
+  const enumOpts = nodeType === 'VideoOutput' && port.name === 'pixel_format'
+    ? videoOutputPixelFormats(nodeParams.codec ?? 'libx265')
+    : port.enum_options;
   if (enumOpts && enumOpts.length > 0) {
     const resolvedDefault = port.name === 'backend' ? defaultBackend : port.default_value;
     return (
@@ -595,7 +631,10 @@ function CustomNodeComponent({ id, data }: NodeProps) {
       dynamic_type_param: null,
     }))
     : [];
-  const effectiveParamInputs = [...paramInputs, ...stringTemplateInputs];
+  const visibleParamInputs = nodeType === 'VideoOutput'
+    ? paramInputs.filter((port) => isVisibleVideoOutputPort(port, params))
+    : paramInputs;
+  const effectiveParamInputs = [...visibleParamInputs, ...stringTemplateInputs];
   const hasStreamPorts = streamInputs.length > 0
     || desc.outputs.length > 0
     || interfaceInputs.length > 0

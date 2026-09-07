@@ -1,0 +1,679 @@
+# Videnoa Controller Operations Guide
+
+This guide covers installation, API use, security, recovery, and distribution
+for `videnoa-controller`. Archive users receive the self-contained
+[`README-controller.md`](../README-controller.md).
+
+## Architecture and Boundaries
+
+Controller is a GPU-free coordination service with a private working location. It serves the Web UI, validates
+task paths, stores task and attempt history, schedules remote work, streams
+transfers, and reconciles restarts.
+
+SQLite is authoritative for operational state: the administrator credential, sessions,
+tasks, attempts, assignments, idempotency, retry state, and recovery. Runtime
+channels and SSE only prompt work or client refetches. They are not a second
+queue or history store.
+
+The existing `videnoa` service remains the GPU application. A Controller worker
+record names one remote Videnoa HTTP(S) service and its compute capacity.
+Controller does not import `videnoa-core`, load models, select GPUs, manage
+network mounts, or require CUDA, cuDNN, TensorRT, or ONNX Runtime.
+
+Controller intake is manual Web UI creation or authenticated `POST /api/tasks`.
+External automation such as ANI-RSS may call that generic endpoint after making
+its own media decision. Controller has no watcher, directory polling,
+qBittorrent integration, cron discovery, or rules engine.
+
+## Install and Configure
+
+Run the binary from the directory that will be its workspace:
+
+```bash
+./videnoa-controller
+```
+
+Windows PowerShell:
+
+```powershell
+.\videnoa-controller.exe
+```
+
+No root access, system directory, copied configuration, media-root preparation,
+or credential file is required. The default listener is `127.0.0.1:3001`.
+Controller creates only `./data/controller.toml` and
+`./data/controller.sqlite3` on first start. SQLite sidecars and transient
+per-task UUID directories may also appear under `./data`.
+
+The optional process overrides are:
+
+```text
+videnoa-controller [--host <IP>] [--port <PORT>]
+videnoa-controller --help
+videnoa-controller --version
+```
+
+Use [`controller.example.toml`](../controller.example.toml) as a field reference,
+not as a required installation step. Raw TOML accepts exactly these sections:
+
+| Section | Fields |
+|---|---|
+| `server` | `host`, `port` |
+| `auth` | `secure_cookie`, `session_absolute_seconds`, `session_idle_seconds` |
+| `scheduler` | `paused`, `default_compute_slots`, `prefetch_per_worker`, `max_concurrent_uploads`, `max_concurrent_downloads` |
+| `timeouts` | `health_seconds`, `poll_seconds`, `transfer_seconds` |
+| `retry` | `initial_seconds`, `maximum_seconds`, `max_attempts` |
+
+Unknown fields are rejected. Defaults are loopback port 3001, non-Secure
+cookies, 30-day absolute sessions, seven-day idle sessions, one compute slot,
+one prefetched task, one upload, one download, health/poll/transfer timeouts of
+10/5/300 seconds, retry delays of 1 through 60 seconds, and five attempts.
+Active tasks are polled again one second after the previous poll completes.
+This cadence is independent of `timeouts.poll_seconds`, which controls the remote
+control-request timeout. `timeouts.transfer_seconds` is a transfer inactivity
+(stall) timeout. Each non-empty upload body chunk handed to the HTTP transport
+resets it; network backpressure eventually stops these updates. Waiting for upload
+response headers after the body ends remains bounded. Downloads bound response
+header wait and each body-chunk wait independently. The shared upload/download default is 300 seconds (five minutes) without
+observable progress. Existing explicit `transfer_seconds` values remain unchanged.
+Continuously progressing transfers can run for hours. Transfers do not use the
+short poll timeout. Connection/TLS establishment retains its separate connect
+bound (`health_seconds` in the runtime timeout mapping). Changed progress is pushed immediately through SSE; unavailable
+workers still follow retry backoff. Existing TOML files need no cadence update.
+
+Authenticated API requests renew the seven-day idle deadline, capped at 30 days
+from login under the default policy. Session durations have no fixed day limit
+in Settings; both must be positive integers and idle lifetime must not exceed
+absolute lifetime. Passive SSE checks do not renew it. Existing explicit auth settings
+remain unchanged: set `auth.session_absolute_seconds = 2592000` and
+`auth.session_idle_seconds = 604800` through Web Settings or the configuration
+file (restart after manual edits). Log in again to receive the longer absolute
+lifetime; increasing the policy does not extend an existing session's deadline.
+
+`data/controller.toml` is the sole persisted Controller configuration source.
+The in-memory `ControllerConfig` is the active runtime configuration.
+`controller.sqlite3` holds durable operational/application state: tasks, attempts,
+workers, recovery evidence, idempotency, administrator credential, and sessions.
+Legacy SQLite settings columns remain unused; startup and Settings never read or
+update them, including the old configuration documents and projection journal.
+
+Web Settings validates policy and prebinds a changed listener, then writes a
+private temporary TOML file, fsyncs it, atomically replaces `controller.toml`, and
+fsyncs `data`. Only after persistence succeeds does it update runtime policy and
+hot-apply scheduler, independent transfer limits, auth, timeouts, retry, and the
+listener. Failed persistence leaves runtime unchanged. Stale Settings generations
+return conflict; the generation is in memory and resets on restart. A shared
+admission lock holds pause/config commits behind already admitted submissions
+and prevents new reservations, uploads, or submissions after pause commits.
+Processing and downstream work continue. Shutdown pauses admission in memory only,
+so it preserves manual TOML edits and does not persist an implicit operator pause.
+
+Manual TOML edits require Controller restart. There is no automatic TOML file
+watching, polling, or database reconciliation. A crash after the TOML replacement
+naturally loads the saved configuration on restart. `--host` and `--port` overrides
+persist directly to TOML at startup and remain effective on later starts.
+
+## First Administrator Setup
+
+Open `http://127.0.0.1:3001/` after first start. The Web UI asks for the first
+administrator password and confirmation. The password must contain at least 12
+bytes. Controller stores only its Argon2id hash in SQLite.
+
+`GET /api/auth/setup` returns an `initialized` boolean. `POST /api/auth/setup`
+accepts this exact shape:
+
+```json
+{
+  "password": "entered interactively",
+  "password_confirmation": "entered interactively"
+}
+```
+
+The POST requires valid same-host Origin proof under the transport policy below. A
+successful setup returns the existing `LoginResponse`, sets the session cookie,
+and returns `x-csrf-token`. A mismatched or shorter password returns 400, an
+origin mismatch returns 403, and an already initialized setup returns 409.
+
+Do not expose first setup to an untrusted network. Complete it through loopback,
+your trusted LAN over HTTP, or a protected same-origin HTTPS endpoint.
+
+## Security
+
+Plain HTTP on a trusted LAN is a supported deployment, including a LAN IP
+address or hostname. Setup, login, task operations, Workers, Settings, and live
+updates work with the default `secure_cookie=false`. HTTPS and public Internet
+exposure are not prerequisites. Leave **Require secure session cookie** off for
+HTTP deployments; enabling it explicitly requires HTTPS for session use.
+
+Browser sessions use an HttpOnly, SameSite=Strict cookie and CSRF proof.
+`Secure` is present when `secure_cookie = true`. Cookie-authenticated mutations
+require both `x-csrf-token` and a valid same-origin `Origin`. Bearer requests are
+CSRF exempt. Controller does not enable permissive CORS.
+
+Same-origin proof compares parsed Host and Origin authorities, including ports
+and HTTP/HTTPS default ports. With `secure_cookie=false`, same-host HTTP and HTTPS
+are accepted. With `secure_cookie=true`, only same-host HTTPS is accepted.
+Malformed or foreign origins and missing required proof are rejected. Forwarded
+headers are not trusted. HTTPS reverse-proxy first-access setup works with defaults;
+an HTTPS session can enable Secure cookies in Settings, then subsequent mutations
+require HTTPS Origin plus CSRF proof. As before, changing Secure policy invalidates
+old sessions; sign in again to receive a Secure cookie.
+
+`POST /api/auth/login` accepts `{"password":"..."}` after setup.
+`GET /api/auth/session` returns current session metadata and rotates the
+cookie-session CSRF proof. `POST /api/auth/logout` revokes a cookie session and
+expires its cookie.
+
+Keep the listener on loopback unless remote access is required. Trusted LAN
+browsers can connect directly over HTTP. To add transport encryption, use a
+same-origin HTTPS reverse proxy and enable `secure_cookie`; HTTPS does not
+require exposing the service publicly. Never
+record passwords, Authorization values, cookies, CSRF values, or setup bodies in
+logs, configuration, URLs, or source control.
+
+## Workspace and Paths
+
+Task paths may refer to any safe filesystem location visible to the Controller
+process. Absolute paths retain their OS location, for example
+`/mnt/user/media/anime/Frieren/E08.mkv` and
+`/mnt/user/media/anime/Frieren/E08.AI.mp4`; they are never rebased under workspace.
+Relative paths resolve from the Controller workspace (the startup working
+directory). With workspace `/opt/videnoa-controller`, `media/E08.mkv` resolves to
+`/opt/videnoa-controller/media/E08.mkv`. Task records store normalized absolute
+paths. The workspace is only Controller's working location, not a media sandbox.
+The entire `<workspace>/data/**` subtree is private and forbidden for task input,
+output, and recovery capabilities, including indirect symlink paths.
+
+Input must be an existing regular file with an extension. Output is an exact,
+caller-selected missing leaf with an extension. Media symlinks are resolved at
+admission and tasks store their real target paths.
+Retargeting an alias does not redirect an admitted task. Parent traversal,
+changed file identity/content, non-regular input, and existing or
+racing output fail closed. Controller never overwrites or auto-renames output. An existing final output
+symlink counts as an occupied destination; only output parent links are resolved.
+
+Downloaded bytes are verified in private UUID task directories under `data`.
+Publication first attempts atomic no-replace rename. If it returns `EXDEV`
+(including separate bind mounts on the same host disk), Controller falls back to
+move semantics: exclusively create the requested final file, copy and fsync its
+bytes, verify its size/SHA-256, then remove the private source. Absolute output
+paths on other filesystems are accepted at intake.
+
+**During the copy fallback, the final filename is visible before copying finishes.**
+Jellyfin or another scanner may observe that incomplete file. Same-mount atomic
+rename retains the complete-file visibility guarantee. Neither route overwrites
+an existing destination, changes the requested path, or creates sibling staging
+files such as `.videnoa-*`, `.partial`, or `.staging`.
+
+Private copy evidence records the exclusively created output's file identity.
+After interruption, Controller validates that identity and the existing byte
+prefix before appending the remainder from the verified source. A replaced or
+corrupt output, or missing ownership evidence, fails as publication ambiguity;
+the source is retained. Successful publication recovery never repeats AI compute.
+Publication ambiguity supports manual retry, including existing failed tasks after
+upgrade. Every retry repeats ownership and content checks; unresolved conflicts
+fail again without overwriting files. Upgrading does not automatically retry them.
+Upgrades make legacy cross-mount publication failures with verified-output evidence
+retryable; use Retry to resume publication on the same attempt. They do not retry
+automatically.
+
+## Register Workers and Workflows
+
+Register workers in the Web UI or through `POST /api/workers`:
+
+```json
+{
+  "name": "gpu-host-1",
+  "api_url": "https://gpu-host-1.example.internal:3000/",
+  "enabled": true,
+  "compute_slots": 1
+}
+```
+
+The reserved domain is illustrative. Worker URLs are credential-free HTTP(S)
+base URLs without query strings or fragments. Controller combines each worker's
+workflow and preset catalogs. A name is eligible only when its interface has
+`Path` inputs named exactly `input` and `output`. Controller does not deploy or
+synchronize workflows.
+
+Worker updates use `PUT /api/workers/{id}` with the current version and all
+mutable fields. Enable and disable use `POST /api/workers/{id}/enable` and
+`/disable`. Delete uses `DELETE /api/workers/{id}?version=N` and succeeds only
+for an unreferenced current record.
+
+Every worker must persist its Videnoa data. `jobs.db` stores keyed job identity,
+and worker task workspaces remain recovery evidence until cleanup. Losing this
+data can produce `remote_state_ambiguous`; Controller never guesses that compute
+is safe to repeat.
+
+## Scheduling and Lifecycle
+
+Queued tasks are ordered by priority descending, creation ascending, then ID.
+Eligible workers are enabled, online, workflow-compatible, and within capacity.
+
+Compute capacity is occupied by `submitting` and `processing`. Stage-in capacity
+is occupied by `reserved`, `uploading`, and `staged`. Downstream transfer,
+verification, publication, and cleanup consume neither. Scheduler pause is
+durable and blocks new reservation, stage-in admission, and compute submission
+while allowing downstream work to converge.
+
+Task statuses are `queued`, `reserved`, `uploading`, `staged`, `submitting`,
+`processing`, `remote_completed`, `downloading`, `verifying`, `publishing`,
+`remote_cleanup`, `completed`, `failed`, and `cancelled`.
+
+Each compute attempt has a durable submission key before remote `POST /api/run`.
+The same key and body returns the existing remote job; a changed body conflicts.
+Transfer and cleanup failures use bounded persisted retry. Downstream retries do
+not repeat successful AI work.
+
+Cancellation is accepted from queued through verifying. Publishing, remote
+cleanup, and terminal tasks reject cancellation. Publication ambiguity permits
+manual retry on the existing attempt; remote-state ambiguity remains non-retryable.
+
+## No-Clobber and Ambiguity
+
+Task intake requires the exact output leaf not to exist. Before publication,
+Controller rechecks the output capability and verified artifact, then attempts
+atomic no-replace rename. Only `EXDEV` activates copy fallback, with exclusive
+creation of the final filename. Existing or racing output is never overwritten
+or auto-renamed. A partial output is resumed only with matching private ownership
+evidence and a byte-for-byte match against the verified source prefix.
+
+If recovery cannot prove whether remote compute or local publication completed,
+Controller records `remote_state_ambiguous` or `publication_ambiguous` and
+preserves evidence.
+
+For `remote_state_ambiguous`, disable the worker and preserve Controller data,
+the worker's `jobs.db`, workspace, logs, IDs, and exact workflow parameters. Do
+not retry or submit equivalent work until identity is proven.
+
+For `publication_ambiguous`, pause scheduling and preserve the final path and
+verified transient artifact. Compare regular-file type, length, and SHA-256 with
+durable evidence. Do not delete, rename, overwrite, or force retry either path.
+
+## API Reference
+
+All JSON DTOs reject unknown fields. Health and setup status are public. Setup is
+available only before initialization. Build identity, readiness, tasks, workers,
+settings, counts, SSE, and logout require session or Bearer authentication after
+setup.
+
+### Health and Authentication
+
+| Method | Route | Result |
+|---|---|---|
+| `GET` | `/api/health` | `200 {"status":"ok"}` |
+| `GET` | `/api/about` | Authenticated `{"name","version","source_url"}` for the running binary |
+| `GET` | `/api/readiness` | Authenticated readiness checks |
+| `GET` | `/api/auth/setup` | `{"initialized":bool}` |
+| `POST` | `/api/auth/setup` | First credential plus login response; valid Origin required |
+| `POST` | `/api/auth/login` | Session cookie, CSRF header, and session JSON |
+| `GET` | `/api/auth/session` | Current session metadata |
+| `POST` | `/api/auth/logout` | `{"logged_out":true}` |
+
+### Create and Read Tasks
+
+The Add Task form provides editable dropdown completion for Input Path, Output
+Path, and Workflow. Path completion follows the Videnoa path picker interaction:
+case-insensitive filename prefix matching, directories first, and selecting a
+directory continues browsing. Input lists regular files and directories; Output
+lists directories so the final filename remains a new, operator-chosen value.
+Workflow suggestions merge and deduplicate the compatible workflow/preset names
+reported by enabled workers, including cached capabilities from offline workers.
+Suggestions are optional; unavailable or empty results do not prevent manual input.
+Arrow keys select an option, Enter accepts it, and Escape first closes the dropdown.
+All completion works on trusted-LAN HTTP with the existing session.
+
+`GET /api/task-path-suggestions?kind=input&prefix=media/` requires authentication.
+Use `kind=output` for directories only. The response is `{items:[{value,kind}],
+truncated:bool}`; values are absolute Controller-visible paths and kinds are
+`directory` or `file`. Directory values end in the platform path separator. Empty
+prefix lists the workspace; relative prefixes resolve there, while absolute
+prefixes browse the process filesystem namespace. Private data/temp subtrees,
+private aliases, traversal, and non-regular files are excluded; media links are
+supported. Browsing creates no files
+and never reads file contents. Each request examines at most 4096 directory entries
+and returns at most 100 matches with `Cache-Control: no-store`. Large directories
+can produce truncated results; a missing suggestion never invalidates a manually
+entered path. Task intake still performs its full independent safety validation.
+
+The **Add Batch** button beside Add Task opens a batch intake dialog. Input Pattern
+supports `*`, `?`, character classes such as `[0-9]`, brace alternatives such as
+`*.{mkv,mp4,avi,mov,webm}`, and `**` for recursive matching. Both
+`/api/tasks/batch-preview` and `/api/tasks/batch` accept these patterns.
+For example, `魔女之旅 S01E01.{mkv,mp4}` selects those two extensions while
+excluding subtitles. Multiple groups can be combined, including directory names:
+`Season {1,2}/**/E[0-9][0-9].{mkv,mp4}`. Matching remains case-sensitive on Linux;
+include uppercase alternatives when needed. Existing `.AI.mkv` outputs still
+match `*.mkv`; brace alternatives filter names, not previously processed files.
+Groups require at least two non-empty comma-separated alternatives, cannot nest
+or cross path separators, and expand to at most 64 patterns per path component.
+Numeric range syntax such as `{1..12}` is not supported. Recursive `**` must
+remain a standalone path component outside braces. Use `[{]` and `[}]` to match
+literal braces. Invalid patterns fail before any tasks are created.
+Patterns resolve in the Controller filesystem namespace just like task
+paths. Choose outputs beside each input or in one Output Directory; both path
+fields and Workflow support the existing dropdown completion. Filenames use
+`<original stem>.<middle extension>.<original extension>` (for example,
+`E01.AI.mkv`). Original filenames are available only with a separate output
+directory. Workflow and priority apply to every task.
+
+The dialog has two steps. **Add Batch** contains the settings and a single
+**Preview Tasks** action. A successful preview opens the **Preview Tasks** screen,
+showing the input/output table, conflicts, workflow, and priority. Only this screen
+has **Create Tasks**. Use **Back** to return to the saved settings and generate a
+new preview; no tasks are created by previewing or going back. Preview errors keep
+the settings screen open. Each preview row has a **Remove task** button that
+marks it as removed with muted text and struck-through paths. Click **Restore task**
+on the same row to include it again. Removed rows stay visible but are never
+submitted. Counts and conflicts apply to the selected rows; removing one of two
+duplicate destinations resolves that duplicate conflict, while independent errors
+such as an existing output remain blocking. Removing all rows disables creation.
+Going back and generating another preview resets the selection. Existing outputs,
+unsafe paths, and duplicate output destinations among selected tasks block submission. Preview creates
+no tasks, directories, or files, and does not hash video contents. Actual intake
+independently validates each file and captures its full content identity with one
+complete SHA-256 pass. Upload admission performs one further complete hash against
+the durable identity, then streams that same verified, rewound descriptor. Input
+metadata, retained-root identity, and no-follow path checks remain enforced. Batch
+preview remains metadata-only; synchronous creation can still take noticeable
+time for very large files on NAS storage.
+
+`POST /api/tasks/batch-preview` requires authentication and the same session
+Origin/CSRF proof as task creation. Its JSON fields are `input_pattern`,
+`output_mode` (`beside_input` or `directory`), `output_directory` (string or null),
+`naming_mode` (`insert_extension` or `original`), `middle_extension`, `workflow`,
+integer `priority`, and optional `source_reference` (string or null). A supplied
+reference must contain 1 to 512 UTF-8 bytes and is copied unchanged into every
+preview task. It returns `{items:[{request,error,validation_error,output_key}]}`,
+where `request` is a manual task creation body and `error` is null or a conflict
+explanation for the full preview. `validation_error` retains each row's independent
+path/naming error before duplicate detection; `output_key` is the server's
+platform-aware destination comparison key. These let the UI recalculate duplicate
+conflicts for selected rows without losing unrelated path errors.
+Scanning resolves media links, deduplicates real file targets, and skips directory
+cycles and private storage. It stops at 20,000 examined entries
+or 64 directory levels, and accepts at most 500 matches. Narrow the pattern if a
+limit is reached; no partial scan is silently accepted.
+
+Batch creation submits the selected preview rows through `POST /api/tasks`, each
+with a stable independent idempotency key. Creation pauses on the first failure;
+**Retry Remaining** skips successful rows and replays the remaining requests with
+the same keys, including after a lost response on LAN HTTP. **Back** and row
+removal/restoration are disabled once submission starts to preserve the exact task list and retry keys. Keep the dialog open to retain retry state; closing or reloading
+discards that browser state. A batch is not a single database transaction: tasks
+already created remain queued even if another row fails.
+
+### Create a Batch in One Request
+
+`POST /api/tasks/batch` accepts the same JSON fields as `batch-preview` and uses
+the same authentication (Bearer clients need no Origin or CSRF header). It runs
+the full preview first. Invalid options, no matches, scan limits, or any preview
+row error reject the entire request with HTTP 400 **before any task is created**.
+The same limit of 500 matched files applies.
+
+When every preview row is valid, the request creates tasks sequentially and waits
+until all rows have been attempted. Tasks use `source: "api"` and
+the supplied `source_reference` on every task; omitting it or passing null keeps
+`source_reference: null`. When using an Idempotency-Key, a supplied reference is
+part of the request fingerprint: changing it returns HTTP 409. Omission and null
+remain equivalent and preserve compatibility with historical batch fingerprints.
+The response contains `created`, `failed`, and `items`;
+each item contains its `request`, a created `task` or null, and an `error` or null.
+Errors use the standard API error fields (`code`, `message`, `retryable`, and
+`field_errors`). HTTP 201 means all tasks were created. HTTP 207 means creation
+encountered errors after preview; successful tasks are retained and individual
+results identify the failures. Unkeyed requests retain each task as it is created.
+
+For preview row errors, HTTP 400 returns the same batch response with `created: 0`;
+`failed` counts invalid rows and every `task` is null. Valid rows were not attempted.
+Malformed requests, invalid options, and no matches return the standard error
+envelope instead. File changes after preview are checked again during each intake.
+
+`Idempotency-Key` is optional and follows the same header validation as
+`POST /api/tasks` (one header, 1–255 visible ASCII bytes). Repeating the same key
+and request returns the original batch membership and response without rescanning
+files or creating tasks, including after a Controller restart. A successful replay
+returns HTTP 200; a stored partial result remains HTTP 207. Reusing the key with
+different options returns HTTP 409. Batch keys are scoped separately from individual
+task keys. Without a key, every request remains an independent submission.
+
+For keyed requests, task inserts and the batch response commit together. A database
+failure saving the response rolls back the entire transaction. Preview/validation
+rejections before admission do not consume the key. A stored 207 result is final
+for that key: retry failed items separately or use a new key with a pattern selecting
+only those items. Replaying does not refresh task status; query `/api/tasks/{id}`
+for current status. Keep the same options when retrying, even if files have changed.
+
+Creation reads input content for verification, so the synchronous response can
+take time for large files; it does not wait for video processing to finish.
+There is no background batch operation or status URL.
+
+### Create Individual Tasks
+
+`POST /api/tasks` accepts requests without an `Idempotency-Key` header. Each
+request without a key is a new submission and does not deduplicate retries.
+Clients that need safe retries can supply one `Idempotency-Key` header containing
+1 to 255 visible ASCII bytes. Empty, invalid, or repeated headers are rejected.
+Request fields are:
+
+| Field | Rule |
+|---|---|
+| `input_path` | Existing regular process-visible media file, outside private `data` |
+| `output_path` | Missing process-visible output leaf, outside private `data` |
+| `workflow` | Non-empty UTF-8 name, maximum 128 bytes |
+| `priority` | Integer from -100 through 100 |
+| `source` | `manual` or `api` |
+| `source_reference` | String up to 512 bytes or `null` |
+
+Successful creation returns 201. When a key is supplied, replaying the same key
+and canonical body returns the original task with 200. The same key with a
+different body returns 409. Without a key, repeating a request can create another
+task; all normal path and request validation still applies.
+
+`GET /api/tasks` supports `limit`, `offset`, `status`, `worker_id`, `workflow`,
+`source`, `failure_stage`, `search`, `sort`, and `direction`. `GET
+/api/tasks/{id}` returns the task plus a paginated attempts array.
+
+`POST /api/tasks/{id}/cancel` and `POST /api/tasks/{id}/retry` require the
+current `version`. `GET /api/status-counts` returns all lifecycle categories,
+including zero counts.
+
+### Workers and Settings
+
+| Method | Route | Request or result |
+|---|---|---|
+| `GET` | `/api/workers` | Worker list, capabilities, and capacity |
+| `POST` | `/api/workers` | Create `name`, `api_url`, `enabled`, `compute_slots` |
+| `PUT` | `/api/workers/{id}` | Current version plus all mutable fields |
+| `GET` | `/api/settings` | Version, path metadata, server, auth policy, scheduler, timeouts, retry |
+| `PUT` | `/api/settings` | Current `version` plus complete `server`, `auth`, `scheduler`, `timeouts`, `retry` |
+| `POST` | `/api/scheduler/pause` | `{"version":N}` |
+| `POST` | `/api/scheduler/resume` | `{"version":N}` |
+
+Settings path metadata is read-only and contains `workspace`, `data_root`, and
+`config_file`. The response exposes server plus scalar auth policy. The update
+groups auth policy under `auth`. Every mutable field is persisted and
+hot-applied, including listener and authentication policy. A listener update is
+rejected before persistence when the requested address cannot be bound.
+
+### SSE Semantics
+
+`GET /api/events` is authenticated SSE. Every connection first receives a
+`refetch` event with reason `snapshot_required`. Durable changes may emit
+`task_updated`, `worker_updated`, or `scheduler_updated`; lag and deletion use
+`refetch`. SSE is an invalidation hint, not durable history.
+
+### Errors
+
+Operational errors use an error envelope with stable code, message, retryable
+flag, and field errors. Stable codes include `invalid_request`, `unauthorized`,
+`forbidden`, `not_found`, `conflict`, `unavailable`, `internal_error`,
+`remote_state_ambiguous`, and `publication_ambiguous`. Authentication endpoints
+use the smaller top-level `error` form.
+
+## Backup and Restore
+
+For a source-accurate filesystem backup:
+
+1. Pause scheduling through Web UI Settings or `/api/scheduler/pause`.
+2. Let work reach known states and stop Controller cleanly.
+3. Copy the complete workspace `data` directory, including SQLite sidecars and
+   transient task directories.
+4. Preserve task media and every worker's persistent Videnoa data, especially
+   `jobs.db` and worker workspaces.
+5. Record Controller and worker versions without recording credentials.
+
+Restore only while Controller and affected workers are stopped. Restore the
+matching Controller data and worker data, and media at its recorded absolute
+paths. Start Controller, check health and authenticated readiness, inspect every
+nonterminal task and worker, then resume scheduling.
+
+## Upgrade and Rollback
+
+Before an upgrade, pause, drain to known states, stop, and take the complete
+backup above. Replace only the executable or image and preserve the workspace.
+Startup applies pending migrations atomically. Verify `/api/health`,
+`/api/readiness`, Web login, workers, retained tasks, and recovery before resume.
+
+Rollback requires the pre-upgrade Controller and worker snapshots. Never point
+an older binary at a database already migrated by a newer version. There is no
+manual migration command or supported migration downgrade.
+
+## Troubleshooting
+
+```bash
+curl --fail http://127.0.0.1:3001/api/health
+```
+
+- Startup cannot create `data`: verify workspace permissions for the process or
+  container user.
+- Setup 400: password and `password_confirmation` must match and contain at least
+  12 bytes.
+- Setup 403: `Origin` must match Host; Secure cookies require HTTPS.
+- Setup 409: setup already completed; use login.
+- `401`: credential is missing, expired, revoked, or invalid.
+- `403` mutation: valid Origin or current CSRF proof is missing.
+- Path rejection: use accessible media outside private `data`; remove
+  traversal or links resolving into private Controller storage.
+- Worker offline: verify network/TLS, Videnoa health, persistent data, and
+  workflow compatibility.
+- Output exists: preserve it and create a task with a different output path.
+- Ambiguous state: follow the evidence-preservation procedures above.
+
+## Distribution and Release
+
+Images are:
+
+```text
+controlnet/videnoa-controller:<version>
+controlnet/videnoa-controller:latest
+```
+
+The image uses Debian bookworm slim, embeds the frontend, exposes port 3001,
+and uses `videnoa-controller` as entrypoint. It declares no named volumes.
+
+The image defaults to working directory `/workspace` and startup arguments
+`--host 0.0.0.0`, so neither `--workdir` nor an explicit `--host` is needed.
+It runs as UID/GID `10001:10001` unless overridden. The `--user` option below
+maps file ownership to your host user.
+
+Mount private Controller data and media separately using `-v`. This example uses
+`$HOME/Videos` as the host media directory; replace it with your existing media
+directory:
+
+```bash
+mkdir -p "$PWD/data"
+docker run -d --name videnoa-controller \
+  --user "$(id -u):$(id -g)" \
+  -p 127.0.0.1:3001:3001 \
+  -v "$PWD/data:/workspace/data" \
+  -v "$HOME/Videos:/media" \
+  controlnet/videnoa-controller:latest
+```
+
+Open `http://localhost:3001` for first-access setup. Configuration and database
+files persist in `./data/controller.toml` and `./data/controller.sqlite3` on the
+host. `/workspace/data` is private and forbidden for task input/output. Use task
+paths such as `/media/input.mkv` and `/media/output.mp4`.
+
+Separate data and media bind mounts are supported. Their final rename can return
+`EXDEV` even on the same host disk, activating the verified copy-and-delete
+fallback described above. The final filename is visible during that copy;
+Jellyfin may scan it before completion.
+
+Keep the published host port on loopback for trusted first setup, or protect it
+with firewalling and a same-origin HTTPS reverse proxy. Do not expose an
+uninitialized setup endpoint to an untrusted network.
+
+Task paths inside Docker are container-visible paths. No Docker path translation
+exists and media need not live under `/workspace`. If another application sends
+`/mnt/user/media/anime/E08.mkv`, mount media at that same container path instead
+of `/media`.
+
+To retain atomic publication without copy fallback, a common bind mount can keep
+workspace and media in separate directories on the same mounted filesystem.
+For example, when your media is under `/mnt/user/media`:
+
+```bash
+mkdir -p /mnt/user/controller-workspace
+docker run -d --name videnoa-controller \
+  --user "$(id -u):$(id -g)" \
+  -p 127.0.0.1:3001:3001 \
+  -v /mnt/user:/mnt/user \
+  --workdir /mnt/user/controller-workspace \
+  controlnet/videnoa-controller:latest
+```
+
+Only this alternative overrides the default working directory; private state
+then lives under `/mnt/user/controller-workspace/data`. Atomic rename is preferred;
+cross-mount outputs use the copy fallback when necessary.
+Changing the Controller listener port in Docker also requires updating container
+port mapping, reverse proxy, and health-check configuration. Listener settings
+remain available normally.
+
+Archives are:
+
+```text
+videnoa-controller-v<version>-linux-x86_64.tar.gz
+videnoa-controller-v<version>-windows-x86_64.zip
+```
+
+Each archive root contains only `LICENSE`, `README-controller.md`,
+`controller.example.toml`, and the platform executable. Frontend assets are
+embedded. Linux packaging uses `scripts/package_controller.sh`; native Windows
+packaging uses `scripts/package_controller.ps1`.
+
+
+## Operational diagnostics
+
+Controller writes timestamped logs to stderr, captured by Docker. Include stderr
+when filtering by task ID:
+
+```bash
+docker logs --timestamps videnoa 2>&1 | grep -F '3cffbc6b-89e6-46f4-b98f-931b43d9ef2e'
+```
+
+Verification/publication failures emit an ERROR with `task_id`, `attempt_id`,
+`stage`, `operation`, and `reason`. Filesystem errors also include `io_kind` and
+`raw_os_error` when available; the reason includes the OS-provided explanation.
+The subsequent lifecycle log confirms whether the Failed state was committed.
+Task details retain the operation and safe cause in `failure.message` for new
+verification/publication failures. Existing generic failure messages cannot be
+reconstructed retroactively; a new manual retry records its current failure.
+
+Operation names distinguish, for example:
+
+- `copy.create_pending_marker`: could not create the temporary ownership record.
+- `copy.sync_destination_parent`: syncing the destination directory failed.
+- `copy.marker_missing`: the final file exists without a copy ownership record.
+- `copy.prefix_content_mismatch`: an interrupted destination differs from the source.
+- `rename.noreplace`: the no-overwrite rename failed.
+
+Download artifact recovery/preparation and local/remote cleanup errors also emit
+operation-specific WARN diagnostics before applying the existing retry policy.
+These diagnostics are visible at the default log level. Raw paths, URLs, headers,
+response bodies, and arbitrary nested error text are not logged; correlate task
+IDs with task details for paths. An OS-less custom I/O error reports its kind,
+not its potentially sensitive embedded message. Remote transport errors retain
+the client's existing typed classifications rather than raw HTTP error chains.

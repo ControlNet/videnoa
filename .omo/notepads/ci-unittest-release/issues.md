@@ -1,0 +1,1 @@
+- Baseline repo issue observed during verification: `cargo test -p videnoa-core -p videnoa-app` fails locally because `crates/core/Cargo.toml` references missing `examples/spike*.rs` files. Workflow command matches plan requirement but may fail until those example files are restored or manifest updated.

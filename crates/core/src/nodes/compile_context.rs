@@ -20,7 +20,13 @@ use crate::nodes::frame_interpolation::{
 };
 use crate::nodes::super_res::{SuperResNode, SuperResOutputMode, SuperResPostprocess};
 use crate::nodes::video_input::{extract_metadata, run_ffprobe, VideoDecoder};
-use crate::nodes::video_output::{EncoderConfig, VideoEncoder};
+use crate::nodes::video_output::{
+    compatible_pixel_format, default_pixel_format_for_codec, EncoderConfig, VideoEncoder,
+};
+
+#[cfg(all(test, target_os = "linux", target_env = "gnu"))]
+#[path = "compile_context_memory_tests.rs"]
+mod memory_tests;
 
 pub struct VideoCompileContext {
     output_width: Cell<u32>,
@@ -37,6 +43,22 @@ pub struct VideoCompileContext {
     previous_superres_tile_size: Cell<u32>,
     pending_fi_emit_tensor: RefCell<Option<Arc<AtomicBool>>>,
     trt_cache_dir: PathBuf,
+}
+
+impl Drop for VideoCompileContext {
+    fn drop(&mut self) {
+        // Compilation can fail while the context still owns initialized stages.
+        // Drop their sessions and buffers before asking the allocator to reclaim pages.
+        self.accumulated_stages.get_mut().clear();
+
+        // Repeated inference jobs leave GiB of freed buffers in glibc's thread
+        // arenas. Return those pages at the job boundary, outside the frame loop.
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        // SAFETY: malloc_trim is thread-safe and only releases unused allocator pages.
+        unsafe {
+            libc::malloc_trim(0);
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,6 +81,71 @@ impl SuperResDimensions {
 }
 
 impl VideoCompileContext {
+    fn encoder_config(
+        &self,
+        inputs: &HashMap<String, PortData>,
+        outputs: &HashMap<String, PortData>,
+    ) -> Result<EncoderConfig> {
+        let source_path = self
+            .source_path
+            .borrow()
+            .clone()
+            .ok_or_else(|| anyhow!("source path is unavailable in compile context"))?;
+
+        let output_path = match outputs.get("output_path") {
+            Some(PortData::Path(path)) => path.clone(),
+            Some(_) => bail!("VideoOutput output 'output_path' must be Path"),
+            None => bail!("VideoOutput output 'output_path' is missing"),
+        };
+
+        let codec = match inputs.get("codec") {
+            Some(PortData::Str(value)) => value.clone(),
+            _ => "libx265".to_string(),
+        };
+        let crf = match inputs.get("crf") {
+            Some(PortData::Int(value)) => *value,
+            _ => 18,
+        };
+        let requested_pixel_format = match inputs.get("pixel_format") {
+            Some(PortData::Str(value)) => value.as_str(),
+            _ => default_pixel_format_for_codec(&codec),
+        };
+        let pixel_format = compatible_pixel_format(&codec, requested_pixel_format).to_string();
+        let cq_value = match inputs.get("cq_value") {
+            Some(PortData::Int(value)) => Some(*value),
+            _ => None,
+        };
+        let nvenc_preset = match inputs.get("nvenc_preset") {
+            Some(PortData::Str(value)) => Some(value.clone()),
+            _ => None,
+        };
+        let x265_preset = match inputs.get("x265_preset") {
+            Some(PortData::Str(value)) => Some(value.clone()),
+            _ => None,
+        };
+
+        let width = self.output_width.get();
+        let height = self.output_height.get();
+        if width == 0 || height == 0 {
+            bail!("output resolution is not initialized");
+        }
+
+        Ok(EncoderConfig {
+            source_path,
+            output_path,
+            codec,
+            crf,
+            pixel_format,
+            width,
+            height,
+            fps: self.output_fps_string(),
+            bit_depth: 8,
+            cq_value,
+            nvenc_preset,
+            x265_preset,
+        })
+    }
+
     pub fn new(trt_cache_dir: PathBuf) -> Self {
         Self {
             output_width: Cell::new(0),
@@ -493,51 +580,7 @@ impl CompileContext for VideoCompileContext {
             SuperResOutputMode::PostprocessRgb | SuperResOutputMode::TensorF16 => {}
         }
 
-        let source_path = self
-            .source_path
-            .borrow()
-            .clone()
-            .ok_or_else(|| anyhow!("source path is unavailable in compile context"))?;
-
-        let output_path = match outputs.get("output_path") {
-            Some(PortData::Path(path)) => path.clone(),
-            Some(_) => bail!("VideoOutput output 'output_path' must be Path"),
-            None => bail!("VideoOutput output 'output_path' is missing"),
-        };
-
-        let codec = match inputs.get("codec") {
-            Some(PortData::Str(value)) => value.clone(),
-            _ => "libx265".to_string(),
-        };
-        let crf = match inputs.get("crf") {
-            Some(PortData::Int(value)) => *value,
-            _ => 18,
-        };
-        let pixel_format = match inputs.get("pixel_format") {
-            Some(PortData::Str(value)) => value.clone(),
-            _ => "yuv420p10le".to_string(),
-        };
-
-        let width = self.output_width.get();
-        let height = self.output_height.get();
-        if width == 0 || height == 0 {
-            bail!("output resolution is not initialized");
-        }
-
-        let config = EncoderConfig {
-            source_path,
-            output_path,
-            codec,
-            crf,
-            pixel_format,
-            width,
-            height,
-            fps: self.output_fps_string(),
-            bit_depth: 8,
-            cq_value: None,
-            nvenc_preset: None,
-            x265_preset: None,
-        };
+        let config = self.encoder_config(inputs, outputs)?;
 
         let encoder = VideoEncoder::new(&config).context("failed to create video encoder")?;
         Ok(Box::new(encoder))
@@ -909,14 +952,26 @@ fn fps_to_rational(fps: f64) -> (u32, u32) {
         return (24000, 1001);
     }
 
-    let den = 1000u32;
-    let num = (fps * den as f64).round() as u32;
-    if num == 0 {
+    let mut best_num = fps.round() as u32;
+    let mut best_den = 1_u32;
+    let mut best_error = (fps - f64::from(best_num)).abs();
+
+    for den in 2_u32..=1001 {
+        let num = (fps * f64::from(den)).round() as u32;
+        let error = (fps - f64::from(num) / f64::from(den)).abs();
+        if error < best_error {
+            best_num = num;
+            best_den = den;
+            best_error = error;
+        }
+    }
+
+    if best_num == 0 {
         return (24000, 1001);
     }
 
-    let divisor = gcd(num, den).max(1);
-    (num / divisor, den / divisor)
+    let divisor = gcd(best_num, best_den).max(1);
+    (best_num / divisor, best_den / divisor)
 }
 
 fn gcd(mut a: u32, mut b: u32) -> u32 {
@@ -1061,6 +1116,79 @@ mod tests {
     fn test_video_compile_context_fi_only() {
         assert_eq!(fi_stage_count(ModelFormat::ThreeInput, false), 1);
         assert_eq!(fi_stage_count(ModelFormat::Concatenated, false), 3);
+    }
+
+    #[test]
+    fn ntsc_frame_rate_keeps_its_exact_rational() {
+        // Given: the floating-point value parsed from 24000/1001.
+        let fps = 24_000.0 / 1_001.0;
+
+        // When: the compile context converts it back to an encoder rate.
+        let rational = fps_to_rational(fps);
+
+        // Then: frame interpolation can multiply the standard rational exactly.
+        assert_eq!(rational, (24_000, 1_001));
+    }
+
+    #[test]
+    fn video_compile_context_preserves_non_default_encoder_settings() {
+        // Given: a compile context and user-selected encoder settings.
+        let context = VideoCompileContext::default();
+        context
+            .source_path
+            .replace(Some(PathBuf::from("input.mkv")));
+        context.output_width.set(3840);
+        context.output_height.set(2160);
+        let inputs = HashMap::from([
+            ("codec".to_string(), PortData::Str("hevc_nvenc".to_string())),
+            ("crf".to_string(), PortData::Int(23)),
+            (
+                "pixel_format".to_string(),
+                PortData::Str("p010le".to_string()),
+            ),
+            ("cq_value".to_string(), PortData::Int(17)),
+            ("nvenc_preset".to_string(), PortData::Str("p6".to_string())),
+            ("x265_preset".to_string(), PortData::Str("slow".to_string())),
+        ]);
+        let outputs = HashMap::from([(
+            "output_path".to_string(),
+            PortData::Path(PathBuf::from("output.mkv")),
+        )]);
+
+        // When: the production compile path assembles its encoder configuration.
+        let config = context
+            .encoder_config(&inputs, &outputs)
+            .expect("encoder settings should produce a configuration");
+
+        // Then: every non-default quality and preset setting reaches the encoder.
+        assert_eq!(config.cq_value, Some(17));
+        assert_eq!(config.nvenc_preset.as_deref(), Some("p6"));
+        assert_eq!(config.x265_preset.as_deref(), Some("slow"));
+    }
+
+    #[test]
+    fn video_compile_context_uses_codec_compatible_pixel_format() {
+        // Given: a workflow that selects HEVC NVENC without overriding pixel format.
+        let context = VideoCompileContext::default();
+        context
+            .source_path
+            .replace(Some(PathBuf::from("input.mkv")));
+        context.output_width.set(3840);
+        context.output_height.set(2160);
+        let inputs =
+            HashMap::from([("codec".to_string(), PortData::Str("hevc_nvenc".to_string()))]);
+        let outputs = HashMap::from([(
+            "output_path".to_string(),
+            PortData::Path(PathBuf::from("output.mkv")),
+        )]);
+
+        // When: the production compile path assembles the encoder configuration.
+        let config = context
+            .encoder_config(&inputs, &outputs)
+            .expect("encoder settings should produce a configuration");
+
+        // Then: the NVENC-compatible 10-bit surface format is selected.
+        assert_eq!(config.pixel_format, "p010le");
     }
 
     #[test]

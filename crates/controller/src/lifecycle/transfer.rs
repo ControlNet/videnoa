@@ -1,0 +1,61 @@
+use chrono::{DateTime, Utc};
+
+use crate::domain::{RemotePath, RetryMetadata, TaskId};
+use crate::persistence::Sha256Digest;
+
+use super::{AttemptCas, SubmissionEvidence};
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UploadEvidence {
+    pub remote_input_path: RemotePath,
+    pub remote_output_path: RemotePath,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DownloadEvidence {
+    pub size: u64,
+    pub sha256: Sha256Digest,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PublicationIntent {
+    legacy_destination_staging_name: Option<String>,
+}
+
+impl PublicationIntent {
+    #[must_use]
+    pub const fn direct() -> Self {
+        Self {
+            legacy_destination_staging_name: None,
+        }
+    }
+
+    #[must_use]
+    pub fn new(destination_staging_name: impl Into<String>) -> Self {
+        Self {
+            legacy_destination_staging_name: Some(destination_staging_name.into()),
+        }
+    }
+
+    pub(crate) fn destination_staging_name(&self) -> Option<&str> {
+        self.legacy_destination_staging_name.as_deref()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum TransitionEvidence {
+    None,
+    Upload(UploadEvidence),
+    Submission(SubmissionEvidence),
+    Download(DownloadEvidence),
+    Publication(PublicationIntent),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TransferRetryWrite {
+    pub task_id: TaskId,
+    pub task_version: u64,
+    pub attempt: AttemptCas,
+    pub retry: RetryMetadata,
+    pub occurred_at: DateTime<Utc>,
+}

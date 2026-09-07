@@ -16,7 +16,26 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: unittest-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  workflow-contracts:
+    name: Workflow contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install Controller web dependencies
+        working-directory: controller-web
+        run: npm ci --no-fund
+      - name: Validate CI and release matrices
+        run: node scripts/tests/validate_ci_release_workflows.test.mjs
+
   rust-tests:
     name: Rust tests
     runs-on: ${{ matrix.os }}
@@ -27,7 +46,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.98.0
       - name: Install protobuf compiler (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
@@ -65,6 +84,163 @@ jobs:
       - name: Build web assets
         working-directory: web
         run: npm run build
+      - name: Share Windows web assets
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: worker-web-windows
+          path: web/dist
+          if-no-files-found: error
+          retention-days: 1
+
+  controller-rust:
+    name: Controller Rust quality and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: rustfmt, clippy
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install Controller web dependencies
+        working-directory: controller-web
+        run: npm ci --no-fund
+      - name: Build Controller web assets
+        working-directory: controller-web
+        run: npm run build
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Run strict Controller Clippy
+        run: cargo clippy -p videnoa-controller --all-targets --all-features -- -D warnings
+      - name: Run Controller tests
+        run: cargo test -p videnoa-controller --all-targets
+
+  controller-fault-load:
+    name: Controller fault and load suites
+    needs: [controller-rust]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@1.98.0
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Run crash and outage suite
+        run: cargo test -p videnoa-controller --test task20 -- --nocapture
+      - name: Run production Argon2 executor contention regression
+        run: cargo test --locked -p videnoa-controller --test auth_contention -- --ignored --nocapture
+      - name: Run load, concurrency, filesystem, resource, and security suites
+        run: |
+          cargo test -p videnoa-controller \
+            --test task21 \
+            --test task21_concurrency \
+            --test task21_filesystem \
+            --test task21_resources \
+            --test task21_security \
+            -- --nocapture
+
+  controller-web:
+    name: Controller web quality and E2E
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        working-directory: controller-web
+        run: npm ci --no-fund
+      - name: Lint
+        working-directory: controller-web
+        run: npm run lint
+      - name: Run unit tests
+        working-directory: controller-web
+        run: npm test -- --run
+      - name: Build
+        working-directory: controller-web
+        run: npm run build
+      - name: Install Chromium
+        working-directory: controller-web
+        run: npx playwright install --with-deps chromium
+      - name: Run browser tests
+        working-directory: controller-web
+        run: npm run test:e2e
+      - name: Run browser tests on non-secure HTTP origin
+        working-directory: controller-web
+        run: npm run test:e2e:http
+
+  controller-package-linux-smoke:
+    name: Controller archive smoke (Linux)
+    if: ${{ github.event_name != 'workflow_call' || inputs.run_packaging_checks }}
+    needs: [controller-rust, controller-web]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Rust 1.98.0
+        uses: dtolnay/rust-toolchain@1.98.0
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Validate archive root files
+        run: bash scripts/tests/controller_archive_root_files_test.sh
+      - name: Run Linux archive contracts
+        run: bash scripts/tests/package_controller_test.sh
+      - name: Build and verify Linux Controller archive
+        run: bash scripts/package_controller.sh --target x86_64-unknown-linux-gnu --output-dir "$RUNNER_TEMP/controller-linux"
+
+  controller-package-windows-smoke:
+    name: Controller archive smoke (Windows)
+    if: ${{ github.event_name != 'workflow_call' || inputs.run_packaging_checks }}
+    needs: [controller-rust, controller-web]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Rust 1.98.0
+        uses: dtolnay/rust-toolchain@1.98.0
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Package Windows Controller archive
+        shell: pwsh
+        run: |
+          pwsh -File scripts/package_controller.ps1 -Target x86_64-pc-windows-msvc -OutputDir "$env:RUNNER_TEMP\controller-windows"
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "([^"]+)"$' | Select-Object -First 1).Matches[0].Groups[1].Value
+          $archive = Join-Path $env:RUNNER_TEMP "controller-windows\videnoa-controller-v${version}-windows-x86_64.zip"
+          if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) {
+            throw "Missing Controller archive: $archive"
+          }
+          pwsh -File scripts/package_controller.ps1 -VerifyArchive $archive
+
+  controller-docker-smoke:
+    name: Controller image and content smoke
+    if: ${{ github.event_name != 'workflow_call' || inputs.run_packaging_checks }}
+    needs: [controller-rust, controller-web]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Controller image
+        run: docker build -f Dockerfile.controller -t videnoa-controller:ci .
+      - name: Verify Controller image and content
+        run: bash scripts/check_controller_container.sh videnoa-controller:ci --all
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install browser smoke dependencies
+        working-directory: controller-web
+        run: |
+          npm ci --no-fund
+          npx playwright install --with-deps chromium
+      - name: Verify real browser HTTP operation
+        run: node scripts/tests/controller_http_browser_smoke.mjs videnoa-controller:ci
 
   package-linux64-smoke:
     name: Package smoke (Linux)
@@ -76,7 +252,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.98.0
+      - name: Cache package Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-package-target
+          workspaces: ". -> ../videnoa-package-target"
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -94,41 +275,23 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             libxdo-dev
+      - name: Run legacy Linux archive contracts
+        run: bash scripts/tests/package_dist_archive_test.sh
       - name: Build package bundle
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/../videnoa-package-target
         run: |
           bash scripts/package_dist.sh --platform linux64 --release-tag misc --output-dir "$RUNNER_TEMP/dist-linux64" --source-dir "$GITHUB_WORKSPACE" --force
       - name: Verify Linux runtime compatibility
         run: bash scripts/check_linux_package_compat.sh "$RUNNER_TEMP/dist-linux64/videnoa"
+      - name: Reclaim build cache for archive headroom
+        run: |
+          rm -rf "$HOME/.cargo/registry" "$HOME/.cargo/git" "$HOME/.npm"
+          sudo apt-get clean
       - name: Create split archive (2000MB volumes)
-        run: |
-          dist_root="$RUNNER_TEMP/dist-linux64"
-          bundle_dir="$dist_root/videnoa"
-          archive_path="$RUNNER_TEMP/${{ env.ARCHIVE_NAME }}"
-          if [[ ! -d "$bundle_dir" ]]; then
-            echo "Expected bundle directory not found: $bundle_dir" >&2
-            exit 1
-          fi
-          rm -f "$archive_path" "$archive_path".*
-          (
-            cd "$dist_root"
-            7z a -t7z -v2000m "$archive_path" videnoa
-          )
+        run: bash scripts/package_dist_archive.sh create "$RUNNER_TEMP/dist-linux64" "$RUNNER_TEMP/${{ env.ARCHIVE_NAME }}" 2000m 0
       - name: Verify archive layout and split volumes
-        run: |
-          archive_base="$RUNNER_TEMP/${{ env.ARCHIVE_NAME }}"
-          first_volume="$archive_base.001"
-          if [[ ! -f "$first_volume" ]]; then
-            if [[ -f "$archive_base" ]]; then
-              first_volume="$archive_base"
-            else
-              echo "Missing split archive output: $archive_base(.001)" >&2
-              exit 1
-            fi
-          fi
-          if ! 7z l "$first_volume" | grep -Eq 'videnoa[/\\]'; then
-            echo "Archive root layout validation failed: missing videnoa/ root" >&2
-            exit 1
-          fi
+        run: bash scripts/package_dist_archive.sh verify "$RUNNER_TEMP/${{ env.ARCHIVE_NAME }}"
 
   package-win64-smoke:
     name: Package smoke (Windows)
@@ -140,7 +303,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.98.0
+      - name: Cache package Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-package-target
+          workspaces: ". -> ../videnoa-package-target"
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -170,10 +338,20 @@ jobs:
           if (-not (Get-Command aria2c -ErrorAction SilentlyContinue)) {
             Write-Warning 'aria2 not available; package_dist.ps1 will fallback to curl/Invoke-WebRequest'
           }
+      - name: Restore verified Windows web assets
+        uses: actions/download-artifact@v4
+        with:
+          name: worker-web-windows
+          path: web/dist
+      - name: Validate Windows packaging inputs
+        shell: pwsh
+        run: pwsh -File scripts/tests/package_dist_windows_test.ps1 -FrontendDist "$env:GITHUB_WORKSPACE\web\dist"
       - name: Build package bundle
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/../videnoa-package-target
         shell: pwsh
         run: |
-          pwsh -File scripts/package_dist.ps1 -Platform win64 -ReleaseTag misc -OutputDir "$env:RUNNER_TEMP\dist-win64" -SourceDir "$env:GITHUB_WORKSPACE" -Force
+          pwsh -File scripts/package_dist.ps1 -Platform win64 -ReleaseTag misc -OutputDir "$env:RUNNER_TEMP\dist-win64" -SourceDir "$env:GITHUB_WORKSPACE" -FrontendDist "$env:GITHUB_WORKSPACE\web\dist" -Force
       - name: Create split archive (2000MB volumes)
         shell: pwsh
         run: |
@@ -186,7 +364,11 @@ jobs:
           Get-ChildItem -Path "$archivePath*" -ErrorAction SilentlyContinue | Remove-Item -Force
           Push-Location $distRoot
           try {
-            7z a -t7z -v2000m $archivePath 'videnoa'
+            # Smoke tests exercise the full payload without release compression cost.
+            7z a -t7z -mx=0 -v2000m $archivePath 'videnoa'
+            if ($LASTEXITCODE -ne 0) {
+              throw 'Failed to create Windows smoke archive'
+            }
           }
           finally {
             Pop-Location
@@ -203,6 +385,10 @@ jobs:
             else {
               throw "Missing split archive output: $archiveBase(.001)"
             }
+          }
+          7z t $firstVolume
+          if ($LASTEXITCODE -ne 0) {
+            throw "Archive integrity validation failed: $firstVolume"
           }
           $listing = 7z l $firstVolume
           if ($LASTEXITCODE -ne 0) {

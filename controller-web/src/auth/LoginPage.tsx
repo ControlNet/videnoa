@@ -1,0 +1,88 @@
+import { LockKeyhole } from "lucide-react"
+import { type FormEvent, useLayoutEffect, useRef, useState } from "react"
+
+import type { LoginResult } from "./useSessionController"
+import { Button } from "../ui/Button"
+import "./auth.css"
+
+type LoginPageProps = {
+  readonly login: (password: string) => Promise<LoginResult>
+  readonly notice: string | null
+}
+
+type LoginError = Extract<LoginResult, { readonly ok: false }> & { readonly generation: number }
+
+const loginErrorId = "login-error-summary"
+
+export function LoginPage({ login, notice }: LoginPageProps) {
+  const [password, setPassword] = useState("")
+  const [error, setError] = useState<LoginError | null>(null)
+  const [submitting, setSubmitting] = useState(false)
+  const alertRef = useRef<HTMLDivElement>(null)
+  const passwordRef = useRef<HTMLInputElement>(null)
+  const submitGenerationRef = useRef(0)
+
+  useLayoutEffect(() => {
+    passwordRef.current?.focus()
+    return () => {
+      submitGenerationRef.current += 1
+    }
+  }, [])
+
+  useLayoutEffect(() => {
+    if (error !== null) alertRef.current?.focus()
+  }, [error])
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const generation = submitGenerationRef.current + 1
+    submitGenerationRef.current = generation
+    setError(null)
+    setSubmitting(true)
+    const result = await login(password)
+    if (generation !== submitGenerationRef.current || result.ok) return
+    setSubmitting(false)
+    setError({ ...result, generation })
+  }
+
+  return (
+    <main className="login-page">
+      <section className="login-panel" aria-labelledby="login-title">
+        <div className="login-brand" aria-hidden="true">
+          <span className="brand-mark">V</span>
+          <span className="boundary-line" />
+        </div>
+        <h1 id="login-title">Sign in to Videnoa Controller</h1>
+
+        <form className="login-form" onSubmit={handleSubmit}>
+          {notice === null ? null : <output className="login-notice">{notice}</output>}
+          {error === null ? null : (
+            <div id={loginErrorId} className="error-summary" role="alert" tabIndex={-1} ref={alertRef}>
+              {error.message}
+            </div>
+          )}
+          <label htmlFor="controller-password">Controller password</label>
+          <div className="input-frame">
+            <LockKeyhole size={17} strokeWidth={1.75} aria-hidden="true" />
+            <input
+              id="controller-password"
+              type="password"
+              autoComplete="current-password"
+              ref={passwordRef}
+              value={password}
+              aria-invalid={error?.kind === "invalid_credentials" ? true : undefined}
+              aria-describedby={error?.kind === "invalid_credentials" ? loginErrorId : undefined}
+              onChange={(event) => setPassword(event.currentTarget.value)}
+              disabled={submitting}
+              required
+            />
+          </div>
+          <Button variant="primary" type="submit" disabled={submitting}>
+            {submitting ? "Signing in..." : "Sign in"}
+          </Button>
+        </form>
+
+      </section>
+    </main>
+  )
+}

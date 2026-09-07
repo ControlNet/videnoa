@@ -1,0 +1,138 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&family=Manrope:wght@400;500;600;700&display=swap">
+  <style>
+    :root {
+      --bg: oklch(0.12 0.022 260);
+      --bg-deep: oklch(0.095 0.025 260);
+      --surface: oklch(0.155 0.024 260);
+      --elevated: oklch(0.19 0.025 260);
+      --text: oklch(0.96 0.008 260);
+      --muted: oklch(0.72 0.016 260);
+      --quiet: oklch(0.61 0.016 260);
+      --border: oklch(0.29 0.02 260);
+      --border-subtle: oklch(0.23 0.018 260);
+      --accent: oklch(0.66 0.19 292);
+      --accent-wash: oklch(0.22 0.055 292);
+      --healthy: oklch(0.72 0.16 145);
+      --danger: oklch(0.7 0.17 25);
+      --mono: "Geist Mono", "SFMono-Regular", Consolas, monospace;
+    }
+    body {
+      margin: 0;
+      font-family: Manrope, "Avenir Next", "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: var(--accent); }
+    a:hover { color: oklch(0.72 0.17 292); }
+  </style>
+</helmet>
+
+<div style="display: flex; flex-direction: column; block-size: 844px; background: var(--bg);">
+
+  <!-- one 48px bar carries identity, live state and the primary action -->
+  <div style="display: flex; align-items: center; gap: 10px; block-size: 48px; padding: 0 14px; border-block-end: 1px solid var(--border-subtle); background: var(--surface); flex-shrink: 0;">
+    <div style="display: grid; place-items: center; inline-size: 24px; block-size: 24px; border-radius: 6px; background: var(--accent-wash); color: var(--accent); font-family: var(--mono); font-size: 12px; font-weight: 600;">V</div>
+    <span style="font-size: 14px; font-weight: 600;">Tasks</span>
+    <span style="inline-size: 6px; block-size: 6px; border-radius: 50%; background: var(--healthy); box-shadow: 0 0 0 3px oklch(0.72 0.16 145 / 0.14);"></span>
+    <div style="flex-grow: 1;"></div>
+    <div style="display: grid; place-items: center; inline-size: 32px; block-size: 32px; border: 1px solid var(--border); border-radius: 7px; color: var(--muted);"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg></div>
+    <div style="display: grid; place-items: center; inline-size: 32px; block-size: 32px; border: 1px solid var(--border); border-radius: 7px; color: var(--muted);"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M3 5h18l-7 8v6l-4 2v-8z"/></svg></div>
+  </div>
+
+  <!-- counters scroll horizontally instead of stacking into a wall of controls -->
+  <div style="display: flex; align-items: center; gap: 6px; block-size: 40px; padding: 0 14px; border-block-end: 1px solid var(--border-subtle); background: var(--bg-deep); flex-shrink: 0;">
+    <span style="block-size: 26px; padding: 0 10px; border-radius: 13px; background: var(--accent-wash); color: var(--accent); font-size: 11.5px; font-weight: 600; line-height: 26px; white-space: nowrap;">All 1,284</span>
+    <span style="block-size: 26px; padding: 0 10px; border-radius: 13px; color: var(--muted); font-size: 11.5px; font-weight: 500; line-height: 26px; white-space: nowrap;">Queued 37</span>
+    <span style="block-size: 26px; padding: 0 10px; border-radius: 13px; color: var(--muted); font-size: 11.5px; font-weight: 500; line-height: 26px; white-space: nowrap;">Active 12</span>
+    <span style="block-size: 26px; padding: 0 10px; border-radius: 13px; color: var(--muted); font-size: 11.5px; font-weight: 500; line-height: 26px; white-space: nowrap;">Failed 3</span>
+    <span style="block-size: 26px; padding: 0 10px; border-radius: 13px; color: var(--quiet); font-size: 11.5px; font-weight: 500; line-height: 26px; white-space: nowrap;">Don…</span>
+  </div>
+
+  <!-- rows become two-line cards: no table, so no horizontal scroll at any width -->
+  <div style="flex-grow: 1; overflow: hidden;">
+    <sc-for list="{{items}}" as="item" hint-placeholder-count="9">
+      <div style="display: flex; flex-direction: column; gap: 7px; padding: 11px 14px; border-block-end: 1px solid var(--border-subtle);">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="inline-size: 7px; block-size: 7px; border-radius: 50%; flex-shrink: 0; background: {{item.tone}};"></span>
+          <span style="flex-grow: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; font-weight: 500;">{{item.name}}</span>
+          <span style="font-family: var(--mono); font-size: 11.5px; font-weight: 600; color: var(--muted); flex-shrink: 0;">{{item.pctLabel}}</span>
+        </div>
+        <span style="block-size: 3px; border-radius: 2px; background: var(--elevated); overflow: hidden;">
+          <span style="display: block; block-size: 3px; inline-size: {{item.pct}}; background: {{item.tone}};"></span>
+        </span>
+        <div style="display: flex; align-items: center; gap: 9px;">
+          <span style="font-size: 11.5px; font-weight: 500; color: {{item.tone}};">{{item.status}}</span>
+          <span style="font-family: var(--mono); font-size: 11px; color: var(--quiet);">{{item.workflow}}</span>
+          <div style="flex-grow: 1;"></div>
+          <span style="font-family: var(--mono); font-size: 11px; color: var(--quiet);">{{item.meta}}</span>
+        </div>
+      </div>
+    </sc-for>
+  </div>
+
+  <!-- 56px tab bar: 44px+ hit targets, primary action always reachable by thumb -->
+  <div style="display: flex; align-items: stretch; block-size: 56px; border-block-start: 1px solid var(--border); background: var(--surface); flex-shrink: 0;">
+    <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; flex-grow: 1; color: var(--accent);">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 6h.01M8 6h13M3 12h.01M8 12h13M3 18h.01M8 18h13"/></svg>
+      <span style="font-size: 10px; font-weight: 600;">Tasks</span>
+    </div>
+    <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; flex-grow: 1; color: var(--quiet);">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><path d="M7 7.5h.01M7 17h.01"/></svg>
+      <span style="font-size: 10px; font-weight: 500;">Workers</span>
+    </div>
+    <div style="display: grid; place-items: center; flex-grow: 0; inline-size: 76px;">
+      <div style="display: grid; place-items: center; inline-size: 46px; block-size: 46px; border-radius: 14px; background: var(--accent); color: oklch(0.14 0.03 292);"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></div>
+    </div>
+    <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; flex-grow: 1; color: var(--quiet);">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1v.3a2 2 0 1 1-4 0v-.2a1.6 1.6 0 0 0-2.8-1.1l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.6 1.6 0 0 0 3.5 15H3a2 2 0 1 1 0-4h.2A1.6 1.6 0 0 0 4.3 8.2l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 2.7-1.1V4a2 2 0 1 1 4 0v.2a1.6 1.6 0 0 0 2.8 1.1l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0 1.1 2.7h.3a2 2 0 1 1 0 4h-.2a1.6 1.6 0 0 0-1.2 1z"/></svg>
+      <span style="font-size: 10px; font-weight: 500;">Settings</span>
+    </div>
+    <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; flex-grow: 1; color: var(--quiet);">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>
+      <span style="font-size: 10px; font-weight: 500;">Sign out</span>
+    </div>
+  </div>
+
+</div>
+
+</x-dc>
+<script data-dc-script>
+class Component extends DCLogic {
+  renderVals() {
+    const accent = 'oklch(0.66 0.19 292)';
+    const healthy = 'oklch(0.72 0.16 145)';
+    const danger = 'oklch(0.7 0.17 25)';
+    const quiet = 'oklch(0.61 0.016 260)';
+    const raw = [
+      ['Processing', accent, 62, 'S01E12 – Whispers.mkv', 'anime-2x', 'ETA 8m 12s'],
+      ['Processing', accent, 41, 'S01E13 – The Long Road.mkv', 'anime-2x', 'ETA 14m 03s'],
+      ['Downloading', accent, 88, 'S02E04 – Harbour Lights.mkv', 'rife-3x', 'ETA 1m 40s'],
+      ['Uploading', accent, 23, 'S02E05 – Ashfall.mkv', 'rife-3x', 'ETA 9m 55s'],
+      ['Verifying', accent, 97, 'S01E09 – Quiet Season.mkv', 'anime-2x', 'ETA 20s'],
+      ['Queued', quiet, 0, 'S02E06 – Driftwood.mkv', 'rife-3x', '14m ago'],
+      ['Queued', quiet, 0, 'S02E07 – Salt Marsh.mkv', 'rife-3x', '15m ago'],
+      ['Failed', danger, 34, 'S01E04 – Rainshadow.mkv', 'anime-2x', '22m ago'],
+      ['Completed', healthy, 100, 'S01E07 – Nightjar.mkv', 'anime-2x', '38m ago'],
+    ];
+    return {
+      items: raw.map(([status, tone, pct, name, workflow, meta]) => ({
+        status, tone, name, workflow, meta,
+        pct: pct + '%',
+        pctLabel: pct + '%',
+      })),
+    };
+  }
+}
+</script>
+</body>
+</html>

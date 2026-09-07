@@ -170,6 +170,8 @@ fn detect_startup_locale() -> String {
 }
 
 fn main() {
+    // SAFETY: configure malloc before Tauri and the native inference libraries start threads.
+    unsafe { videnoa_core::runtime::configure_host_memory() };
     videnoa_core::runtime::setup_runtime_libs();
     let startup_data_dir = data_dir(None);
     init_logging(startup_data_dir.clone());
@@ -184,13 +186,7 @@ fn main() {
             if let Err(e) = initialize_data_dir(&data_dir) {
                 warn!(error = %e, "Failed to initialize data directory");
             }
-            let mut config = match AppConfig::load_from_path(&cfg_path) {
-                Ok(config) => config,
-                Err(err) => {
-                    warn!(error = %err, "Failed to load config file, using defaults");
-                    AppConfig::default()
-                }
-            };
+            let mut config = AppConfig::load_from_path(&cfg_path)?;
 
             if first_launch {
                 let startup_locale = detect_startup_locale();
@@ -212,6 +208,7 @@ fn main() {
             }
 
             let state = app_state_with_config(config, cfg_path, data_dir.clone());
+            state.ensure_auth_ready()?;
 
             #[cfg(debug_assertions)]
             let static_path = {
@@ -243,7 +240,7 @@ fn main() {
                     }
                 };
 
-                if let Err(err) = axum::serve(listener, router).await {
+                if let Err(err) = axum::serve(listener, router.into_make_service_with_connect_info::<std::net::SocketAddr>()).await {
                     error!(error = %err, "Axum server stopped");
                 }
             });

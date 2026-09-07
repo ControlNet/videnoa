@@ -3,20 +3,22 @@
 # Multi-stage build: Rust compilation → NVIDIA CUDA runtime with ORT + TRT
 #
 # All runtime libraries (ONNX Runtime, TensorRT) are baked into the image.
-# Users only need to mount models and media directories.
+# Mount models, the TensorRT cache, and /app/data for persistent Worker state.
+# Mount host media separately when workflows need direct file access.
 #
 # Build:
 #   docker build -t videnoa .
 #
 # Run server:
-#   docker run --gpus all -p 3000:3000 \
-#     -v ./models:/app/models \
-#     -v ./trt_cache:/app/trt_cache \
+#   docker run -d --name videnoa --gpus all -p 3000:3000 \
+#     -v "$PWD/models:/app/models" \
+#     -v "$PWD/trt_cache:/app/trt_cache" \
+#     -v "$PWD/data:/app/data" \
 #     videnoa
 #
 # Run CLI:
 #   docker run --gpus all \
-#     -v ./models:/app/models \
+#     -v "$PWD/models:/app/models" \
 #     -v /path/to/media:/data \
 #     videnoa videnoa run /app/presets/interpolation-2x.json \
 #       -i /data/input.mkv -o /data/output.mkv
@@ -25,7 +27,7 @@
 # ---------------------------------------------------------------------------
 # Stage 1: Build the Rust workspace
 # ---------------------------------------------------------------------------
-FROM rust:1.88-bookworm AS builder
+FROM rust:1.98.0-bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         pkg-config \
@@ -38,18 +40,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /build
 
-COPY Cargo.toml Cargo.toml
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 
 COPY crates/core/Cargo.toml crates/core/Cargo.toml
 COPY crates/app/Cargo.toml crates/app/Cargo.toml
 COPY crates/desktop/Cargo.toml crates/desktop/Cargo.toml
+COPY crates/controller/Cargo.toml crates/controller/Cargo.toml
 
 RUN mkdir -p crates/core/src && echo "" > crates/core/src/lib.rs \
     && mkdir -p crates/app/src && echo "" > crates/app/src/lib.rs \
     && echo "fn main() {}" > crates/app/src/main.rs \
-    && mkdir -p crates/desktop/src && echo "fn main() {}" > crates/desktop/src/main.rs
+    && mkdir -p crates/desktop/src && echo "fn main() {}" > crates/desktop/src/main.rs \
+    && mkdir -p crates/controller/src && echo "" > crates/controller/src/lib.rs \
+    && echo "fn main() {}" > crates/controller/src/main.rs
 
-RUN cargo build --release -p videnoa-app --bin videnoa 2>/dev/null || true
+RUN cargo build --release --locked -p videnoa-app --bin videnoa 2>/dev/null || true
 
 COPY web/ web/
 COPY presets/ presets/
@@ -59,7 +64,7 @@ RUN rm -rf crates/*/src
 
 COPY crates/ crates/
 
-RUN cargo build --release -p videnoa-app --bin videnoa
+RUN cargo build --release --locked -p videnoa-app --bin videnoa
 
 # ---------------------------------------------------------------------------
 # Stage 2: Download ONNX Runtime GPU

@@ -1,0 +1,213 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&family=Manrope:wght@400;500;600;700&display=swap">
+  <style>
+    :root {
+      --bg: oklch(0.12 0.022 260);
+      --bg-deep: oklch(0.095 0.025 260);
+      --surface: oklch(0.155 0.024 260);
+      --elevated: oklch(0.19 0.025 260);
+      --hover: oklch(0.23 0.025 260);
+      --text: oklch(0.96 0.008 260);
+      --muted: oklch(0.72 0.016 260);
+      --quiet: oklch(0.61 0.016 260);
+      --border: oklch(0.29 0.02 260);
+      --border-subtle: oklch(0.23 0.018 260);
+      --accent: oklch(0.66 0.19 292);
+      --accent-wash: oklch(0.22 0.055 292);
+      --healthy: oklch(0.72 0.16 145);
+      --danger: oklch(0.7 0.17 25);
+      --mono: "Geist Mono", "SFMono-Regular", Consolas, monospace;
+    }
+    body {
+      margin: 0;
+      font-family: Manrope, "Avenir Next", "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: var(--accent); }
+    a:hover { color: oklch(0.72 0.17 292); }
+  </style>
+</helmet>
+
+<div style="display: grid; grid-template-columns: 200px minmax(0, 1fr); block-size: 900px; background: var(--bg);">
+
+  <!-- rail -->
+  <div style="display: flex; flex-direction: column; gap: 4px; padding: 14px 10px; background: var(--surface); border-inline-end: 1px solid var(--border-subtle);">
+    <div style="display: flex; align-items: center; gap: 9px; padding: 4px 8px 14px;">
+      <div style="display: grid; place-items: center; inline-size: 24px; block-size: 24px; border-radius: 6px; background: var(--accent-wash); color: var(--accent); font-family: var(--mono); font-size: 12px; font-weight: 600;">V</div>
+      <div style="display: flex; flex-direction: column; gap: 1px;">
+        <span style="font-size: 13px; font-weight: 600; letter-spacing: -0.01em;">Videnoa</span>
+        <span style="font-family: var(--mono); font-size: 9px; font-weight: 500; letter-spacing: 0.09em; color: var(--quiet);">CONTROLLER</span>
+      </div>
+    </div>
+
+    <div style="display: flex; align-items: center; gap: 9px; block-size: 32px; padding: 0 8px; border-radius: 6px; background: var(--accent-wash); color: var(--accent); font-size: 13px; font-weight: 600;">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 6h.01M8 6h13M3 12h.01M8 12h13M3 18h.01M8 18h13"/></svg>
+      <span>Tasks</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 9px; block-size: 32px; padding: 0 8px; border-radius: 6px; color: var(--muted); font-size: 13px; font-weight: 500;">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><path d="M7 7.5h.01M7 17h.01"/></svg>
+      <span>Workers</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 9px; block-size: 32px; padding: 0 8px; border-radius: 6px; color: var(--muted); font-size: 13px; font-weight: 500;">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1v.3a2 2 0 1 1-4 0v-.2a1.6 1.6 0 0 0-2.8-1.1l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.6 1.6 0 0 0 3.5 15H3a2 2 0 1 1 0-4h.2A1.6 1.6 0 0 0 4.3 8.2l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 2.7-1.1V4a2 2 0 1 1 4 0v.2a1.6 1.6 0 0 0 2.8 1.1l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0 1.1 2.7h.3a2 2 0 1 1 0 4h-.2a1.6 1.6 0 0 0-1.2 1z"/></svg>
+      <span>Settings</span>
+    </div>
+
+    <div style="flex-grow: 1;"></div>
+
+    <div style="display: flex; align-items: center; gap: 8px; padding: 0 8px; block-size: 28px;">
+      <span style="inline-size: 6px; block-size: 6px; border-radius: 50%; background: var(--healthy); box-shadow: 0 0 0 3px oklch(0.72 0.16 145 / 0.14);"></span>
+      <span style="font-size: 11px; font-weight: 500; color: var(--muted);">Connected</span>
+      <span style="font-family: var(--mono); font-size: 10px; color: var(--quiet);">SSE</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 9px; block-size: 30px; padding: 0 8px; border-radius: 6px; color: var(--quiet); font-size: 12px; font-weight: 500;">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>
+      <span>Sign out</span>
+    </div>
+  </div>
+
+  <!-- work area -->
+  <div style="display: flex; flex-direction: column; min-inline-size: 0;">
+
+    <!-- command row -->
+    <div style="display: flex; align-items: center; gap: 10px; block-size: 48px; padding: 0 18px; border-block-end: 1px solid var(--border-subtle);">
+      <span style="font-size: 15px; font-weight: 600; letter-spacing: -0.01em;">Tasks</span>
+      <div style="flex-grow: 1;"></div>
+      <div style="display: flex; align-items: center; gap: 7px; inline-size: 216px; block-size: 30px; padding: 0 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-deep);">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="color: var(--quiet);"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <span style="font-size: 12px; color: var(--quiet);">Search input or output path</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 6px; block-size: 30px; padding: 0 10px; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); font-size: 12px; font-weight: 600;">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M10 4v16M16 4v16"/></svg>
+        <span>Columns</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 6px; block-size: 30px; padding: 0 12px; border-radius: 6px; background: var(--accent); color: oklch(0.14 0.03 292); font-size: 12px; font-weight: 700;">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+        <span>New task</span>
+      </div>
+    </div>
+
+    <!-- counters double as the status filter; remaining filters sit to the right -->
+    <div style="display: flex; align-items: center; gap: 14px; block-size: 42px; padding: 0 18px; border-block-end: 1px solid var(--border-subtle); background: var(--bg-deep);">
+      <div style="display: flex; align-items: center; gap: 2px;">
+        <div style="display: flex; align-items: baseline; gap: 6px; block-size: 26px; padding: 0 9px; border-radius: 5px; background: var(--accent-wash);">
+          <span style="font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--accent);">1,284</span>
+          <span style="font-size: 11px; font-weight: 600; color: var(--accent);">All</span>
+        </div>
+        <div style="display: flex; align-items: baseline; gap: 6px; block-size: 26px; padding: 0 9px; border-radius: 5px;">
+          <span style="font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--text);">37</span>
+          <span style="font-size: 11px; font-weight: 500; color: var(--quiet);">Queued</span>
+        </div>
+        <div style="display: flex; align-items: baseline; gap: 6px; block-size: 26px; padding: 0 9px; border-radius: 5px;">
+          <span style="font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--text);">12</span>
+          <span style="font-size: 11px; font-weight: 500; color: var(--quiet);">Active</span>
+        </div>
+        <div style="display: flex; align-items: baseline; gap: 6px; block-size: 26px; padding: 0 9px; border-radius: 5px;">
+          <span style="font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--danger);">3</span>
+          <span style="font-size: 11px; font-weight: 500; color: var(--quiet);">Failed</span>
+        </div>
+        <div style="display: flex; align-items: baseline; gap: 6px; block-size: 26px; padding: 0 9px; border-radius: 5px;">
+          <span style="font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--text);">1,232</span>
+          <span style="font-size: 11px; font-weight: 500; color: var(--quiet);">Done</span>
+        </div>
+      </div>
+
+      <div style="flex-grow: 1;"></div>
+
+      <div style="display: flex; align-items: center; gap: 6px;">
+        <div style="display: flex; align-items: center; gap: 5px; block-size: 26px; padding: 0 8px; border: 1px solid var(--border-subtle); border-radius: 5px; font-size: 11px; font-weight: 500; color: var(--muted);"><span style="color: var(--quiet);">Source</span><span style="font-weight: 600; color: var(--text);">Any</span><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></div>
+        <div style="display: flex; align-items: center; gap: 5px; block-size: 26px; padding: 0 8px; border: 1px solid var(--border-subtle); border-radius: 5px; font-size: 11px; font-weight: 500; color: var(--muted);"><span style="color: var(--quiet);">Stage</span><span style="font-weight: 600; color: var(--text);">Any</span><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></div>
+        <div style="display: flex; align-items: center; gap: 5px; block-size: 26px; padding: 0 8px; border: 1px solid var(--accent); border-radius: 5px; background: var(--accent-wash); font-size: 11px; font-weight: 500; color: var(--muted);"><span style="color: var(--quiet);">Workflow</span><span style="font-family: var(--mono); font-weight: 600; color: var(--accent);">anime-2x</span><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" style="color: var(--accent);"><path d="M18 6 6 18M6 6l12 12"/></svg></div>
+        <div style="display: flex; align-items: center; gap: 5px; block-size: 26px; padding: 0 8px; border: 1px solid var(--border-subtle); border-radius: 5px; font-size: 11px; font-weight: 500; color: var(--muted);"><span style="color: var(--quiet);">Worker</span><span style="font-weight: 600; color: var(--text);">Any</span><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></div>
+        <div style="inline-size: 1px; block-size: 16px; background: var(--border-subtle);"></div>
+        <div style="display: flex; align-items: center; gap: 5px; block-size: 26px; padding: 0 8px; border-radius: 5px; font-size: 11px; font-weight: 500; color: var(--muted);"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M11 5h10M11 12h7M11 19h4M3 8l3-3 3 3M6 5v14"/></svg><span style="font-weight: 600; color: var(--text);">Priority</span></div>
+      </div>
+    </div>
+
+    <!-- table -->
+    <div style="flex-grow: 1; overflow: hidden; padding: 0 18px;">
+      <div style="display: grid; grid-template-columns: 116px minmax(0, 1fr) 96px 92px 132px 66px 72px 78px; align-items: center; block-size: 30px; gap: 12px; border-block-end: 1px solid var(--border); font-family: var(--mono); font-size: 9.5px; font-weight: 600; letter-spacing: 0.09em; color: var(--quiet);">
+        <span>STATUS</span><span>NAME</span><span>WORKFLOW</span><span>WORKER</span><span>PROGRESS</span><span style="text-align: end;">ETA</span><span style="text-align: end;">SIZE</span><span style="text-align: end;">CREATED</span>
+      </div>
+
+      <sc-for list="{{rows}}" as="row" hint-placeholder-count="14">
+        <div style="display: grid; grid-template-columns: 116px minmax(0, 1fr) 96px 92px 132px 66px 72px 78px; align-items: center; block-size: 34px; gap: 12px; border-block-end: 1px solid var(--border-subtle);">
+          <span style="display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 500; color: {{row.tone}};">
+            <span style="inline-size: 6px; block-size: 6px; border-radius: 50%; flex-shrink: 0; background: {{row.tone}};"></span>
+            <span>{{row.status}}</span>
+          </span>
+          <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 500;">{{row.name}}</span>
+          <span style="font-family: var(--mono); font-size: 11px; color: var(--muted);">{{row.workflow}}</span>
+          <span style="font-family: var(--mono); font-size: 11px; color: var(--muted);">{{row.worker}}</span>
+          <span style="display: flex; align-items: center; gap: 8px;">
+            <span style="position: relative; flex-grow: 1; block-size: 3px; border-radius: 2px; background: var(--elevated); overflow: hidden;">
+              <span style="position: absolute; inset-block: 0; inset-inline-start: 0; inline-size: {{row.pct}}; background: {{row.tone}};"></span>
+            </span>
+            <span style="font-family: var(--mono); font-size: 10.5px; font-weight: 600; color: var(--muted); inline-size: 30px; text-align: end;">{{row.pctLabel}}</span>
+          </span>
+          <span style="font-family: var(--mono); font-size: 11px; color: var(--muted); text-align: end;">{{row.eta}}</span>
+          <span style="font-family: var(--mono); font-size: 11px; color: var(--muted); text-align: end;">{{row.size}}</span>
+          <span style="font-family: var(--mono); font-size: 11px; color: var(--quiet); text-align: end;">{{row.created}}</span>
+        </div>
+      </sc-for>
+    </div>
+
+    <!-- pagination -->
+    <div style="display: flex; align-items: center; gap: 10px; block-size: 40px; padding: 0 18px; border-block-start: 1px solid var(--border-subtle); background: var(--bg-deep);">
+      <span style="font-family: var(--mono); font-size: 11px; color: var(--quiet);">1–50 of 1,284</span>
+      <div style="flex-grow: 1;"></div>
+      <div style="display: flex; align-items: center; gap: 4px;">
+        <div style="display: grid; place-items: center; inline-size: 26px; block-size: 26px; border: 1px solid var(--border-subtle); border-radius: 5px; color: oklch(0.4 0.016 260);"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m15 18-6-6 6-6"/></svg></div>
+        <div style="display: grid; place-items: center; inline-size: 26px; block-size: 26px; border: 1px solid var(--border); border-radius: 5px; color: var(--muted);"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m9 18 6-6-6-6"/></svg></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+</x-dc>
+<script data-dc-script>
+class Component extends DCLogic {
+  renderVals() {
+    const accent = 'oklch(0.66 0.19 292)';
+    const healthy = 'oklch(0.72 0.16 145)';
+    const danger = 'oklch(0.7 0.17 25)';
+    const quiet = 'oklch(0.61 0.016 260)';
+    const raw = [
+      ['Processing', accent, 62, '8m 12s', '4.2 GB', '2m ago', 'S01E12 – Whispers.mkv', 'anime-2x', 'node-east'],
+      ['Processing', accent, 41, '14m 03s', '6.8 GB', '4m ago', 'S01E13 – The Long Road.mkv', 'anime-2x', 'node-east'],
+      ['Downloading', accent, 88, '1m 40s', '3.1 GB', '6m ago', 'S02E04 – Harbour Lights.mkv', 'rife-3x', 'node-west'],
+      ['Uploading', accent, 23, '9m 55s', '5.4 GB', '7m ago', 'S02E05 – Ashfall.mkv', 'rife-3x', 'node-west'],
+      ['Verifying', accent, 97, '20s', '2.9 GB', '11m ago', 'S01E09 – Quiet Season.mkv', 'anime-2x', 'node-east'],
+      ['Publishing', accent, 99, '10s', '4.0 GB', '12m ago', 'S01E08 – Cold Front.mkv', 'anime-2x', 'node-east'],
+      ['Queued', quiet, 0, '—', '7.2 GB', '14m ago', 'S02E06 – Driftwood.mkv', 'rife-3x', '—'],
+      ['Queued', quiet, 0, '—', '4.6 GB', '15m ago', 'S02E07 – Salt Marsh.mkv', 'rife-3x', '—'],
+      ['Queued', quiet, 0, '—', '3.8 GB', '15m ago', 'S02E08 – Tidewater.mkv', 'anime-2x', '—'],
+      ['Failed', danger, 34, '—', '5.1 GB', '22m ago', 'S01E04 – Rainshadow.mkv', 'anime-2x', 'node-west'],
+      ['Failed', danger, 0, '—', '6.0 GB', '31m ago', 'S01E05 – Undertow.mkv', 'rife-3x', 'node-west'],
+      ['Completed', healthy, 100, '—', '4.4 GB', '38m ago', 'S01E07 – Nightjar.mkv', 'anime-2x', 'node-east'],
+      ['Completed', healthy, 100, '—', '5.9 GB', '44m ago', 'S01E06 – Bramble.mkv', 'anime-2x', 'node-east'],
+      ['Cancelled', quiet, 12, '—', '2.2 GB', '51m ago', 'S02E01 – Foghorn.mkv', 'rife-3x', 'node-west'],
+    ];
+    return {
+      rows: raw.map(([status, tone, pct, eta, size, created, name, workflow, worker]) => ({
+        status, tone, eta, size, created, name, workflow, worker,
+        pct: pct + '%',
+        pctLabel: pct + '%',
+      })),
+    };
+  }
+}
+</script>
+</body>
+</html>

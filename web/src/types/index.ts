@@ -165,7 +165,14 @@ export interface BatchResponse {
   total: number;
 }
 
+export interface AuthConfig {
+  session_absolute_seconds: number;
+  session_idle_seconds: number;
+  secure_cookie: boolean;
+}
+export const DEFAULT_AUTH_CONFIG: AuthConfig = { session_absolute_seconds: 2592000, session_idle_seconds: 604800, secure_cookie: false };
 export interface AppConfig {
+  auth?: AuthConfig;
   paths: {
     models_dir: string;
     trt_cache_dir: string;

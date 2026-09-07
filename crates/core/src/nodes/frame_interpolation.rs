@@ -967,7 +967,9 @@ fn cpu_rgb_to_nchw_buffered(
 fn infer_high_bit_source_max(bit_depth: u8, data: &[u8]) -> u32 {
     let native_max = (1u32 << bit_depth) - 1;
     let has_wide_samples = data
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .any(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]) as u32 > native_max);
 
     if has_wide_samples {

@@ -1,3 +1,4 @@
+import { AuthGate } from '@/auth/AuthGate'
 import { BrowserRouter, Route, Routes } from 'react-router'
 import { AppShell } from '@/components/layout/AppShell'
 import { ErrorBoundary } from '@/components/shared/ErrorBoundary'
@@ -12,7 +13,7 @@ import { SettingsPage } from '@/pages/settings/SettingsPage'
 
 export default function App() {
   return (
-    <BrowserRouter>
+    <AuthGate><BrowserRouter>
       <AppShell>
         <Routes>
           <Route path="/" element={<ErrorBoundary><EditorPage /></ErrorBoundary>} />
@@ -25,6 +26,6 @@ export default function App() {
       <ComparisonViewer />
       <BatchPanel />
       <Toaster />
-    </BrowserRouter>
+    </BrowserRouter></AuthGate>
   )
 }

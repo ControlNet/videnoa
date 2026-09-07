@@ -1,3 +1,5 @@
+import { AccessSettings } from '@/auth/AccessSettings';
+import { DEFAULT_AUTH_CONFIG } from '@/types';
 import {
 	Check,
 	FolderOpen,
@@ -54,6 +56,7 @@ export function SettingsPage() {
 	const normalizeConfig = useCallback((data: AppConfig): AppConfig => {
 		return {
 			...data,
+            auth: data.auth ?? { ...DEFAULT_AUTH_CONFIG },
 			performance: {
 				profiling_enabled: data.performance?.profiling_enabled ?? false,
 			},
@@ -86,6 +89,10 @@ export function SettingsPage() {
 
 	const handleSave = useCallback(async () => {
 		if (!formState) return;
+        const auth = formState.auth ?? DEFAULT_AUTH_CONFIG;
+        if (!Number.isSafeInteger(auth.session_absolute_seconds) || !Number.isSafeInteger(auth.session_idle_seconds) || auth.session_idle_seconds < 1 || auth.session_idle_seconds > auth.session_absolute_seconds) {
+            setError(t("errors.invalidSessionLifetime")); return;
+        }
 		setSaving(true);
 		setSaveSuccess(false);
 		setError(null);
@@ -227,7 +234,9 @@ export function SettingsPage() {
 					</CardContent>
 				</Card>
 
-				{/* ── Server Section (read-only) ─────────────────────────────────────── */}
+				<AccessSettings config={formState.auth ?? DEFAULT_AUTH_CONFIG} onChange={(auth) => setFormState((prev) => prev ? { ...prev, auth } : prev)} />
+
+                {/* ── Server Section (read-only) ─────────────────────────────────────── */}
 				<Card className="opacity-80">
 					<CardHeader>
 						<div className="flex items-center gap-2">

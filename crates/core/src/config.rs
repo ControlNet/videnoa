@@ -16,6 +16,7 @@ pub struct AppConfig {
     pub server: ServerConfig,
     pub locale: String,
     pub performance: PerformanceConfig,
+    pub auth: AuthConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -41,6 +42,41 @@ pub struct PerformanceConfig {
     pub profiling_enabled: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct AuthConfig {
+    pub session_absolute_seconds: u64,
+    pub session_idle_seconds: u64,
+    pub secure_cookie: bool,
+}
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            session_absolute_seconds: 2_592_000,
+            session_idle_seconds: 604_800,
+            secure_cookie: false,
+        }
+    }
+}
+impl AuthConfig {
+    pub fn validate(&self) -> Result<()> {
+        anyhow::ensure!(
+            self.session_idle_seconds > 0
+                && self.session_idle_seconds <= self.session_absolute_seconds,
+            "Session durations must be positive and idle must not exceed absolute lifetime"
+        );
+        let seconds = i64::try_from(self.session_absolute_seconds)?;
+        let duration =
+            chrono::Duration::try_seconds(seconds).context("Session duration out of range")?;
+        anyhow::ensure!(
+            self.session_absolute_seconds <= 9_007_199_254_740_991
+                && chrono::Utc::now().checked_add_signed(duration).is_some(),
+            "Session expiry out of range"
+        );
+        Ok(())
+    }
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -48,6 +84,7 @@ impl Default for AppConfig {
             server: ServerConfig::default(),
             locale: FALLBACK_LOCALE.to_string(),
             performance: PerformanceConfig::default(),
+            auth: AuthConfig::default(),
         }
     }
 }
@@ -109,8 +146,23 @@ impl AppConfig {
             .with_context(|| format!("failed to create config directory: {}", parent.display()))?;
 
         let encoded = toml::to_string_pretty(self).context("failed to serialize config TOML")?;
-        fs::write(path, encoded)
-            .with_context(|| format!("failed to write config file: {}", path.display()))?;
+        use std::io::Write;
+        let temporary = parent.join(format!(".config-{}.tmp", uuid::Uuid::new_v4()));
+        let result = (|| -> Result<()> {
+            let mut file = fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&temporary)?;
+            file.write_all(encoded.as_bytes())?;
+            file.sync_all()?;
+            drop(file);
+            fs::rename(&temporary, path)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        result.with_context(|| format!("failed to write config file: {}", path.display()))?;
 
         Ok(())
     }

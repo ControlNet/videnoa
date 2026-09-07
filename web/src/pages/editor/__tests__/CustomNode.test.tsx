@@ -5,7 +5,7 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { useJobStore } from '@/stores/job-store';
 import { useNodeDefinitions } from '@/stores/node-definitions-store';
 import { useWorkflowStore } from '@/stores/workflow-store';
-import { CustomNode } from '../CustomNode';
+import { CustomNode, defaultPixelFormat } from '../CustomNode';
 
 vi.mock('@xyflow/react', () => ({
   Handle: ({ id, type }: { id: string; type: string }) => (
@@ -90,6 +90,23 @@ const CONSTANT_DESCRIPTOR = {
   outputs: [],
 };
 
+const VIDEO_OUTPUT_DESCRIPTOR = {
+  node_type: 'VideoOutput',
+  display_name: 'Video Output',
+  category: 'output',
+  accent_color: '#10B981',
+  icon: 'hard-drive',
+  inputs: [
+    { name: 'codec', port_type: 'Str', direction: 'param', required: false, default_value: 'libx265', ui_hint: null, enum_options: ['libx265', 'libx264', 'hevc_nvenc', 'h264_nvenc'], dynamic_type_param: null },
+    { name: 'crf', port_type: 'Int', direction: 'param', required: false, default_value: 18, ui_hint: null, enum_options: null, dynamic_type_param: null },
+    { name: 'cq_value', port_type: 'Int', direction: 'param', required: false, default_value: 20, ui_hint: null, enum_options: null, dynamic_type_param: null },
+    { name: 'nvenc_preset', port_type: 'Str', direction: 'param', required: false, default_value: 'p4', ui_hint: null, enum_options: ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7'], dynamic_type_param: null },
+    { name: 'x265_preset', port_type: 'Str', direction: 'param', required: false, default_value: 'medium', ui_hint: null, enum_options: ['ultrafast', 'fast', 'medium', 'slow', 'veryslow'], dynamic_type_param: null },
+    { name: 'pixel_format', port_type: 'Str', direction: 'param', required: false, default_value: 'yuv420p10le', ui_hint: null, enum_options: ['yuv420p10le', 'p010le', 'yuv420p'], dynamic_type_param: null },
+  ],
+  outputs: [],
+};
+
 async function renderNode(
   nodeType: string,
   id: string,
@@ -114,7 +131,7 @@ async function renderNode(
 
 beforeEach(() => {
   useNodeDefinitions.setState({
-    descriptors: [PRINT_DESCRIPTOR, VIDEO_INPUT_DESCRIPTOR, CONSTANT_DESCRIPTOR],
+    descriptors: [PRINT_DESCRIPTOR, VIDEO_INPUT_DESCRIPTOR, CONSTANT_DESCRIPTOR, VIDEO_OUTPUT_DESCRIPTOR],
     loading: false,
     error: null,
     fetch: vi.fn().mockResolvedValue(undefined),
@@ -222,5 +239,32 @@ describe('CustomNode Constant value editor', () => {
 
     expect(screen.queryByTestId('path-autocomplete')).not.toBeInTheDocument();
     expect(screen.getByPlaceholderText('value')).toBeInTheDocument();
+  });
+});
+
+describe('CustomNode VideoOutput encoder controls', () => {
+  it('shows CRF and software preset for libx265', async () => {
+    await renderNode('VideoOutput', 'video-output-software', { codec: 'libx265' });
+
+    expect(screen.getByText('crf')).toBeInTheDocument();
+    expect(screen.getByText('x265_preset')).toBeInTheDocument();
+    expect(screen.queryByText('cq_value')).not.toBeInTheDocument();
+    expect(screen.queryByText('nvenc_preset')).not.toBeInTheDocument();
+  });
+
+  it('shows CQ and NVENC preset for hevc_nvenc', async () => {
+    await renderNode('VideoOutput', 'video-output-nvenc', { codec: 'hevc_nvenc' });
+
+    expect(screen.getByText('cq_value')).toBeInTheDocument();
+    expect(screen.getByText('nvenc_preset')).toBeInTheDocument();
+    expect(screen.queryByText('crf')).not.toBeInTheDocument();
+    expect(screen.queryByText('x265_preset')).not.toBeInTheDocument();
+  });
+
+  it('maps codecs to compatible default pixel formats', () => {
+    expect(defaultPixelFormat('libx265')).toBe('yuv420p10le');
+    expect(defaultPixelFormat('libx264')).toBe('yuv420p');
+    expect(defaultPixelFormat('hevc_nvenc')).toBe('p010le');
+    expect(defaultPixelFormat('h264_nvenc')).toBe('yuv420p');
   });
 });

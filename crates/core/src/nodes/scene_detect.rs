@@ -153,7 +153,7 @@ mod tests {
 
     fn make_solid_frame(w: u32, h: u32, r: u8, g: u8, b: u8) -> Frame {
         let mut data = vec![0u8; w as usize * h as usize * 3];
-        for pixel in data.chunks_exact_mut(3) {
+        for pixel in data.as_chunks_mut::<3>().0 {
             pixel[0] = r;
             pixel[1] = g;
             pixel[2] = b;

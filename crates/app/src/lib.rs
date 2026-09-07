@@ -61,6 +61,23 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     Run(RunArgs),
+    Auth(AuthArgs),
+}
+
+#[derive(Args)]
+struct AuthArgs {
+    #[command(subcommand)]
+    command: AuthCommand,
+}
+#[derive(Subcommand)]
+enum AuthCommand {
+    /// Clear the access password and sessions while this instance is stopped.
+    Reset {
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Args)]
@@ -81,6 +98,22 @@ struct RunArgs {
 
 pub async fn run_from_env() -> Result<()> {
     let cli = Cli::parse();
+    if let Some(Commands::Auth(AuthArgs {
+        command: AuthCommand::Reset {
+            data_dir: directory,
+            yes,
+        },
+    })) = &cli.command
+    {
+        eprintln!("This removes the access password and all sessions, restoring open access.");
+        anyhow::ensure!(
+            *yes,
+            "Pass --yes to confirm the reset. Stop the instance first."
+        );
+        videnoa_core::server::auth::reset(&data_dir(directory.as_deref()))?;
+        println!("Access password and sessions cleared.");
+        return Ok(());
+    }
     let mode = if cli.command.is_some() {
         RuntimeLogMode::Cli
     } else {
@@ -99,6 +132,9 @@ pub async fn run_from_env() -> Result<()> {
     log_startup_metadata(mode, Some(resolved_data_dir.as_path()));
 
     match cli.command {
+        Some(Commands::Auth(_)) => {
+            unreachable!("Authentication CLI returns before runtime initialization")
+        }
         Some(Commands::Run(run)) => {
             run_workflow(run.workflow, run.input, run.output, run.params).await
         }
@@ -276,13 +312,7 @@ async fn run_server(
         warn!(error = %e, "Failed to initialize data directory");
     }
     let cfg_path = config_path(&data_dir);
-    let config = match AppConfig::load_from_path(&cfg_path) {
-        Ok(config) => config,
-        Err(err) => {
-            warn!(error = %err, "Failed to load config file, using defaults");
-            AppConfig::default()
-        }
-    };
+    let config = AppConfig::load_from_path(&cfg_path)?;
 
     let port = port_override
         .or_else(|| std::env::var("PORT").ok().and_then(|v| v.parse().ok()))
@@ -290,6 +320,7 @@ async fn run_server(
     let host = host_override.unwrap_or_else(|| config.server.host.clone());
 
     let state = app_state_with_config(config, cfg_path, data_dir);
+    state.ensure_auth_ready()?;
 
     #[cfg(not(debug_assertions))]
     {
@@ -316,7 +347,11 @@ async fn run_server(
     info!(%addr, "Starting videnoa server");
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 
@@ -403,41 +438,39 @@ fn estimate_input_processed(
     }
 }
 
-fn make_progress_callback() -> (
-    Arc<AtomicU64>,
-    Box<dyn Fn(u64, Option<u64>, Option<u64>) + Send>,
-) {
+type ProgressCallback = Box<dyn Fn(u64, Option<u64>, Option<u64>) + Send>;
+
+fn make_progress_callback() -> (Arc<AtomicU64>, ProgressCallback) {
     let start = Instant::now();
     let fps_start = Arc::new(Mutex::new(None::<Instant>));
     let frames_written = Arc::new(AtomicU64::new(0));
     let frames_written_cb = frames_written.clone();
     let fps_start_cb = fps_start.clone();
-    let callback: Box<dyn Fn(u64, Option<u64>, Option<u64>) + Send> =
-        Box::new(move |current, total_output, total_input| {
-            frames_written_cb.store(current, Ordering::Relaxed);
-            let total_elapsed = start.elapsed().as_secs_f64();
-            let input_done = estimate_input_processed(current, total_output, total_input);
-            let fps_elapsed = {
-                let mut start_opt = fps_start_cb
-                    .lock()
-                    .expect("progress callback mutex poisoned");
-                if start_opt.is_none() && input_done > FPS_WARMUP_INPUT_FRAMES {
-                    *start_opt = Some(Instant::now());
-                }
-                start_opt
-                    .as_ref()
-                    .map(|s| s.elapsed().as_secs_f64())
-                    .unwrap_or(0.0)
-            };
+    let callback: ProgressCallback = Box::new(move |current, total_output, total_input| {
+        frames_written_cb.store(current, Ordering::Relaxed);
+        let total_elapsed = start.elapsed().as_secs_f64();
+        let input_done = estimate_input_processed(current, total_output, total_input);
+        let fps_elapsed = {
+            let mut start_opt = fps_start_cb
+                .lock()
+                .expect("progress callback mutex poisoned");
+            if start_opt.is_none() && input_done > FPS_WARMUP_INPUT_FRAMES {
+                *start_opt = Some(Instant::now());
+            }
+            start_opt
+                .as_ref()
+                .map(|s| s.elapsed().as_secs_f64())
+                .unwrap_or(0.0)
+        };
 
-            print_progress(
-                current,
-                total_output,
-                total_input,
-                total_elapsed,
-                fps_elapsed,
-            );
-        });
+        print_progress(
+            current,
+            total_output,
+            total_input,
+            total_elapsed,
+            fps_elapsed,
+        );
+    });
     (frames_written, callback)
 }
 
@@ -521,12 +554,10 @@ fn parse_dynamic_args(args: &[String], workflow_ports: &[String]) -> HashMap<Str
         let arg = &args[i];
         if arg.starts_with("--") && !KNOWN_FLAGS.contains(&arg.as_str()) {
             let name = arg.trim_start_matches('-');
-            if workflow_ports.contains(&name.to_string()) {
-                if i + 1 < args.len() {
-                    dynamic.insert(name.to_string(), args[i + 1].clone());
-                    i += 2;
-                    continue;
-                }
+            if workflow_ports.contains(&name.to_string()) && i + 1 < args.len() {
+                dynamic.insert(name.to_string(), args[i + 1].clone());
+                i += 2;
+                continue;
             }
         }
         i += 1;
@@ -828,7 +859,7 @@ mod format_port_data_tests {
     #[test]
     fn formats_all_variants() {
         assert_eq!(format_port_data(&PortData::Int(42)), "42");
-        assert_eq!(format_port_data(&PortData::Float(3.14)), "3.14");
+        assert_eq!(format_port_data(&PortData::Float(2.75)), "2.75");
         assert_eq!(format_port_data(&PortData::Str("hi".into())), "\"hi\"");
         assert_eq!(format_port_data(&PortData::Bool(true)), "true");
         let path = test_temp_path("x");

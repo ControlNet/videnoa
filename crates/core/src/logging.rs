@@ -213,7 +213,7 @@ impl<W: Write> RedactingWriter<W> {
 
     fn flush_all_pending(&mut self) -> io::Result<()> {
         if !self.pending.is_empty() {
-            let chunk: Vec<u8> = self.pending.drain(..).collect();
+            let chunk: Vec<u8> = std::mem::take(&mut self.pending);
             self.write_redacted_bytes(&chunk)?;
         }
         Ok(())
@@ -838,7 +838,9 @@ mod tests {
         let mut inner = Vec::new();
         {
             let mut writer = RedactingWriter::new(&mut inner);
-            writer.write_all(b"token=").expect("first split write");
+            writer
+                .write_all(b"token=")
+                .expect("write the field prefix separately from its value");
             writer
                 .write_all(b"abc123 ffmpeg\n")
                 .expect("second split write");

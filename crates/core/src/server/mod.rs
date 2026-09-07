@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, delete, get, post};
 use axum::{Json, Router};
@@ -16,13 +16,24 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, RwLock, Semaphore};
 use tokio_util::sync::CancellationToken;
-use tower_http::cors::CorsLayer;
+
 #[cfg(debug_assertions)]
 use tower_http::services::{ServeDir, ServeFile};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
+pub mod auth;
+mod files;
+mod idempotency;
 mod persistence;
+
+#[cfg(test)]
+#[path = "tests/files/mod.rs"]
+mod files_tests;
+
+#[cfg(test)]
+#[path = "tests/idempotency/mod.rs"]
+mod idempotency_tests;
 
 use crate::config::AppConfig;
 use crate::debug_event::NodeDebugValueEvent;
@@ -35,7 +46,8 @@ use crate::model_registry::{ModelEntry, ModelRegistry};
 use crate::nodes::compile_context::VideoCompileContext;
 use crate::registry::{register_all_nodes, NodeRegistry};
 use crate::streaming_executor::ProgressCallback;
-use persistence::JobsPersistence;
+use idempotency::{IdempotencyKey, RequestFingerprint};
+use persistence::{IdempotentJobClaim, IdempotentJobLookup, JobsPersistence};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Preset {
@@ -65,6 +77,7 @@ pub struct AppState {
 }
 
 struct AppStateInner {
+    auth: std::result::Result<auth::AuthService, String>,
     jobs: DashMap<String, Job>,
     jobs_persistence: Option<JobsPersistence>,
     gpu_semaphore: Arc<Semaphore>,
@@ -75,6 +88,7 @@ struct AppStateInner {
     config: RwLock<AppConfig>,
     config_path: PathBuf,
     data_dir: PathBuf,
+    workspace_root: PathBuf,
     preview_sessions: DashMap<String, PathBuf>,
     performance_series: Mutex<VecDeque<RuntimePerformanceSeriesSample>>,
 }
@@ -90,6 +104,14 @@ const RERUN_COMPLETED_REJECTION: &str = "cannot rerun completed job";
 const PREVIEW_VSYNC_MODE: &str = "vfr";
 
 impl AppState {
+    pub fn ensure_auth_ready(&self) -> Result<()> {
+        self.inner
+            .auth
+            .as_ref()
+            .map(|_| ())
+            .map_err(|e| anyhow::anyhow!(e.clone()))
+    }
+
     pub fn new(
         node_registry: NodeRegistry,
         model_registry: ModelRegistry,
@@ -98,7 +120,17 @@ impl AppState {
         config_path: PathBuf,
         data_dir: PathBuf,
     ) -> Self {
+        let auth =
+            auth::AuthService::open(&data_dir, config.auth.clone()).map_err(|e| e.to_string());
         let jobs = DashMap::new();
+        let workspace_root = data_dir.join("workspace");
+        if let Err(err) = std::fs::create_dir_all(&workspace_root) {
+            warn!(
+                error = %err,
+                workspace_root = %workspace_root.display(),
+                "Failed to initialize remote file workspace"
+            );
+        }
 
         let jobs_persistence = match JobsPersistence::new(&data_dir) {
             Ok(persistence) => Some(persistence),
@@ -138,6 +170,7 @@ impl AppState {
 
         Self {
             inner: Arc::new(AppStateInner {
+                auth,
                 jobs,
                 jobs_persistence,
                 gpu_semaphore: Arc::new(Semaphore::new(1)),
@@ -148,6 +181,7 @@ impl AppState {
                 config: RwLock::new(config),
                 config_path,
                 data_dir,
+                workspace_root,
                 preview_sessions: DashMap::new(),
                 performance_series: Mutex::new(VecDeque::new()),
             }),
@@ -451,9 +485,23 @@ pub struct HealthResponse {
     pub status: String,
 }
 
+/// Build identity of the running server.
+///
+/// The frontend is embedded in this binary, so a bundle-side constant would
+/// only restate what the build already knows -- and it would be wrong in
+/// development, where a proxied dev bundle may be talking to any build.
+#[derive(Serialize)]
+pub struct AboutResponse {
+    pub name: String,
+    pub version: String,
+    pub source_url: String,
+}
+
 #[derive(Serialize)]
 pub struct ErrorResponse {
     pub error: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<&'static str>,
 }
 
 #[derive(Deserialize)]
@@ -561,7 +609,7 @@ pub fn app_router(state: AppState) -> Router {
 
 pub fn app_router_with_static(state: AppState, static_dir: Option<&StdPath>) -> Router {
     let api = Router::new()
-        .route("/api/health", get(health))
+        .route("/api/about", get(about))
         .route("/api/config", get(get_config).put(update_config))
         .route("/api/performance/current", get(get_performance_current))
         .route("/api/performance/overview", get(get_performance_overview))
@@ -574,7 +622,6 @@ pub fn app_router_with_static(state: AppState, static_dir: Option<&StdPath>) -> 
         .route("/api/run", post(run_workflow_by_name))
         .route("/api/jobs/{id}", get(get_job).delete(delete_job_history))
         .route("/api/jobs/{id}/rerun", post(rerun_job))
-        .route("/api/jobs/{id}/ws", any(job_ws))
         .route("/api/nodes", get(list_nodes))
         .route("/api/models", get(list_models))
         .route("/api/models/{filename}/inspect", get(inspect_model))
@@ -588,6 +635,14 @@ pub fn app_router_with_static(state: AppState, static_dir: Option<&StdPath>) -> 
         .route("/api/workflows/{filename}", delete(delete_workflow))
         .route("/api/jellyfin/libraries", get(jellyfin_libraries))
         .route("/api/jellyfin/items", get(jellyfin_items))
+        .route("/api/files", delete(files::reject_workspace_root_delete))
+        .route("/api/files/", delete(files::reject_workspace_root_delete))
+        .route(
+            "/api/files/{*path}",
+            get(files::get_file_or_stat)
+                .put(files::upload_file)
+                .delete(files::delete_file),
+        )
         .route("/api/fs/list", get(list_fs))
         .route("/api/fs/browse", get(browse_fs))
         .route("/api/preview/extract", post(extract_frames))
@@ -597,7 +652,19 @@ pub fn app_router_with_static(state: AppState, static_dir: Option<&StdPath>) -> 
             get(serve_preview_frame),
         )
         .route("/api/{*path}", any(api_route_not_found))
-        .layer(CorsLayer::permissive())
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth::protect,
+        ))
+        .route("/api/health", get(health))
+        .route("/api/jobs/{id}/ws", any(job_ws))
+        .route("/api/auth/session", get(auth::session))
+        .route("/api/auth/login", post(auth::login))
+        .route("/api/auth/logout", post(auth::logout))
+        .route(
+            "/api/auth/password",
+            axum::routing::put(auth::set_password).delete(auth::disable),
+        )
         .with_state(state);
 
     #[cfg(not(debug_assertions))]
@@ -620,6 +687,19 @@ pub fn app_router_with_static(state: AppState, static_dir: Option<&StdPath>) -> 
 async fn health() -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok".to_string(),
+    })
+}
+
+/// Reports the build identity of this server.
+///
+/// Authenticated on purpose. `/api/health` answers without a session so a probe
+/// can confirm the port is alive; a precise build fingerprint is a different
+/// thing and belongs behind the same gate as the rest of the application.
+async fn about() -> Json<AboutResponse> {
+    Json(AboutResponse {
+        name: "Videnoa".to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        source_url: "https://github.com/ControlNet/videnoa".to_string(),
     })
 }
 
@@ -1186,12 +1266,19 @@ async fn update_config(
     State(state): State<AppState>,
     Json(payload): Json<AppConfig>,
 ) -> Result<Json<AppConfig>, AppError> {
+    payload
+        .auth
+        .validate()
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let auth = state
+        .inner
+        .auth
+        .as_ref()
+        .map_err(|_| AppError::Internal("Authentication unavailable".into()))?;
+    let mut config = state.inner.config.write().await;
     payload.save_to_path(&state.inner.config_path)?;
-
-    {
-        let mut config = state.inner.config.write().await;
-        *config = payload.clone();
-    }
+    auth.reconfigure(payload.auth.clone())?;
+    *config = payload.clone();
 
     Ok(Json(payload))
 }
@@ -1216,11 +1303,13 @@ async fn create_job(
     let workflow = parse_and_validate_workflow(&state, payload.workflow)?;
     let created = create_and_spawn_job(
         &state,
-        workflow,
-        params,
-        workflow_name,
-        WORKFLOW_SOURCE_API_JOBS.to_string(),
-        None,
+        JobSubmission {
+            workflow,
+            params,
+            workflow_name,
+            workflow_source: WORKFLOW_SOURCE_API_JOBS.to_string(),
+            rerun_of_job_id: None,
+        },
     )?;
 
     Ok((StatusCode::CREATED, Json(created)))
@@ -1228,9 +1317,28 @@ async fn create_job(
 
 async fn run_workflow_by_name(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(payload): Json<RunWorkflowRequest>,
 ) -> Result<(StatusCode, Json<CreateJobResponse>), AppError> {
+    let idempotency_key =
+        IdempotencyKey::from_headers(&headers).map_err(|_| AppError::InvalidIdempotencyKey)?;
     let workflow_name = validate_run_workflow_name(payload.workflow_name.as_deref())?;
+    let fingerprint = RequestFingerprint::for_run(&workflow_name, payload.params.as_ref())
+        .map_err(|_| AppError::Internal("failed to fingerprint run request".to_string()))?;
+    if let Some(key) = idempotency_key.as_ref() {
+        let persistence = jobs_persistence(&state)?;
+        match persistence
+            .lookup_idempotent_job(key.as_str(), fingerprint.as_str())
+            .map_err(|error| {
+                AppError::Internal(format!("failed to inspect idempotent job: {error:#}"))
+            })? {
+            IdempotentJobLookup::Missing => {}
+            IdempotentJobLookup::Replayed(existing) => {
+                return Ok((StatusCode::OK, Json(existing)));
+            }
+            IdempotentJobLookup::Conflict => return Err(AppError::IdempotencyConflict),
+        }
+    }
     let resolved = resolve_run_workflow_file(&state, &workflow_name).await?;
 
     let workflow_document = std::fs::read_to_string(&resolved.path)
@@ -1243,16 +1351,18 @@ async fn run_workflow_by_name(
         .unwrap_or(parsed_document);
 
     let workflow = parse_and_validate_workflow(&state, workflow_value)?;
-    let created = create_and_spawn_job(
-        &state,
+    let submission = JobSubmission {
         workflow,
-        payload.params,
+        params: payload.params,
         workflow_name,
-        resolved.workflow_source.to_string(),
-        None,
-    )?;
-
-    Ok((StatusCode::CREATED, Json(created)))
+        workflow_source: resolved.workflow_source.to_string(),
+        rerun_of_job_id: None,
+    };
+    match idempotency_key {
+        Some(key) => create_idempotent_job(&state, submission, &key, &fingerprint),
+        None => create_and_spawn_job(&state, submission)
+            .map(|created| (StatusCode::CREATED, Json(created))),
+    }
 }
 
 fn parse_and_validate_workflow(
@@ -1269,56 +1379,95 @@ fn parse_and_validate_workflow(
     Ok(workflow)
 }
 
-fn create_and_spawn_job(
-    state: &AppState,
+struct JobSubmission {
     workflow: PipelineGraph,
     params: Option<HashMap<String, serde_json::Value>>,
     workflow_name: String,
     workflow_source: String,
     rerun_of_job_id: Option<String>,
+}
+
+fn create_and_spawn_job(
+    state: &AppState,
+    submission: JobSubmission,
 ) -> Result<CreateJobResponse, AppError> {
+    let (job, response) = prepare_job(submission);
+    state
+        .persist_job_snapshot(&job)
+        .map_err(|error| AppError::Internal(format!("failed to persist new job: {error:#}")))?;
+    spawn_job(state, job);
+    Ok(response)
+}
+
+fn create_idempotent_job(
+    state: &AppState,
+    submission: JobSubmission,
+    key: &IdempotencyKey,
+    fingerprint: &RequestFingerprint,
+) -> Result<(StatusCode, Json<CreateJobResponse>), AppError> {
+    let persistence = jobs_persistence(state)?;
+    let (job, response) = prepare_job(submission);
+    match persistence
+        .claim_idempotent_job(key.as_str(), fingerprint.as_str(), &job)
+        .map_err(|error| {
+            AppError::Internal(format!("failed to persist idempotent job: {error:#}"))
+        })? {
+        IdempotentJobClaim::Created => {
+            spawn_job(state, job);
+            Ok((StatusCode::CREATED, Json(response)))
+        }
+        IdempotentJobClaim::Replayed(existing) => Ok((StatusCode::OK, Json(existing))),
+        IdempotentJobClaim::Conflict => Err(AppError::IdempotencyConflict),
+    }
+}
+
+fn jobs_persistence(state: &AppState) -> Result<&JobsPersistence, AppError> {
+    state
+        .inner
+        .jobs_persistence
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("durable jobs persistence is unavailable".to_string()))
+}
+
+fn prepare_job(submission: JobSubmission) -> (Job, CreateJobResponse) {
     let id = Uuid::new_v4().to_string();
     let now = Utc::now();
     let cancel_token = CancellationToken::new();
-
-    let (tx, _rx) = broadcast::channel::<JobWsEvent>(64);
-    state.inner.progress_senders.insert(id.clone(), tx);
-
     let job = Job {
         id: id.clone(),
         status: JobStatus::Queued,
-        workflow,
+        workflow: submission.workflow,
         created_at: now,
         started_at: None,
         completed_at: None,
         progress: None,
         error: None,
-        cancel_token: cancel_token.clone(),
-        params,
-        workflow_name,
-        workflow_source: workflow_source.clone(),
-        rerun_of_job_id,
+        cancel_token,
+        params: submission.params,
+        workflow_name: submission.workflow_name,
+        workflow_source: submission.workflow_source,
+        rerun_of_job_id: submission.rerun_of_job_id,
     };
+    let response = CreateJobResponse {
+        id,
+        status: JobStatus::Queued,
+        created_at: now,
+    };
+    (job, response)
+}
 
-    state
-        .persist_job_snapshot(&job)
-        .map_err(|e| AppError::Internal(format!("failed to persist new job: {e:#}")))?;
-
+fn spawn_job(state: &AppState, job: Job) {
+    let id = job.id.clone();
+    let workflow_source = job.workflow_source.clone();
+    let (sender, _receiver) = broadcast::channel::<JobWsEvent>(64);
+    state.inner.progress_senders.insert(id.clone(), sender);
     state.inner.jobs.insert(id.clone(), job);
-
     let state_clone = state.clone();
     let job_id = id.clone();
     tokio::spawn(async move {
         run_job(state_clone, job_id).await;
     });
-
     info!(job_id = %id, workflow_source, "Job created");
-
-    Ok(CreateJobResponse {
-        id,
-        status: JobStatus::Queued,
-        created_at: now,
-    })
 }
 
 struct ResolvedWorkflowFile {
@@ -1456,11 +1605,13 @@ async fn create_batch(
 
         let created = create_and_spawn_job(
             &state,
-            workflow,
-            None,
-            workflow_name.clone(),
-            WORKFLOW_SOURCE_API_BATCH.to_string(),
-            None,
+            JobSubmission {
+                workflow,
+                params: None,
+                workflow_name: workflow_name.clone(),
+                workflow_source: WORKFLOW_SOURCE_API_BATCH.to_string(),
+                rerun_of_job_id: None,
+            },
         )?;
         let id = created.id;
 
@@ -1522,11 +1673,13 @@ async fn rerun_job(
 
     let created = create_and_spawn_job(
         &state,
-        workflow,
-        params,
-        workflow_name,
-        workflow_source,
-        Some(id),
+        JobSubmission {
+            workflow,
+            params,
+            workflow_name,
+            workflow_source,
+            rerun_of_job_id: Some(id),
+        },
     )?;
 
     Ok((StatusCode::CREATED, Json(created)))
@@ -2274,6 +2427,25 @@ async fn jellyfin_items(
     Ok(Json(serde_json::to_value(items).unwrap_or_default()))
 }
 
+fn job_cancellation_watch(
+    token: CancellationToken,
+) -> (
+    tokio::sync::watch::Receiver<bool>,
+    tokio::task::JoinHandle<()>,
+) {
+    let (tx, rx) = tokio::sync::watch::channel(false);
+    let bridge = tokio::spawn(async move {
+        tokio::select! {
+            _ = token.cancelled() => {
+                let _ = tx.send(true);
+            }
+            // Completion, failure, and unwinding all drop the executor's receiver.
+            _ = tx.closed() => {}
+        }
+    });
+    (rx, bridge)
+}
+
 async fn run_job(state: AppState, job_id: String) {
     let _permit = {
         let cancel_token = {
@@ -2445,14 +2617,7 @@ async fn run_job(state: AppState, job_id: String) {
                     }
                 };
 
-                let (cancel_watch_tx, cancel_watch_rx) = tokio::sync::watch::channel(false);
-                let _cancel_bridge = tokio::spawn({
-                    let token = cancel_token.clone();
-                    async move {
-                        token.cancelled().await;
-                        let _ = cancel_watch_tx.send(true);
-                    }
-                });
+                let (cancel_watch_rx, _cancel_bridge) = job_cancellation_watch(cancel_token);
 
                 SequentialExecutor::execute_with_context_and_debug_hook(
                     &workflow,
@@ -2520,18 +2685,33 @@ pub enum AppError {
     Forbidden(String),
     NotFound(String),
     Internal(String),
+    InvalidIdempotencyKey,
+    IdempotencyConflict,
 }
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        let (status, message) = match self {
-            AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
-            AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg),
-            AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
-            AppError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
+        let (status, message, code) = match self {
+            AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg, None),
+            AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg, None),
+            AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg, None),
+            AppError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg, None),
+            AppError::InvalidIdempotencyKey => (
+                StatusCode::BAD_REQUEST,
+                "invalid idempotency key".to_string(),
+                Some("invalid_idempotency_key"),
+            ),
+            AppError::IdempotencyConflict => (
+                StatusCode::CONFLICT,
+                "idempotency key conflicts with an existing submission".to_string(),
+                Some("idempotency_conflict"),
+            ),
         };
 
-        let body = Json(ErrorResponse { error: message });
+        let body = Json(ErrorResponse {
+            error: message,
+            code,
+        });
         (status, body).into_response()
     }
 }
@@ -2715,6 +2895,31 @@ mod tests {
 
     fn test_models_dir() -> PathBuf {
         std::env::temp_dir().join("models")
+    }
+
+    #[tokio::test]
+    async fn job_cancellation_bridge_exits_when_execution_drops_its_receiver() {
+        let token = CancellationToken::new();
+        let (rx, bridge) = job_cancellation_watch(token.clone());
+        drop(rx);
+        tokio::time::timeout(Duration::from_secs(1), bridge)
+            .await
+            .expect("completed or failed jobs must not retain a cancellation bridge")
+            .expect("bridge must not panic");
+        assert!(!token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn job_cancellation_bridge_forwards_cancellation() {
+        let token = CancellationToken::new();
+        let (mut rx, bridge) = job_cancellation_watch(token.clone());
+        token.cancel();
+        tokio::time::timeout(Duration::from_secs(1), rx.changed())
+            .await
+            .expect("cancellation must reach the executor")
+            .expect("bridge must publish cancellation before closing");
+        assert!(*rx.borrow());
+        bridge.await.expect("bridge must not panic");
     }
 
     fn test_data_dir() -> PathBuf {
@@ -2983,6 +3188,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_about_endpoint_reports_build_identity() {
+        let mut app = test_router();
+        let req = Request::builder()
+            .uri("/api/about")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = send_request(&mut app, req).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["name"], "Videnoa");
+        assert_eq!(json["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(json["source_url"], "https://github.com/ControlNet/videnoa");
+    }
+
+    #[tokio::test]
     async fn test_health_endpoint() {
         let mut app = test_router();
         let req = Request::builder()
@@ -3027,6 +3252,7 @@ mod tests {
         let mut app = app_router(state);
 
         let updated = AppConfig {
+            auth: crate::config::AuthConfig::default(),
             paths: crate::config::PathsConfig {
                 models_dir: PathBuf::from("models_custom"),
                 trt_cache_dir: PathBuf::from("cache_custom"),

@@ -1120,6 +1120,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn closed_false_cancellation_watch_allows_pipeline_to_complete() {
+        let state = SharedSinkState::new();
+        let (tx, rx) = watch::channel(false);
+        drop(tx);
+
+        StreamingExecutor::new(1)
+            .execute_pipeline(
+                (0_u8..10).map(sample_frame).map(Ok),
+                Vec::new(),
+                CollectingSink::new(state.clone()),
+                Some(10),
+                rx,
+                None,
+            )
+            .await
+            .expect("a missing cancellation sender must not truncate the video");
+
+        assert_eq!(state.values(), (0_u8..10).collect::<Vec<_>>());
+    }
+
+    #[tokio::test]
     async fn test_backpressure_limits_in_flight_frames() {
         let executor = StreamingExecutor::new(1);
         let state = SharedSinkState::new();

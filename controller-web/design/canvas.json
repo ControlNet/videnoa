@@ -1,0 +1,44 @@
+{
+  "pages": [
+    { "id": "page-1", "name": "Direction A" },
+    { "id": "page-2", "name": "Alternates" }
+  ],
+  "artboards": [
+    { "file": "Main.dc.html", "page": "page-1", "title": "Tasks", "x": 0, "y": 0, "w": 1440, "h": 900 },
+    { "file": "TaskDetail.dc.html", "page": "page-1", "title": "Task inspector", "x": 1560, "y": 0, "w": 1440, "h": 900 },
+    { "file": "Workers.dc.html", "page": "page-1", "title": "Workers", "x": 3120, "y": 0, "w": 1440, "h": 900 },
+    { "file": "Settings.dc.html", "page": "page-1", "title": "Settings", "x": 0, "y": 1080, "w": 1440, "h": 900 },
+    { "file": "SignIn.dc.html", "page": "page-1", "title": "Sign in", "x": 1560, "y": 1080, "w": 1440, "h": 900 },
+    { "file": "Narrow.dc.html", "page": "page-1", "title": "Tasks at 390px", "x": 3120, "y": 1080, "w": 390, "h": 844 },
+
+    { "file": "DirectionB.dc.html", "page": "page-2", "title": "B · Split workspace", "x": 0, "y": 0, "w": 1440, "h": 900 },
+    { "file": "DirectionC.dc.html", "page": "page-2", "title": "C · Pipeline lanes", "x": 1560, "y": 0, "w": 1440, "h": 900 }
+  ],
+  "annotations": [
+    {
+      "id": "chosen",
+      "page": "page-1",
+      "x": 0,
+      "y": -200,
+      "w": 700,
+      "text": "Direction A — chosen and implemented in controller-web.\n\nRoute chrome is one 48px command row plus one 42px filter band: 90px total, down from ~350px. Counters and filters share the band; the inspector is a drawer over the table region, so the selected row stays put and the command row and pagination stay reachable. Fourteen status pills became one dot plus label in four semantic tones."
+    },
+    {
+      "id": "deviations",
+      "page": "page-1",
+      "x": 760,
+      "y": -200,
+      "w": 700,
+      "text": "Where the build differs from these boards, and why:\n\n• Workers keeps a semantic <table> rather than free cards — the capacity language (slot pips, tone edge, inline actions) carries over, but table semantics and the overflow contract are load-bearing for screen readers and the browser suite.\n• Primary actions stay named \"Add Task\" / \"Add Worker\" rather than \"New task\".\n• Filter chips include Status, Order and Rows, which these boards omitted.\n• Settings labels keep their \"… seconds\" wording, so no separate unit suffix."
+    },
+    {
+      "id": "alternates-note",
+      "page": "page-2",
+      "x": 0,
+      "y": -170,
+      "w": 700,
+      "text": "Not chosen. Kept for the record.\n\nB · Split workspace — detail always mounted beside a single-column list; horizontal overflow becomes structurally impossible, at the cost of the wide multi-column scan.\n\nC · Pipeline lanes — the fourteen statuses laid out as the pipeline they are; shows where work is stuck without reading, but is poor at 20,000 rows and arbitrary sort/filter."
+    }
+  ],
+  "launch": { "view": "canvas", "page": "page-1" }
+}

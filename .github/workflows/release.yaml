@@ -61,6 +61,7 @@ jobs:
 
           cargo_files = {
               "app": Path("crates/app/Cargo.toml"),
+              "controller": Path("crates/controller/Cargo.toml"),
               "core": Path("crates/core/Cargo.toml"),
               "desktop": Path("crates/desktop/Cargo.toml"),
           }
@@ -158,7 +159,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.98.0
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -185,37 +186,16 @@ jobs:
       - name: Verify Linux runtime compatibility
         run: bash scripts/check_linux_package_compat.sh "$RUNNER_TEMP/dist-linux64/videnoa"
 
-      - name: Create split archive (2000MB volumes)
+      - name: Reclaim build cache for archive headroom
         run: |
-          dist_root="$RUNNER_TEMP/dist-linux64"
-          bundle_dir="$dist_root/videnoa"
-          archive_path="$RUNNER_TEMP/${{ env.ARCHIVE_NAME }}"
-          if [[ ! -d "$bundle_dir" ]]; then
-            echo "Expected bundle directory not found: $bundle_dir" >&2
-            exit 1
-          fi
-          rm -f "$archive_path" "$archive_path".*
-          (
-            cd "$dist_root"
-            7z a -t7z -v2000m "$archive_path" videnoa
-          )
+          rm -rf "$HOME/.cargo/registry" "$HOME/.cargo/git" "$HOME/.npm"
+          sudo apt-get clean
+
+      - name: Create split archive (2000MB volumes)
+        run: bash scripts/package_dist_archive.sh create "$RUNNER_TEMP/dist-linux64" "$RUNNER_TEMP/${{ env.ARCHIVE_NAME }}"
 
       - name: Validate archive root layout
-        run: |
-          archive_base="$RUNNER_TEMP/${{ env.ARCHIVE_NAME }}"
-          first_volume="$archive_base.001"
-          if [[ ! -f "$first_volume" ]]; then
-            if [[ -f "$archive_base" ]]; then
-              first_volume="$archive_base"
-            else
-              echo "Missing split archive output: $archive_base(.001)" >&2
-              exit 1
-            fi
-          fi
-          if ! 7z l "$first_volume" | grep -Eq 'videnoa[/\\]'; then
-            echo "Archive root layout validation failed: missing videnoa/ root" >&2
-            exit 1
-          fi
+        run: bash scripts/package_dist_archive.sh verify "$RUNNER_TEMP/${{ env.ARCHIVE_NAME }}"
 
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
@@ -236,7 +216,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.98.0
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -320,6 +300,62 @@ jobs:
           name: videnoa-win64-${{ env.DIST_VERSION }}
           path: ${{ runner.temp }}/${{ env.ARCHIVE_NAME }}*
 
+  package-controller-linux:
+    name: Package Controller Linux release
+    needs: [version-gate, quality-gate]
+    if: needs.version-gate.outputs.publish == 'true'
+    runs-on: ubuntu-22.04
+    env:
+      ARCHIVE_NAME: videnoa-controller-v${{ needs.version-gate.outputs.version }}-linux-x86_64.tar.gz
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Rust 1.98.0
+        uses: dtolnay/rust-toolchain@1.98.0
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Package Linux Controller archive
+        run: bash scripts/package_controller.sh --target x86_64-unknown-linux-gnu --output-dir "$RUNNER_TEMP/controller-linux"
+      - name: Verify Linux Controller archive
+        run: bash scripts/package_controller.sh --verify-archive "$RUNNER_TEMP/controller-linux/${{ env.ARCHIVE_NAME }}"
+      - name: Upload Linux Controller artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: videnoa-controller-linux-${{ needs.version-gate.outputs.version }}
+          path: ${{ runner.temp }}/controller-linux/${{ env.ARCHIVE_NAME }}
+          if-no-files-found: error
+
+  package-controller-windows:
+    name: Package Controller Windows release
+    needs: [version-gate, quality-gate]
+    if: needs.version-gate.outputs.publish == 'true'
+    runs-on: windows-latest
+    env:
+      ARCHIVE_NAME: videnoa-controller-v${{ needs.version-gate.outputs.version }}-windows-x86_64.zip
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Rust 1.98.0
+        uses: dtolnay/rust-toolchain@1.98.0
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Package Windows Controller archive
+        shell: pwsh
+        run: pwsh -File scripts/package_controller.ps1 -Target x86_64-pc-windows-msvc -OutputDir "$env:RUNNER_TEMP\controller-windows"
+      - name: Verify Windows Controller archive
+        shell: pwsh
+        run: pwsh -File scripts/package_controller.ps1 -VerifyArchive (Join-Path $env:RUNNER_TEMP "controller-windows\$env:ARCHIVE_NAME")
+      - name: Upload Windows Controller artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: videnoa-controller-windows-${{ needs.version-gate.outputs.version }}
+          path: ${{ runner.temp }}/controller-windows/${{ env.ARCHIVE_NAME }}
+          if-no-files-found: error
+
   dockerhub-publish:
     name: Publish Docker image
     needs: [version-gate, quality-gate]
@@ -361,9 +397,47 @@ jobs:
             controlnet/videnoa:${{ needs.version-gate.outputs.version }}
             controlnet/videnoa:latest
 
+  controller-dockerhub-publish:
+    name: Publish Controller Docker image
+    needs: [version-gate, quality-gate]
+    if: needs.version-gate.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Preflight DockerHub credentials
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [[ -z "${DOCKERHUB_USERNAME}" ]]; then
+            echo "Missing required secret: DOCKERHUB_USERNAME" >&2
+            exit 1
+          fi
+          if [[ -z "${DOCKERHUB_TOKEN}" ]]; then
+            echo "Missing required secret: DOCKERHUB_TOKEN" >&2
+            exit 1
+          fi
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Build and push Controller Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.controller
+          push: true
+          tags: |
+            controlnet/videnoa-controller:${{ needs.version-gate.outputs.version }}
+            controlnet/videnoa-controller:latest
+
   github-release:
     name: Publish GitHub Release
-    needs: [version-gate, quality-gate, package-linux64, package-win64, dockerhub-publish]
+    needs: [version-gate, quality-gate, package-linux64, package-win64, dockerhub-publish, package-controller-linux, package-controller-windows, controller-dockerhub-publish]
     if: needs.version-gate.outputs.publish == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -388,6 +462,18 @@ jobs:
         with:
           name: videnoa-win64-${{ env.DIST_VERSION }}
           path: ${{ runner.temp }}/release/win64
+
+      - name: Download Linux Controller release artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: videnoa-controller-linux-${{ env.DIST_VERSION }}
+          path: ${{ runner.temp }}/release/controller-linux
+
+      - name: Download Windows Controller release artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: videnoa-controller-windows-${{ env.DIST_VERSION }}
+          path: ${{ runner.temp }}/release/controller-windows
 
       - name: Create and push release tag
         run: |
@@ -419,6 +505,8 @@ jobs:
           files: |
             ${{ runner.temp }}/release/linux64/videnoa-linux64-${{ env.DIST_VERSION }}.7z*
             ${{ runner.temp }}/release/win64/videnoa-win64-${{ env.DIST_VERSION }}.7z*
+            ${{ runner.temp }}/release/controller-linux/videnoa-controller-v${{ env.DIST_VERSION }}-linux-x86_64.tar.gz
+            ${{ runner.temp }}/release/controller-windows/videnoa-controller-v${{ env.DIST_VERSION }}-windows-x86_64.zip
 
   release-skipped:
     name: Release Skipped Summary
@@ -439,7 +527,7 @@ jobs:
 
   release-verify:
     name: Verify Release Outcome
-    needs: [version-gate, github-release, dockerhub-publish]
+    needs: [version-gate, github-release, dockerhub-publish, controller-dockerhub-publish]
     if: needs.version-gate.outputs.publish == 'true'
     runs-on: ubuntu-latest
     env:
@@ -457,6 +545,8 @@ jobs:
           expected_linux_single="videnoa-linux64-${RELEASE_VERSION}.7z"
           expected_win_part0="videnoa-win64-${RELEASE_VERSION}.7z.001"
           expected_win_single="videnoa-win64-${RELEASE_VERSION}.7z"
+          expected_controller_linux="videnoa-controller-v${RELEASE_VERSION}-linux-x86_64.tar.gz"
+          expected_controller_windows="videnoa-controller-v${RELEASE_VERSION}-windows-x86_64.zip"
           release_assets="$(gh release view "$RELEASE_TAG" --repo "$GH_REPO" --json assets --jq '.assets[].name')"
 
           if [[ -z "$release_assets" ]]; then
@@ -474,6 +564,16 @@ jobs:
             exit 1
           fi
 
+          if ! printf '%s\n' "$release_assets" | grep -Fxq "$expected_controller_linux"; then
+            echo "Release verification failed: missing expected Controller linux archive '$expected_controller_linux'" >&2
+            exit 1
+          fi
+
+          if ! printf '%s\n' "$release_assets" | grep -Fxq "$expected_controller_windows"; then
+            echo "Release verification failed: missing expected Controller windows archive '$expected_controller_windows'" >&2
+            exit 1
+          fi
+
           if [[ "${{ needs.dockerhub-publish.result }}" == "success" ]]; then
             docker pull controlnet/videnoa:${RELEASE_VERSION}
             docker pull controlnet/videnoa:latest
@@ -481,11 +581,14 @@ jobs:
             echo "Skipping Docker pull verification because dockerhub-publish result is '${{ needs.dockerhub-publish.result }}'."
           fi
 
+          docker pull controlnet/videnoa-controller:${RELEASE_VERSION}
+          docker pull controlnet/videnoa-controller:latest
+
           {
             echo "## Release Outcome"
             echo "- tag: \\`${RELEASE_TAG}\\`"
             echo "- publish flag: \\`${RELEASE_PUBLISH}\\`"
             echo "- result: **verified**"
             echo
-            echo "Checks passed: GitHub release exists with assets and Docker tags are pullable (version + latest)."
+            echo "Checks passed: GitHub release contains Videnoa and Controller assets, and both products' Docker tags are pullable (version + latest)."
           } >> "$GITHUB_STEP_SUMMARY"

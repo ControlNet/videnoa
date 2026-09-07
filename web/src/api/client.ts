@@ -1,3 +1,4 @@
+import { authenticatedFetch } from '../auth/transport';
 import type { NodeDescriptor } from '../stores/node-definitions-store';
 import type {
   AppConfig,
@@ -61,7 +62,7 @@ export class ApiError extends Error {
 // ─── Generic request wrapper ─────────────────────────────────────────────────
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const resp = await fetch(url, init);
+  const resp = await authenticatedFetch(url, init);
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
     let message = `HTTP ${String(resp.status)}`;
@@ -105,6 +106,25 @@ function jsonBody(data: unknown): RequestInit {
 
 export function healthCheck(): Promise<{ status: string }> {
   return request<{ status: string }>('/api/health');
+}
+
+// ─── About ───────────────────────────────────────────────────────────────────
+
+export interface AboutResponse {
+  name: string;
+  version: string;
+  source_url: string;
+}
+
+/**
+ * Build identity of the server this session is talking to.
+ *
+ * Read from the server rather than the bundle: in production the frontend is
+ * embedded in the binary so the two agree, but in development a proxied dev
+ * bundle may be talking to any build, and the question is about the server.
+ */
+export function getAbout(): Promise<AboutResponse> {
+  return request<AboutResponse>('/api/about');
 }
 
 // ─── Nodes ───────────────────────────────────────────────────────────────────
@@ -208,7 +228,7 @@ export function rerunJob(id: string): Promise<CreateJobResponse> {
 }
 
 export async function deleteJobHistory(id: string): Promise<void> {
-  const resp = await fetch(`/api/jobs/${id}`, { method: 'DELETE' });
+  const resp = await authenticatedFetch(`/api/jobs/${id}`, { method: 'DELETE' });
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
     let message = `HTTP ${String(resp.status)}`;
@@ -407,7 +427,7 @@ export function getWorkflowInterface(filename: string): Promise<WorkflowInterfac
 }
 
 export async function deleteWorkflow(filename: string): Promise<void> {
-  const resp = await fetch(`/api/workflows/${encodeURIComponent(filename)}`, {
+  const resp = await authenticatedFetch(`/api/workflows/${encodeURIComponent(filename)}`, {
     method: 'DELETE',
   });
   if (!resp.ok) {
@@ -513,7 +533,7 @@ export async function listDirectory(
 ): Promise<FsEntry[]> {
   const params = new URLSearchParams({ base });
   if (prefix) params.set('prefix', prefix);
-  const res = await fetch(`/api/fs/list?${params.toString()}`);
+  const res = await authenticatedFetch(`/api/fs/list?${params.toString()}`);
   if (!res.ok) return [];
   return res.json();
 }
@@ -521,7 +541,7 @@ export async function listDirectory(
 export async function browseDirectory(path: string = ''): Promise<FsEntry[]> {
   const params = new URLSearchParams();
   if (path) params.set('path', path);
-  const res = await fetch(`/api/fs/browse?${params.toString()}`);
+  const res = await authenticatedFetch(`/api/fs/browse?${params.toString()}`);
   if (!res.ok) return [];
   return res.json();
 }

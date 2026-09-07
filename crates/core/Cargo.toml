@@ -1,13 +1,17 @@
 [package]
 name = "videnoa-core"
 version.workspace = true
+rust-version.workspace = true
 edition = "2021"
 
 [dependencies]
+argon2 = { workspace = true }
+rand_core = { workspace = true }
 anyhow = { workspace = true }
 axum = { workspace = true }
 chrono = { workspace = true }
 dashmap = { workspace = true }
+futures-util = { workspace = true }
 mime_guess = { workspace = true }
 ndarray = { workspace = true }
 ort = { workspace = true }
@@ -16,10 +20,12 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
 petgraph = { workspace = true }
+pathdiff = "0.2"
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 tower = { workspace = true }
 tower-http = { workspace = true }
+subtle.workspace = true
 sha2 = { workspace = true }
 tracing = { workspace = true }
 tracing-appender = { workspace = true }
@@ -41,6 +47,10 @@ prost-build = "0.14"
 
 [dev-dependencies]
 tempfile = "3"
+
+[[test]]
+name = "allocator_policy"
+harness = false
 
 [[example]]
 name = "spike"

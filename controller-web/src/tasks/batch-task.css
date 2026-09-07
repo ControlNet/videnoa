@@ -1,0 +1,33 @@
+.batch-task-dialog { --dialog-measure: 64rem; }
+.batch-task-fields { display: grid; gap: var(--space-4); border: 0; padding: 0; margin: 0; min-inline-size: 0; }
+.batch-task-fields:disabled { opacity: .7; }
+.batch-field-pair { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4); }
+.batch-field-pair > * { min-inline-size: 0; }
+.batch-help, .batch-preview > p { font-size: var(--type-chip); color: var(--color-text-muted); line-height: 1.6; }
+.batch-help { margin-block-start: calc(-1 * var(--space-2)); }
+.batch-preview { display: grid; gap: var(--space-2); min-inline-size: 0; }
+.batch-preview-scroll { overflow: auto; max-block-size: 19rem; border: var(--border-subtle); border-radius: var(--radius-sm); }
+.batch-preview table { width: 100%; border-collapse: collapse; font-size: var(--type-chip); text-align: start; }
+.batch-preview th { position: sticky; top: 0; background: var(--color-background-deep); }
+.batch-preview th, .batch-preview td { padding: var(--space-3); border-block-end: var(--border-subtle); vertical-align: top; }
+.batch-preview td { overflow-wrap: anywhere; min-inline-size: 9rem; }
+.batch-preview td:first-child, .batch-preview td:nth-child(2) { font-family: var(--font-mono); width: 38%; }
+@media (max-width: 48rem) { .batch-field-pair { grid-template-columns: 1fr; } }
+
+.batch-review-summary { display: flex; flex-wrap: wrap; gap: var(--space-4); margin: 0; font-size: var(--type-chip); }
+.batch-review-summary > div { min-inline-size: 0; }
+.batch-review-summary > div:first-child { flex: 1 1 16rem; }
+.batch-review-summary dt { color: var(--color-text-muted); margin-block-end: var(--space-1); }
+.batch-review-summary dd { margin: 0; overflow-wrap: anywhere; font-family: var(--font-mono); }
+
+/*
+ * The actions column is frozen so it stays reachable once long paths overflow
+ * at narrow widths. It therefore needs an opaque background -- but it must be
+ * the background of the row it pins to, not a global tone, or it reads as a
+ * dark band bolted onto the table.
+ */
+.batch-preview .batch-row-actions { position: sticky; inset-inline-end: 0; min-inline-size: 3.5rem; inline-size: 3.5rem; text-align: center; background: var(--color-surface); border-inline-start: var(--border-subtle); }
+.batch-preview th.batch-row-actions { z-index: 1; background: var(--color-background-deep); }
+.batch-row--excluded .batch-row-actions { background: var(--color-background-deep); }
+.batch-row--excluded { background: var(--color-background-deep); color: var(--color-text-muted); }
+.batch-row--excluded .batch-row-path { text-decoration: line-through; }

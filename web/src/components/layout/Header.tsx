@@ -15,7 +15,7 @@ import {
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { NavLink } from "react-router";
-import { healthCheck, listJobs } from "@/api/client";
+import { getAbout, healthCheck, listJobs } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import {
 	DropdownMenu,
@@ -91,6 +91,7 @@ export function Header() {
 	const theme = useUIStore((s) => s.theme);
 	const setTheme = useUIStore((s) => s.setTheme);
 	const [serverStatus, setServerStatus] = useState<ServerStatus>("offline");
+	const [version, setVersion] = useState<string | null>(null);
 	const desktopWindowController = createDesktopWindowController();
 	const desktopRuntime = desktopWindowController.isDesktop;
 	const activeLocale = resolveActiveLocale(
@@ -175,6 +176,27 @@ export function Header() {
 		</DropdownMenu>
 	);
 
+	/*
+	 * Read once, not polled: a running binary cannot change its own build.
+	 * A failure stays silent -- the stamp is identification, and losing it must
+	 * not put an error in the header of a working session.
+	 */
+	useEffect(() => {
+		let disposed = false;
+
+		void getAbout()
+			.then((about) => {
+				if (!disposed) setVersion(about.version);
+			})
+			.catch(() => {
+				if (!disposed) setVersion(null);
+			});
+
+		return () => {
+			disposed = true;
+		};
+	}, []);
+
 	useEffect(() => {
 		let disposed = false;
 
@@ -239,6 +261,14 @@ export function Header() {
 				>
 					Videnoa
 				</a>
+				{version === null ? null : (
+					<span
+						className="text-xs text-muted-foreground whitespace-nowrap"
+						style={{ fontFamily: "'Geist Mono', monospace" }}
+					>
+						v{version}
+					</span>
+				)}
 			</div>
 
 			<nav className="flex items-center gap-1">

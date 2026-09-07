@@ -1,0 +1,214 @@
+@import "./ui/primitives.css";
+
+/*
+ * Videnoa Controller design tokens.
+ *
+ * Identity anchors are unchanged: Manrope + Geist Mono, the graphite luminance
+ * ramp, the violet accent and the single green live signal. What this ramp
+ * changes is density -- the surface is an operations console, so route chrome
+ * is measured in rows, not in display type.
+ */
+
+:root {
+  color-scheme: light dark;
+  font-family: Manrope, "Avenir Next", "Segoe UI", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+
+  /* Surface ramp */
+  --color-background: oklch(0.97 0.008 260);
+  --color-background-deep: oklch(0.94 0.012 260);
+  --color-surface: oklch(0.995 0.003 260);
+  --color-surface-elevated: oklch(1 0 0);
+  --color-surface-hover: oklch(0.93 0.014 260);
+  --color-text: oklch(0.18 0.02 260);
+  --color-text-muted: oklch(0.45 0.018 260);
+  --color-text-quiet: oklch(0.48 0.014 260);
+  --color-border: oklch(0.86 0.012 260);
+  --color-border-subtle: oklch(0.91 0.008 260);
+  --color-accent: oklch(0.51 0.2 292);
+  --color-accent-strong: oklch(0.46 0.21 292);
+  --color-accent-wash: oklch(0.92 0.035 292);
+  --color-accent-contrast: oklch(0.99 0.005 292);
+  --color-healthy: oklch(0.44 0.15 145);
+  --color-healthy-wash: oklch(0.94 0.025 145);
+  --color-danger: oklch(0.48 0.18 25);
+  --color-danger-wash: oklch(0.94 0.025 25);
+  --color-overlay: oklch(0.4 0.02 260 / 0.28);
+  --shadow-drawer: -24px 0 48px oklch(0.5 0.02 260 / 0.14);
+  --shadow-dialog: 0 24px 56px oklch(0.4 0.02 260 / 0.2);
+
+  /*
+   * Semantic tones. Every status in the product resolves to exactly one of
+   * these four, so a dense table reads as four signals instead of fourteen.
+   */
+  --tone-quiet: var(--color-text-quiet);
+  --tone-active: var(--color-accent);
+  --tone-positive: var(--color-healthy);
+  --tone-negative: var(--color-danger);
+
+  /* Type ramp: operational, not editorial */
+  --type-page: 0.9375rem;
+  --type-section: 0.8125rem;
+  --type-body: 0.8125rem;
+  --type-cell: 0.78125rem;
+  --type-ui: 0.75rem;
+  --type-chip: 0.6875rem;
+  --type-micro: 0.59375rem;
+  --type-metric: 1.0625rem;
+  --type-login-title: 1.25rem;
+
+  --font-mono: "Geist Mono", "SFMono-Regular", Consolas, "Noto Sans Mono CJK SC",
+    "Noto Sans Mono CJK KR", monospace;
+
+  /* Spacing */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+
+  /* Structural measures */
+  --rail-width: 12.5rem;
+  --row-command: 3rem;
+  --row-filter: 2.625rem;
+  --row-foot: 2.5rem;
+  --control-md: 1.875rem;
+  --control-sm: 1.625rem;
+  --control-field: 2rem;
+  --table-head: 1.875rem;
+  --table-row: 2.125rem;
+  --drawer-width: 35rem;
+  --measure-dialog: 42rem;
+  --gutter: 1.125rem;
+
+  --radius-sm: 0.3125rem;
+  --radius-md: 0.375rem;
+  --radius-lg: 0.5rem;
+  --radius-xl: 0.75rem;
+  --border-default: 1px solid var(--color-border);
+  --border-subtle: 1px solid var(--color-border-subtle);
+
+  --motion-fast: 150ms cubic-bezier(0.16, 1, 0.3, 1);
+  --motion-enter: 240ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-inline-size: 20rem;
+  background: var(--color-background);
+}
+
+body {
+  margin: 0;
+  min-block-size: 100dvb;
+  overflow: hidden;
+  background: var(--color-background);
+  color: var(--color-text);
+  font-size: var(--type-body);
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button,
+a {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+h1,
+h2,
+h3,
+p,
+dl,
+dd,
+figure {
+  margin: 0;
+}
+
+.mono-cell,
+.numeric-cell,
+.date-cell,
+.copy-value,
+.technical-label {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Visually hidden but reachable by assistive technology. */
+.sr-only {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .button:active:not(:disabled) {
+    transform: none;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-background: oklch(0.12 0.022 260);
+    --color-background-deep: oklch(0.095 0.025 260);
+    --color-surface: oklch(0.155 0.024 260);
+    --color-surface-elevated: oklch(0.19 0.025 260);
+    --color-surface-hover: oklch(0.23 0.025 260);
+    --color-text: oklch(0.96 0.008 260);
+    --color-text-muted: oklch(0.72 0.016 260);
+    --color-text-quiet: oklch(0.61 0.016 260);
+    --color-border: oklch(0.29 0.02 260);
+    --color-border-subtle: oklch(0.23 0.018 260);
+    --color-accent: oklch(0.66 0.19 292);
+    --color-accent-strong: oklch(0.72 0.17 292);
+    --color-accent-wash: oklch(0.22 0.055 292);
+    --color-accent-contrast: oklch(0.14 0.03 292);
+    --color-healthy: oklch(0.72 0.16 145);
+    --color-healthy-wash: oklch(0.2 0.04 145);
+    --color-danger: oklch(0.7 0.17 25);
+    --color-danger-wash: oklch(0.2 0.04 25);
+    --color-overlay: oklch(0.08 0.02 260 / 0.55);
+    --shadow-drawer: -24px 0 48px oklch(0.08 0.02 260 / 0.55);
+    --shadow-dialog: 0 24px 56px oklch(0.06 0.02 260 / 0.6);
+  }
+}

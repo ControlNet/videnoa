@@ -1,0 +1,230 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&family=Manrope:wght@400;500;600;700&display=swap">
+  <style>
+    :root {
+      --bg: oklch(0.12 0.022 260);
+      --bg-deep: oklch(0.095 0.025 260);
+      --surface: oklch(0.155 0.024 260);
+      --elevated: oklch(0.19 0.025 260);
+      --text: oklch(0.96 0.008 260);
+      --muted: oklch(0.72 0.016 260);
+      --quiet: oklch(0.61 0.016 260);
+      --border: oklch(0.29 0.02 260);
+      --border-subtle: oklch(0.23 0.018 260);
+      --accent: oklch(0.66 0.19 292);
+      --accent-wash: oklch(0.22 0.055 292);
+      --healthy: oklch(0.72 0.16 145);
+      --healthy-wash: oklch(0.2 0.04 145);
+      --mono: "Geist Mono", "SFMono-Regular", Consolas, monospace;
+    }
+    body {
+      margin: 0;
+      font-family: Manrope, "Avenir Next", "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: var(--accent); }
+    a:hover { color: oklch(0.72 0.17 292); }
+  </style>
+</helmet>
+
+<div style="display: grid; grid-template-columns: 200px minmax(0, 1fr); block-size: 900px; background: var(--bg);">
+
+  <div style="display: flex; flex-direction: column; gap: 4px; padding: 14px 10px; background: var(--surface); border-inline-end: 1px solid var(--border-subtle);">
+    <div style="display: flex; align-items: center; gap: 9px; padding: 4px 8px 14px;">
+      <div style="display: grid; place-items: center; inline-size: 24px; block-size: 24px; border-radius: 6px; background: var(--accent-wash); color: var(--accent); font-family: var(--mono); font-size: 12px; font-weight: 600;">V</div>
+      <div style="display: flex; flex-direction: column; gap: 1px;">
+        <span style="font-size: 13px; font-weight: 600; letter-spacing: -0.01em;">Videnoa</span>
+        <span style="font-family: var(--mono); font-size: 9px; font-weight: 500; letter-spacing: 0.09em; color: var(--quiet);">CONTROLLER</span>
+      </div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 9px; block-size: 32px; padding: 0 8px; border-radius: 6px; color: var(--muted); font-size: 13px; font-weight: 500;">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 6h.01M8 6h13M3 12h.01M8 12h13M3 18h.01M8 18h13"/></svg>
+      <span>Tasks</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 9px; block-size: 32px; padding: 0 8px; border-radius: 6px; color: var(--muted); font-size: 13px; font-weight: 500;">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><path d="M7 7.5h.01M7 17h.01"/></svg>
+      <span>Workers</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 9px; block-size: 32px; padding: 0 8px; border-radius: 6px; background: var(--accent-wash); color: var(--accent); font-size: 13px; font-weight: 600;">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1v.3a2 2 0 1 1-4 0v-.2a1.6 1.6 0 0 0-2.8-1.1l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.6 1.6 0 0 0 3.5 15H3a2 2 0 1 1 0-4h.2A1.6 1.6 0 0 0 4.3 8.2l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 2.7-1.1V4a2 2 0 1 1 4 0v.2a1.6 1.6 0 0 0 2.8 1.1l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0 1.1 2.7h.3a2 2 0 1 1 0 4h-.2a1.6 1.6 0 0 0-1.2 1z"/></svg>
+      <span>Settings</span>
+    </div>
+    <div style="flex-grow: 1;"></div>
+    <div style="display: flex; align-items: center; gap: 8px; padding: 0 8px; block-size: 28px;">
+      <span style="inline-size: 6px; block-size: 6px; border-radius: 50%; background: var(--healthy); box-shadow: 0 0 0 3px oklch(0.72 0.16 145 / 0.14);"></span>
+      <span style="font-size: 11px; font-weight: 500; color: var(--muted);">Connected</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 9px; block-size: 30px; padding: 0 8px; border-radius: 6px; color: var(--quiet); font-size: 12px; font-weight: 500;">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>
+      <span>Sign out</span>
+    </div>
+  </div>
+
+  <div style="display: flex; flex-direction: column; min-inline-size: 0;">
+
+    <div style="display: flex; align-items: center; gap: 10px; block-size: 48px; padding: 0 18px; border-block-end: 1px solid var(--border-subtle);">
+      <span style="font-size: 15px; font-weight: 600; letter-spacing: -0.01em;">Settings</span>
+      <span style="font-family: var(--mono); font-size: 11px; color: var(--quiet);">v7 · /var/lib/videnoa/controller.toml</span>
+      <div style="flex-grow: 1;"></div>
+      <div style="display: flex; align-items: center; gap: 8px; block-size: 30px; padding: 0 11px; border: 1px solid oklch(0.72 0.16 145 / 0.4); border-radius: 6px; background: var(--healthy-wash);">
+        <span style="inline-size: 6px; block-size: 6px; border-radius: 50%; background: var(--healthy);"></span>
+        <span style="font-size: 11.5px; font-weight: 600; color: var(--healthy);">Scheduler running</span>
+        <span style="inline-size: 1px; block-size: 14px; background: oklch(0.72 0.16 145 / 0.3);"></span>
+        <span style="font-size: 11.5px; font-weight: 600; color: var(--muted);">Pause</span>
+      </div>
+    </div>
+
+    <div style="display: grid; grid-template-columns: 168px minmax(0, 1fr); gap: 0; flex-grow: 1; min-block-size: 0;">
+
+      <!-- section nav replaces one long uninterrupted scroll -->
+      <div style="display: flex; flex-direction: column; gap: 1px; padding: 14px 10px; border-inline-end: 1px solid var(--border-subtle);">
+        <sc-for list="{{sections}}" as="section" hint-placeholder-count="6">
+          <div style="display: flex; align-items: center; block-size: 28px; padding: 0 10px; border-radius: 5px; background: {{section.bg}}; color: {{section.color}}; font-size: 12px; font-weight: {{section.weight}};">{{section.label}}</div>
+        </sc-for>
+      </div>
+
+      <div style="display: flex; flex-direction: column; min-inline-size: 0;">
+        <div style="display: flex; flex-direction: column; gap: 26px; padding: 20px 22px; flex-grow: 1; overflow: hidden;">
+
+          <sc-for list="{{groups}}" as="group" hint-placeholder-count="3">
+            <div style="display: flex; flex-direction: column; gap: 12px;">
+              <div style="display: flex; align-items: baseline; gap: 10px; padding-block-end: 8px; border-block-end: 1px solid var(--border-subtle);">
+                <span style="font-size: 13px; font-weight: 600;">{{group.title}}</span>
+                <span style="font-size: 11.5px; color: var(--quiet);">{{group.hint}}</span>
+              </div>
+              <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px 16px;">
+                <sc-for list="{{group.fields}}" as="field" hint-placeholder-count="4">
+                  <div style="display: flex; flex-direction: column; gap: 5px; min-inline-size: 0;">
+                    <span style="font-size: 11px; font-weight: 600; color: var(--muted);">{{field.label}}</span>
+                    <div style="display: flex; align-items: center; gap: 8px; block-size: 32px; padding: 0 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-deep);">
+                      <span style="font-family: var(--mono); font-size: 12.5px; color: var(--text); flex-grow: 1;">{{field.value}}</span>
+                      <span style="font-family: var(--mono); font-size: 10px; color: var(--quiet);">{{field.unit}}</span>
+                    </div>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+          </sc-for>
+
+          <div style="display: flex; flex-direction: column; gap: 12px;">
+            <div style="display: flex; align-items: baseline; gap: 10px; padding-block-end: 8px; border-block-end: 1px solid var(--border-subtle);">
+              <span style="font-size: 13px; font-weight: 600;">Authentication policy</span>
+              <span style="font-size: 11.5px; color: var(--quiet);">Cookie transport and session lifetimes.</span>
+            </div>
+            <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px 16px; align-items: end;">
+              <div style="display: flex; flex-direction: column; gap: 5px;">
+                <span style="font-size: 11px; font-weight: 600; color: var(--muted);">Absolute session</span>
+                <div style="display: flex; align-items: center; gap: 8px; block-size: 32px; padding: 0 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-deep);"><span style="font-family: var(--mono); font-size: 12.5px; flex-grow: 1;">86400</span><span style="font-family: var(--mono); font-size: 10px; color: var(--quiet);">s</span></div>
+              </div>
+              <div style="display: flex; flex-direction: column; gap: 5px;">
+                <span style="font-size: 11px; font-weight: 600; color: var(--muted);">Idle session</span>
+                <div style="display: flex; align-items: center; gap: 8px; block-size: 32px; padding: 0 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-deep);"><span style="font-family: var(--mono); font-size: 12.5px; flex-grow: 1;">3600</span><span style="font-family: var(--mono); font-size: 10px; color: var(--quiet);">s</span></div>
+              </div>
+              <div style="display: flex; align-items: center; gap: 9px; block-size: 32px; grid-column: span 2;">
+                <span style="display: grid; place-items: center; inline-size: 16px; block-size: 16px; border-radius: 4px; background: var(--accent); color: oklch(0.14 0.03 292);"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"><path d="m5 12 5 5L20 7"/></svg></span>
+                <span style="font-size: 12.5px; font-weight: 500;">Require secure session cookie</span>
+                <span style="font-family: var(--mono); font-size: 10.5px; color: var(--quiet);">HTTPS only</span>
+              </div>
+            </div>
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 10px;">
+            <div style="display: flex; align-items: baseline; gap: 10px; padding-block-end: 8px; border-block-end: 1px solid var(--border-subtle);">
+              <span style="font-size: 13px; font-weight: 600;">Paths</span>
+              <span style="font-size: 11.5px; color: var(--quiet);">Read-only operational context.</span>
+            </div>
+            <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px;">
+              <sc-for list="{{paths}}" as="path" hint-placeholder-count="3">
+                <div style="display: flex; flex-direction: column; gap: 3px; min-inline-size: 0;">
+                  <span style="font-family: var(--mono); font-size: 9px; letter-spacing: 0.08em; color: var(--quiet);">{{path.label}}</span>
+                  <span style="font-family: var(--mono); font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{path.value}}</span>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- the save bar is pinned, so a long form never hides its own commit -->
+        <div style="display: flex; align-items: center; gap: 12px; block-size: 52px; padding: 0 22px; border-block-start: 1px solid var(--border); background: var(--bg-deep);">
+          <span style="display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 500; color: var(--muted);">
+            <span style="inline-size: 6px; block-size: 6px; border-radius: 50%; background: var(--accent);"></span>
+            2 unsaved changes
+          </span>
+          <span style="font-family: var(--mono); font-size: 11px; color: var(--quiet);">scheduler.prefetch_per_worker · timeouts.transfer</span>
+          <div style="flex-grow: 1;"></div>
+          <div style="block-size: 30px; padding: 0 13px; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); font-size: 12px; font-weight: 600; line-height: 28px;">Discard</div>
+          <div style="block-size: 30px; padding: 0 15px; border-radius: 6px; background: var(--accent); color: oklch(0.14 0.03 292); font-size: 12px; font-weight: 700; line-height: 30px;">Save and apply</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+</x-dc>
+<script data-dc-script>
+class Component extends DCLogic {
+  renderVals() {
+    const accent = 'oklch(0.66 0.19 292)';
+    const quiet = 'oklch(0.61 0.016 260)';
+    const muted = 'oklch(0.72 0.016 260)';
+    const names = ['Server binding', 'Authentication', 'Scheduler', 'Transfers', 'Timeouts', 'Retries', 'Paths'];
+    return {
+      sections: names.map((label, index) => ({
+        label,
+        bg: index === 2 ? 'oklch(0.22 0.055 292)' : 'transparent',
+        color: index === 2 ? accent : muted,
+        weight: index === 2 ? '600' : '500',
+      })),
+      groups: [
+        {
+          title: 'Server binding',
+          hint: 'Applied after the new address accepts connections.',
+          fields: [
+            { label: 'Host', value: '127.0.0.1', unit: '' },
+            { label: 'Port', value: '8080', unit: '' },
+          ],
+        },
+        {
+          title: 'Scheduler capacity',
+          hint: 'Reservation, prefetch, compute starts, and transfer concurrency.',
+          fields: [
+            { label: 'Default compute slots', value: '4', unit: '' },
+            { label: 'Prefetch per worker', value: '2', unit: '' },
+            { label: 'Concurrent uploads', value: '2', unit: '' },
+            { label: 'Concurrent downloads', value: '3', unit: '' },
+          ],
+        },
+        {
+          title: 'Timeouts and retries',
+          hint: 'Runtime ceilings; each value is limited to seven days.',
+          fields: [
+            { label: 'Health timeout', value: '15', unit: 's' },
+            { label: 'Poll timeout', value: '5', unit: 's' },
+            { label: 'Transfer timeout', value: '1800', unit: 's' },
+            { label: 'Max attempts', value: '3', unit: '' },
+          ],
+        },
+      ],
+      paths: [
+        { label: 'WORKSPACE', value: '/srv/videnoa/workspace' },
+        { label: 'DATA ROOT', value: '/var/lib/videnoa' },
+        { label: 'CONFIG FILE', value: '/var/lib/videnoa/controller.toml' },
+      ],
+    };
+  }
+}
+</script>
+</body>
+</html>

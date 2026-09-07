@@ -1,12 +1,13 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { healthCheck, listJobs } from '@/api/client'
+import { getAbout, healthCheck, listJobs } from '@/api/client'
 import { i18n, initializeI18n } from '@/i18n'
 import { LOCALE_STORAGE_KEY, SUPPORTED_LOCALES } from '@/i18n/locales/types'
 import { Header } from '../Header'
 
 vi.mock('@/api/client', () => ({
+  getAbout: vi.fn(),
   healthCheck: vi.fn(),
   listJobs: vi.fn(),
 }))
@@ -18,6 +19,11 @@ beforeEach(async () => {
   initializeI18n()
   await i18n.changeLanguage('en')
   window.localStorage.removeItem(LOCALE_STORAGE_KEY)
+  vi.mocked(getAbout).mockResolvedValue({
+    name: 'Videnoa',
+    version: '9.9.9-test',
+    source_url: 'https://github.com/ControlNet/videnoa',
+  })
   vi.mocked(healthCheck).mockResolvedValue({ status: 'ok' })
   vi.mocked(listJobs).mockResolvedValue([])
   delete (globalThis as { __TAURI__?: unknown }).__TAURI__
@@ -47,6 +53,8 @@ describe('Header desktop runtime gating', () => {
 		)
 		expect(projectLink).toHaveAttribute('target', '_blank')
 		expect(projectLink).toHaveAttribute('rel', 'noopener noreferrer')
+		// The version identifies the server, so it is read from it, not from the bundle.
+		expect(await screen.findByText('v9.9.9-test')).toBeInTheDocument()
 
 		expect(screen.getByRole('banner')).toHaveAttribute('data-desktop-runtime', 'false')
 		expect(await screen.findByText('Editor')).toBeInTheDocument()

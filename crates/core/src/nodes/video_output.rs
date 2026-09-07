@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::thread::{self, JoinHandle};
 
 use anyhow::{bail, Context, Result};
@@ -47,6 +47,87 @@ pub struct EncoderConfig {
 }
 
 impl EncoderConfig {
+    fn is_nvenc(&self) -> bool {
+        self.codec == "hevc_nvenc" || self.codec == "h264_nvenc"
+    }
+
+    fn nvenc_profile(&self) -> &'static str {
+        if self.codec == "h264_nvenc" {
+            "high"
+        } else if self.pixel_format.contains("10") || self.pixel_format == "p010le" {
+            "main10"
+        } else {
+            "main"
+        }
+    }
+
+    fn nvenc_probe_error(&self, details: &str) -> anyhow::Error {
+        anyhow::anyhow!(
+            "NVENC probe failed for requested codec '{}'; software fallback was not applied: {}",
+            self.codec,
+            details.trim()
+        )
+    }
+
+    fn probe_nvenc(&self) -> Result<()> {
+        if !self.is_nvenc() {
+            return Ok(());
+        }
+
+        let mut command = crate::runtime::command_for("ffmpeg");
+        self.run_nvenc_probe(&mut command)
+    }
+
+    fn run_nvenc_probe(&self, command: &mut Command) -> Result<()> {
+        let cq = self.cq_value.unwrap_or(20).to_string();
+        let output = command
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=size=64x64:rate=1:color=black",
+                "-frames:v",
+                "1",
+                "-c:v",
+                &self.codec,
+                "-rc",
+                "vbr",
+                "-cq",
+                &cq,
+                "-preset",
+                self.nvenc_preset.as_deref().unwrap_or("p4"),
+                "-profile:v",
+                self.nvenc_profile(),
+                "-b:v",
+                "0",
+                "-pix_fmt",
+                &self.pixel_format,
+                "-f",
+                "null",
+                "-",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .map_err(|error| {
+                self.nvenc_probe_error(&format!("failed to execute FFmpeg probe: {error}"))
+            })?;
+
+        if output.status.success() {
+            return Ok(());
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(self.nvenc_probe_error(&format!(
+            "FFmpeg exited with {}: {}",
+            output.status,
+            stderr.trim()
+        )))
+    }
+
     pub fn build_ffmpeg_args(&self) -> Vec<String> {
         let input_pix_fmt = if self.bit_depth > 8 {
             "rgb48le"
@@ -63,11 +144,11 @@ impl EncoderConfig {
         // conversion with dithering.
         let vf_filter = format!(
             "format={pf},setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709,\
-             zscale=range=limited:dither=error_diffusion",
+             zscale=range=limited:dither=error_diffusion,setsar=1",
             pf = self.pixel_format,
         );
 
-        let is_nvenc = self.codec.contains("nvenc");
+        let is_nvenc = self.is_nvenc();
 
         let mut args: Vec<String> = vec![
             "-nostdin".into(),
@@ -105,7 +186,7 @@ impl EncoderConfig {
                 "-preset".into(),
                 preset.into(),
                 "-profile:v".into(),
-                "main10".into(),
+                self.nvenc_profile().into(),
                 "-b:v".into(),
                 "0".into(),
             ]);
@@ -131,12 +212,25 @@ impl EncoderConfig {
             "1".into(),
             "-map_chapters".into(),
             "1".into(),
+            "-disposition:v:0".into(),
+            "default".into(),
             "-copy_unknown".into(),
         ]);
 
         if self.codec == "libx265" && self.pixel_format.contains("10") {
             args.push("-x265-params".into());
             args.push("profile=main10".into());
+        }
+
+        if self
+            .output_path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| {
+                extension.eq_ignore_ascii_case("mkv") || extension.eq_ignore_ascii_case("mka")
+            })
+        {
+            args.extend(["-default_mode".into(), "passthrough".into()]);
         }
 
         args.push(self.output_path.to_string_lossy().into_owned());
@@ -162,6 +256,7 @@ pub struct VideoEncoder {
 
 impl VideoEncoder {
     pub fn new(config: &EncoderConfig) -> Result<Self> {
+        config.probe_nvenc()?;
         let args = config.build_ffmpeg_args();
         let frame_size = config.frame_size();
 
@@ -415,6 +510,24 @@ impl Node for VideoOutputNode {
                 default_value: Some(serde_json::json!(18)),
             },
             PortDefinition {
+                name: "cq_value".to_string(),
+                port_type: PortType::Int,
+                required: false,
+                default_value: Some(serde_json::json!(20)),
+            },
+            PortDefinition {
+                name: "nvenc_preset".to_string(),
+                port_type: PortType::Str,
+                required: false,
+                default_value: Some(serde_json::json!("p4")),
+            },
+            PortDefinition {
+                name: "x265_preset".to_string(),
+                port_type: PortType::Str,
+                required: false,
+                default_value: Some(serde_json::json!("medium")),
+            },
+            PortDefinition {
                 name: "pixel_format".to_string(),
                 port_type: PortType::Str,
                 required: false,
@@ -566,9 +679,25 @@ pub fn encoder_config_from_inputs(
         _ => 18,
     };
 
-    let pixel_format = match inputs.get("pixel_format") {
-        Some(PortData::Str(s)) => s.clone(),
-        _ => "yuv420p10le".to_string(),
+    let requested_pixel_format = match inputs.get("pixel_format") {
+        Some(PortData::Str(s)) => s.as_str(),
+        _ => default_pixel_format_for_codec(&codec),
+    };
+    let pixel_format = compatible_pixel_format(&codec, requested_pixel_format).to_string();
+
+    let cq_value = match inputs.get("cq_value") {
+        Some(PortData::Int(value)) => Some(*value),
+        _ => None,
+    };
+
+    let nvenc_preset = match inputs.get("nvenc_preset") {
+        Some(PortData::Str(value)) => Some(value.clone()),
+        _ => None,
+    };
+
+    let x265_preset = match inputs.get("x265_preset") {
+        Some(PortData::Str(value)) => Some(value.clone()),
+        _ => None,
     };
 
     Ok(EncoderConfig {
@@ -581,10 +710,32 @@ pub fn encoder_config_from_inputs(
         height,
         fps,
         bit_depth,
-        cq_value: None,
-        nvenc_preset: None,
-        x265_preset: None,
+        cq_value,
+        nvenc_preset,
+        x265_preset,
     })
+}
+
+pub(crate) fn default_pixel_format_for_codec(codec: &str) -> &'static str {
+    match codec {
+        "libx264" | "h264_nvenc" => "yuv420p",
+        "hevc_nvenc" => "p010le",
+        _ => "yuv420p10le",
+    }
+}
+
+pub(crate) fn compatible_pixel_format<'a>(codec: &str, requested: &'a str) -> &'a str {
+    let compatible = match codec {
+        "libx265" => matches!(requested, "yuv420p10le" | "yuv420p"),
+        "hevc_nvenc" => matches!(requested, "p010le" | "yuv420p"),
+        "libx264" | "h264_nvenc" => requested == "yuv420p",
+        _ => true,
+    };
+    if compatible {
+        requested
+    } else {
+        default_pixel_format_for_codec(codec)
+    }
 }
 
 /// Run `mkvpropedit --add-track-statistics-tags` on an MKV output file to
@@ -881,6 +1032,47 @@ mod tests {
     }
 
     #[test]
+    fn matroska_output_preserves_source_default_track_flags() {
+        // Given: an MKV output whose source can contain multiple default tracks.
+        let config = default_config();
+
+        // When: FFmpeg arguments are built for the final mux.
+        let args = config.build_ffmpeg_args();
+
+        // Then: the Matroska muxer uses source dispositions without re-inferring them.
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "-default_mode" && w[1] == "passthrough"));
+    }
+
+    #[test]
+    fn raw_video_output_is_marked_as_the_default_video_track() {
+        // Given: the generated rawvideo input has no source disposition metadata.
+        let config = default_config();
+
+        // When: FFmpeg arguments are built for the final mux.
+        let args = config.build_ffmpeg_args();
+
+        // Then: the single generated video stream remains the default video track.
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "-disposition:v:0" && w[1] == "default"));
+    }
+
+    #[test]
+    fn video_filter_marks_ai_output_as_square_pixel() {
+        // Given: raw RGB frames, which do not carry a sample aspect ratio.
+        let config = default_config();
+
+        // When: FFmpeg arguments are built for encoding.
+        let args = config.build_ffmpeg_args();
+
+        // Then: the encoded video explicitly carries square-pixel display metadata.
+        let vf_idx = args.iter().position(|arg| arg == "-vf").unwrap();
+        assert!(args[vf_idx + 1].contains("setsar=1"));
+    }
+
+    #[test]
     fn test_node_type() {
         let node = VideoOutputNode::new();
         assert_eq!(node.node_type(), "video_output");
@@ -891,7 +1083,7 @@ mod tests {
         let node = VideoOutputNode::new();
         let ports = node.input_ports();
 
-        assert_eq!(ports.len(), 8);
+        assert_eq!(ports.len(), 11);
 
         let names: Vec<&str> = ports.iter().map(|p| p.name.as_str()).collect();
         assert!(names.contains(&"source_path"));
@@ -899,6 +1091,9 @@ mod tests {
         assert!(names.contains(&"codec"));
         assert!(names.contains(&"crf"));
         assert!(names.contains(&"pixel_format"));
+        assert!(names.contains(&"cq_value"));
+        assert!(names.contains(&"nvenc_preset"));
+        assert!(names.contains(&"x265_preset"));
         assert!(names.contains(&"width"));
         assert!(names.contains(&"height"));
         assert!(names.contains(&"fps"));
@@ -916,6 +1111,9 @@ mod tests {
         assert!(!required.contains(&"codec"));
         assert!(!required.contains(&"crf"));
         assert!(!required.contains(&"pixel_format"));
+        assert!(!required.contains(&"cq_value"));
+        assert!(!required.contains(&"nvenc_preset"));
+        assert!(!required.contains(&"x265_preset"));
     }
 
     #[test]
@@ -1046,12 +1244,18 @@ mod tests {
             "pixel_format".to_string(),
             PortData::Str("yuv420p".to_string()),
         );
+        inputs.insert("cq_value".to_string(), PortData::Int(17));
+        inputs.insert("nvenc_preset".to_string(), PortData::Str("p6".to_string()));
+        inputs.insert("x265_preset".to_string(), PortData::Str("slow".to_string()));
 
         let config = encoder_config_from_inputs(&inputs, 10).unwrap();
         assert_eq!(config.codec, "libx264");
         assert_eq!(config.crf, 22);
         assert_eq!(config.pixel_format, "yuv420p");
         assert_eq!(config.bit_depth, 10);
+        assert_eq!(config.cq_value, Some(17));
+        assert_eq!(config.nvenc_preset.as_deref(), Some("p6"));
+        assert_eq!(config.x265_preset.as_deref(), Some("slow"));
     }
 
     #[test]
@@ -1070,6 +1274,98 @@ mod tests {
             .windows(2)
             .any(|w| w[0] == "-profile:v" && w[1] == "main10"));
         assert!(args.windows(2).any(|w| w[0] == "-b:v" && w[1] == "0"));
+    }
+
+    #[test]
+    fn test_ffmpeg_args_h264_nvenc_uses_high_profile() {
+        let mut config = default_config();
+        config.codec = "h264_nvenc".to_string();
+        config.pixel_format = "yuv420p".to_string();
+        let args = config.build_ffmpeg_args();
+
+        assert!(args
+            .windows(2)
+            .any(|window| window[0] == "-profile:v" && window[1] == "high"));
+        assert!(!args.contains(&"main10".to_string()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nvenc_unavailable_reports_requested_codec_and_ffmpeg_cause() {
+        // Given: an FFmpeg probe process that reports unsupported NVENC hardware.
+        let mut config = default_config();
+        config.codec = "hevc_nvenc".to_string();
+        config.pixel_format = "p010le".to_string();
+        let mut command = std::process::Command::new("sh");
+        command.args([
+            "-c",
+            "printf 'OpenEncodeSessionEx failed: unsupported device (2)\\nNo capable devices found\\n' >&2; exit 7",
+        ]);
+
+        // When: the actual probe execution returns a non-zero status.
+        let error = config
+            .run_nvenc_probe(&mut command)
+            .expect_err("unsupported NVENC hardware should fail encoder creation");
+        let message = error.to_string();
+
+        // Then: the requested codec, exit status, and original FFmpeg cause remain visible.
+        assert!(message.contains("hevc_nvenc"));
+        assert!(message.contains("exit status: 7"));
+        assert!(message.contains("unsupported device (2)"));
+        assert!(message.contains("No capable devices found"));
+        assert!(message.contains("software fallback was not applied"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unrelated_ffmpeg_failure_remains_visible() {
+        // Given: an FFmpeg probe process that rejects an invalid encoder option.
+        let mut config = default_config();
+        config.codec = "hevc_nvenc".to_string();
+        let mut command = std::process::Command::new("sh");
+        command.args([
+            "-c",
+            "printf \"Undefined constant or missing '(' in 'invalid-preset'\\n\" >&2; exit 8",
+        ]);
+
+        // When: the actual probe execution returns a non-zero status.
+        let error = config
+            .run_nvenc_probe(&mut command)
+            .expect_err("invalid encoder options should fail encoder creation");
+        let message = error.to_string();
+
+        // Then: configuration errors remain visible instead of being hidden.
+        assert!(message.contains("exit status: 8"));
+        assert!(message.contains("invalid-preset"));
+        assert!(message.contains("software fallback was not applied"));
+    }
+
+    #[test]
+    fn nvenc_probe_execution_failure_reports_requested_codec() {
+        // Given: the selected FFmpeg probe executable does not exist.
+        let mut config = default_config();
+        config.codec = "hevc_nvenc".to_string();
+        let temp = tempfile::tempdir().expect("temporary directory should be created");
+        let mut command = std::process::Command::new(temp.path().join("missing-ffmpeg"));
+
+        // When: the operating system cannot start the probe process.
+        let error = config
+            .run_nvenc_probe(&mut command)
+            .expect_err("missing FFmpeg should fail encoder creation");
+        let message = error.to_string();
+
+        // Then: the execution error follows the same explicit no-fallback contract.
+        assert!(message.contains("hevc_nvenc"));
+        assert!(message.contains("failed to execute FFmpeg probe"));
+        assert!(message.contains("software fallback was not applied"));
+    }
+
+    #[test]
+    fn default_pixel_format_matches_selected_codec() {
+        assert_eq!(default_pixel_format_for_codec("libx265"), "yuv420p10le");
+        assert_eq!(default_pixel_format_for_codec("libx264"), "yuv420p");
+        assert_eq!(default_pixel_format_for_codec("hevc_nvenc"), "p010le");
+        assert_eq!(default_pixel_format_for_codec("h264_nvenc"), "yuv420p");
     }
 
     #[test]

@@ -1,0 +1,58 @@
+[package]
+name = "videnoa-controller"
+version.workspace = true
+rust-version.workspace = true
+edition = "2021"
+build = "build.rs"
+
+[[bin]]
+name = "videnoa-controller"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+argon2.workspace = true
+axum.workspace = true
+base64.workspace = true
+cap-fs-ext.workspace = true
+cap-std.workspace = true
+chrono.workspace = true
+clap.workspace = true
+figment.workspace = true
+futures-util.workspace = true
+glob = "=0.3.3"
+mime_guess.workspace = true
+percent-encoding.workspace = true
+rand_core.workspace = true
+rust-embed.workspace = true
+rpassword.workspace = true
+reqwest = { version = "=0.12.27", default-features = false, features = ["json", "rustls-tls", "stream"] }
+renamore = "=0.3.2"
+rustix.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sqlx.workspace = true
+subtle.workspace = true
+thiserror = "2"
+tokio.workspace = true
+tokio-util = { workspace = true, features = ["io", "rt"] }
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+url.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+tempfile = "3"
+tokio = { workspace = true, features = ["test-util"] }
+tower.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }

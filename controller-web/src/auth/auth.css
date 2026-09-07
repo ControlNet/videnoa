@@ -1,0 +1,178 @@
+/*
+ * Authentication surfaces: setup, sign-in, bootstrap recovery.
+ *
+ * These are the only screens in the product that get to be quiet and centred.
+ * The structure behind the panel is a ruled field, not a gradient.
+ */
+
+.login-page {
+  position: relative;
+  display: grid;
+  min-block-size: 100dvb;
+  overflow: hidden;
+  padding: var(--space-6);
+  background: var(--color-background-deep);
+  place-items: center;
+}
+
+.login-page::before,
+.login-page::after {
+  position: absolute;
+  pointer-events: none;
+  content: "";
+}
+
+/* A structural field, deliberately not decoration. */
+.login-page::before {
+  inset: 0;
+  background-image:
+    linear-gradient(color-mix(in oklch, var(--color-border) 45%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in oklch, var(--color-border) 45%, transparent) 1px, transparent 1px);
+  background-size: 3.5rem 3.5rem;
+}
+
+.login-page::after {
+  inset: var(--space-6);
+  border: var(--border-subtle);
+}
+
+.login-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  inline-size: min(24.75rem, 100%);
+  padding: var(--space-6);
+  border: var(--border-default);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface);
+}
+
+.compact-panel {
+  gap: var(--space-4);
+}
+
+.login-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.login-brand .brand-mark {
+  inline-size: 1.875rem;
+  block-size: 1.875rem;
+  border-radius: var(--radius-lg);
+  font-size: var(--type-section);
+}
+
+.boundary-line {
+  flex-grow: 1;
+  block-size: 1px;
+  background: var(--color-border-subtle);
+}
+
+.login-panel h1 {
+  font-size: var(--type-login-title);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.login-summary {
+  color: var(--color-text-muted);
+  font-size: var(--type-cell);
+  line-height: 1.55;
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.login-form label {
+  color: var(--color-text-muted);
+  font-size: var(--type-chip);
+  font-weight: 600;
+}
+
+.login-form .input-frame {
+  block-size: 2.5rem;
+  border-radius: var(--radius-lg);
+  background: var(--color-background);
+}
+
+.login-form .input-frame:focus-within {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--color-accent) 18%, transparent);
+}
+
+.login-form .input-frame.invalid {
+  border-color: var(--color-danger);
+}
+
+.login-form .input-frame input {
+  font-family: var(--font-mono);
+  font-size: var(--type-body);
+  letter-spacing: 0.08em;
+}
+
+.login-form .button {
+  block-size: 2.5rem;
+  margin-block-start: var(--space-2);
+  border-radius: var(--radius-lg);
+  font-size: var(--type-body);
+}
+
+.login-form > label + .input-frame + .button,
+.login-form > .input-frame + .button {
+  margin-block-start: var(--space-3);
+}
+
+.setup-field-error {
+  color: var(--color-danger);
+  font-size: var(--type-chip);
+  font-weight: 600;
+}
+
+.error-summary {
+  padding: var(--space-3);
+  border: 1px solid color-mix(in oklch, var(--color-danger) 35%, transparent);
+  border-radius: var(--radius-lg);
+  background: var(--color-danger-wash);
+  color: var(--color-danger);
+  font-size: var(--type-chip);
+  font-weight: 500;
+  line-height: 1.6;
+}
+
+.login-notice {
+  display: block;
+  padding: var(--space-3);
+  border: var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--color-background-deep);
+  color: var(--color-text-muted);
+  font-size: var(--type-chip);
+  line-height: 1.6;
+}
+
+.session-loading {
+  position: relative;
+  color: var(--color-text-quiet);
+  font-family: var(--font-mono);
+  font-size: var(--type-cell);
+}
+
+@media (max-width: 28rem) {
+  .login-page {
+    padding: var(--space-3);
+  }
+
+  .login-page::after {
+    inset: var(--space-3);
+  }
+
+  .login-panel {
+    padding: var(--space-5);
+  }
+}
