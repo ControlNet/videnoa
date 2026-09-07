@@ -145,7 +145,7 @@ describe("authenticated Controller shell", () => {
     render(<App />)
 
     // Then: setup is the only surface, setup ran before session, and focus reaches the new password.
-    expect(await screen.findByRole("heading", { name: "Set up Controller access" })).toBeVisible()
+    expect(await screen.findByRole("heading", { name: "Set up Videnoa Controller access" })).toBeVisible()
     expect(requestedPaths).toEqual(["/api/auth/setup"])
     expect(screen.queryByRole("heading", { name: "Sign in to Videnoa Controller" })).not.toBeInTheDocument()
     await waitFor(() => expect(screen.getByLabelText("Create password")).toHaveFocus())
