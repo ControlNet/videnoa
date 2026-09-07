@@ -34,6 +34,7 @@ it('keeps a saved password without exposing it and supports explicit replacement
 it('registers an iroh Endpoint ID and password without an HTTP URL', async () => {
   // Synthetic public ID and credential for the form contract only.
   const endpointId = 'a'.repeat(64)
+  const testCredential = 'test-only-iroh-password'
   const onCreate = vi.fn().mockResolvedValue(false)
   render(<WorkerFormDialog worker={null} open submitting={false} actionError={null} onClose={vi.fn()} onCreate={onCreate} onUpdate={vi.fn()} />)
   fireEvent.change(screen.getByLabelText('Worker name'), { target: { value: 'iroh worker' } })
@@ -44,10 +45,10 @@ it('registers an iroh Endpoint ID and password without an HTTP URL', async () =>
   fireEvent.change(screen.getByLabelText('Worker Endpoint ID'), { target: { value: endpointId } })
   fireEvent.click(screen.getByRole('button', { name: 'Save Worker' }))
   expect(onCreate).not.toHaveBeenCalled()
-  fireEvent.change(screen.getByLabelText(/^Access password/), { target: { value: 'test-only-iroh-password' } })
+  fireEvent.change(screen.getByLabelText(/^Access password/), { target: { value: testCredential } })
   fireEvent.click(screen.getByRole('button', { name: 'Save Worker' }))
   await waitFor(() => expect(onCreate).toHaveBeenCalledTimes(1))
-  expect(onCreate.mock.calls[0]?.[0]).toMatchObject({ transport: 'iroh', endpoint_id: endpointId, password: 'test-only-iroh-password' })
+  expect(onCreate.mock.calls[0]?.[0]).toMatchObject({ transport: 'iroh', endpoint_id: endpointId, password: testCredential })
   expect(onCreate.mock.calls[0]?.[0]).not.toHaveProperty('api_url')
 })
 
