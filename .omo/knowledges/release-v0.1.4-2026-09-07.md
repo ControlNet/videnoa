@@ -36,3 +36,11 @@ git diff --check
 ```
 
 Expected: five workspace packages resolve to 0.1.4, all commands exit zero, and only the workspace version and five workspace lockfile versions change besides this release record. Release candidate CI and published artifact verification must be recorded separately after they actually complete.
+
+## Candidate review follow-up
+
+- PR: https://github.com/ControlNet/videnoa/pull/2.
+- Public N0 Endpoint-ID-only transport test passed on the v0.1.4 candidate: `CARGO_TARGET_DIR=/tmp/videnoa-iroh-target cargo test --locked -p videnoa-transport n0_endpoint_id_only_connection -- --ignored`. This checks public discovery from the current host, not mainland/NAS-to-GPU or forced-relay throughput.
+- Review identified a real Worker delta race: two queued microtasks derived new lists from stale effect closures, so the second update could undo the first. A synthetic two-Worker regression reproduced `[true, false]` instead of `[false, false]` before the fix.
+- The follow-up uses a functional state update and checks the target Worker's version against the latest list. Unlike the initial version-only candidate, the final candidate includes this narrowly scoped frontend correction and its regression test.
+- Verification: `npm --prefix controller-web test -- src/workers`, `npm --prefix controller-web run lint`, and `npm --prefix controller-web run build` must pass before pushing the corrected candidate.
