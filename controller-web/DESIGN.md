@@ -157,6 +157,7 @@ Routes compose from one shared vocabulary in `src/ui/`. A route-specific rule th
 
 - **Structure**: a 48px command row (route title, path search, column picker, `Add Task`) above a 42px band carrying status counters and the filter chips, then the table, then a pinned pagination footer. Total route chrome is 90px; the route is exactly one viewport tall and never scrolls the shell.
 - **States**: loading rows, populated page, empty filter result, recoverable load failure, and live active-row replacement.
+- **Worker filter**: the worker chip selects a registered name and submits its identifier, because the worker column shows names and the Controller matches identifiers. A selected worker that is no longer registered keeps an option of its own, so an active filter is never silently widened.
 - **Density**: 30px header, 34px rows, 12.5px cell type. Row separators replace cards; numeric and identifier cells use Geist Mono with tabular numerals; long values truncate with native title disclosure.
 - **Status column**: one dot plus the exact status label in its semantic tone, so column width no longer tracks the longest status name.
 - **Dates**: `Created` renders relative time with the absolute timestamp in `title`. Values older than thirty days, and any future timestamp, fall back to the absolute format.

@@ -15,6 +15,8 @@ import {
 type TaskToolbarProps = {
   readonly query: TaskQuery
   readonly search: string
+  /** Registered worker names by identifier, so the filter offers what the table shows. */
+  readonly workerNames: ReadonlyMap<string, string>
   readonly onQueryChange: (patch: Partial<TaskQuery>) => void
   readonly onSearchChange: (value: string) => void
   /**
@@ -26,7 +28,16 @@ type TaskToolbarProps = {
   readonly actions?: ReactNode
 }
 
-export function TaskToolbar({ query, search, onQueryChange, onSearchChange, heading, counters, actions }: TaskToolbarProps) {
+export function TaskToolbar({ query, search, workerNames, onQueryChange, onSearchChange, heading, counters, actions }: TaskToolbarProps) {
+  /*
+   * The worker column shows names, so this filter must offer names -- typing an
+   * identifier was the only way to use it before, which contradicted everything
+   * on screen. The value stays the identifier because that is what the
+   * Controller filters on. A selected worker that is no longer registered keeps
+   * its own option, or choosing it back would silently widen the filter.
+   */
+  const workerOptions = [...workerNames].sort(([, left], [, right]) => left.localeCompare(right))
+  const selectedWorkerIsListed = query.worker === "" || workerNames.has(query.worker)
   return (
     <>
       <div className="command-row">
@@ -81,7 +92,11 @@ export function TaskToolbar({ query, search, onQueryChange, onSearchChange, head
             {failureStageSchema.options.map((stage) => <option key={stage} value={stage}>{stage.replaceAll("_", " ")}</option>)}
           </SelectChip>
           <TextChip name="workflow" label="Workflow" placeholder="Any" value={query.workflow} onChange={(workflow) => onQueryChange({ workflow, offset: 0 })} />
-          <TextChip name="worker" label="Worker ID" placeholder="Any" value={query.worker} onChange={(worker) => onQueryChange({ worker, offset: 0 })} />
+          <SelectChip label="Worker" value={query.worker} neutralValue="" onChange={(worker) => onQueryChange({ worker, offset: 0 })}>
+            <option value="">Any</option>
+            {workerOptions.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+            {selectedWorkerIsListed ? null : <option value={query.worker}>{shortWorkerId(query.worker)}</option>}
+          </SelectChip>
           <span className="chip-divider" aria-hidden="true" />
           <SelectChip label="Sort" value={query.sort} neutralValue="priority" onChange={(value) => onQueryChange({ sort: parseSort(value), offset: 0 })}>
             {taskSorts.map((sort) => <option key={sort} value={sort}>{sort.replaceAll("_", " ")}</option>)}
@@ -128,4 +143,9 @@ function parseLimit(value: string): TaskLimit {
 
 function toggleColumn(columns: readonly OptionalColumn[], column: OptionalColumn): readonly OptionalColumn[] {
   return columns.includes(column) ? columns.filter((value) => value !== column) : [...columns, column]
+}
+
+/** A deregistered worker still selected in the filter: identify it, do not pretend to name it. */
+function shortWorkerId(id: string): string {
+  return `${id.slice(0, 8)} (unregistered)`
 }
