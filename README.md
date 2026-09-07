@@ -26,18 +26,26 @@ Videnoa supports super-resolution (Real-ESRGAN / RealCUGAN) and frame interpolat
 
 Use the prebuilt Docker Hub image on Linux x86-64 with a compatible NVIDIA GPU, driver, and [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html). CUDA and TensorRT are included; no local build or host CUDA installation is needed.
 
-Place your models in `./models` and replace `$HOME/Videos` with your media directory:
+Place your models in `./models`. Persist Worker configuration and data alongside the model files and TensorRT cache:
 
 ```bash
-mkdir -p ./models ./trt_cache
-docker run --gpus all -p 3000:3000 \
+mkdir -p ./models ./trt_cache ./data
+docker run -d --name videnoa --gpus all -p 3000:3000 \
   -v "$PWD/models:/app/models" \
   -v "$PWD/trt_cache:/app/trt_cache" \
-  -v "$HOME/Videos:/data" \
+  -v "$PWD/data:/app/data" \
   controlnet/videnoa:latest
 ```
 
-Open `http://localhost:3000`; use `/data/...` paths for media. TensorRT builds engine caches on first use and reuses `./trt_cache` on subsequent runs.
+Open `http://localhost:3000`. The `/app/data` mount persists Worker configuration
+at `./data/config.toml` on the host, together with the default `./data/workflows`
+directory and other Worker data. Reuse these host directories when recreating or
+upgrading the container. TensorRT builds engine caches on first use and reuses
+`./trt_cache` on subsequent runs.
+
+If workflows need access to existing host media, additionally mount the media
+directory by adding `-v "$HOME/Videos:/media"` before the image name, then use
+`/media/...` paths in the Worker. This media mount is separate from `/app/data`.
 
 To build locally instead, run the following and replace `controlnet/videnoa:latest` above with `videnoa`:
 
@@ -67,7 +75,11 @@ Logs default to `INFO`; add `-e RUST_LOG=warn,videnoa_controller=debug` to `dock
 
 ## Configuration
 
-Runtime config lives at `data/config.toml` (or `${VIDENOA_DATA_DIR}/config.toml`).
+Worker runtime config lives at `data/config.toml` (or `${VIDENOA_DATA_DIR}/config.toml`).
+In the standard Docker setup above, this is `/app/data/config.toml` inside the
+container and `./data/config.toml` on the host. If you override `--data-dir` or
+`VIDENOA_DATA_DIR`, mount the selected directory too. Controller uses its own
+`data/controller.toml`; its persistence mount is shown in the Controller example.
 
 ```toml
 locale = "en"

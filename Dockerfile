@@ -3,20 +3,22 @@
 # Multi-stage build: Rust compilation → NVIDIA CUDA runtime with ORT + TRT
 #
 # All runtime libraries (ONNX Runtime, TensorRT) are baked into the image.
-# Users only need to mount models and media directories.
+# Mount models, the TensorRT cache, and /app/data for persistent Worker state.
+# Mount host media separately when workflows need direct file access.
 #
 # Build:
 #   docker build -t videnoa .
 #
 # Run server:
-#   docker run --gpus all -p 3000:3000 \
-#     -v ./models:/app/models \
-#     -v ./trt_cache:/app/trt_cache \
+#   docker run -d --name videnoa --gpus all -p 3000:3000 \
+#     -v "$PWD/models:/app/models" \
+#     -v "$PWD/trt_cache:/app/trt_cache" \
+#     -v "$PWD/data:/app/data" \
 #     videnoa
 #
 # Run CLI:
 #   docker run --gpus all \
-#     -v ./models:/app/models \
+#     -v "$PWD/models:/app/models" \
 #     -v /path/to/media:/data \
 #     videnoa videnoa run /app/presets/interpolation-2x.json \
 #       -i /data/input.mkv -o /data/output.mkv
