@@ -54,3 +54,11 @@ Date: 2026-09-01 (Australia/Melbourne)
 
 - GitHub Actions reported that several actions still target deprecated Node.js 20 runtimes and are being forced onto Node.js 24.
 - A tracked-file secret scan reported a false positive in `crates/core/src/logging.rs:841` for a test string containing `token=`; no release evidence file was staged or committed.
+
+
+## September 7 remote-state correction
+
+Before preparing the current v0.1.3 release, GitHub listed v0.1.2 as Latest and
+`git ls-remote --tags origin` contained no v0.1.3. Treat the above as historical
+records, not proof of current availability. Current release evidence is recorded
+in `release-v0.1.3-2026-09-07.md`; no existing tag is being replaced.
