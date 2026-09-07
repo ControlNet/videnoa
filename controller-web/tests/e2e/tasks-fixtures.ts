@@ -132,8 +132,8 @@ export async function installPagedApi(page: Page, journal: RequestJournal, total
   })
 }
 
-export async function installLiveApi(page: Page, journal: RequestJournal, initialTask: Task) {
-  let currentTask = initialTask
+/** Replaces EventSource with a dispatchable stub, so a suite can deliver exact SSE deltas. */
+export async function installTestEventSource(page: Page): Promise<void> {
   await page.addInitScript(() => {
     class TestEventSource extends EventTarget {
       static readonly CLOSED = 2
@@ -146,6 +146,20 @@ export async function installLiveApi(page: Page, journal: RequestJournal, initia
     }
     Object.defineProperty(window, "EventSource", { value: TestEventSource })
   })
+}
+
+export async function dispatchEvent(page: Page, name: string, payload: unknown): Promise<void> {
+  await page.evaluate(({ name: eventName, payload: body }) => {
+    const events = Reflect.get(window, "testEventSource")
+    if (events instanceof EventTarget) {
+      events.dispatchEvent(new MessageEvent(eventName, { data: JSON.stringify(body) }))
+    }
+  }, { name, payload })
+}
+
+export async function installLiveApi(page: Page, journal: RequestJournal, initialTask: Task) {
+  let currentTask = initialTask
+  await installTestEventSource(page)
   await installAuthenticatedSession(page)
   await page.route("**/api/status-counts", async (route) => {
     journal.counts.push(route.request().url())
@@ -164,15 +178,10 @@ export async function installLiveApi(page: Page, journal: RequestJournal, initia
 }
 
 export async function dispatchTaskUpdate(page: Page, taskUpdate: Task): Promise<void> {
-  await page.evaluate((incoming) => {
-    const events = Reflect.get(window, "testEventSource")
-    if (events instanceof EventTarget) {
-      events.dispatchEvent(new MessageEvent("task_updated", { data: JSON.stringify({
-        type: "task_updated",
-        data: { event_id: "550e8400-e29b-41d4-a716-446655440003", task: incoming },
-      }) }))
-    }
-  }, taskUpdate)
+  await dispatchEvent(page, "task_updated", {
+    type: "task_updated",
+    data: { event_id: "550e8400-e29b-41d4-a716-446655440003", task: taskUpdate },
+  })
 }
 
 export async function capture(page: Page, name: string): Promise<void> {

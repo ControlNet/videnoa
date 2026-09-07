@@ -2,7 +2,8 @@ import { mkdir, writeFile } from "node:fs/promises"
 
 import { expect, test } from "@playwright/test"
 
-import { installOperationalApi } from "./operations-fixtures"
+import { dispatchWorkerUpdate, installOperationalApi, workerTemplate } from "./operations-fixtures"
+import { installTestEventSource } from "./tasks-fixtures"
 
 const evidenceDir = "../.omo/evidence/videnoa-controller/task-19/playwright-report/screenshots/task-18/workers-settings"
 
@@ -240,4 +241,51 @@ test("operates workers and runtime settings with safe failures", async ({ page }
     "Offline worker: health probe timed out remained visible independently from enabled policy.",
     "Unauthenticated worker enable mutation -> 401 unauthorized replaced the shell with the captured safe sign-in surface; no credential or request proof was rendered.",
   ].join("\n"), "utf8")
+})
+
+test("shows a worker coming back online without a manual reload", async ({ page }) => {
+  // Given: an authenticated Workers route showing a worker the Controller reports offline.
+  await installTestEventSource(page)
+  await installOperationalApi(page)
+  await page.goto("/workers")
+  const workerTable = page.getByRole("table")
+  await expect(workerTable.getByText("Offline")).toBeVisible()
+  await expect(page.getByText("health probe timed out")).toBeVisible()
+
+  // And: every DOM change anywhere in the document is recorded from here on.
+  await page.evaluate(() => document.fonts.ready)
+  await page.evaluate(() => {
+    const counts = { childList: 0, other: 0 }
+    const observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        if (mutation.type === "childList") counts.childList += 1
+        else counts.other += 1
+      }
+    })
+    observer.observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true })
+    Reflect.set(window, "domMutations", counts)
+  })
+
+  // When: a health probe brings the worker online, which the Controller publishes
+  // as a full worker DTO on the event stream.
+  await dispatchWorkerUpdate(page, {
+    ...workerTemplate,
+    version: workerTemplate.version + 1,
+    online: true,
+    last_error: null,
+    last_seen_at: "2026-09-03T10:05:00Z",
+    updated_at: "2026-09-03T10:05:00Z",
+  })
+
+  // Then: the row reflects the new health in place, with no reload and no refetch.
+  await expect(workerTable.getByText("Online")).toBeVisible()
+  await expect(page.getByText("health probe timed out")).toBeHidden()
+
+  /*
+   * And the delta was patched into the existing DOM rather than rebuilding it:
+   * not one node was added, removed or moved anywhere in the document. That is
+   * what keeps a live worker row from taking scroll position or focus with it,
+   * so it is asserted rather than left to inspection.
+   */
+  expect(await page.evaluate(() => Reflect.get(window, "domMutations"))).toMatchObject({ childList: 0 })
 })
