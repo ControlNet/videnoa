@@ -756,7 +756,7 @@ fn add_mkv_statistics_tags(output_path: &Path) {
     match crate::runtime::command_for("mkvpropedit")
         .arg(output_path)
         .arg("--add-track-statistics-tags")
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
     {
@@ -767,10 +767,12 @@ fn add_mkv_statistics_tags(output_path: &Path) {
             );
         }
         Ok(result) => {
+            let stdout = String::from_utf8_lossy(&result.stdout);
             let stderr = String::from_utf8_lossy(&result.stderr);
             warn!(
                 path = %output_path.display(),
                 status = %result.status,
+                stdout = %stdout.trim(),
                 stderr = %stderr.trim(),
                 "mkvpropedit failed to add track statistics tags"
             );

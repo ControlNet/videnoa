@@ -67,10 +67,10 @@ impl Store {
         let mut transaction = self.database.pool().begin().await?;
         let updated_version: Option<i64> = sqlx::query_scalar(
             "UPDATE workers SET password = CASE WHEN ? THEN ? ELSE password END,
-                online = CASE WHEN ? THEN 0 ELSE online END,
-                next_health_check_at_ms = CASE WHEN ? THEN NULL ELSE next_health_check_at_ms END,
-                health_retry_count = CASE WHEN ? THEN 0 ELSE health_retry_count END,
-                capabilities_json = CASE WHEN ? THEN '{\"workflows\":[],\"refreshed_at\":null}' ELSE capabilities_json END,
+                online = CASE WHEN (? OR api_url <> ?) THEN 0 ELSE online END,
+                next_health_check_at_ms = CASE WHEN (? OR api_url <> ?) THEN NULL ELSE next_health_check_at_ms END,
+                health_retry_count = CASE WHEN (? OR api_url <> ?) THEN 0 ELSE health_retry_count END,
+                capabilities_json = CASE WHEN (? OR api_url <> ?) THEN '{\"workflows\":[],\"refreshed_at\":null}' ELSE capabilities_json END,
                 name = ?, api_url = ?, enabled = ?, compute_slots = ?,
                 version = version + 1, updated_at_ms = ?
              WHERE id = ? AND version = ?
@@ -82,9 +82,13 @@ impl Store {
         .bind(update.password.is_some())
         .bind(update.password.as_ref().and_then(Option::as_ref).map(crate::domain::SecretString::expose))
         .bind(update.password.is_some())
+        .bind(update.api_url.as_url().as_str())
         .bind(update.password.is_some())
+        .bind(update.api_url.as_url().as_str())
         .bind(update.password.is_some())
+        .bind(update.api_url.as_url().as_str())
         .bind(update.password.is_some())
+        .bind(update.api_url.as_url().as_str())
         .bind(update.name.as_str())
         .bind(update.api_url.as_url().as_str())
         .bind(update.enabled)

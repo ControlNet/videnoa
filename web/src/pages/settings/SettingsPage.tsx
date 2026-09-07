@@ -1,3 +1,4 @@
+import { IrohSettings } from "./IrohSettings";
 import { AccessSettings } from '@/auth/AccessSettings';
 import { DEFAULT_AUTH_CONFIG } from '@/types';
 import {
@@ -65,7 +66,7 @@ export function SettingsPage() {
 
 	// Fetch on mount
 	useEffect(() => {
-		void (async () => {
+		const reload = () => { void (async () => {
 			try {
 				const data = await getConfig();
 				const normalized = normalizeConfig(data);
@@ -76,7 +77,10 @@ export function SettingsPage() {
 			} finally {
 				setLoading(false);
 			}
-		})();
+		})(); };
+        reload();
+        window.addEventListener("videnoa-password-changed", reload);
+        return () => window.removeEventListener("videnoa-password-changed", reload);
 	}, [normalizeConfig, t]);
 
 	// Dirty detection
@@ -234,7 +238,8 @@ export function SettingsPage() {
 					</CardContent>
 				</Card>
 
-				<AccessSettings config={formState.auth ?? DEFAULT_AUTH_CONFIG} onChange={(auth) => setFormState((prev) => prev ? { ...prev, auth } : prev)} />
+				<IrohSettings enabled={formState.iroh?.enabled ?? false} savedEnabled={config?.iroh?.enabled ?? false} onChange={(enabled) => setFormState({ ...formState, iroh: { enabled } })} />
+                    <AccessSettings config={formState.auth ?? DEFAULT_AUTH_CONFIG} onChange={(auth) => setFormState((prev) => prev ? { ...prev, auth } : prev)} />
 
                 {/* ── Server Section (read-only) ─────────────────────────────────────── */}
 				<Card className="opacity-80">

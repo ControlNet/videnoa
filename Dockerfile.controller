@@ -8,6 +8,9 @@ COPY controller-web/ ./
 RUN npm run build
 
 FROM rust:1.98.0-bookworm AS controller-builder
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends cmake pkg-config \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates/ crates/

@@ -321,6 +321,9 @@ async fn run_server(
 
     let state = app_state_with_config(config, cfg_path, data_dir);
     state.ensure_auth_ready()?;
+    if let Err(error) = state.reconcile_iroh().await {
+        warn!(%error, "Iroh unavailable; local HTTP service remains available");
+    }
 
     #[cfg(not(debug_assertions))]
     {

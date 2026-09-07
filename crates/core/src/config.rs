@@ -17,6 +17,13 @@ pub struct AppConfig {
     pub locale: String,
     pub performance: PerformanceConfig,
     pub auth: AuthConfig,
+    pub iroh: IrohConfig,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct IrohConfig {
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -85,6 +92,7 @@ impl Default for AppConfig {
             locale: FALLBACK_LOCALE.to_string(),
             performance: PerformanceConfig::default(),
             auth: AuthConfig::default(),
+            iroh: IrohConfig::default(),
         }
     }
 }

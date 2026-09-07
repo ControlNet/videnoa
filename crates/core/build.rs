@@ -8,6 +8,7 @@ const NPM_BIN: &str = "npm.cmd";
 const NPM_BIN: &str = "npm";
 
 fn build_frontend_assets_for_release() {
+    println!("cargo:rerun-if-env-changed=VIDENOA_WEB_PREBUILT");
     let profile = std::env::var("PROFILE").unwrap_or_default();
     if profile != "release" {
         return;
@@ -24,6 +25,15 @@ fn build_frontend_assets_for_release() {
     let web_dir = Path::new("../../web");
     if !web_dir.is_dir() {
         panic!("frontend directory missing: {}", web_dir.to_string_lossy());
+    }
+
+    if std::env::var("VIDENOA_WEB_PREBUILT").as_deref() == Ok("1") {
+        println!("cargo:rerun-if-changed=../../web/dist");
+        assert!(
+            web_dir.join("dist/index.html").is_file(),
+            "Prebuilt WebUI index is missing"
+        );
+        return;
     }
 
     let lockfile_exists = web_dir.join("package-lock.json").exists();

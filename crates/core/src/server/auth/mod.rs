@@ -36,7 +36,7 @@ struct Inner {
 }
 struct Database {
     connection: Connection,
-    failures: HashMap<IpAddr, VecDeque<i64>>,
+    failures: HashMap<AuthPeer, VecDeque<i64>>,
     // Ephemeral bearer verifier, guarded by the credential transaction mutex. Never serialized.
     cached_password_digest: Option<[u8; 32]>,
     #[cfg(test)]
@@ -79,16 +79,35 @@ impl IntoResponse for AuthError {
             .into_response()
     }
 }
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+enum AuthPeer {
+    Http(IpAddr),
+    Iroh(videnoa_transport::EndpointId),
+}
+impl std::str::FromStr for AuthPeer {
+    type Err = std::net::AddrParseError;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        value.parse().map(Self::Http)
+    }
+}
+
 #[derive(Clone)]
 struct RequestContext {
     headers: HeaderMap,
-    peer: Option<IpAddr>,
+    peer: Option<AuthPeer>,
 }
 impl RequestContext {
-    fn new(headers: HeaderMap, peer: Option<ConnectInfo<SocketAddr>>) -> Self {
+    fn new(headers: HeaderMap, peer: Option<ConnectInfo<SocketAddr>>, state: &AppState) -> Self {
         Self {
             headers,
-            peer: peer.map(|p| p.0.ip()),
+            peer: peer.map(|p| {
+                state
+                    .inner
+                    .iroh
+                    .peers
+                    .get(p.0)
+                    .map_or(AuthPeer::Http(p.0.ip()), AuthPeer::Iroh)
+            }),
         }
     }
     fn same_origin(&self) -> bool {
@@ -222,6 +241,14 @@ fn open_database(dir: &Path) -> anyhow::Result<(File, Connection)> {
 /// Removes only authentication state. Fails while an instance owns this data directory.
 pub fn reset(dir: &Path) -> anyhow::Result<()> {
     let (_lock, mut connection) = open_database(dir)?;
+    let config_path = crate::config::config_path(dir);
+    if config_path.exists() {
+        let mut config = crate::config::AppConfig::load_from_path(&config_path)?;
+        if config.iroh.enabled {
+            config.iroh.enabled = false;
+            config.save_to_path(&config_path)?;
+        }
+    }
     let transaction = connection.transaction()?;
     transaction.execute("DELETE FROM credential", [])?;
     transaction.execute("DELETE FROM sessions", [])?;
@@ -255,6 +282,54 @@ impl AuthService {
             _lock: lock,
         })))
     }
+    pub(super) fn password_enabled(&self) -> Result<bool, AuthError> {
+        let db = self.0.database.lock().map_err(|_| AuthError::Unavailable)?;
+        Ok(stored_hash(&db.connection)?.is_some())
+    }
+
+    pub(super) async fn verify_tunnel(
+        &self,
+        peer: videnoa_transport::EndpointId,
+        password: String,
+    ) -> Result<(), videnoa_transport::TunnelError> {
+        use videnoa_transport::TunnelError;
+        let inner = self.0.clone();
+        let permit = inner
+            .tasks
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| TunnelError::Unavailable)?;
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            let mut db = inner.database.lock().map_err(|_| AuthError::Unavailable)?;
+            let hash = stored_hash(&db.connection)?.ok_or(AuthError::Unauthorized)?;
+            let mut headers = HeaderMap::new();
+            let mut value =
+                axum::http::HeaderValue::from_bytes(format!("Bearer {password}").as_bytes())
+                    .map_err(|_| AuthError::Unauthorized)?;
+            value.set_sensitive(true);
+            headers.insert(header::AUTHORIZATION, value);
+            let context = RequestContext {
+                headers,
+                peer: Some(AuthPeer::Iroh(peer)),
+            };
+            let policy = inner
+                .policy
+                .read()
+                .map_err(|_| AuthError::Unavailable)?
+                .clone();
+            db.authenticate(&context, &hash, &policy, false).map(|_| ())
+        })
+        .await
+        .map_err(|_| TunnelError::Unavailable)?
+        .map_err(|error| match error {
+            AuthError::RateLimited => TunnelError::RateLimited,
+            AuthError::Unavailable => TunnelError::Unavailable,
+            _ => TunnelError::Unauthorized,
+        })
+    }
+
     pub(super) fn reconfigure(&self, policy: AuthConfig) -> anyhow::Result<()> {
         policy.validate()?;
         *self
@@ -565,6 +640,7 @@ pub(super) async fn protect(
             .extensions()
             .get::<ConnectInfo<SocketAddr>>()
             .copied(),
+        &state,
     );
     let action = Action::Check {
         mutation: !matches!(
@@ -600,7 +676,10 @@ macro_rules! simple_handler {
         ) -> Response {
             match service(&state) {
                 Ok(auth) => match auth
-                    .execute(RequestContext::new(headers, peer.map(|v| v.0)), $action)
+                    .execute(
+                        RequestContext::new(headers, peer.map(|v| v.0), &state),
+                        $action,
+                    )
                     .await
                 {
                     Ok(reply) => reply.into_response(),
@@ -613,7 +692,29 @@ macro_rules! simple_handler {
 }
 simple_handler!(session, Action::Session);
 simple_handler!(logout, Action::Logout);
-simple_handler!(disable, Action::Disable);
+pub(super) async fn disable(
+    State(state): State<AppState>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
+) -> Response {
+    let _settings = state.inner.settings_lock.lock().await;
+    let context = RequestContext::new(headers, peer.map(|v| v.0), &state);
+    let result = async {
+        let auth = service(&state)?;
+        auth.execute(context.clone(), Action::Check { mutation: true })
+            .await?;
+        state
+            .disable_iroh_persisted()
+            .await
+            .map_err(|_| AuthError::Unavailable)?;
+        auth.execute(context, Action::Disable).await
+    }
+    .await;
+    match result {
+        Ok(reply) => reply.into_response(),
+        Err(error) => error.into_response(),
+    }
+}
 pub(super) async fn login(
     State(state): State<AppState>,
     peer: Option<Extension<ConnectInfo<SocketAddr>>>,
@@ -623,7 +724,7 @@ pub(super) async fn login(
     match service(&state) {
         Ok(auth) => match auth
             .execute(
-                RequestContext::new(headers, peer.map(|v| v.0)),
+                RequestContext::new(headers, peer.map(|v| v.0), &state),
                 Action::Login {
                     password: input.password,
                 },
@@ -642,10 +743,11 @@ pub(super) async fn set_password(
     headers: HeaderMap,
     Json(input): Json<PasswordInput>,
 ) -> Response {
+    let _settings = state.inner.settings_lock.lock().await;
     match service(&state) {
         Ok(auth) => match auth
             .execute(
-                RequestContext::new(headers, peer.map(|v| v.0)),
+                RequestContext::new(headers, peer.map(|v| v.0), &state),
                 Action::SetPassword {
                     password: input.password,
                     confirmation: input.password_confirmation,
@@ -653,7 +755,12 @@ pub(super) async fn set_password(
             )
             .await
         {
-            Ok(reply) => reply.into_response(),
+            Ok(reply) => {
+                if let Err(error) = state.reconcile_iroh().await {
+                    tracing::warn!(%error, "Iroh did not start after password update");
+                }
+                reply.into_response()
+            }
             Err(error) => error.into_response(),
         },
         Err(error) => error.into_response(),

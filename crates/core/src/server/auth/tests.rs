@@ -144,6 +144,29 @@ async fn reset_requires_exclusive_access_and_preserves_other_files() {
 }
 
 #[tokio::test]
+async fn reset_disables_persisted_iroh_without_replacing_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = crate::config::AppConfig::default();
+    config.iroh.enabled = true;
+    config
+        .save_to_path(&dir.path().join("config.toml"))
+        .unwrap();
+    let identity = videnoa_transport::Identity::open(dir.path()).unwrap();
+    let endpoint_id = identity.id();
+    drop(identity);
+    let service = AuthService::open(dir.path(), AuthConfig::default()).unwrap();
+    service.execute(context(None), setup("a")).await.unwrap();
+    drop(service);
+    reset(dir.path()).unwrap();
+    let config = crate::config::AppConfig::load_from_path(&dir.path().join("config.toml")).unwrap();
+    assert!(!config.iroh.enabled);
+    assert_eq!(
+        videnoa_transport::Identity::open(dir.path()).unwrap().id(),
+        endpoint_id
+    );
+}
+
+#[tokio::test]
 async fn bearer_unicode_origin_limits_and_policy_changes() {
     let dir = tempfile::tempdir().unwrap();
     let service = AuthService::open(dir.path(), AuthConfig::default()).unwrap();

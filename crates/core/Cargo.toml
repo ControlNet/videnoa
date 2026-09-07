@@ -5,6 +5,7 @@ rust-version.workspace = true
 edition = "2021"
 
 [dependencies]
+videnoa-transport.workspace = true
 argon2 = { workspace = true }
 rand_core = { workspace = true }
 anyhow = { workspace = true }

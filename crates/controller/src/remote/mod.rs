@@ -1,3 +1,5 @@
+mod iroh;
+pub use iroh::{configure_iroh, shutdown_iroh};
 #[path = "cache.rs"]
 mod capability_store;
 mod catalog;
