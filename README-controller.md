@@ -88,6 +88,9 @@ After interruption, Controller validates that identity and the existing byte
 prefix before appending the remainder from the verified source. A replaced or
 corrupt output, or missing ownership evidence, fails as publication ambiguity;
 the source is retained. Successful publication recovery never repeats AI compute.
+Publication ambiguity supports manual retry, including existing failed tasks after
+upgrade. Every retry repeats ownership and content checks; unresolved conflicts
+fail again without overwriting files. Upgrading does not automatically retry them.
 Upgrades make legacy cross-mount publication failures with verified-output evidence
 retryable; use Retry to resume publication on the same attempt. They do not retry
 automatically.
@@ -199,12 +202,14 @@ unknown.
 For `publication_ambiguous`, pause scheduling and preserve the requested final
 path and verified transient artifact. Compare regular-file type, length, and
 SHA-256 with the task record. Do not delete, rename, overwrite, or force retry an
-unknown artifact.
+unknown artifact. Manual Retry repeats the publication checks; it does not
+overwrite an unknown file or bypass ownership verification.
 
 Cancellation is available from queued through verifying. Publishing,
 remote-cleanup, and terminal tasks reject cancellation. Retry is stage-aware:
 downstream transfer/publication retries do not rerun successful AI processing,
-and ambiguous failures are not retryable.
+and publication ambiguity permits manual retry after inspecting the conflicting
+artifacts. Remote-state ambiguity remains non-retryable.
 
 ## Upgrade and Rollback
 

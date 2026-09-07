@@ -68,7 +68,7 @@ impl LifecycleFailure {
             FailureStage::Publication,
             FailureCode::PublicationAmbiguous,
             message,
-            false,
+            true,
         )
     }
 

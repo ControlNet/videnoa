@@ -210,6 +210,9 @@ After interruption, Controller validates that identity and the existing byte
 prefix before appending the remainder from the verified source. A replaced or
 corrupt output, or missing ownership evidence, fails as publication ambiguity;
 the source is retained. Successful publication recovery never repeats AI compute.
+Publication ambiguity supports manual retry, including existing failed tasks after
+upgrade. Every retry repeats ownership and content checks; unresolved conflicts
+fail again without overwriting files. Upgrading does not automatically retry them.
 Upgrades make legacy cross-mount publication failures with verified-output evidence
 retryable; use Retry to resume publication on the same attempt. They do not retry
 automatically.
@@ -264,8 +267,8 @@ Transfer and cleanup failures use bounded persisted retry. Downstream retries do
 not repeat successful AI work.
 
 Cancellation is accepted from queued through verifying. Publishing, remote
-cleanup, and terminal tasks reject cancellation. Ambiguous failures are not
-retryable.
+cleanup, and terminal tasks reject cancellation. Publication ambiguity permits
+manual retry on the existing attempt; remote-state ambiguity remains non-retryable.
 
 ## No-Clobber and Ambiguity
 

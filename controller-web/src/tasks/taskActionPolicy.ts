@@ -35,6 +35,7 @@ function isSupportedRetryPair(code: FailureCode, stage: FailureStage): boolean {
     case "verification_failed":
       return stage === "verification"
     case "publication_failed":
+    case "publication_ambiguous":
       return stage === "publication"
     case "cleanup_failed":
       return stage === "local_cleanup" || stage === "remote_cleanup"
@@ -45,7 +46,6 @@ function isSupportedRetryPair(code: FailureCode, stage: FailureStage): boolean {
     case "workflow_incompatible":
     case "remote_submission_failed":
     case "remote_state_ambiguous":
-    case "publication_ambiguous":
     case "cancelled":
       return false
   }
@@ -80,8 +80,8 @@ export function failureGuidance(code: FailureCode, stage: FailureStage): Failure
       }
     case "publication_ambiguous":
       return {
-        kind: "blocked",
-        message: "Publication is ambiguous. Inspect the destination and staging artifact before taking further action; retry is blocked.",
+        kind: "stage_retry",
+        message: "Inspect the destination and verified temporary file before retrying publication. Manual retry rechecks ownership and content without overwriting conflicting files or repeating AI processing.",
       }
     case "worker_unavailable":
     case "workflow_incompatible":

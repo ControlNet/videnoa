@@ -42,3 +42,52 @@ Shutdown cancellation aborts orchestration stage tasks in `recovery_scan.rs`;
 process termination and filesystem errors can still interrupt publication.
 An underlying network filesystem can have its own timeout/error behavior.
 The reported ambiguity therefore does not establish a Controller copy timeout.
+
+
+## Superseding correction: explicit publication retry
+
+Publication ambiguity now permits manual retry on the existing attempt. Remote
+state ambiguity remains blocked. The classifier requires the publication stage;
+retry does not create a compute attempt or change task paths. Failed tasks are
+not automatically scheduled, and each explicit retry repeats the unchanged
+ownership, content, path, and no-clobber checks. An unresolved conflict fails
+again, remaining manually retryable.
+
+Migration 0012 enables retryability for existing failed publication-ambiguity
+rows and their matching current failed attempts, incrementing changed versions.
+It does not start publication or modify files, expected hashes, or other failure
+classes. The frontend retry policy and guidance now match the backend.
+
+The user subsequently supplied the initial `publication_failed` followed by
+`publication_ambiguous` on manual retry. This confirms distinct failure classes,
+not the precise underlying filesystem error. Local publication still has no
+transfer deadline; exposing underlying I/O diagnostics is separate work.
+
+Regression fixtures use synthetic output bytes. Coverage checks repeated manual
+retry preserves an unowned empty final and verified source, then publishes after
+the test operator preserves the conflict elsewhere, without new AI work. Legacy
+migration coverage checks both rows, unchanged Failed state, idempotence, and
+successful same-attempt publication after explicit retry.
+
+
+Validation commands for this correction (Rust is currently pinned to 1.98.0):
+
+```bash
+cargo +1.98.0 test --locked -p videnoa-controller --test lifecycle --test task13 --test persistence_migrations
+cargo +1.98.0 fmt --all -- --check
+rustfmt +1.98.0 --edition 2021 --config skip_children=true --check crates/controller/src/lifecycle/classification.rs crates/controller/src/lifecycle/failure.rs crates/controller/tests/lifecycle/retry.rs crates/controller/tests/task13/publication_ambiguity.rs
+cargo +1.98.0 clippy --locked -p videnoa-controller --all-targets --all-features -- -D warnings
+cargo +1.98.0 test --locked -p videnoa-controller --all-targets
+npm --prefix controller-web test -- src/tasks/taskActionPolicy.test.ts
+npm --prefix controller-web run typecheck
+npm --prefix controller-web run lint
+npm --prefix controller-web run build
+bash scripts/tests/controller_docs_test.sh
+```
+
+Expected: all checks exit zero. Focused Rust coverage: 68 passed; frontend policy:
+19 passed. The new typed-failure regression was confirmed failing before the fix.
+
+Final validation: full Controller all-targets suite passed (550 passed, zero
+failed, one ignored across 50 harnesses). Strict Clippy, both formatting checks,
+frontend typecheck/lint/build, and documentation checks passed.

@@ -70,6 +70,7 @@ describe("task lifecycle action policy", () => {
     ["transfer_failed", "download"],
     ["verification_failed", "verification"],
     ["publication_failed", "publication"],
+    ["publication_ambiguous", "publication"],
     ["cleanup_failed", "local_cleanup"],
     ["cleanup_failed", "remote_cleanup"],
   ] as const)("allows the Rust-supported %s and %s retry pair", (failureCode, failureStage) => {
@@ -122,5 +123,6 @@ describe("task lifecycle action policy", () => {
     // Then: path changes create a new task while processing retry verifies remote state.
     expect(collision.kind).toBe("new_task")
     expect(processing.kind).toBe("processing_retry")
+    expect(failureGuidance("publication_ambiguous", "publication").kind).toBe("stage_retry")
   })
 })

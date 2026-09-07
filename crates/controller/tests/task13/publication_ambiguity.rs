@@ -206,3 +206,124 @@ async fn assert_ambiguous(fixture: &Fixture, prepared: &PreparedTask) -> TestRes
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn manual_ambiguity_retry_rechecks_conflicts_and_resumes_without_compute() -> TestResult {
+    // Synthetic output models a crash leaving an unowned empty final file.
+    let server = MockVidenoa::start().await?;
+    let bytes = b"synthetic publication retry output".repeat(1024);
+    let (fixture, prepared, destination) =
+        publishing_task(&server, &bytes, PublicationIntent::direct()).await?;
+    std::fs::write(&destination, [])?;
+    let service = LifecycleService::new(fixture.store.clone());
+    let runs = server
+        .counters()
+        .await
+        .get(crate::mock_videnoa::journal::Route::Run);
+    for _ in 0..2 {
+        assert_eq!(
+            publish(&fixture, &prepared).await?,
+            PublicationOutcome::Failed
+        );
+        let task = fixture.task(prepared.task_id).await?;
+        let attempt = fixture.attempt(prepared.attempt_id).await?;
+        assert_eq!(task.status, TaskStatus::Failed);
+        assert_eq!(
+            task.failure.as_ref().unwrap().failure_code,
+            FailureCode::PublicationAmbiguous
+        );
+        assert!(task.failure.as_ref().unwrap().retryable);
+        assert_eq!(std::fs::metadata(&destination)?.len(), 0);
+        assert_eq!(
+            std::fs::read(verified_path(&fixture.temp_root, prepared.task_id))?,
+            bytes
+        );
+        service
+            .retry_downstream(&task, &attempt, fixture.now)
+            .await?;
+    }
+    // Operator preserves the conflicting file elsewhere before the next publication.
+    let preserved = destination.with_extension("preserved-by-test");
+    std::fs::rename(&destination, &preserved)?;
+    assert_eq!(
+        publish(&fixture, &prepared).await?,
+        PublicationOutcome::Completed
+    );
+    assert_eq!(std::fs::read(&destination)?, bytes);
+    assert_eq!(std::fs::metadata(preserved)?.len(), 0);
+    assert_eq!(fixture.task(prepared.task_id).await?.attempt_count, 1);
+    assert_eq!(
+        fixture.attempt(prepared.attempt_id).await?.attempt.status,
+        TaskStatus::Completed
+    );
+    assert_eq!(
+        server
+            .counters()
+            .await
+            .get(crate::mock_videnoa::journal::Route::Run),
+        runs
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn legacy_publication_ambiguity_upgrade_enables_manual_retry_only() -> TestResult {
+    use videnoa_controller::domain::FailureStage;
+    use videnoa_controller::lifecycle::LifecycleFailure;
+    use videnoa_controller::persistence::{Database, DatabaseOptions};
+    let server = MockVidenoa::start().await?;
+    let bytes = b"synthetic legacy publication retry".repeat(1024);
+    let (fixture, prepared, destination) =
+        publishing_task(&server, &bytes, PublicationIntent::direct()).await?;
+    let service = LifecycleService::new(fixture.store.clone());
+    service
+        .fail(
+            &fixture.task(prepared.task_id).await?,
+            Some(&fixture.attempt(prepared.attempt_id).await?),
+            LifecycleFailure::terminal(
+                TaskStatus::Publishing,
+                FailureStage::Publication,
+                FailureCode::PublicationAmbiguous,
+                "legacy ownership conflict",
+            ),
+            fixture.now,
+        )
+        .await?;
+    let old = fixture.task(prepared.task_id).await?;
+    let old_attempt = fixture.attempt(prepared.attempt_id).await?;
+    assert!(!old.failure.as_ref().unwrap().retryable);
+    // Synthetic legacy database: migration 0012 changes only retryability data.
+    sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 12")
+        .execute(fixture.store.database().pool())
+        .await?;
+    let upgraded = Database::open(DatabaseOptions::new(
+        fixture.directory.path().join("controller.sqlite3"),
+    ))
+    .await?;
+    let task = fixture.task(prepared.task_id).await?;
+    let attempt = fixture.attempt(prepared.attempt_id).await?;
+    assert_eq!(task.status, TaskStatus::Failed);
+    assert_eq!(attempt.attempt.status, TaskStatus::Failed);
+    assert!(task.failure.as_ref().unwrap().retryable);
+    assert!(attempt.attempt.failure.as_ref().unwrap().retryable);
+    assert_eq!(task.version, old.version + 1);
+    assert_eq!(attempt.version, old_attempt.version + 1);
+    // Reapplying the data update is harmless and never starts publication.
+    sqlx::raw_sql(include_str!(
+        "../../migrations/0012_publication_ambiguity_retry.sql"
+    ))
+    .execute(upgraded.pool())
+    .await?;
+    assert_eq!(fixture.task(prepared.task_id).await?.version, task.version);
+    service
+        .retry_downstream(&task, &attempt, fixture.now)
+        .await?;
+    assert_eq!(
+        publish(&fixture, &prepared).await?,
+        PublicationOutcome::Completed
+    );
+    assert_eq!(std::fs::read(destination)?, bytes);
+    assert_eq!(fixture.task(prepared.task_id).await?.attempt_count, 1);
+    upgraded.pool().close().await;
+    Ok(())
+}

@@ -134,8 +134,8 @@ fn failed_processing_creates_a_new_attempt_but_downstream_failures_resume() {
 }
 
 #[test]
-fn ambiguity_is_non_retryable_even_if_persisted_metadata_claims_otherwise() {
-    // Given: contradictory retryable flags on both ambiguity codes.
+fn publication_ambiguity_resumes_but_remote_ambiguity_remains_blocked() {
+    // Given: retryable flags on both ambiguity codes.
     let remote = failure(
         FailureStage::Submission,
         FailureCode::RemoteStateAmbiguous,
@@ -147,9 +147,20 @@ fn ambiguity_is_non_retryable_even_if_persisted_metadata_claims_otherwise() {
         true,
     );
 
-    // When/Then: code taxonomy outranks mutable persisted retryability metadata.
+    // When/Then: only publication can safely repeat its local evidence checks.
     assert_eq!(Lifecycle::retry_mode(&remote), RetryMode::Blocked);
-    assert_eq!(Lifecycle::retry_mode(&publication), RetryMode::Blocked);
+    assert_eq!(
+        Lifecycle::retry_mode(&publication),
+        RetryMode::Resume(ResumeStage::Publishing)
+    );
+    assert_eq!(
+        Lifecycle::retry_mode(&failure(
+            FailureStage::Processing,
+            FailureCode::PublicationAmbiguous,
+            true
+        )),
+        RetryMode::Blocked
+    );
 }
 
 #[test]
@@ -171,7 +182,7 @@ fn restart_cancelled_remote_job_is_a_retryable_processing_failure() {
 }
 
 #[test]
-fn typed_ambiguity_failures_cannot_be_marked_retryable() {
+fn typed_publication_ambiguity_allows_explicit_retry() {
     // Given: typed remote and publication ambiguity reports.
     let remote = LifecycleFailure::remote_state_ambiguous(
         RemoteAmbiguityStage::Submission,
@@ -179,7 +190,7 @@ fn typed_ambiguity_failures_cannot_be_marked_retryable() {
     );
     let publication = LifecycleFailure::publication_ambiguous("destination ownership is unknown");
 
-    // When/Then: both projections use stable ambiguity codes and disable retry.
+    // When/Then: remote ambiguity remains blocked; publication permits manual retry.
     assert_eq!(
         remote.info().failure_code,
         FailureCode::RemoteStateAmbiguous
@@ -189,5 +200,5 @@ fn typed_ambiguity_failures_cannot_be_marked_retryable() {
         publication.info().failure_code,
         FailureCode::PublicationAmbiguous
     );
-    assert!(!publication.info().retryable);
+    assert!(publication.info().retryable);
 }

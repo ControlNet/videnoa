@@ -37,15 +37,15 @@ impl Lifecycle {
             return RetryMode::Blocked;
         }
         match failure.failure_code {
-            FailureCode::RemoteStateAmbiguous | FailureCode::PublicationAmbiguous => {
-                RetryMode::Blocked
-            }
             FailureCode::ProcessingFailed => processing(failure.failure_stage),
             FailureCode::TransferFailed => transfer(failure.failure_stage),
             FailureCode::VerificationFailed => verification(failure.failure_stage),
-            FailureCode::PublicationFailed => publication(failure.failure_stage),
+            FailureCode::PublicationFailed | FailureCode::PublicationAmbiguous => {
+                publication(failure.failure_stage)
+            }
             FailureCode::CleanupFailed => cleanup(failure.failure_stage),
-            FailureCode::InputUnavailable
+            FailureCode::RemoteStateAmbiguous
+            | FailureCode::InputUnavailable
             | FailureCode::InputChanged
             | FailureCode::OutputExists
             | FailureCode::WorkerUnavailable
