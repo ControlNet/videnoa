@@ -13,7 +13,7 @@ export type BatchOptions = {
   input_pattern: string
   output_mode: "beside_input" | "directory"
   output_directory: string
-  naming_mode: "insert_extension" | "original"
+  naming_mode: "insert_extension" | "jellyfin_version_suffix" | "original"
   middle_extension: string
   workflow: string
   priority: string
