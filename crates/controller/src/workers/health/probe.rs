@@ -1,6 +1,8 @@
 use crate::persistence::WorkerRecord;
 use crate::recovery::StagePermit;
-use crate::remote::{CacheInvalidation, CompatibilityCatalog, PayloadLimits, VidenoaClient};
+use crate::remote::{
+    CacheInvalidation, CompatibilityCatalog, PayloadLimits, VidenoaClient, VidenoaClientError,
+};
 use crate::scheduler::RuntimeSettings;
 
 pub(super) struct ProbedWorker {
@@ -19,6 +21,7 @@ pub(super) enum ProbeOutcome {
     },
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub(super) enum ProbeFailure {
     Client,
     Health,
@@ -71,7 +74,7 @@ pub(super) async fn probe(
             tracing::warn!(worker_id = %worker.record.id, error = %error, "Worker health request failed");
             return ProbeOutcome::Failed {
                 worker,
-                failure: ProbeFailure::Health,
+                failure: classify_error(&error, ProbeFailure::Health),
             };
         }
         Ok(_) => {
@@ -89,17 +92,56 @@ pub(super) async fn probe(
                 tracing::warn!(worker_id = %worker.record.id, error = %error, "Worker capability request failed");
                 return ProbeOutcome::Failed {
                     worker,
-                    failure: if matches!(
-                        error,
-                        crate::remote::VidenoaClientError::ClientStatus { status: 401 | 403 }
-                    ) {
-                        ProbeFailure::Authentication
-                    } else {
-                        ProbeFailure::Capabilities
-                    },
+                    failure: classify_error(&error, ProbeFailure::Capabilities),
                 };
             }
         },
     };
     ProbeOutcome::Healthy { worker, catalog }
+}
+
+fn classify_error(error: &VidenoaClientError, fallback: ProbeFailure) -> ProbeFailure {
+    if matches!(
+        error,
+        VidenoaClientError::ClientStatus { status: 401 | 403 }
+    ) {
+        ProbeFailure::Authentication
+    } else {
+        fallback
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn authentication_is_independent_of_probe_stage() {
+        for status in [401, 403] {
+            for stage in [ProbeFailure::Health, ProbeFailure::Capabilities] {
+                assert_eq!(
+                    classify_error(&VidenoaClientError::ClientStatus { status }, stage),
+                    ProbeFailure::Authentication
+                );
+            }
+        }
+        for error in [
+            VidenoaClientError::Network,
+            VidenoaClientError::Timeout,
+            VidenoaClientError::Stall,
+            VidenoaClientError::MalformedPayload,
+            VidenoaClientError::RateLimited,
+            VidenoaClientError::ClientStatus { status: 429 },
+            VidenoaClientError::ServerStatus { status: 503 },
+        ] {
+            assert_eq!(
+                classify_error(&error, ProbeFailure::Health),
+                ProbeFailure::Health
+            );
+            assert_eq!(
+                classify_error(&error, ProbeFailure::Capabilities),
+                ProbeFailure::Capabilities
+            );
+        }
+    }
 }

@@ -134,6 +134,10 @@ pub async fn shutdown_iroh() {
 }
 
 #[cfg(test)]
+#[path = "iroh_health_test.rs"]
+mod health_test;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::{SecretString, WorkerApiUrl};
@@ -192,15 +196,8 @@ mod tests {
         let http_task = tokio::spawn(async move { axum::serve(http, router).await });
         let worker_root = tempfile::tempdir()?;
         let identity = videnoa_transport::Identity::open(worker_root.path())?;
-        let auth: videnoa_transport::Authorizer = Arc::new(|_, supplied| {
-            Box::pin(async move {
-                if supplied == PASSWORD {
-                    Ok(())
-                } else {
-                    Err(TunnelError::Unauthorized)
-                }
-            })
-        });
+        let failures = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let auth = health_test::counted_authorizer(PASSWORD, failures.clone());
         let server = videnoa_transport::Server::start(
             &identity,
             target,
@@ -241,13 +238,14 @@ mod tests {
         client.delete_file(&path).await?;
         assert!(file.lock().await.is_empty());
         let bad = SecretString::new("incorrect controller test credential");
-        let rejected = VidenoaClient::new_with_password(url, timeouts, limits, Some(&bad))?;
+        let rejected = VidenoaClient::new_with_password(url.clone(), timeouts, limits, Some(&bad))?;
         assert_eq!(
             rejected.health().await,
             Err(VidenoaClientError::ClientStatus { status: 401 })
         );
         drop(rejected);
         drop(client);
+        health_test::wrong_password_health_blocks_until_edit(url, PASSWORD, failures).await?;
         server.shutdown().await;
         shutdown_iroh().await;
         http_task.abort();
