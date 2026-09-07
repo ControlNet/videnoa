@@ -6,6 +6,7 @@ use super::{ClientConfigError, Health, PayloadLimits, RemoteTimeouts, VidenoaCli
 pub struct VidenoaClient {
     pub(super) base_url: WorkerApiUrl,
     pub(super) http: reqwest::Client,
+    pub(super) authorization: Option<reqwest::header::HeaderValue>,
     pub(super) timeouts: RemoteTimeouts,
     pub(super) limits: PayloadLimits,
 }
@@ -23,7 +24,7 @@ impl VidenoaClient {
         Self::new_with_password(base_url, timeouts, limits, None)
     }
 
-    /// Creates a client with a private, optional worker credential for all requests.
+    /// Creates a client with a private, optional worker credential for protected requests.
     ///
     /// # Errors
     /// Returns an error when the credential or HTTP client is invalid.
@@ -33,17 +34,17 @@ impl VidenoaClient {
         limits: PayloadLimits,
         password: Option<&crate::domain::SecretString>,
     ) -> Result<Self, ClientConfigError> {
-        let mut headers = reqwest::header::HeaderMap::new();
-        if let Some(password) = password {
+        let authorization = if let Some(password) = password {
             let mut value = reqwest::header::HeaderValue::from_bytes(
                 format!("Bearer {}", password.expose()).as_bytes(),
             )
             .map_err(|_| ClientConfigError::HttpClient)?;
             value.set_sensitive(true);
-            headers.insert(reqwest::header::AUTHORIZATION, value);
-        }
+            Some(value)
+        } else {
+            None
+        };
         let http = reqwest::Client::builder()
-            .default_headers(headers)
             .connect_timeout(timeouts.connect)
             .pool_max_idle_per_host(8)
             .redirect(reqwest::redirect::Policy::none())
@@ -57,6 +58,7 @@ impl VidenoaClient {
         Ok(Self {
             base_url,
             http,
+            authorization,
             timeouts,
             limits,
         })
@@ -68,7 +70,7 @@ impl VidenoaClient {
     /// Returns [`VidenoaClientError`] for transport, status, bounds, or payload failures.
     pub async fn health(&self) -> Result<Health, VidenoaClientError> {
         let response = self
-            .send(self.http.get(self.endpoint(&["api", "health"])?))
+            .send_public(self.http.get(self.endpoint(&["api", "health"])?))
             .await?;
         self.json(response).await
     }

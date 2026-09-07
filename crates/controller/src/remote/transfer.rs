@@ -20,8 +20,7 @@ impl VidenoaClient {
         // can exceed the short control-request deadline.
         let response = stalled(
             self.timeouts.stall,
-            self.http
-                .get(self.endpoint(&file_endpoint(path, None))?)
+            self.authenticated(self.http.get(self.endpoint(&file_endpoint(path, None))?))
                 .send(),
         )
         .await?
@@ -36,7 +35,7 @@ impl VidenoaClient {
     /// Returns [`VidenoaClientError`] for transport, status, bounds, or payload failures.
     pub async fn stat(&self, path: &FileApiPath) -> Result<FileStat, VidenoaClientError> {
         let response = self
-            .send(
+            .send_authenticated(
                 self.http
                     .get(self.endpoint(&file_endpoint(path, Some("stat")))?),
             )
@@ -50,7 +49,7 @@ impl VidenoaClient {
     /// Returns [`VidenoaClientError`] for transport or typed status failures.
     pub async fn delete_file(&self, path: &FileApiPath) -> Result<(), VidenoaClientError> {
         let response = self
-            .send(self.http.delete(self.endpoint(&file_endpoint(path, None))?))
+            .send_authenticated(self.http.delete(self.endpoint(&file_endpoint(path, None))?))
             .await?;
         ensure_success(response.status())
     }

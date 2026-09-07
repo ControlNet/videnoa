@@ -43,8 +43,7 @@ impl VidenoaClient {
             },
         );
         let request = self
-            .http
-            .put(self.endpoint(&file_endpoint(path, None))?)
+            .authenticated(self.http.put(self.endpoint(&file_endpoint(path, None))?))
             .header(header::CONTENT_TYPE, "application/octet-stream")
             .header(header::CONTENT_LENGTH, size)
             .body(reqwest::Body::wrap_stream(stream))

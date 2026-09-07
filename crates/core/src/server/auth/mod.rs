@@ -18,6 +18,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 use tokio::sync::Semaphore;
 
 use super::AppState;
@@ -36,6 +37,10 @@ struct Inner {
 struct Database {
     connection: Connection,
     failures: HashMap<IpAddr, VecDeque<i64>>,
+    // Ephemeral bearer verifier, guarded by the credential transaction mutex. Never serialized.
+    cached_password_digest: Option<[u8; 32]>,
+    #[cfg(test)]
+    slow_verifications: usize,
 }
 
 #[derive(Debug)]
@@ -241,6 +246,9 @@ impl AuthService {
             database: Mutex::new(Database {
                 connection,
                 failures: HashMap::new(),
+                cached_password_digest: None,
+                #[cfg(test)]
+                slow_verifications: 0,
             }),
             policy: RwLock::new(policy),
             tasks: Arc::new(Semaphore::new(2)),
@@ -312,6 +320,10 @@ impl Database {
         {
             return Err(AuthError::RateLimited);
         }
+        #[cfg(test)]
+        {
+            self.slow_verifications += 1;
+        }
         let parsed = PasswordHash::new(hash).map_err(|_| AuthError::Unavailable)?;
         if valid_password(password)
             && Argon2::default()
@@ -337,7 +349,19 @@ impl Database {
                 .ok()
                 .and_then(|s| s.strip_prefix("Bearer "))
                 .ok_or(AuthError::Unauthorized)?;
-            self.verify(context, password, hash)?;
+            let incoming: [u8; 32] = Sha256::digest(password.as_bytes()).into();
+            let cached_match = self
+                .cached_password_digest
+                .as_ref()
+                .is_some_and(|cached| bool::from(cached.ct_eq(&incoming)));
+            if cached_match {
+                if let Some(peer) = context.peer {
+                    self.failures.remove(&peer);
+                }
+            } else {
+                self.verify(context, password, hash)?;
+                self.cached_password_digest = Some(incoming);
+            }
             return Ok(Identity::default());
         }
         let token = context.cookie().ok_or(AuthError::Unauthorized)?;
@@ -477,6 +501,8 @@ impl Database {
                 match result {
                     Ok(reply) => {
                         self.connection.execute_batch("COMMIT")?;
+                        self.cached_password_digest =
+                            Some(Sha256::digest(password.as_bytes()).into());
                         self.failures.clear();
                         Ok(reply)
                     }
@@ -496,6 +522,7 @@ impl Database {
                 transaction.execute("DELETE FROM credential", [])?;
                 transaction.execute("DELETE FROM sessions", [])?;
                 transaction.commit()?;
+                self.cached_password_digest = None;
                 self.failures.clear();
                 Ok(Reply {
                     body: json!({"password_enabled":false,"authenticated":false}),

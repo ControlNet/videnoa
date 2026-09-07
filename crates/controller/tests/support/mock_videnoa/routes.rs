@@ -37,7 +37,37 @@ pub(crate) fn router(state: Arc<SharedState>) -> Router {
             get(files::get).put(files::upload).delete(files::delete),
         )
         .fallback(not_found)
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            authenticate,
+        ))
         .with_state(state)
+}
+
+async fn authenticate(
+    axum::extract::State(state): axum::extract::State<Arc<SharedState>>,
+    request: Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if request.uri().path() == "/api/health" {
+        assert!(!request.headers().contains_key(header::AUTHORIZATION));
+    } else {
+        let password = state.password.lock().await;
+        if let Some(password) = password.as_ref() {
+            if request
+                .headers()
+                .get(header::AUTHORIZATION)
+                .map(HeaderValue::as_bytes)
+                != Some(format!("Bearer {password}").as_bytes())
+            {
+                state
+                    .authentication_failures
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                return StatusCode::UNAUTHORIZED.into_response();
+            }
+        }
+    }
+    next.run(request).await
 }
 
 async fn not_found() -> Response {

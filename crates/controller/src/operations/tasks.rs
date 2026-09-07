@@ -98,10 +98,11 @@ async fn processing_retry(
         .await
         .map_err(|error| OperationsError::from_worker(&error))?
         .ok_or(OperationsError::RemoteStateAmbiguous)?;
-    let client = VidenoaClient::new(
+    let client = VidenoaClient::new_with_password(
         worker.api_url,
         state.scheduler.runtime_settings().remote_timeouts(),
         state.payload_limits,
+        worker.password.as_ref(),
     )
     .map_err(|_| OperationsError::Internal)?;
     let job = client

@@ -83,7 +83,7 @@ async fn worker_password_create_keep_replace_clear_and_restart() -> TestResult {
 }
 
 #[tokio::test]
-async fn all_remote_requests_including_upload_carry_the_worker_credential() -> TestResult {
+async fn only_protected_remote_requests_carry_the_worker_credential() -> TestResult {
     use axum::{
         extract::State,
         http::{HeaderMap, StatusCode},
@@ -107,7 +107,12 @@ async fn all_remote_requests_including_upload_carry_the_worker_credential() -> T
             "/{*path}",
             any(
                 |State((secret, count)): State<(SecretString, Arc<AtomicUsize>)>,
+                 uri: axum::http::Uri,
                  headers: HeaderMap| async move {
+                    if uri.path() == "/api/health" {
+                        assert!(!headers.contains_key("authorization"));
+                        return StatusCode::NOT_FOUND;
+                    }
                     if headers
                         .get("authorization")
                         .map(axum::http::HeaderValue::as_bytes)
@@ -137,6 +142,11 @@ async fn all_remote_requests_including_upload_carry_the_worker_credential() -> T
     )?;
     let path = FileApiPath::parse("test/input.bin")?;
     let _ = client.health().await;
+    let _ = client.workflows().await;
+    let _ = client.presets().await;
+    let _ = client
+        .workflow_interface(&videnoa_controller::domain::WorkflowName::new("test"))
+        .await;
     let _ = client.stat(&path).await;
     let _ = client.upload(&path, 0, tokio::io::empty()).await;
     let _ = client.delete_file(&path).await;
@@ -152,6 +162,57 @@ async fn all_remote_requests_including_upload_carry_the_worker_credential() -> T
         )
         .await;
     server.abort();
-    assert_eq!(count.load(Ordering::SeqCst), 8);
+    assert_eq!(count.load(Ordering::SeqCst), 10);
+    Ok(())
+}
+
+#[test]
+fn production_worker_clients_cannot_silently_become_anonymous() -> TestResult {
+    fn audit(path: &std::path::Path) -> TestResult {
+        for entry in std::fs::read_dir(path)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                audit(&path)?;
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                let source = std::fs::read_to_string(&path)?;
+                let compact: String = source.chars().filter(|c| !c.is_whitespace()).collect();
+                assert!(
+                    !compact.contains("VidenoaClient::new("),
+                    "anonymous production client: {}",
+                    path.display()
+                );
+                if !path.components().any(|part| part.as_os_str() == "remote") {
+                    assert!(
+                        !compact.contains("reqwest::Client"),
+                        "direct worker HTTP client: {}",
+                        path.display()
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+    audit(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"))
+}
+
+#[test]
+fn malformed_worker_credential_errors_are_redacted() -> TestResult {
+    use videnoa_controller::{
+        domain::{SecretString, WorkerApiUrl},
+        remote::{PayloadLimits, RemoteTimeouts, VidenoaClient},
+    };
+    let credential = format!("{}\n", uuid::Uuid::new_v4());
+    let result = VidenoaClient::new_with_password(
+        WorkerApiUrl::parse("http://127.0.0.1:13000")?,
+        RemoteTimeouts::new(
+            std::time::Duration::from_secs(3),
+            std::time::Duration::from_secs(3),
+            std::time::Duration::from_secs(3),
+        )?,
+        PayloadLimits::new(4096, 1024)?,
+        Some(&SecretString::new(&credential)),
+    );
+    let error = result.err().ok_or("invalid header accepted")?;
+    assert!(!format!("{error:?} {error}").contains(credential.trim()));
     Ok(())
 }

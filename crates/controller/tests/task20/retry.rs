@@ -12,7 +12,11 @@ async fn explicit_processing_retry_creates_replacement_attempt_and_converges() -
     let mut worker = MockVidenoa::start_persistent().await?;
     worker.set_fault(Fault::AcceptThenDropRunResponse).await;
     let mut fixture = ControllerFixture::start().await?;
-    let registered = fixture.register_worker(&worker, "worker-retry").await?;
+    let credential = uuid::Uuid::new_v4().to_string();
+    worker.require_password(&credential).await;
+    let registered = fixture
+        .register_protected_worker(&worker, &credential)
+        .await?;
     let task = fixture.create_task("worker-retry", b"input-video").await?;
     wait_for_job_count(&worker, 1).await?;
     assert_eq!(
@@ -35,7 +39,16 @@ async fn explicit_processing_retry_creates_replacement_attempt_and_converges() -
         .first()
         .ok_or_else(|| std::io::Error::other("failed attempt missing"))?;
 
+    let before_retry = worker.journal().await.len();
     let retried = fixture.retry_task(&task).await?;
+    let requests = worker.journal().await;
+    let retry_requests = &requests[before_retry..];
+    assert!(retry_requests
+        .iter()
+        .any(|entry| entry.route == Route::JobPoll));
+    assert!(retry_requests
+        .iter()
+        .any(|entry| entry.route == Route::DeleteFile));
     let processing = wait_for_status(&fixture, &task, TaskStatus::Processing).await?;
     let replacement = processing
         .attempts
@@ -62,6 +75,7 @@ async fn explicit_processing_retry_creates_replacement_attempt_and_converges() -
     assert_eq!(completed.task.attempt_count, 2);
     assert_eq!(worker.counters().await.get(Route::Run), 2);
     assert_eq!(worker.file_count().await, 0);
+    assert_eq!(worker.authentication_failures(), 0);
     assert_eq!(fixture.store.worker_used_slots(registered.id).await?, 0);
     assert_eq!(
         tokio::fs::read(completed.task.output_path.as_str()).await?,

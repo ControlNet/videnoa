@@ -3,6 +3,7 @@ mod admission;
 #[path = "controller.rs"]
 mod harness;
 mod http;
+mod password;
 mod proof;
 mod recovery;
 mod runtime;

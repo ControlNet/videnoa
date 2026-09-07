@@ -25,6 +25,7 @@ tokio = { workspace = true }
 tokio-util = { workspace = true }
 tower = { workspace = true }
 tower-http = { workspace = true }
+subtle.workspace = true
 sha2 = { workspace = true }
 tracing = { workspace = true }
 tracing-appender = { workspace = true }

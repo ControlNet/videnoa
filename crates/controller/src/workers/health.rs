@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -6,7 +6,7 @@ use tokio::sync::broadcast;
 use tokio::task::JoinSet;
 use tokio::time::{interval, MissedTickBehavior};
 
-use crate::domain::WorkerCapabilities;
+use crate::domain::{WorkerCapabilities, WorkerId};
 use crate::operations::EventHub;
 use crate::persistence::{Store, WorkerHealthUpdate, WorkerRecord};
 use crate::recovery::ShutdownCoordinator;
@@ -14,7 +14,7 @@ use crate::remote::{CapabilityCache, PayloadLimits, SystemClock};
 use crate::scheduler::RuntimeSettings;
 
 use super::{WorkerRegistry, WorkerRegistryError, WorkerRegistryErrorCode};
-use probe::{probe, ProbeOutcome};
+use probe::{probe, ProbeFailure, ProbeOutcome};
 
 mod probe;
 
@@ -39,6 +39,7 @@ pub struct WorkerHealthService {
     payload_limits: PayloadLimits,
     shutdown: ShutdownCoordinator,
     wakeups: broadcast::Receiver<()>,
+    authentication_blocks: HashMap<WorkerId, u64>,
 }
 
 impl WorkerHealthService {
@@ -57,6 +58,7 @@ impl WorkerHealthService {
             payload_limits,
             shutdown,
             wakeups: events.subscribe_wakeups(),
+            authentication_blocks: HashMap::new(),
         }
     }
 
@@ -87,16 +89,17 @@ impl WorkerHealthService {
     }
 
     async fn refresh_due(
-        &self,
+        &mut self,
         cache: &mut CapabilityCache<SystemClock>,
     ) -> Result<(), WorkerHealthError> {
         let now = Utc::now();
-        let mut pending: VecDeque<_> = self
-            .store
-            .workers()
-            .await?
-            .into_iter()
-            .filter(|worker| due(worker, now))
+        let workers = self.store.workers().await?;
+        self.authentication_blocks.retain(|id, _| workers.iter().any(|worker| worker.id == *id));
+        let mut pending: VecDeque<_> = workers.into_iter()
+            .filter(|worker| match self.authentication_blocks.get(&worker.id) {
+                Some(version) => worker.enabled && *version != worker.version,
+                None => due(worker, now),
+            })
             .collect();
         let mut probes = JoinSet::new();
         while !pending.is_empty() || !probes.is_empty() {
@@ -129,11 +132,12 @@ impl WorkerHealthService {
     }
 
     async fn persist(
-        &self,
+        &mut self,
         outcome: ProbeOutcome,
         cache: &mut CapabilityCache<SystemClock>,
         now: DateTime<Utc>,
     ) -> Result<(), WorkerHealthError> {
+        let authentication_failed = matches!(&outcome, ProbeOutcome::Failed { failure: ProbeFailure::Authentication, .. });
         let was_online = match &outcome {
             ProbeOutcome::Healthy { worker, .. } | ProbeOutcome::Failed { worker, .. } => {
                 worker.record.online
@@ -178,11 +182,20 @@ impl WorkerHealthService {
                 )
             }
         };
+        // Use the CAS result version, not a subsequent reload that may see a concurrent edit.
+        let probed_version = update.expected_version + 1;
         let _write = stage.begin_write();
         match self.registry.refresh_health(update).await {
             Ok(record) => {
+                if authentication_failed {
+                    self.authentication_blocks.insert(record.id, probed_version);
+                } else {
+                    self.authentication_blocks.remove(&record.id);
+                }
                 if record.online && !was_online {
                     tracing::info!(worker_id = %record.id, workflows = record.capabilities.workflows.len(), "Worker online");
+                } else if authentication_failed {
+                    tracing::warn!(worker_id = %record.id, "Worker authentication failed; health checks paused until registration changes");
                 } else if !record.online {
                     tracing::warn!(worker_id = %record.id, retry_count = record.health_retry_count, next_check_at = ?record.next_health_check_at, "Worker unavailable; health check will retry");
                 }

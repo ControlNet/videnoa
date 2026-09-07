@@ -21,7 +21,7 @@ impl VidenoaClient {
         params: &BTreeMap<String, Value>,
     ) -> Result<RunSubmission, VidenoaClientError> {
         let response = self
-            .send(
+            .send_authenticated(
                 self.http
                     .post(self.endpoint(&["api", "run"])?)
                     .header("idempotency-key", key.to_string())
@@ -50,7 +50,7 @@ impl VidenoaClient {
     pub async fn job(&self, id: RemoteJobId) -> Result<Job, VidenoaClientError> {
         let id = id.to_string();
         let response = self
-            .send(self.http.get(self.endpoint(&["api", "jobs", &id])?))
+            .send_authenticated(self.http.get(self.endpoint(&["api", "jobs", &id])?))
             .await?;
         self.json(response).await
     }
@@ -62,7 +62,7 @@ impl VidenoaClient {
     pub async fn cancel_job(&self, id: RemoteJobId) -> Result<(), VidenoaClientError> {
         let id = id.to_string();
         let response = self
-            .send(self.http.delete(self.endpoint(&["api", "jobs", &id])?))
+            .send_authenticated(self.http.delete(self.endpoint(&["api", "jobs", &id])?))
             .await?;
         ensure_success(response.status())
     }

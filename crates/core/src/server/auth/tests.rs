@@ -455,3 +455,109 @@ async fn anonymous_websocket_survives_password_rotation_and_disable() {
     drop(stream);
     server.abort();
 }
+
+fn bearer_context(password: &str) -> RequestContext {
+    let mut request = context(None);
+    request.headers.insert(
+        header::AUTHORIZATION,
+        axum::http::HeaderValue::from_bytes(format!("Bearer {password}").as_bytes()).unwrap(),
+    );
+    request
+}
+
+#[tokio::test]
+async fn bearer_cache_is_ephemeral_and_tracks_committed_password_rotation() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = uuid::Uuid::new_v4().to_string();
+    let second = format!(" 短{} ", uuid::Uuid::new_v4());
+    let service = AuthService::open(dir.path(), AuthConfig::default()).unwrap();
+    service.execute(context(None), setup(&first)).await.unwrap();
+    assert!(service
+        .0
+        .database
+        .lock()
+        .unwrap()
+        .cached_password_digest
+        .is_some());
+    drop(service);
+
+    let service = AuthService::open(dir.path(), AuthConfig::default()).unwrap();
+    assert!(service
+        .0
+        .database
+        .lock()
+        .unwrap()
+        .cached_password_digest
+        .is_none());
+    for expected in [1, 1, 1] {
+        service
+            .execute(bearer_context(&first), Action::Check { mutation: false })
+            .await
+            .unwrap();
+        assert_eq!(
+            service.0.database.lock().unwrap().slow_verifications,
+            expected
+        );
+    }
+    assert!(matches!(
+        service
+            .execute(bearer_context(&second), Action::Check { mutation: false })
+            .await,
+        Err(AuthError::Unauthorized)
+    ));
+    let rotated = service
+        .execute(bearer_context(&first), setup(&second))
+        .await
+        .unwrap();
+    let before = service.0.database.lock().unwrap().slow_verifications;
+    service
+        .execute(bearer_context(&second), Action::Check { mutation: true })
+        .await
+        .unwrap();
+    assert_eq!(
+        service.0.database.lock().unwrap().slow_verifications,
+        before
+    );
+    assert!(matches!(
+        service
+            .execute(bearer_context(&first), Action::Check { mutation: false })
+            .await,
+        Err(AuthError::Unauthorized)
+    ));
+    {
+        let database = service.0.database.lock().unwrap();
+        let hash = stored_hash(&database.connection).unwrap().unwrap();
+        assert!(hash.starts_with("$argon2id$"));
+        assert!(Argon2::default()
+            .verify_password(second.as_bytes(), &PasswordHash::new(&hash).unwrap())
+            .is_ok());
+        let columns: Vec<String> = database
+            .connection
+            .prepare("PRAGMA table_info(credential)")
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(columns, ["id", "password_hash"]);
+    }
+    service
+        .execute(context(Some(&rotated)), Action::Disable)
+        .await
+        .unwrap();
+    assert!(service
+        .0
+        .database
+        .lock()
+        .unwrap()
+        .cached_password_digest
+        .is_none());
+    service.execute(context(None), setup(&first)).await.unwrap();
+    assert!(reset(dir.path()).is_err()); // A live instance cannot retain a cache across external reset.
+    drop(service);
+    reset(dir.path()).unwrap();
+    let service = AuthService::open(dir.path(), AuthConfig::default()).unwrap();
+    let database = service.0.database.lock().unwrap();
+    assert!(database.cached_password_digest.is_none());
+    assert!(stored_hash(&database.connection).unwrap().is_none());
+}

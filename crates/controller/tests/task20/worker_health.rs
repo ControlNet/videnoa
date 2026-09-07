@@ -208,3 +208,73 @@ where
     .await
     .map_err(|_| std::io::Error::other("timed out waiting for durable runtime state").into())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn authentication_failure_blocks_periodic_probes_until_password_edit() -> TestResult {
+    let worker = MockVidenoa::start().await?;
+    let credential = uuid::Uuid::new_v4().to_string();
+    worker.require_password(&credential).await;
+    let fixture = ControllerFixture::start().await?;
+    let registered = fixture
+        .register_protected_worker(&worker, &uuid::Uuid::new_v4().to_string())
+        .await?;
+    let failed = wait_for_worker(&fixture, registered.id, |record| {
+        record.last_error.is_some()
+    })
+    .await?;
+    assert!(!failed.online);
+    assert!(failed.enabled);
+    assert_eq!(
+        failed.last_error.as_deref(),
+        Some("worker authentication failed; check the saved worker password")
+    );
+    tokio::time::sleep(Duration::from_millis(2_200)).await;
+    assert_eq!(worker.authentication_failures(), 1);
+    assert_eq!(worker.counters().await.get(Route::Health), 1);
+    fixture
+        .replace_worker_password(registered.id, &credential)
+        .await?;
+    let online = wait_for_worker(&fixture, registered.id, |record| record.online).await?;
+    assert!(online.version > failed.version);
+    assert_eq!(worker.authentication_failures(), 1);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn forbidden_blocks_but_rate_limit_and_capability_failures_retry() -> TestResult {
+    for status in [403, 429, 503] {
+        let worker = MockVidenoa::start().await?;
+        worker
+            .set_fault(Fault::Response(ResponseFault {
+                route: Route::Workflows,
+                status,
+                body: Vec::new(),
+            }))
+            .await;
+        let fixture = ControllerFixture::start().await?;
+        let registered = fixture
+            .register_worker_without_wait(&worker, "status-probe", true)
+            .await?;
+        let failed = wait_for_worker(&fixture, registered.id, |record| {
+            record.last_error.is_some()
+        })
+        .await?;
+        if status == 403 {
+            assert_eq!(
+                failed.last_error.as_deref(),
+                Some("worker authentication failed; check the saved worker password")
+            );
+            tokio::time::sleep(Duration::from_millis(2_200)).await;
+            assert_eq!(worker.counters().await.get(Route::Workflows), 1);
+        } else {
+            assert_eq!(
+                failed.last_error.as_deref(),
+                Some("worker capability refresh failed")
+            );
+            wait_for_worker(&fixture, registered.id, |record| record.online).await?;
+            assert!(worker.counters().await.get(Route::Workflows) >= 2);
+        }
+        fixture.stop().await?;
+    }
+    Ok(())
+}

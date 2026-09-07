@@ -17,7 +17,21 @@ impl VidenoaClient {
         Ok(url)
     }
 
-    pub(super) async fn send(
+    pub(super) fn authenticated(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match &self.authorization {
+            Some(value) => request.header(reqwest::header::AUTHORIZATION, value.clone()),
+            None => request,
+        }
+    }
+
+    pub(super) async fn send_authenticated(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> Result<Response, VidenoaClientError> {
+        self.send_public(self.authenticated(request)).await
+    }
+
+    pub(super) async fn send_public(
         &self,
         request: reqwest::RequestBuilder,
     ) -> Result<Response, VidenoaClientError> {

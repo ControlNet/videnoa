@@ -74,6 +74,8 @@ impl RuntimeState {
 pub(crate) struct SharedState {
     pub inner: Mutex<RuntimeState>,
     pub checkpoints: CheckpointHub,
+    pub password: Mutex<Option<String>>,
+    pub authentication_failures: std::sync::atomic::AtomicUsize,
     persistence_path: Option<PathBuf>,
 }
 
@@ -82,6 +84,8 @@ impl SharedState {
         Arc::new(Self {
             inner: Mutex::new(RuntimeState::new(persistent)),
             checkpoints: CheckpointHub::new(),
+            password: Mutex::new(None),
+            authentication_failures: std::sync::atomic::AtomicUsize::new(0),
             persistence_path,
         })
     }

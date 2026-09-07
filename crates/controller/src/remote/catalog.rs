@@ -11,7 +11,7 @@ impl VidenoaClient {
     /// Returns [`VidenoaClientError`] for transport, status, bounds, or payload failures.
     pub async fn workflows(&self) -> Result<Vec<Workflow>, VidenoaClientError> {
         let response = self
-            .send(self.http.get(self.endpoint(&["api", "workflows"])?))
+            .send_authenticated(self.http.get(self.endpoint(&["api", "workflows"])?))
             .await?;
         self.json(response).await
     }
@@ -22,7 +22,7 @@ impl VidenoaClient {
     /// Returns [`VidenoaClientError`] for transport, status, bounds, or payload failures.
     pub async fn presets(&self) -> Result<Vec<Preset>, VidenoaClientError> {
         let response = self
-            .send(self.http.get(self.endpoint(&["api", "presets"])?))
+            .send_authenticated(self.http.get(self.endpoint(&["api", "presets"])?))
             .await?;
         self.json(response).await
     }
@@ -36,7 +36,7 @@ impl VidenoaClient {
         name: &WorkflowName,
     ) -> Result<WorkflowInterface, VidenoaClientError> {
         let response = self
-            .send(self.http.get(self.endpoint(&[
+            .send_authenticated(self.http.get(self.endpoint(&[
                 "api",
                 "workflows",
                 name.as_str(),

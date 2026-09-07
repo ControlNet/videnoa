@@ -122,3 +122,24 @@ Development proxies default to these isolated ports and can be overridden:
 VIDENOA_DEV_API_URL=http://127.0.0.1:13000 npm --prefix web run dev
 VIDENOA_CONTROLLER_DEV_API_URL=http://127.0.0.1:13001 npm --prefix controller-web run dev
 ```
+
+## Machine authentication runtime
+
+Controller continues sending `Authorization: Bearer <worker-password>` to protected
+Worker requests, including manual processing retry, uploads, downloads, and cleanup.
+Public `/api/health` receives no Authorization header. Redirects remain disabled.
+
+The Worker keeps a successful password's SHA-256 digest only in memory under the
+authentication mutex. Bearer requests compare fixed-size digests in constant time;
+cache misses use the existing Argon2id verifier and failed-attempt limiter. Startup
+begins with an empty cache. Successful Bearer verification populates it; committed
+password creation/rotation replaces it immediately; disabling clears it. Offline
+reset requires the instance lock, so an old live cache cannot survive reset. Disk
+credentials remain salted Argon2id hashes. Browser login/session/CSRF behavior is
+independent and unchanged.
+
+A protected capability response of 401 or 403 marks the Worker offline and pauses
+periodic probes for that registration version with the error "worker authentication
+failed; check the saved worker password". Editing the registration unblocks a fresh
+probe immediately. Controller restart clears these in-memory blocks. Network,
+429, and other capability errors retain ordinary retry/backoff behavior.

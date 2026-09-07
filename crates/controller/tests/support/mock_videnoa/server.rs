@@ -52,6 +52,24 @@ impl MockVidenoa {
         })
     }
 
+    #[allow(
+        dead_code,
+        reason = "Shared harness authentication is exercised by Task 20"
+    )]
+    pub async fn require_password(&self, password: &str) {
+        *self.state.password.lock().await = Some(password.to_owned());
+    }
+
+    #[allow(
+        dead_code,
+        reason = "Shared harness authentication is exercised by Task 20"
+    )]
+    pub fn authentication_failures(&self) -> usize {
+        self.state
+            .authentication_failures
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     pub fn base_url(&self) -> &str {
         &self.base_url
     }
@@ -166,7 +184,9 @@ impl MockVidenoa {
                 (persistent, RestartOutcome::StateLostAmbiguous)
             }
         };
+        let password = self.state.password.lock().await.clone();
         self.state = SharedState::new(persistent, self.persistence_path.clone());
+        *self.state.password.lock().await = password;
         let listener = TcpListener::bind(self.address).await?;
         self.runtime = Some(spawn_runtime(listener, Arc::clone(&self.state)));
         Ok(outcome)
