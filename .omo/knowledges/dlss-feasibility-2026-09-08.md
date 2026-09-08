@@ -154,6 +154,15 @@ in SDK 1.1, and Windows 10+ requirements. It is not DLSS FG and does not solve
 native Linux support. Prefer evaluating this purpose-built video API before
 committing to the NR carrier for faithful video restoration.
 
+Rechecked the RTX Video SDK getting-started page after the Linux discussion:
+version 1.1 lists native CUDA, 10-bit SR, and RTX 50 support, but explicitly
+requires 64-bit Windows 10 or later. CUDA/Vulkan API availability does not imply
+Linux OS support. Its advertised effects are SR, artifact reduction, and SDR
+to HDR, not frame interpolation. The download link points to
+`rtx_video_sdk_v1.1.0.zip` and redirects to NVIDIA account login; its archive
+contents were not inspected. Treat it as a Windows video-SR candidate, separate
+from the official Linux NGX DLSS libraries and Maxine VFX Linux SDK.
+
 Redistribution needs a separate check of the bundled NVIDIA licenses; the
 Python project's MIT license alone is not sufficient evidence for all binaries.
 
