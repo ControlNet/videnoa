@@ -239,7 +239,6 @@ const onnxNodeTypes = {
 function GraphSection({ inspection }: { inspection: ModelInspection }) {
 	const { t } = useTranslation("models");
 	const structuralCount = structuralNodes(inspection).length;
-	const hiddenConstants = inspection.nodes.length - structuralCount;
 	const tooLarge = structuralCount > MAX_GRAPH_NODES;
 
 	const { nodes, edges } = useMemo(
@@ -342,11 +341,6 @@ function GraphSection({ inspection }: { inspection: ModelInspection }) {
 				/>
 				<Controls className="!bg-card !border-border/50 !shadow-sm" />
 			</ReactFlow>
-			{hiddenConstants > 0 && (
-				<p className="pointer-events-none absolute bottom-4 left-1/2 -translate-x-1/2 text-[11px] text-muted-foreground">
-					{t("detail.graph.constantsHidden", { total: hiddenConstants })}
-				</p>
-			)}
 		</div>
 	);
 }

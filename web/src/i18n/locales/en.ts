@@ -194,7 +194,6 @@ export const enResources: NamespaceResources = {
 		"card.noDescription": "No description",
 		"card.rangeLabel": "Range",
 		"detail.error.inspectFailed": "Failed to inspect model",
-		"detail.graph.constantsHidden": "{{total}} Constant nodes hidden — they carry weights, not structure",
 		"detail.graph.tooLarge": "Graph too large to render ({{count}} operations)",
 		"detail.graph.tooLargeHint": "Switch to Operators for the full list.",
 		"detail.metadata.domain": "Domain",

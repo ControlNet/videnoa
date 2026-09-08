@@ -189,7 +189,6 @@ export const zhCNResources: NamespaceResources = {
 		"card.noDescription": "无描述",
 		"card.rangeLabel": "范围",
 		"detail.error.inspectFailed": "模型解析失败",
-		"detail.graph.constantsHidden": "已隐藏 {{total}} 个 Constant 节点 —— 它们承载权重，不是结构",
 		"detail.graph.tooLarge": "图过大，无法渲染（{{count}} 个算子）",
 		"detail.graph.tooLargeHint": "切换到“算子”查看完整列表。",
 		"detail.metadata.domain": "域",
