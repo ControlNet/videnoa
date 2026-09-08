@@ -1,0 +1,188 @@
+{
+  "pages": [
+    {
+      "id": "page-2",
+      "name": "Proposed"
+    },
+    {
+      "id": "page-1",
+      "name": "Current build"
+    }
+  ],
+  "artboards": [
+    {
+      "file": "ModelsNext.dc.html",
+      "page": "page-2",
+      "title": "Models · proposed",
+      "x": 0,
+      "y": 0,
+      "w": 1440,
+      "h": 900,
+      "is_interactive": true
+    },
+    {
+      "file": "ModelDetailNext.dc.html",
+      "page": "page-2",
+      "title": "Model detail · proposed",
+      "x": 1560,
+      "y": 0,
+      "w": 1440,
+      "h": 900,
+      "is_interactive": true
+    },
+    {
+      "file": "PerformanceNext.dc.html",
+      "page": "page-2",
+      "title": "Performance · proposed",
+      "x": 3120,
+      "y": 0,
+      "w": 1440,
+      "h": 900,
+      "is_interactive": true
+    },
+    {
+      "file": "SettingsNext.dc.html",
+      "page": "page-2",
+      "title": "Settings · proposed",
+      "x": 4680,
+      "y": 0,
+      "w": 1440,
+      "h": 900,
+      "is_interactive": true
+    },
+    {
+      "file": "Main.dc.html",
+      "page": "page-1",
+      "title": "Editor",
+      "x": 0,
+      "y": 0,
+      "w": 1440,
+      "h": 900,
+      "is_interactive": true
+    },
+    {
+      "file": "Jobs.dc.html",
+      "page": "page-1",
+      "title": "Jobs",
+      "x": 1560,
+      "y": 0,
+      "w": 1440,
+      "h": 900,
+      "is_interactive": true
+    },
+    {
+      "file": "Models.dc.html",
+      "page": "page-1",
+      "title": "Models",
+      "x": 3120,
+      "y": 0,
+      "w": 1440,
+      "h": 900,
+      "is_interactive": true
+    },
+    {
+      "file": "Performance.dc.html",
+      "page": "page-1",
+      "title": "Performance",
+      "x": 0,
+      "y": 1080,
+      "w": 1440,
+      "h": 900,
+      "is_interactive": true
+    },
+    {
+      "file": "PerformanceScrolled.dc.html",
+      "page": "page-1",
+      "title": "Performance · scrolled to trends",
+      "x": 1560,
+      "y": 1080,
+      "w": 1440,
+      "h": 900,
+      "is_interactive": true
+    },
+    {
+      "file": "Settings.dc.html",
+      "page": "page-1",
+      "title": "Settings",
+      "x": 0,
+      "y": 2160,
+      "w": 1440,
+      "h": 900,
+      "is_interactive": true
+    },
+    {
+      "file": "SettingsScrolled.dc.html",
+      "page": "page-1",
+      "title": "Settings · scrolled to foot",
+      "x": 1560,
+      "y": 2160,
+      "w": 1440,
+      "h": 900,
+      "is_interactive": true
+    },
+    {
+      "file": "ModelDetail.dc.html",
+      "page": "page-1",
+      "title": "Model detail · current",
+      "x": 4680,
+      "y": 0,
+      "w": 1440,
+      "h": 900,
+      "is_interactive": true
+    }
+  ],
+  "annotations": [
+    {
+      "id": "proposal",
+      "page": "page-2",
+      "x": 0,
+      "y": -300,
+      "w": 900,
+      "text": "Proposal for Models / Performance / Settings. Header, Editor and Jobs untouched.\n\nSame type ramp, same violet, same control heights — nothing here needs a new design system.\n\nThree changes are shared across all three pages:\n\n1. The page ground drops one step (light 0.98 → 0.965 L, dark 0.13 → 0.115) so cards read as a raised surface instead of a hairline outline. This is the one change that also touches Editor and Jobs — two lines in index.css, and it helps both.\n\n2. Badges become theme-aware: dark ink on a light tint in light mode, the reverse in dark. The current bg-*-500/20 + text-*-400 pairing is dark-only, and washes out on white.\n\n3. One page-header pattern: title, one subtitle line, 24px. Today all three pages do this differently."
+    },
+    {
+      "id": "perf-note",
+      "page": "page-2",
+      "x": 700,
+      "y": 960,
+      "w": 640,
+      "text": "Performance\n\n• Status is stated once beside the title. Was LIVE ×7 plus 'telemetry available' ×6.\n• All four tiles now lead with a percentage, so they are comparable; bytes move to the sub-line. Each carries a sparkline of the same series the chart below plots.\n• The two 500px donuts become two stacked bars in one 208px card — same three numbers each, a quarter of the space, and RAM vs VRAM now sit side by side. Each bar uses its own metric's colour, so a RAM bar is no longer drawn in the CPU's purple.\n• The trend chart gets a legend. Four unlabelled lines was the worst readability problem on the page.\n\nThe whole page now fits 900px without scrolling — it needed 1166 before."
+    },
+    {
+      "id": "models-note",
+      "page": "page-2",
+      "x": 0,
+      "y": 960,
+      "w": 660,
+      "text": "Models\n\n• Filter bar is one row of 36px controls in two segmented groups — was 36 / 32 / 36 with no grouping and a barely-visible selected state.\n• Model name is now mono (it is an identifier); the filename drops to a quiet footer line.\n• Type carries the only colour, and it is the SAME accent as that node in the Editor palette (orange = Super Resolution, cyan = Frame Interpolation). 4x / FP16 become neutral spec chips.\n• Card gets a spine: name → type → description → rule → Range / Input → filename."
+    },
+    {
+      "id": "detail-note",
+      "page": "page-2",
+      "x": 720,
+      "y": 960,
+      "w": 800,
+      "text": "Model detail — this is where clicking a card goes.\n\nEverything on this board is read out of the real the_database_AnimeJaNaiV3L1_sharp_HD_x2_fp16_op17.onnx: 55 ops, opset 17, IR 8, pytorch 2.1.2, float16 [?, 3, ?, ?] in and out. The architecture drawn is the actual one — SRVGGNetCompact: Conv 3→24 + PRelu, then Conv 24→24 + PRelu eight more times, Conv 24→12, DepthToSpace blocksize 2 CRD, joined by Add with a nearest-neighbour Resize of the input, then Clip.\n\nWhat changed from the modal:\n• A full-width surface instead of a 768px dialog. The graph is the reason you opened this.\n• No tabs. Metadata and the I/O schema live in the rail and stay on screen — the graph IS the schema, so splitting them across tabs was fighting itself.\n• Left-to-right, like the Editor. The current one is top-to-bottom, so the app has two graphs that read in different directions.\n• The 32 Constant nodes are hidden. They are weights, not structure, and they were 58% of the boxes.\n• The repeated Conv → PRelu run collapses to one block with a ×8 chip.\n• Operators is the other half: op counts by type, and the 23-op sequence. The current view cannot answer what is in this model at all."
+    },
+    {
+      "id": "settings-note",
+      "page": "page-2",
+      "x": 1580,
+      "y": 960,
+      "w": 800,
+      "text": "Settings — rebuilt at Controller density.\n\nBorrowed from controller-web: the 168px section nav beside a bordered content column, section = 13px heading + hairline + grid, 32px fields with 11px labels and mono values on a recessed ground, and the save bar pinned to the foot of the route.\n\nWhat that buys: numeric values stop getting 432px inputs, so Session fits on one row and Storage puts all four paths on one. The page went 1546px → 1383px → 778px, and now fits on screen with room to spare.\n\nStill fixed from the current build: no stretch holes, footer aligned, one checkbox style, one input radius, human labels with the config key beside them, Server as read-only text rather than 40%-opacity disabled inputs, and Access protection split into Password and Session."
+    },
+    {
+      "id": "detail-current-note",
+      "page": "page-1",
+      "x": 4680,
+      "y": -320,
+      "w": 1440,
+      "text": "Model detail as it is today — and this one is not a drawing. The 57 boxes are placed by running the app’s own buildOnnxGraph + dagre over the real AnimeJaNai .onnx file, at the zoom React Flow actually settles on.\n\nThree things fall out of that:\n\n1. The layout is 2960 × 2816px. fitView asks for zoom 0.136 to fit it in the 720 × 420 box; React Flow’s default minZoom is 0.5, so it clamps. You land on 49% of the width and can never zoom out far enough — the fit-view button cannot fit the view.\n\n2. There are no edges. OnnxOpNode and OnnxIONode render plain divs with no <Handle>, and getEdgePosition returns null without handle bounds, so all 57 edges are dropped (console error 008). The graph is 57 disconnected boxes.\n\n3. 32 of the 55 nodes are Constant — the weights. The actual architecture is the other 23.\n\nAlso: RIFE v4.26 has 636 ops and the tab refuses to draw anything over 500, so the interpolation half of the product has no graph at all. And Parameters reads 0 because param_count sums initializers, of which this model has none — its 44,940 weights are Constant nodes."
+    }
+  ],
+  "launch": {
+    "view": "canvas",
+    "page": "page-2"
+  }
+}

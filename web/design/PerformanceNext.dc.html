@@ -1,0 +1,393 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&family=Manrope:wght@400;500;600;700&display=swap">
+  <style>
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;font-family:'Manrope','Avenir Next','Segoe UI',sans-serif;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+.app{
+  --background:oklch(0.965 0.006 260);
+  --foreground:oklch(0.15 0.02 260);
+  --card:oklch(1 0 0);
+  --popover:oklch(1 0 0);
+  --primary:oklch(0.55 0.22 292);
+  --primary-foreground:oklch(0.98 0.005 260);
+  --secondary:oklch(0.93 0.01 260);
+  --muted:oklch(0.93 0.01 260);
+  --muted-foreground:oklch(0.45 0.015 260);
+  --accent:oklch(0.93 0.01 260);
+  --destructive:oklch(0.50 0.20 25);
+  --border:oklch(0.88 0.01 260);
+  --input:oklch(0.88 0.01 260);
+  --ring:oklch(0.55 0.22 292);
+  --sidebar:oklch(0.96 0.008 260);
+  --red-400:oklch(70.4% 0.191 22.216);
+  --red-500:oklch(63.7% 0.237 25.331);
+  --orange-400:oklch(75% 0.183 55.934);
+  --orange-500:oklch(70.5% 0.213 47.604);
+  --yellow-300:oklch(90.5% 0.182 98.111);
+  --yellow-400:oklch(85.2% 0.199 91.936);
+  --yellow-500:oklch(79.5% 0.184 86.047);
+  --green-400:oklch(79.2% 0.209 151.711);
+  --green-500:oklch(72.3% 0.219 149.579);
+  --emerald-400:oklch(76.5% 0.177 163.223);
+  --emerald-500:oklch(69.6% 0.17 162.48);
+  --cyan-400:oklch(78.9% 0.154 211.53);
+  --cyan-500:oklch(71.5% 0.143 215.221);
+  --blue-400:oklch(70.7% 0.165 254.624);
+  --blue-500:oklch(62.3% 0.214 259.815);
+  --purple-400:oklch(71.4% 0.203 305.504);
+  --purple-500:oklch(62.7% 0.265 303.9);
+  --gray-400:oklch(70.7% 0.022 261.325);
+  --gray-500:oklch(55.1% 0.027 264.364);
+  --perf-cpu:hsl(262 83% 58%);
+  --perf-gpu:hsl(200 88% 46%);
+  --perf-ram:hsl(155 63% 43%);
+  --perf-vram:hsl(24 90% 52%);
+  --perf-free:hsl(220 14% 62%);
+  width:1440px;height:900px;display:flex;flex-direction:column;overflow:hidden;
+  background:var(--background);color:var(--foreground);font-size:14px;
+  font-family:'Manrope','Avenir Next','Segoe UI',sans-serif;
+}
+.app[data-theme="dark"]{
+  color-scheme:dark;
+  --background:oklch(0.115 0.03 260);
+  --foreground:oklch(0.97 0.005 260);
+  --card:oklch(0.16 0.028 260);
+  --popover:oklch(0.16 0.028 260);
+  --primary:oklch(0.58 0.22 292);
+  --primary-foreground:oklch(0.97 0.005 260);
+  --secondary:oklch(0.24 0.02 260);
+  --muted:oklch(0.24 0.02 260);
+  --muted-foreground:oklch(0.7 0.015 260);
+  --accent:oklch(0.24 0.02 260);
+  --destructive:oklch(0.45 0.18 25);
+  --border:oklch(0.28 0.02 260);
+  --input:oklch(0.28 0.02 260);
+  --ring:oklch(0.58 0.22 292);
+  --sidebar:oklch(0.11 0.028 260);
+  --perf-cpu:hsl(262 90% 70%);
+  --perf-gpu:hsl(199 92% 62%);
+  --perf-ram:hsl(156 68% 58%);
+  --perf-vram:hsl(31 95% 64%);
+  --perf-free:hsl(220 16% 74%);
+}
+.mono{font-family:'Geist Mono','SFMono-Regular',Consolas,'Noto Sans Mono CJK SC',monospace}
+a{color:var(--primary);text-decoration:none}
+a:hover{color:var(--primary);opacity:.85}
+button{font:inherit;color:inherit;border:0;background:none;padding:0;cursor:pointer}
+input,select,textarea{font:inherit;color:inherit}
+.nav-item{transition:background-color .15s,color .15s}
+.nav-item:hover{background:var(--accent)}
+.ghost-btn{transition:background-color .15s,color .15s;border-radius:6px}
+.ghost-btn:hover{background:var(--accent)}
+.ctl{appearance:none;-webkit-appearance:none;border-radius:6px;border:1px solid color-mix(in oklab,var(--border) 50%,transparent);background:color-mix(in oklab,var(--background) 50%,transparent);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)}
+.ctl:focus{outline:none;box-shadow:0 0 0 1px var(--ring)}
+.scroll{overflow-y:auto;scrollbar-width:thin}
+
+/* ── additions used only by the proposed boards ─────────────────────────── */
+.micro{font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted-foreground)}
+.nano{font-size:10px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted-foreground)}
+.panel{border:1px solid var(--border);border-radius:12px;background:var(--card)}
+
+/* Badges that hold up in BOTH themes: dark ink on a light tint, and the
+   reverse in dark. The current build uses text-*-400 on bg-*-500/20, which
+   is a dark-theme-only pairing. */
+.chip{display:inline-flex;align-items:center;gap:4px;border-radius:6px;padding:2px 8px;font-size:11px;font-weight:600;border:1px solid transparent;white-space:nowrap}
+.chip-sr{background:oklch(0.95 0.04 60);color:oklch(0.47 0.15 47);border-color:oklch(0.89 0.06 58)}
+.chip-fi{background:oklch(0.95 0.035 212);color:oklch(0.45 0.11 220);border-color:oklch(0.88 0.05 212)}
+.app[data-theme="dark"] .chip-sr{background:color-mix(in oklab,var(--orange-500) 16%,transparent);color:oklch(0.83 0.12 62);border-color:color-mix(in oklab,var(--orange-500) 34%,transparent)}
+.app[data-theme="dark"] .chip-fi{background:color-mix(in oklab,var(--cyan-500) 16%,transparent);color:oklch(0.85 0.1 208);border-color:color-mix(in oklab,var(--cyan-500) 34%,transparent)}
+.chip-spec{background:transparent;border-color:var(--border);color:var(--muted-foreground);font-family:'Geist Mono','SFMono-Regular',Consolas,monospace;font-size:11px;font-weight:500}
+
+/* One checkbox, everywhere. */
+.cbx{position:relative;display:inline-flex;width:16px;height:16px;flex-shrink:0}
+.cbx input{position:absolute;inset:0;opacity:0;margin:0;cursor:pointer;width:16px;height:16px}
+.cbx span{width:16px;height:16px;border-radius:4px;border:1px solid var(--border);background:var(--card);display:flex;align-items:center;justify-content:center;color:transparent;transition:background-color .12s,border-color .12s}
+.cbx input:checked + span{background:var(--primary);border-color:var(--primary);color:#fff}
+.cbx input:focus-visible + span{box-shadow:0 0 0 2px color-mix(in oklab,var(--ring) 50%,transparent)}
+
+/* Segmented control — one control height, a selected state you can see. */
+.seg{display:flex;align-items:center;gap:2px;padding:3px;border:1px solid var(--border);border-radius:8px;background:color-mix(in oklab,var(--secondary) 45%,transparent);height:36px}
+.seg button{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:28px;padding:0 12px;border-radius:5px;font-size:12px;font-weight:500;color:var(--muted-foreground);transition:background-color .12s,color .12s}
+.seg button:hover{color:var(--foreground)}
+.seg button[data-on="1"]{background:color-mix(in oklab,var(--primary) 14%,transparent);color:var(--primary);font-weight:600}
+.field-input{display:flex;height:36px;width:100%;border-radius:6px;border:1px solid var(--input);background:var(--card);padding:0 12px;font-size:14px}
+.field-input:focus{outline:none;border-color:var(--ring);box-shadow:0 0 0 1px var(--ring)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;white-space:nowrap;border-radius:6px;font-size:13px;font-weight:500;height:36px;padding:0 14px;transition:background-color .15s,color .15s,border-color .15s}
+.btn-primary{background:var(--primary);color:var(--primary-foreground)}
+.btn-primary:hover{filter:brightness(1.08)}
+.btn-outline{border:1px solid var(--border);background:var(--card)}
+.btn-outline:hover{background:var(--secondary)}
+.btn-ghost{color:var(--muted-foreground)}
+.btn-ghost:hover{background:var(--secondary);color:var(--foreground)}
+.rule{height:1px;background:var(--border)}
+.card-lift{transition:border-color .15s,transform .15s}
+.card-lift:hover{border-color:color-mix(in oklab,var(--primary) 45%,var(--border))}
+@keyframes tw-pulse{0%,100%{opacity:1}50%{opacity:.5}}
+
+/* Tailwind pairs a line-height with each text size. */
+.app [style*="font-size:12px"]{line-height:16px}
+.app [style*="font-size:14px"]{line-height:20px}
+.app [style*="font-size:16px"]{line-height:24px}
+.app [style*="font-size:20px"]{line-height:28px}
+
+  </style>
+</helmet>
+
+<div class="app" data-theme="{{theme}}">
+  <header style="display:flex;align-items:center;height:48px;padding:0 16px;border-bottom:1px solid var(--border);flex-shrink:0;background:var(--background)">
+    <div style="display:flex;align-items:center;gap:10px;margin-right:24px">
+      <div title="Server connected: workflow running" style="height:24px;width:24px;border-radius:8px;border:1px solid color-mix(in oklab,var(--yellow-400) 50%,transparent);display:flex;align-items:center;justify-content:center;flex-shrink:0;background:color-mix(in oklab,var(--yellow-500) 20%,transparent)">
+        <div style="height:8px;width:8px;border-radius:50%;background:var(--yellow-300);box-shadow:0 0 10px rgba(253,224,71,.65);animation:tw-pulse 2s cubic-bezier(.4,0,.6,1) infinite"></div>
+      </div>
+      <a href="https://github.com/ControlNet/videnoa" class="mono" style="font-size:14px;font-weight:600;color:var(--foreground);white-space:nowrap">Videnoa</a>
+      <span class="mono" style="font-size:12px;color:var(--muted-foreground);white-space:nowrap">v0.1.3</span>
+    </div>
+
+    <nav style="display:flex;align-items:center;gap:4px">
+      <span class="nav-item" style="display:flex;align-items:center;gap:8px;border-radius:6px;padding:6px 12px;font-size:14px;font-weight:500;color:var(--muted-foreground)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><rect width="8" height="8" x="3" y="3" rx="2"/><path d="M7 11v4a2 2 0 0 0 2 2h4"/><rect width="8" height="8" x="13" y="13" rx="2"/></svg>
+        <span>Editor</span>
+      </span>
+      <span class="nav-item" style="display:flex;align-items:center;gap:8px;border-radius:6px;padding:6px 12px;font-size:14px;font-weight:500;color:var(--muted-foreground)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></svg>
+        <span>Jobs</span>
+      </span>
+      <span class="nav-item" style="display:flex;align-items:center;gap:8px;border-radius:6px;padding:6px 12px;font-size:14px;font-weight:500;color:var(--muted-foreground)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z"/><path d="M12 22V12"/><polyline points="3.29 7 12 12 20.71 7"/><path d="m7.5 4.27 9 5.15"/></svg>
+        <span>Models</span>
+      </span>
+      <span class="nav-item" style="display:flex;align-items:center;gap:8px;border-radius:6px;padding:6px 12px;font-size:14px;font-weight:500;background:color-mix(in oklab,var(--primary) 15%,transparent);color:var(--primary)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></svg>
+        <span>Performance</span>
+      </span>
+      <span class="nav-item" style="display:flex;align-items:center;gap:8px;border-radius:6px;padding:6px 12px;font-size:14px;font-weight:500;color:var(--muted-foreground)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></svg>
+        <span>Settings</span>
+      </span>
+    </nav>
+
+    <div style="margin-left:auto;display:flex;align-items:center;gap:4px">
+      <button class="ghost-btn" aria-label="Select language" title="Current language: English" style="height:32px;width:32px;display:flex;align-items:center;justify-content:center">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
+      </button>
+      <button class="ghost-btn" onClick="{{cycleTheme}}" title="{{themeTitle}}" aria-label="{{themeTitle}}" style="height:32px;width:32px;display:flex;align-items:center;justify-content:center">
+        <sc-if value="{{isSystem}}" hint-placeholder-val="{{true}}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg>
+        </sc-if>
+        <sc-if value="{{isLight}}" hint-placeholder-val="{{false}}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
+        </sc-if>
+        <sc-if value="{{isDark}}" hint-placeholder-val="{{false}}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/></svg>
+        </sc-if>
+      </button>
+    </div>
+  </header>
+  <main style="flex:1;min-height:0;overflow:auto">
+    <div style="padding:24px">
+
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
+        <h2 style="font-size:18px;line-height:28px;font-weight:600;letter-spacing:-.025em;margin:0">Performance</h2>
+        <span style="display:inline-flex;align-items:center;gap:7px;height:22px;padding:0 9px;border-radius:6px;border:1px solid color-mix(in oklab,var(--green-500) 32%,transparent);background:color-mix(in oklab,var(--green-500) 12%,transparent)">
+          <span style="width:6px;height:6px;border-radius:50%;background:var(--green-500);box-shadow:0 0 7px color-mix(in oklab,var(--green-500) 70%,transparent)"></span>
+          <span style="font-size:10px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--green-500)">Live</span>
+        </span>
+        <span style="font-size:13px;color:var(--muted-foreground)">telemetry available</span>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px;margin-bottom:16px">
+        <div class="panel" style="padding:16px;display:flex;flex-direction:column;gap:10px">
+          <div style="display:flex;align-items:center;justify-content:space-between">
+            <span class="micro">CPU</span>
+            <span style="width:7px;height:7px;border-radius:50%;background:var(--perf-cpu)"></span>
+          </div>
+          <div>
+            <div class="mono" style="font-size:30px;line-height:34px;font-weight:600;letter-spacing:-.02em">34.2%</div>
+            <div style="font-size:12px;color:var(--muted-foreground);margin-top:3px">utilization</div>
+          </div>
+              <svg viewBox="0 0 304 32" preserveAspectRatio="none" style="width:100%;height:32px;display:block;overflow:visible" aria-hidden="true">
+                <defs><linearGradient id="sf-cpu" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="var(--perf-cpu)" stop-opacity=".28"/><stop offset="100%" stop-color="var(--perf-cpu)" stop-opacity="0"/></linearGradient></defs>
+                <path d="M0.0,29.0 C5.6,27.3 22.5,22.3 33.8,18.8 C45.0,15.3 56.3,9.1 67.6,8.0 C78.8,6.8 90.1,12.8 101.3,12.0 C112.6,11.2 123.9,3.1 135.1,3.0 C146.4,2.9 157.6,9.2 168.9,11.4 C180.1,13.5 191.4,16.7 202.7,16.0 C213.9,15.3 225.2,8.2 236.4,7.0 C247.7,5.8 259.0,8.2 270.2,8.9 C281.5,9.6 298.4,10.7 304.0,11.0 L304,32 L0,32 Z" fill="url(#sf-cpu)"/>
+                <path d="M0.0,29.0 C5.6,27.3 22.5,22.3 33.8,18.8 C45.0,15.3 56.3,9.1 67.6,8.0 C78.8,6.8 90.1,12.8 101.3,12.0 C112.6,11.2 123.9,3.1 135.1,3.0 C146.4,2.9 157.6,9.2 168.9,11.4 C180.1,13.5 191.4,16.7 202.7,16.0 C213.9,15.3 225.2,8.2 236.4,7.0 C247.7,5.8 259.0,8.2 270.2,8.9 C281.5,9.6 298.4,10.7 304.0,11.0" fill="none" stroke="var(--perf-cpu)" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+                <circle cx="304" cy="11.0" r="2.5" fill="var(--perf-cpu)"/>
+              </svg>
+        </div>
+        <div class="panel" style="padding:16px;display:flex;flex-direction:column;gap:10px">
+          <div style="display:flex;align-items:center;justify-content:space-between">
+            <span class="micro">GPU</span>
+            <span style="width:7px;height:7px;border-radius:50%;background:var(--perf-gpu)"></span>
+          </div>
+          <div>
+            <div class="mono" style="font-size:30px;line-height:34px;font-weight:600;letter-spacing:-.02em">91.4%</div>
+            <div style="font-size:12px;color:var(--muted-foreground);margin-top:3px">utilization</div>
+          </div>
+              <svg viewBox="0 0 304 32" preserveAspectRatio="none" style="width:100%;height:32px;display:block;overflow:visible" aria-hidden="true">
+                <defs><linearGradient id="sf-gpu" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="var(--perf-gpu)" stop-opacity=".28"/><stop offset="100%" stop-color="var(--perf-gpu)" stop-opacity="0"/></linearGradient></defs>
+                <path d="M0.0,29.0 C5.6,26.8 22.5,19.2 33.8,15.5 C45.0,11.8 56.3,8.7 67.6,6.8 C78.8,4.9 90.1,4.2 101.3,4.0 C112.6,3.7 123.9,5.5 135.1,5.3 C146.4,5.2 157.6,3.2 168.9,3.0 C180.1,2.8 191.4,3.8 202.7,4.4 C213.9,5.0 225.2,6.5 236.4,6.4 C247.7,6.3 259.0,4.0 270.2,3.7 C281.5,3.5 298.4,4.6 304.0,4.7 L304,32 L0,32 Z" fill="url(#sf-gpu)"/>
+                <path d="M0.0,29.0 C5.6,26.8 22.5,19.2 33.8,15.5 C45.0,11.8 56.3,8.7 67.6,6.8 C78.8,4.9 90.1,4.2 101.3,4.0 C112.6,3.7 123.9,5.5 135.1,5.3 C146.4,5.2 157.6,3.2 168.9,3.0 C180.1,2.8 191.4,3.8 202.7,4.4 C213.9,5.0 225.2,6.5 236.4,6.4 C247.7,6.3 259.0,4.0 270.2,3.7 C281.5,3.5 298.4,4.6 304.0,4.7" fill="none" stroke="var(--perf-gpu)" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+                <circle cx="304" cy="4.7" r="2.5" fill="var(--perf-gpu)"/>
+              </svg>
+        </div>
+        <div class="panel" style="padding:16px;display:flex;flex-direction:column;gap:10px">
+          <div style="display:flex;align-items:center;justify-content:space-between">
+            <span class="micro">RAM</span>
+            <span style="width:7px;height:7px;border-radius:50%;background:var(--perf-ram)"></span>
+          </div>
+          <div>
+            <div class="mono" style="font-size:30px;line-height:34px;font-weight:600;letter-spacing:-.02em">29.7%</div>
+            <div style="font-size:12px;color:var(--muted-foreground);margin-top:3px">18.6 / 62.7 GiB</div>
+          </div>
+              <svg viewBox="0 0 304 32" preserveAspectRatio="none" style="width:100%;height:32px;display:block;overflow:visible" aria-hidden="true">
+                <defs><linearGradient id="sf-ram" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="var(--perf-ram)" stop-opacity=".28"/><stop offset="100%" stop-color="var(--perf-ram)" stop-opacity="0"/></linearGradient></defs>
+                <path d="M0.0,29.0 C5.6,26.9 22.5,19.7 33.8,16.5 C45.0,13.2 56.3,11.3 67.6,9.5 C78.8,7.7 90.1,6.6 101.3,5.8 C112.6,4.9 123.9,4.8 135.1,4.4 C146.4,4.0 157.6,3.5 168.9,3.5 C180.1,3.4 191.4,4.0 202.7,3.9 C213.9,3.9 225.2,3.1 236.4,3.0 C247.7,2.9 259.0,3.5 270.2,3.5 C281.5,3.5 298.4,3.1 304.0,3.0 L304,32 L0,32 Z" fill="url(#sf-ram)"/>
+                <path d="M0.0,29.0 C5.6,26.9 22.5,19.7 33.8,16.5 C45.0,13.2 56.3,11.3 67.6,9.5 C78.8,7.7 90.1,6.6 101.3,5.8 C112.6,4.9 123.9,4.8 135.1,4.4 C146.4,4.0 157.6,3.5 168.9,3.5 C180.1,3.4 191.4,4.0 202.7,3.9 C213.9,3.9 225.2,3.1 236.4,3.0 C247.7,2.9 259.0,3.5 270.2,3.5 C281.5,3.5 298.4,3.1 304.0,3.0" fill="none" stroke="var(--perf-ram)" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+                <circle cx="304" cy="3.0" r="2.5" fill="var(--perf-ram)"/>
+              </svg>
+        </div>
+        <div class="panel" style="padding:16px;display:flex;flex-direction:column;gap:10px">
+          <div style="display:flex;align-items:center;justify-content:space-between">
+            <span class="micro">VRAM</span>
+            <span style="width:7px;height:7px;border-radius:50%;background:var(--perf-vram)"></span>
+          </div>
+          <div>
+            <div class="mono" style="font-size:30px;line-height:34px;font-weight:600;letter-spacing:-.02em">41.5%</div>
+            <div style="font-size:12px;color:var(--muted-foreground);margin-top:3px">9.8 / 23.6 GiB</div>
+          </div>
+              <svg viewBox="0 0 304 32" preserveAspectRatio="none" style="width:100%;height:32px;display:block;overflow:visible" aria-hidden="true">
+                <defs><linearGradient id="sf-vram" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="var(--perf-vram)" stop-opacity=".28"/><stop offset="100%" stop-color="var(--perf-vram)" stop-opacity="0"/></linearGradient></defs>
+                <path d="M0.0,29.0 C5.6,26.1 22.5,15.8 33.8,11.8 C45.0,7.8 56.3,6.3 67.6,4.9 C78.8,3.5 90.1,3.8 101.3,3.6 C112.6,3.3 123.9,3.3 135.1,3.2 C146.4,3.1 157.6,3.1 168.9,3.1 C180.1,3.1 191.4,3.0 202.7,3.0 C213.9,3.0 225.2,3.1 236.4,3.1 C247.7,3.1 259.0,3.0 270.2,3.0 C281.5,3.0 298.4,3.0 304.0,3.0 L304,32 L0,32 Z" fill="url(#sf-vram)"/>
+                <path d="M0.0,29.0 C5.6,26.1 22.5,15.8 33.8,11.8 C45.0,7.8 56.3,6.3 67.6,4.9 C78.8,3.5 90.1,3.8 101.3,3.6 C112.6,3.3 123.9,3.3 135.1,3.2 C146.4,3.1 157.6,3.1 168.9,3.1 C180.1,3.1 191.4,3.0 202.7,3.0 C213.9,3.0 225.2,3.1 236.4,3.1 C247.7,3.1 259.0,3.0 270.2,3.0 C281.5,3.0 298.4,3.0 304.0,3.0" fill="none" stroke="var(--perf-vram)" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+                <circle cx="304" cy="3.0" r="2.5" fill="var(--perf-vram)"/>
+              </svg>
+        </div>
+      </div>
+
+      <div class="panel" style="padding:16px;margin-bottom:16px">
+        <div style="font-size:14px;font-weight:600;line-height:20px;margin-bottom:16px">Memory</div>
+        <div style="display:flex;flex-direction:column;gap:20px">
+          <div>
+            <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:8px">
+              <span style="font-size:13px;font-weight:600">RAM</span>
+              <span class="mono" style="font-size:12px;color:var(--muted-foreground)">18.6 GiB used of 62.7 GiB</span>
+            </div>
+            <div style="display:flex;gap:2px;height:12px;border-radius:6px;overflow:hidden">
+              <div style="width:9.9%;background:var(--perf-ram);border-radius:6px 0 0 6px;"></div>
+              <div style="width:19.8%;background:color-mix(in oklab, var(--perf-ram) 40%, transparent);"></div>
+              <div style="width:70.3%;background:color-mix(in oklab, var(--foreground) 14%, transparent);border-radius:0 6px 6px 0;"></div>
+            </div>
+            <div style="display:flex;flex-wrap:wrap;gap:20px;margin-top:10px;font-size:11px">
+              <span style="display:inline-flex;align-items:center;gap:6px"><span style="width:8px;height:8px;border-radius:2px;background:var(--perf-ram)"></span><span style="color:var(--muted-foreground)">process</span><span style="font-weight:500">6.2 GiB</span></span>
+              <span style="display:inline-flex;align-items:center;gap:6px"><span style="width:8px;height:8px;border-radius:2px;background:color-mix(in oklab, var(--perf-ram) 40%, transparent)"></span><span style="color:var(--muted-foreground)">others</span><span style="font-weight:500">12.4 GiB</span></span>
+              <span style="display:inline-flex;align-items:center;gap:6px"><span style="width:8px;height:8px;border-radius:2px;background:color-mix(in oklab, var(--foreground) 14%, transparent)"></span><span style="color:var(--muted-foreground)">free / idle</span><span style="font-weight:500">44.1 GiB</span></span>
+            </div>
+          </div>
+          <div>
+            <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:8px">
+              <span style="font-size:13px;font-weight:600">VRAM</span>
+              <span class="mono" style="font-size:12px;color:var(--muted-foreground)">9.8 GiB used of 23.6 GiB</span>
+            </div>
+            <div style="display:flex;gap:2px;height:12px;border-radius:6px;overflow:hidden">
+              <div style="width:37.7%;background:var(--perf-vram);border-radius:6px 0 0 6px;"></div>
+              <div style="width:3.8%;background:color-mix(in oklab, var(--perf-vram) 40%, transparent);"></div>
+              <div style="width:58.5%;background:color-mix(in oklab, var(--foreground) 14%, transparent);border-radius:0 6px 6px 0;"></div>
+            </div>
+            <div style="display:flex;flex-wrap:wrap;gap:20px;margin-top:10px;font-size:11px">
+              <span style="display:inline-flex;align-items:center;gap:6px"><span style="width:8px;height:8px;border-radius:2px;background:var(--perf-vram)"></span><span style="color:var(--muted-foreground)">process</span><span style="font-weight:500">8.9 GiB</span></span>
+              <span style="display:inline-flex;align-items:center;gap:6px"><span style="width:8px;height:8px;border-radius:2px;background:color-mix(in oklab, var(--perf-vram) 40%, transparent)"></span><span style="color:var(--muted-foreground)">others</span><span style="font-weight:500">0.9 GiB</span></span>
+              <span style="display:inline-flex;align-items:center;gap:6px"><span style="width:8px;height:8px;border-radius:2px;background:color-mix(in oklab, var(--foreground) 14%, transparent)"></span><span style="color:var(--muted-foreground)">free / idle</span><span style="font-weight:500">13.8 GiB</span></span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" style="padding:16px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+          <div style="font-size:14px;font-weight:600;line-height:20px">Utilization trends</div>
+          <div style="display:flex;align-items:center;gap:16px">
+            <span style="display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--muted-foreground)"><span style="width:14px;height:2px;border-radius:1px;background:var(--perf-cpu)"></span>CPU</span>
+            <span style="display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--muted-foreground)"><span style="width:14px;height:2px;border-radius:1px;background:var(--perf-gpu)"></span>GPU</span>
+            <span style="display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--muted-foreground)"><span style="width:14px;height:2px;border-radius:1px;background:var(--perf-ram)"></span>RAM</span>
+            <span style="display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--muted-foreground)"><span style="width:14px;height:2px;border-radius:1px;background:var(--perf-vram)"></span>VRAM</span>
+          </div>
+        </div>
+        <svg viewBox="0 0 1360 280" style="width:100%;height:280px" role="img" aria-label="CPU, GPU, RAM, and VRAM utilization timeline trends">
+            <line x1="40" x2="1348" y1="254.0" y2="254.0" stroke="var(--border)" stroke-dasharray="3 5"/>
+            <line x1="40" x2="1348" y1="193.0" y2="193.0" stroke="var(--border)" stroke-dasharray="3 5"/>
+            <line x1="40" x2="1348" y1="132.0" y2="132.0" stroke="var(--border)" stroke-dasharray="3 5"/>
+            <line x1="40" x2="1348" y1="71.0" y2="71.0" stroke="var(--border)" stroke-dasharray="3 5"/>
+            <line x1="40" x2="1348" y1="10.0" y2="10.0" stroke="var(--border)" stroke-dasharray="3 5"/>
+            <text x="30" y="258.0" text-anchor="end" font-size="11" fill="var(--muted-foreground)">0%</text>
+            <text x="30" y="197.0" text-anchor="end" font-size="11" fill="var(--muted-foreground)">25%</text>
+            <text x="30" y="136.0" text-anchor="end" font-size="11" fill="var(--muted-foreground)">50%</text>
+            <text x="30" y="75.0" text-anchor="end" font-size="11" fill="var(--muted-foreground)">75%</text>
+            <text x="30" y="14.0" text-anchor="end" font-size="11" fill="var(--muted-foreground)">100%</text>
+            <text x="40.0" y="273" text-anchor="middle" font-size="11" fill="var(--muted-foreground)">+0s</text>
+            <text x="185.3" y="273" text-anchor="middle" font-size="11" fill="var(--muted-foreground)">+30s</text>
+            <text x="330.7" y="273" text-anchor="middle" font-size="11" fill="var(--muted-foreground)">+60s</text>
+            <text x="476.0" y="273" text-anchor="middle" font-size="11" fill="var(--muted-foreground)">+90s</text>
+            <text x="621.3" y="273" text-anchor="middle" font-size="11" fill="var(--muted-foreground)">+120s</text>
+            <text x="766.7" y="273" text-anchor="middle" font-size="11" fill="var(--muted-foreground)">+150s</text>
+            <text x="912.0" y="273" text-anchor="middle" font-size="11" fill="var(--muted-foreground)">+180s</text>
+            <text x="1057.3" y="273" text-anchor="middle" font-size="11" fill="var(--muted-foreground)">+210s</text>
+            <text x="1202.7" y="273" text-anchor="middle" font-size="11" fill="var(--muted-foreground)">+240s</text>
+            <text x="1348.0" y="273" text-anchor="end" font-size="11" fill="var(--muted-foreground)">+270s</text>
+            <path d="M40.0,184.7 C64.2,183.4 136.9,179.4 185.3,176.7 C233.8,173.9 282.2,169.0 330.7,168.1 C379.1,167.2 427.6,171.9 476.0,171.3 C524.4,170.6 572.9,164.3 621.3,164.2 C669.8,164.1 718.2,169.1 766.7,170.8 C815.1,172.5 863.6,175.0 912.0,174.5 C960.4,173.9 1008.9,168.3 1057.3,167.4 C1105.8,166.4 1154.2,168.3 1202.7,168.8 C1251.1,169.4 1323.8,170.3 1348.0,170.6" fill="none" stroke="var(--perf-cpu)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M40.0,102.5 C64.2,95.8 136.9,73.6 185.3,62.7 C233.8,51.8 282.2,42.7 330.7,37.1 C379.1,31.4 427.6,29.5 476.0,28.8 C524.4,28.1 572.9,33.2 621.3,32.7 C669.8,32.2 718.2,26.3 766.7,25.9 C815.1,25.4 863.6,28.3 912.0,30.0 C960.4,31.7 1008.9,36.2 1057.3,35.9 C1105.8,35.5 1154.2,28.9 1202.7,28.1 C1251.1,27.2 1323.8,30.5 1348.0,31.0" fill="none" stroke="var(--perf-gpu)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M40.0,195.2 C64.2,194.1 136.9,190.3 185.3,188.6 C233.8,186.9 282.2,185.9 330.7,184.9 C379.1,184.0 427.6,183.4 476.0,183.0 C524.4,182.5 572.9,182.5 621.3,182.3 C669.8,182.1 718.2,181.8 766.7,181.8 C815.1,181.7 863.6,182.1 912.0,182.0 C960.4,182.0 1008.9,181.6 1057.3,181.5 C1105.8,181.5 1154.2,181.8 1202.7,181.8 C1251.1,181.8 1323.8,181.6 1348.0,181.5" fill="none" stroke="var(--perf-ram)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M40.0,209.6 C64.2,203.3 136.9,180.8 185.3,172.0 C233.8,163.2 282.2,159.9 330.7,156.9 C379.1,153.9 427.6,154.6 476.0,154.0 C524.4,153.4 572.9,153.4 621.3,153.2 C669.8,153.1 718.2,153.1 766.7,153.0 C815.1,152.9 863.6,152.7 912.0,152.7 C960.4,152.7 1008.9,153.0 1057.3,153.0 C1105.8,153.0 1154.2,152.8 1202.7,152.7 C1251.1,152.7 1323.8,152.7 1348.0,152.7" fill="none" stroke="var(--perf-vram)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+
+    </div>
+  </main>
+</div>
+</x-dc>
+
+<script data-dc-script data-props='{"theme":{"editor":"enum","options":["system","light","dark"],"default":"dark","section":"Theme"},"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { mode: null };
+  }
+
+  currentMode() {
+    return this.state.mode ?? this.props.theme ?? 'dark';
+  }
+
+  resolvedTheme() {
+    const mode = this.currentMode();
+    if (mode !== 'system') return mode;
+    try {
+      return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    } catch (err) {
+      return 'dark';
+    }
+  }
+
+  renderVals() {
+    const cycle = ['system', 'light', 'dark'];
+    const labels = { system: 'System', light: 'Light', dark: 'Dark' };
+    const mode = this.currentMode();
+    const next = cycle[(cycle.indexOf(mode) + 1) % cycle.length];
+
+    return {
+      theme: this.resolvedTheme(),
+      isSystem: mode === 'system',
+      isLight: mode === 'light',
+      isDark: mode === 'dark',
+      themeTitle: labels[mode] + ' — click for ' + labels[next],
+      cycleTheme: () => this.setState({ mode: next })
+    };
+  }
+}
+</script>
+</body>
+</html>

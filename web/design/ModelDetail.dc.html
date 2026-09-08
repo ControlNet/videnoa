@@ -1,0 +1,531 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&family=Manrope:wght@400;500;600;700&display=swap">
+  <style>
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;font-family:'Manrope','Avenir Next','Segoe UI',sans-serif;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+.app{
+  --background:oklch(0.98 0.005 260);
+  --foreground:oklch(0.15 0.02 260);
+  --card:oklch(1 0 0);
+  --popover:oklch(1 0 0);
+  --primary:oklch(0.55 0.22 292);
+  --primary-foreground:oklch(0.98 0.005 260);
+  --secondary:oklch(0.93 0.01 260);
+  --muted:oklch(0.93 0.01 260);
+  --muted-foreground:oklch(0.45 0.015 260);
+  --accent:oklch(0.93 0.01 260);
+  --destructive:oklch(0.50 0.20 25);
+  --border:oklch(0.88 0.01 260);
+  --input:oklch(0.88 0.01 260);
+  --ring:oklch(0.55 0.22 292);
+  --sidebar:oklch(0.96 0.008 260);
+  --red-400:oklch(70.4% 0.191 22.216);
+  --red-500:oklch(63.7% 0.237 25.331);
+  --orange-400:oklch(75% 0.183 55.934);
+  --orange-500:oklch(70.5% 0.213 47.604);
+  --yellow-300:oklch(90.5% 0.182 98.111);
+  --yellow-400:oklch(85.2% 0.199 91.936);
+  --yellow-500:oklch(79.5% 0.184 86.047);
+  --green-400:oklch(79.2% 0.209 151.711);
+  --green-500:oklch(72.3% 0.219 149.579);
+  --emerald-400:oklch(76.5% 0.177 163.223);
+  --emerald-500:oklch(69.6% 0.17 162.48);
+  --cyan-400:oklch(78.9% 0.154 211.53);
+  --cyan-500:oklch(71.5% 0.143 215.221);
+  --blue-400:oklch(70.7% 0.165 254.624);
+  --blue-500:oklch(62.3% 0.214 259.815);
+  --purple-400:oklch(71.4% 0.203 305.504);
+  --purple-500:oklch(62.7% 0.265 303.9);
+  --gray-400:oklch(70.7% 0.022 261.325);
+  --gray-500:oklch(55.1% 0.027 264.364);
+  --perf-cpu:hsl(262 83% 58%);
+  --perf-gpu:hsl(200 88% 46%);
+  --perf-ram:hsl(155 63% 43%);
+  --perf-vram:hsl(24 90% 52%);
+  --perf-free:hsl(220 14% 62%);
+  width:1440px;height:900px;display:flex;flex-direction:column;overflow:hidden;
+  background:var(--background);color:var(--foreground);font-size:14px;
+  font-family:'Manrope','Avenir Next','Segoe UI',sans-serif;
+}
+.app[data-theme="dark"]{
+  color-scheme:dark;
+  --background:oklch(0.13 0.028 260);
+  --foreground:oklch(0.97 0.005 260);
+  --card:oklch(0.16 0.028 260);
+  --popover:oklch(0.16 0.028 260);
+  --primary:oklch(0.58 0.22 292);
+  --primary-foreground:oklch(0.97 0.005 260);
+  --secondary:oklch(0.24 0.02 260);
+  --muted:oklch(0.24 0.02 260);
+  --muted-foreground:oklch(0.7 0.015 260);
+  --accent:oklch(0.24 0.02 260);
+  --destructive:oklch(0.45 0.18 25);
+  --border:oklch(0.28 0.02 260);
+  --input:oklch(0.28 0.02 260);
+  --ring:oklch(0.58 0.22 292);
+  --sidebar:oklch(0.11 0.028 260);
+  --perf-cpu:hsl(262 90% 70%);
+  --perf-gpu:hsl(199 92% 62%);
+  --perf-ram:hsl(156 68% 58%);
+  --perf-vram:hsl(31 95% 64%);
+  --perf-free:hsl(220 16% 74%);
+}
+.mono{font-family:'Geist Mono','SFMono-Regular',Consolas,'Noto Sans Mono CJK SC',monospace}
+a{color:var(--primary);text-decoration:none}
+a:hover{color:var(--primary);opacity:.85}
+button{font:inherit;color:inherit;border:0;background:none;padding:0;cursor:pointer}
+input,select,textarea{font:inherit;color:inherit}
+.nav-item{transition:background-color .15s,color .15s}
+.nav-item:hover{background:var(--accent)}
+.ghost-btn{transition:background-color .15s,color .15s;border-radius:6px}
+.ghost-btn:hover{background:var(--accent)}
+.ctl{appearance:none;-webkit-appearance:none;border-radius:6px;border:1px solid color-mix(in oklab,var(--border) 50%,transparent);background:color-mix(in oklab,var(--background) 50%,transparent);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)}
+.ctl:focus{outline:none;box-shadow:0 0 0 1px var(--ring)}
+.scroll{overflow-y:auto;scrollbar-width:thin}
+@keyframes tw-pulse{0%,100%{opacity:1}50%{opacity:.5}}
+
+.app [style*="font-size:12px"]{line-height:16px}
+.app [style*="font-size:14px"]{line-height:20px}
+.app [style*="font-size:16px"]{line-height:24px}
+.app [style*="font-size:20px"]{line-height:28px}
+
+  </style>
+</helmet>
+
+<div class="app" data-theme="{{theme}}">
+  <header style="display:flex;align-items:center;height:48px;padding:0 16px;border-bottom:1px solid var(--border);flex-shrink:0;background:var(--background)">
+    <div style="display:flex;align-items:center;gap:10px;margin-right:24px">
+      <div title="Server connected: workflow running" style="height:24px;width:24px;border-radius:8px;border:1px solid color-mix(in oklab,var(--yellow-400) 50%,transparent);display:flex;align-items:center;justify-content:center;flex-shrink:0;background:color-mix(in oklab,var(--yellow-500) 20%,transparent)">
+        <div style="height:8px;width:8px;border-radius:50%;background:var(--yellow-300);box-shadow:0 0 10px rgba(253,224,71,.65);animation:tw-pulse 2s cubic-bezier(.4,0,.6,1) infinite"></div>
+      </div>
+      <a href="https://github.com/ControlNet/videnoa" class="mono" style="font-size:14px;font-weight:600;color:var(--foreground);white-space:nowrap">Videnoa</a>
+      <span class="mono" style="font-size:12px;color:var(--muted-foreground);white-space:nowrap">v0.1.3</span>
+    </div>
+
+    <nav style="display:flex;align-items:center;gap:4px">
+      <span class="nav-item" style="display:flex;align-items:center;gap:8px;border-radius:6px;padding:6px 12px;font-size:14px;font-weight:500;color:var(--muted-foreground)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><rect width="8" height="8" x="3" y="3" rx="2"/><path d="M7 11v4a2 2 0 0 0 2 2h4"/><rect width="8" height="8" x="13" y="13" rx="2"/></svg>
+        <span>Editor</span>
+      </span>
+      <span class="nav-item" style="display:flex;align-items:center;gap:8px;border-radius:6px;padding:6px 12px;font-size:14px;font-weight:500;color:var(--muted-foreground)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></svg>
+        <span>Jobs</span>
+      </span>
+      <span class="nav-item" style="display:flex;align-items:center;gap:8px;border-radius:6px;padding:6px 12px;font-size:14px;font-weight:500;background:color-mix(in oklab,var(--primary) 15%,transparent);color:var(--primary)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z"/><path d="M12 22V12"/><polyline points="3.29 7 12 12 20.71 7"/><path d="m7.5 4.27 9 5.15"/></svg>
+        <span>Models</span>
+      </span>
+      <span class="nav-item" style="display:flex;align-items:center;gap:8px;border-radius:6px;padding:6px 12px;font-size:14px;font-weight:500;color:var(--muted-foreground)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></svg>
+        <span>Performance</span>
+      </span>
+      <span class="nav-item" style="display:flex;align-items:center;gap:8px;border-radius:6px;padding:6px 12px;font-size:14px;font-weight:500;color:var(--muted-foreground)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></svg>
+        <span>Settings</span>
+      </span>
+    </nav>
+
+    <div style="margin-left:auto;display:flex;align-items:center;gap:4px">
+      <button class="ghost-btn" aria-label="Select language" title="Current language: English" style="height:32px;width:32px;display:flex;align-items:center;justify-content:center">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
+      </button>
+      <button class="ghost-btn" onClick="{{cycleTheme}}" title="{{themeTitle}}" aria-label="{{themeTitle}}" style="height:32px;width:32px;display:flex;align-items:center;justify-content:center">
+        <sc-if value="{{isSystem}}" hint-placeholder-val="{{true}}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg>
+        </sc-if>
+        <sc-if value="{{isLight}}" hint-placeholder-val="{{false}}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
+        </sc-if>
+        <sc-if value="{{isDark}}" hint-placeholder-val="{{false}}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/></svg>
+        </sc-if>
+      </button>
+    </div>
+  </header>
+  <main style="flex:1;min-height:0;overflow:hidden;position:relative">
+
+    <div style="padding:24px;filter:none">
+      <div style="margin-bottom:24px">
+        <h2 style="font-size:18px;line-height:28px;font-weight:600;letter-spacing:-.025em;margin:0">Models</h2>
+        <p style="font-size:14px;color:var(--muted-foreground);margin:2px 0 0">3 models available</p>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px">
+        <div style="height:230px;border-radius:12px;border:1px solid var(--border);background:var(--card)"></div>
+        <div style="height:230px;border-radius:12px;border:1px solid var(--border);background:var(--card)"></div>
+        <div style="height:230px;border-radius:12px;border:1px solid var(--border);background:var(--card)"></div>
+      </div>
+    </div>
+
+    <div style="position:absolute;inset:0;background:rgb(0 0 0 / .8);z-index:50"></div>
+
+    <div style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:50;width:768px;display:grid;gap:16px;border:1px solid var(--border);background:var(--background);padding:24px;box-shadow:0 10px 15px -3px rgb(0 0 0 / .3),0 4px 6px -4px rgb(0 0 0 / .3);border-radius:8px">
+
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <div style="font-size:16px;font-weight:600;line-height:1;letter-spacing:-.025em">AnimeJaNai_V3_L1_Sharp_HD_x2_FP16</div>
+        <div class="mono" style="font-size:12px;color:var(--muted-foreground)">the_database_AnimeJaNaiV3L1_sharp_HD_x2_fp16_op17.onnx</div>
+      </div>
+      <button style="position:absolute;right:16px;top:16px;border-radius:2px;opacity:.7;display:flex">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+      </button>
+
+      <div style="margin-top:8px">
+        <div style="display:inline-flex;width:100%;height:36px;align-items:center;justify-content:center;border-radius:8px;background:var(--muted);padding:4px;color:var(--muted-foreground)">
+          <span style="flex:1;display:inline-flex;align-items:center;justify-content:center;border-radius:6px;padding:4px 12px;font-size:14px;font-weight:500">Metadata</span>
+          <span style="flex:1;display:inline-flex;align-items:center;justify-content:center;border-radius:6px;padding:4px 12px;font-size:14px;font-weight:500">I/O Schema</span>
+          <span style="flex:1;display:inline-flex;align-items:center;justify-content:center;border-radius:6px;padding:4px 12px;font-size:14px;font-weight:500;background:var(--background);color:var(--foreground);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">Graph</span>
+        </div>
+
+        <div style="margin-top:8px;height:420px;border-radius:6px;border:1px solid var(--border);overflow:hidden;background:var(--background);background-image:radial-gradient(circle at 1px 1px, var(--border) 1px, transparent 0);background-size:16px 16px;position:relative">
+          <div style="position:absolute;left:0;top:0;transform:translate(-380.0px, -494.0px) scale(0.5);transform-origin:0 0">
+          <div style="position:absolute;left:2780px;top:0px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Constant</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Constant</div>
+          </div>
+          <div style="position:absolute;left:0px;top:0px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Constant</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Constant_1</div>
+          </div>
+          <div style="position:absolute;left:2660px;top:120px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Conv</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Conv</div>
+          </div>
+          <div style="position:absolute;left:2220px;top:120px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Constant</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Constant_2</div>
+          </div>
+          <div style="position:absolute;left:2550px;top:240px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">PRelu</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/PRelu</div>
+          </div>
+          <div style="position:absolute;left:2000px;top:240px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Constant</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Constant_3</div>
+          </div>
+          <div style="position:absolute;left:2330px;top:240px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Constant</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Constant_4</div>
+          </div>
+          <div style="position:absolute;left:2330px;top:360px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Conv</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Conv_1</div>
+          </div>
+          <div style="position:absolute;left:2000px;top:360px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Constant</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Constant_5</div>
+          </div>
+          <div style="position:absolute;left:2220px;top:480px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">PRelu</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/PRelu_1</div>
+          </div>
+          <div style="position:absolute;left:1780px;top:480px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Constant</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Constant_6</div>
+          </div>
+          <div style="position:absolute;left:2000px;top:480px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Constant</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Constant_7</div>
+          </div>
+          <div style="position:absolute;left:2110px;top:600px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Conv</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Conv_2</div>
+          </div>
+          <div style="position:absolute;left:1780px;top:600px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Constant</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Constant_8</div>
+          </div>
+          <div style="position:absolute;left:2000px;top:720px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">PRelu</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/PRelu_2</div>
+          </div>
+          <div style="position:absolute;left:1560px;top:720px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Constant</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Constant_9</div>
+          </div>
+          <div style="position:absolute;left:1780px;top:720px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Constant</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Constant_10</div>
+          </div>
+          <div style="position:absolute;left:1890px;top:840px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Conv</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Conv_3</div>
+          </div>
+          <div style="position:absolute;left:1560px;top:840px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Constant</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Constant_11</div>
+          </div>
+          <div style="position:absolute;left:1780px;top:960px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">PRelu</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/PRelu_3</div>
+          </div>
+          <div style="position:absolute;left:1340px;top:960px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Constant</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Constant_12</div>
+          </div>
+          <div style="position:absolute;left:1560px;top:960px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Constant</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Constant_13</div>
+          </div>
+          <div style="position:absolute;left:1670px;top:1080px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Conv</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Conv_4</div>
+          </div>
+          <div style="position:absolute;left:1340px;top:1080px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Constant</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Constant_14</div>
+          </div>
+          <div style="position:absolute;left:1560px;top:1200px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">PRelu</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/PRelu_4</div>
+          </div>
+          <div style="position:absolute;left:1120px;top:1200px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Constant</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Constant_15</div>
+          </div>
+          <div style="position:absolute;left:1340px;top:1200px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Constant</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Constant_16</div>
+          </div>
+          <div style="position:absolute;left:1450px;top:1320px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Conv</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Conv_5</div>
+          </div>
+          <div style="position:absolute;left:1120px;top:1320px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Constant</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Constant_17</div>
+          </div>
+          <div style="position:absolute;left:1340px;top:1440px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">PRelu</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/PRelu_5</div>
+          </div>
+          <div style="position:absolute;left:900px;top:1440px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Constant</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Constant_18</div>
+          </div>
+          <div style="position:absolute;left:1120px;top:1440px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Constant</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Constant_19</div>
+          </div>
+          <div style="position:absolute;left:1230px;top:1560px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Conv</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Conv_6</div>
+          </div>
+          <div style="position:absolute;left:900px;top:1560px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Constant</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Constant_20</div>
+          </div>
+          <div style="position:absolute;left:1120px;top:1680px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">PRelu</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/PRelu_6</div>
+          </div>
+          <div style="position:absolute;left:680px;top:1680px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Constant</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Constant_21</div>
+          </div>
+          <div style="position:absolute;left:900px;top:1680px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Constant</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Constant_22</div>
+          </div>
+          <div style="position:absolute;left:1010px;top:1800px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Conv</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Conv_7</div>
+          </div>
+          <div style="position:absolute;left:680px;top:1800px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Constant</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Constant_23</div>
+          </div>
+          <div style="position:absolute;left:900px;top:1920px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">PRelu</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/PRelu_7</div>
+          </div>
+          <div style="position:absolute;left:460px;top:1920px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Constant</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Constant_24</div>
+          </div>
+          <div style="position:absolute;left:680px;top:1920px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Constant</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Constant_25</div>
+          </div>
+          <div style="position:absolute;left:790px;top:2040px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Conv</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Conv_8</div>
+          </div>
+          <div style="position:absolute;left:460px;top:2040px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Constant</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Constant_26</div>
+          </div>
+          <div style="position:absolute;left:680px;top:2160px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">PRelu</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/PRelu_8</div>
+          </div>
+          <div style="position:absolute;left:240px;top:2160px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Constant</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Constant_27</div>
+          </div>
+          <div style="position:absolute;left:460px;top:2160px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Constant</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Constant_28</div>
+          </div>
+          <div style="position:absolute;left:560px;top:2280px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Conv</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Conv_9</div>
+          </div>
+          <div style="position:absolute;left:560px;top:2400px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">DepthToSpace</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/DepthToSpace</div>
+          </div>
+          <div style="position:absolute;left:240px;top:2280px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Constant</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Constant_29</div>
+          </div>
+          <div style="position:absolute;left:180px;top:2400px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Resize</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Resize</div>
+          </div>
+          <div style="position:absolute;left:220px;top:2520px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Add</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Add</div>
+          </div>
+          <div style="position:absolute;left:440px;top:2520px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Constant</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Constant_30</div>
+          </div>
+          <div style="position:absolute;left:660px;top:2520px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Constant</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Constant_31</div>
+          </div>
+          <div style="position:absolute;left:330px;top:2640px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--foreground)">Clip</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">/Clip</div>
+          </div>
+          <div style="position:absolute;left:220px;top:0px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:2px solid color-mix(in oklab,var(--emerald-500) 50%,transparent);background:color-mix(in oklab,var(--emerald-500) 10%,transparent)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--emerald-400)">input</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">float16 [?, 3, ?, ?]</div>
+          </div>
+          <div style="position:absolute;left:330px;top:2760px;min-width:140px;border-radius:6px;padding:8px 12px;text-align:center;border:2px solid color-mix(in oklab,var(--emerald-500) 50%,transparent);background:color-mix(in oklab,var(--emerald-500) 10%,transparent)">
+            <div style="font-size:12px;line-height:14px;font-weight:600;color:var(--emerald-400)">output</div>
+            <div style="font-size:10px;color:var(--muted-foreground);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">float16 [?, 3, ?, ?]</div>
+          </div>
+          </div>
+
+          <div style="position:absolute;left:15px;bottom:15px;display:flex;flex-direction:column;border:1px solid color-mix(in oklab,var(--border) 50%,transparent);border-radius:2px;overflow:hidden;background:var(--card)">
+            <span style="width:26px;height:26px;display:flex;align-items:center;justify-content:center;border-bottom:1px solid color-mix(in oklab,var(--border) 50%,transparent)"><svg viewBox="0 0 32 32" style="width:12px;height:12px;fill:currentColor"><path d="M32 18.133H18.133V32h-4.266V18.133H0v-4.266h13.867V0h4.266v13.867H32z"/></svg></span>
+            <span style="width:26px;height:26px;display:flex;align-items:center;justify-content:center;border-bottom:1px solid color-mix(in oklab,var(--border) 50%,transparent)"><svg viewBox="0 0 32 5" style="width:12px;height:12px;fill:currentColor"><path d="M0 0h32v4.2H0z"/></svg></span>
+            <span style="width:26px;height:26px;display:flex;align-items:center;justify-content:center;border-bottom:1px solid color-mix(in oklab,var(--border) 50%,transparent)"><svg viewBox="0 0 32 30" style="width:12px;height:12px;fill:currentColor"><path d="M3.692 4.63c0-.53.4-.938.939-.938h5.215V0H4.708C2.13 0 0 2.054 0 4.63v5.216h3.692V4.631zM27.354 0h-5.2v3.692h5.17c.53 0 .984.4.984.939v5.215H32V4.631A4.624 4.624 0 0027.354 0zm.954 24.83c0 .532-.4.94-.939.94h-5.215v3.768h5.215c2.577 0 4.631-2.13 4.631-4.707v-5.139h-3.692v5.139zm-23.677.94a.919.919 0 01-.939-.94v-5.138H0v5.139c0 2.577 2.13 4.707 4.708 4.707h5.138V25.77H4.631z"/></svg></span>
+            <span style="width:26px;height:26px;display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 25 32" style="width:12px;height:12px;fill:currentColor"><path d="M21.333 10.667H19.81V7.619C19.81 3.429 16.38 0 12.19 0 8 0 4.571 3.429 4.571 7.619v3.048H3.048A3.056 3.056 0 000 13.714v15.238A3.056 3.056 0 003.048 32h18.285a3.056 3.056 0 003.048-3.048V13.714a3.056 3.056 0 00-3.048-3.047zM12.19 24.533a3.056 3.056 0 01-3.047-3.047 3.056 3.056 0 013.047-3.048 3.056 3.056 0 013.048 3.048 3.056 3.056 0 01-3.048 3.047zm4.724-13.866H7.467V7.619c0-2.6 2.123-4.724 4.723-4.724 2.6 0 4.724 2.124 4.724 4.724v3.048z"/></svg></span>
+          </div>
+
+          <div style="position:absolute;right:15px;bottom:15px;width:200px;height:150px;border:1px solid color-mix(in oklab,var(--border) 50%,transparent);border-radius:2px;background:color-mix(in oklab,var(--card) 80%,transparent);overflow:hidden">
+            <svg viewBox="0 0 2960 2816" preserveAspectRatio="xMidYMid meet" style="width:100%;height:100%">
+              <rect x="2780" y="0" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="0" y="0" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="2660" y="120" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="2220" y="120" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="2550" y="240" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="2000" y="240" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="2330" y="240" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="2330" y="360" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="2000" y="360" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="2220" y="480" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="1780" y="480" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="2000" y="480" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="2110" y="600" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="1780" y="600" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="2000" y="720" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="1560" y="720" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="1780" y="720" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="1890" y="840" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="1560" y="840" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="1780" y="960" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="1340" y="960" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="1560" y="960" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="1670" y="1080" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="1340" y="1080" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="1560" y="1200" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="1120" y="1200" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="1340" y="1200" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="1450" y="1320" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="1120" y="1320" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="1340" y="1440" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="900" y="1440" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="1120" y="1440" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="1230" y="1560" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="900" y="1560" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="1120" y="1680" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="680" y="1680" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="900" y="1680" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="1010" y="1800" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="680" y="1800" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="900" y="1920" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="460" y="1920" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="680" y="1920" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="790" y="2040" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="460" y="2040" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="680" y="2160" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="240" y="2160" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="460" y="2160" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="560" y="2280" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="560" y="2400" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="240" y="2280" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="180" y="2400" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="220" y="2520" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="440" y="2520" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="660" y="2520" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="330" y="2640" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="220" y="0" width="180" height="56" rx="6" fill="#10b981"/>
+              <rect x="330" y="2760" width="180" height="56" rx="6" fill="#10b981"/>
+            </svg>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+</x-dc>
+
+<script data-dc-script data-props='{"theme":{"editor":"enum","options":["system","light","dark"],"default":"dark","section":"Theme"},"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { mode: null };
+  }
+
+  currentMode() {
+    return this.state.mode ?? this.props.theme ?? 'dark';
+  }
+
+  resolvedTheme() {
+    const mode = this.currentMode();
+    if (mode !== 'system') return mode;
+    try {
+      return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    } catch (err) {
+      return 'dark';
+    }
+  }
+
+  renderVals() {
+    const cycle = ['system', 'light', 'dark'];
+    const labels = { system: 'System', light: 'Light', dark: 'Dark' };
+    const mode = this.currentMode();
+    const next = cycle[(cycle.indexOf(mode) + 1) % cycle.length];
+    return {
+      theme: this.resolvedTheme(),
+      isSystem: mode === 'system',
+      isLight: mode === 'light',
+      isDark: mode === 'dark',
+      themeTitle: labels[mode] + ' — click for ' + labels[next],
+      cycleTheme: () => this.setState({ mode: next })
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,393 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&family=Manrope:wght@400;500;600;700&display=swap">
+  <style>
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;font-family:'Manrope','Avenir Next','Segoe UI',sans-serif;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+.app{
+  --background:oklch(0.965 0.006 260);
+  --foreground:oklch(0.15 0.02 260);
+  --card:oklch(1 0 0);
+  --popover:oklch(1 0 0);
+  --primary:oklch(0.55 0.22 292);
+  --primary-foreground:oklch(0.98 0.005 260);
+  --secondary:oklch(0.93 0.01 260);
+  --muted:oklch(0.93 0.01 260);
+  --muted-foreground:oklch(0.45 0.015 260);
+  --accent:oklch(0.93 0.01 260);
+  --destructive:oklch(0.50 0.20 25);
+  --border:oklch(0.88 0.01 260);
+  --input:oklch(0.88 0.01 260);
+  --ring:oklch(0.55 0.22 292);
+  --sidebar:oklch(0.96 0.008 260);
+  --red-400:oklch(70.4% 0.191 22.216);
+  --red-500:oklch(63.7% 0.237 25.331);
+  --orange-400:oklch(75% 0.183 55.934);
+  --orange-500:oklch(70.5% 0.213 47.604);
+  --yellow-300:oklch(90.5% 0.182 98.111);
+  --yellow-400:oklch(85.2% 0.199 91.936);
+  --yellow-500:oklch(79.5% 0.184 86.047);
+  --green-400:oklch(79.2% 0.209 151.711);
+  --green-500:oklch(72.3% 0.219 149.579);
+  --emerald-400:oklch(76.5% 0.177 163.223);
+  --emerald-500:oklch(69.6% 0.17 162.48);
+  --cyan-400:oklch(78.9% 0.154 211.53);
+  --cyan-500:oklch(71.5% 0.143 215.221);
+  --blue-400:oklch(70.7% 0.165 254.624);
+  --blue-500:oklch(62.3% 0.214 259.815);
+  --purple-400:oklch(71.4% 0.203 305.504);
+  --purple-500:oklch(62.7% 0.265 303.9);
+  --gray-400:oklch(70.7% 0.022 261.325);
+  --gray-500:oklch(55.1% 0.027 264.364);
+  --perf-cpu:hsl(262 83% 58%);
+  --perf-gpu:hsl(200 88% 46%);
+  --perf-ram:hsl(155 63% 43%);
+  --perf-vram:hsl(24 90% 52%);
+  --perf-free:hsl(220 14% 62%);
+  width:1440px;height:900px;display:flex;flex-direction:column;overflow:hidden;
+  background:var(--background);color:var(--foreground);font-size:14px;
+  font-family:'Manrope','Avenir Next','Segoe UI',sans-serif;
+}
+.app[data-theme="dark"]{
+  color-scheme:dark;
+  --background:oklch(0.115 0.03 260);
+  --foreground:oklch(0.97 0.005 260);
+  --card:oklch(0.16 0.028 260);
+  --popover:oklch(0.16 0.028 260);
+  --primary:oklch(0.58 0.22 292);
+  --primary-foreground:oklch(0.97 0.005 260);
+  --secondary:oklch(0.24 0.02 260);
+  --muted:oklch(0.24 0.02 260);
+  --muted-foreground:oklch(0.7 0.015 260);
+  --accent:oklch(0.24 0.02 260);
+  --destructive:oklch(0.45 0.18 25);
+  --border:oklch(0.28 0.02 260);
+  --input:oklch(0.28 0.02 260);
+  --ring:oklch(0.58 0.22 292);
+  --sidebar:oklch(0.11 0.028 260);
+  --perf-cpu:hsl(262 90% 70%);
+  --perf-gpu:hsl(199 92% 62%);
+  --perf-ram:hsl(156 68% 58%);
+  --perf-vram:hsl(31 95% 64%);
+  --perf-free:hsl(220 16% 74%);
+}
+.mono{font-family:'Geist Mono','SFMono-Regular',Consolas,'Noto Sans Mono CJK SC',monospace}
+a{color:var(--primary);text-decoration:none}
+a:hover{color:var(--primary);opacity:.85}
+button{font:inherit;color:inherit;border:0;background:none;padding:0;cursor:pointer}
+input,select,textarea{font:inherit;color:inherit}
+.nav-item{transition:background-color .15s,color .15s}
+.nav-item:hover{background:var(--accent)}
+.ghost-btn{transition:background-color .15s,color .15s;border-radius:6px}
+.ghost-btn:hover{background:var(--accent)}
+.ctl{appearance:none;-webkit-appearance:none;border-radius:6px;border:1px solid color-mix(in oklab,var(--border) 50%,transparent);background:color-mix(in oklab,var(--background) 50%,transparent);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)}
+.ctl:focus{outline:none;box-shadow:0 0 0 1px var(--ring)}
+.scroll{overflow-y:auto;scrollbar-width:thin}
+
+/* ── additions used only by the proposed boards ─────────────────────────── */
+.micro{font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted-foreground)}
+.nano{font-size:10px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted-foreground)}
+.panel{border:1px solid var(--border);border-radius:12px;background:var(--card)}
+
+/* Badges that hold up in BOTH themes: dark ink on a light tint, and the
+   reverse in dark. The current build uses text-*-400 on bg-*-500/20, which
+   is a dark-theme-only pairing. */
+.chip{display:inline-flex;align-items:center;gap:4px;border-radius:6px;padding:2px 8px;font-size:11px;font-weight:600;border:1px solid transparent;white-space:nowrap}
+.chip-sr{background:oklch(0.95 0.04 60);color:oklch(0.47 0.15 47);border-color:oklch(0.89 0.06 58)}
+.chip-fi{background:oklch(0.95 0.035 212);color:oklch(0.45 0.11 220);border-color:oklch(0.88 0.05 212)}
+.app[data-theme="dark"] .chip-sr{background:color-mix(in oklab,var(--orange-500) 16%,transparent);color:oklch(0.83 0.12 62);border-color:color-mix(in oklab,var(--orange-500) 34%,transparent)}
+.app[data-theme="dark"] .chip-fi{background:color-mix(in oklab,var(--cyan-500) 16%,transparent);color:oklch(0.85 0.1 208);border-color:color-mix(in oklab,var(--cyan-500) 34%,transparent)}
+.chip-spec{background:transparent;border-color:var(--border);color:var(--muted-foreground);font-family:'Geist Mono','SFMono-Regular',Consolas,monospace;font-size:11px;font-weight:500}
+
+/* One checkbox, everywhere. */
+.cbx{position:relative;display:inline-flex;width:16px;height:16px;flex-shrink:0}
+.cbx input{position:absolute;inset:0;opacity:0;margin:0;cursor:pointer;width:16px;height:16px}
+.cbx span{width:16px;height:16px;border-radius:4px;border:1px solid var(--border);background:var(--card);display:flex;align-items:center;justify-content:center;color:transparent;transition:background-color .12s,border-color .12s}
+.cbx input:checked + span{background:var(--primary);border-color:var(--primary);color:#fff}
+.cbx input:focus-visible + span{box-shadow:0 0 0 2px color-mix(in oklab,var(--ring) 50%,transparent)}
+
+/* Segmented control — one control height, a selected state you can see. */
+.seg{display:flex;align-items:center;gap:2px;padding:3px;border:1px solid var(--border);border-radius:8px;background:color-mix(in oklab,var(--secondary) 45%,transparent);height:36px}
+.seg button{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:28px;padding:0 12px;border-radius:5px;font-size:12px;font-weight:500;color:var(--muted-foreground);transition:background-color .12s,color .12s}
+.seg button:hover{color:var(--foreground)}
+.seg button[data-on="1"]{background:color-mix(in oklab,var(--primary) 14%,transparent);color:var(--primary);font-weight:600}
+.field-input{display:flex;height:36px;width:100%;border-radius:6px;border:1px solid var(--input);background:var(--card);padding:0 12px;font-size:14px}
+.field-input:focus{outline:none;border-color:var(--ring);box-shadow:0 0 0 1px var(--ring)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;white-space:nowrap;border-radius:6px;font-size:13px;font-weight:500;height:36px;padding:0 14px;transition:background-color .15s,color .15s,border-color .15s}
+.btn-primary{background:var(--primary);color:var(--primary-foreground)}
+.btn-primary:hover{filter:brightness(1.08)}
+.btn-outline{border:1px solid var(--border);background:var(--card)}
+.btn-outline:hover{background:var(--secondary)}
+.btn-ghost{color:var(--muted-foreground)}
+.btn-ghost:hover{background:var(--secondary);color:var(--foreground)}
+.rule{height:1px;background:var(--border)}
+.card-lift{transition:border-color .15s,transform .15s}
+.card-lift:hover{border-color:color-mix(in oklab,var(--primary) 45%,var(--border))}
+@keyframes tw-pulse{0%,100%{opacity:1}50%{opacity:.5}}
+
+/* Tailwind pairs a line-height with each text size. */
+.app [style*="font-size:12px"]{line-height:16px}
+.app [style*="font-size:14px"]{line-height:20px}
+.app [style*="font-size:16px"]{line-height:24px}
+.app [style*="font-size:20px"]{line-height:28px}
+
+.clamp2{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  </style>
+</helmet>
+
+<div class="app" data-theme="{{theme}}">
+  <header style="display:flex;align-items:center;height:48px;padding:0 16px;border-bottom:1px solid var(--border);flex-shrink:0;background:var(--background)">
+    <div style="display:flex;align-items:center;gap:10px;margin-right:24px">
+      <div title="Server connected: workflow running" style="height:24px;width:24px;border-radius:8px;border:1px solid color-mix(in oklab,var(--yellow-400) 50%,transparent);display:flex;align-items:center;justify-content:center;flex-shrink:0;background:color-mix(in oklab,var(--yellow-500) 20%,transparent)">
+        <div style="height:8px;width:8px;border-radius:50%;background:var(--yellow-300);box-shadow:0 0 10px rgba(253,224,71,.65);animation:tw-pulse 2s cubic-bezier(.4,0,.6,1) infinite"></div>
+      </div>
+      <a href="https://github.com/ControlNet/videnoa" class="mono" style="font-size:14px;font-weight:600;color:var(--foreground);white-space:nowrap">Videnoa</a>
+      <span class="mono" style="font-size:12px;color:var(--muted-foreground);white-space:nowrap">v0.1.3</span>
+    </div>
+
+    <nav style="display:flex;align-items:center;gap:4px">
+      <span class="nav-item" style="display:flex;align-items:center;gap:8px;border-radius:6px;padding:6px 12px;font-size:14px;font-weight:500;color:var(--muted-foreground)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><rect width="8" height="8" x="3" y="3" rx="2"/><path d="M7 11v4a2 2 0 0 0 2 2h4"/><rect width="8" height="8" x="13" y="13" rx="2"/></svg>
+        <span>Editor</span>
+      </span>
+      <span class="nav-item" style="display:flex;align-items:center;gap:8px;border-radius:6px;padding:6px 12px;font-size:14px;font-weight:500;color:var(--muted-foreground)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></svg>
+        <span>Jobs</span>
+      </span>
+      <span class="nav-item" style="display:flex;align-items:center;gap:8px;border-radius:6px;padding:6px 12px;font-size:14px;font-weight:500;background:color-mix(in oklab,var(--primary) 15%,transparent);color:var(--primary)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z"/><path d="M12 22V12"/><polyline points="3.29 7 12 12 20.71 7"/><path d="m7.5 4.27 9 5.15"/></svg>
+        <span>Models</span>
+      </span>
+      <span class="nav-item" style="display:flex;align-items:center;gap:8px;border-radius:6px;padding:6px 12px;font-size:14px;font-weight:500;color:var(--muted-foreground)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></svg>
+        <span>Performance</span>
+      </span>
+      <span class="nav-item" style="display:flex;align-items:center;gap:8px;border-radius:6px;padding:6px 12px;font-size:14px;font-weight:500;color:var(--muted-foreground)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></svg>
+        <span>Settings</span>
+      </span>
+    </nav>
+
+    <div style="margin-left:auto;display:flex;align-items:center;gap:4px">
+      <button class="ghost-btn" aria-label="Select language" title="Current language: English" style="height:32px;width:32px;display:flex;align-items:center;justify-content:center">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
+      </button>
+      <button class="ghost-btn" onClick="{{cycleTheme}}" title="{{themeTitle}}" aria-label="{{themeTitle}}" style="height:32px;width:32px;display:flex;align-items:center;justify-content:center">
+        <sc-if value="{{isSystem}}" hint-placeholder-val="{{true}}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg>
+        </sc-if>
+        <sc-if value="{{isLight}}" hint-placeholder-val="{{false}}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
+        </sc-if>
+        <sc-if value="{{isDark}}" hint-placeholder-val="{{false}}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/></svg>
+        </sc-if>
+      </button>
+    </div>
+  </header>
+  <main style="flex:1;min-height:0;overflow:auto">
+    <div style="padding:24px">
+
+      <div style="margin-bottom:24px">
+        <h2 style="font-size:18px;line-height:28px;font-weight:600;letter-spacing:-.025em;margin:0">Models</h2>
+        <p style="font-size:14px;color:var(--muted-foreground);margin:4px 0 0">{{subtitle}} · scanned from <span class="mono" style="font-size:13px">models/</span></p>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
+        <div style="position:relative;width:320px;flex-shrink:0">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="position:absolute;left:11px;top:50%;transform:translateY(-50%);width:15px;height:15px;color:var(--muted-foreground);pointer-events:none"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg>
+          <input class="field-input" placeholder="Search models…" value="{{query}}" onChange="{{onSearch}}" style="padding-left:34px">
+        </div>
+
+        <div class="seg">
+          <button data-on="{{allOn}}" onClick="{{filterAll}}">All</button>
+          <button data-on="{{srOn}}" onClick="{{filterSr}}">Super-Res</button>
+          <button data-on="{{fiOn}}" onClick="{{filterFi}}">Interpolation</button>
+        </div>
+
+        <div class="seg" style="margin-left:auto">
+          <button data-on="{{gridOn}}" onClick="{{setGrid}}" aria-label="Grid view" style="padding:0 10px">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></svg>
+          </button>
+          <button data-on="{{listOn}}" onClick="{{setList}}" aria-label="List view" style="padding:0 10px">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px"><path d="M3 5h.01"/><path d="M3 12h.01"/><path d="M3 19h.01"/><path d="M8 5h13"/><path d="M8 12h13"/><path d="M8 19h13"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px">
+
+        <sc-if value="{{showEsrgan}}" hint-placeholder-val="{{true}}">
+        <div class="panel card-lift" style="overflow:hidden;display:flex;flex-direction:column">
+          <div style="height:3px;background:#F97316;flex-shrink:0"></div>
+          <div style="padding:16px;display:flex;flex-direction:column;gap:12px;flex:1">
+            <div class="mono" style="font-size:14px;font-weight:600;letter-spacing:-.01em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">RealESRGAN_x4plus_anime_6B</div>
+            <div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px">
+              <span class="chip chip-sr">Super-Resolution</span>
+              <span class="chip chip-spec">4x</span>
+            </div>
+            <p class="clamp2" style="font-size:13px;line-height:20px;color:color-mix(in oklab,var(--foreground) 72%,transparent);margin:0;height:40px">RealESRGAN x4 anime-optimized model (6-block variant, 17.9 MB)</p>
+            <div class="rule"></div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+              <div>
+                <div class="nano">Range</div>
+                <div class="mono" style="font-size:12px;margin-top:3px">0–255</div>
+              </div>
+              <div>
+                <div class="nano">Input</div>
+                <div class="mono" style="font-size:12px;margin-top:3px">standard</div>
+              </div>
+            </div>
+            <div class="mono" style="font-size:11px;color:color-mix(in oklab,var(--muted-foreground) 80%,transparent);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:auto">RealESRGAN_x4plus_anime_6B.onnx</div>
+          </div>
+        </div>
+        </sc-if>
+
+        <sc-if value="{{showJanai}}" hint-placeholder-val="{{true}}">
+        <div class="panel card-lift" style="overflow:hidden;display:flex;flex-direction:column">
+          <div style="height:3px;background:#F97316;flex-shrink:0"></div>
+          <div style="padding:16px;display:flex;flex-direction:column;gap:12px;flex:1">
+            <div class="mono" style="font-size:14px;font-weight:600;letter-spacing:-.01em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">AnimeJaNai_V3_L1_Sharp_HD_x2_FP16</div>
+            <div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px">
+              <span class="chip chip-sr">Super-Resolution</span>
+              <span class="chip chip-spec">2x</span>
+              <span class="chip chip-spec">FP16</span>
+            </div>
+            <p class="clamp2" style="font-size:13px;line-height:20px;color:color-mix(in oklab,var(--foreground) 72%,transparent);margin:0;height:40px">AnimeJaNai V3 L1 Sharp HD 2x FP16 — Compact architecture, optimized for anime</p>
+            <div class="rule"></div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+              <div>
+                <div class="nano">Range</div>
+                <div class="mono" style="font-size:12px;margin-top:3px">0–1</div>
+              </div>
+              <div>
+                <div class="nano">Input</div>
+                <div class="mono" style="font-size:12px;margin-top:3px">standard</div>
+              </div>
+            </div>
+            <div class="mono" style="font-size:11px;color:color-mix(in oklab,var(--muted-foreground) 80%,transparent);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:auto">the_database_AnimeJaNaiV3L1_sharp_HD_x2_fp16_op17.onnx</div>
+          </div>
+        </div>
+        </sc-if>
+
+        <sc-if value="{{showRife}}" hint-placeholder-val="{{true}}">
+        <div class="panel card-lift" style="overflow:hidden;display:flex;flex-direction:column">
+          <div style="height:3px;background:#06B6D4;flex-shrink:0"></div>
+          <div style="padding:16px;display:flex;flex-direction:column;gap:12px;flex:1">
+            <div class="mono" style="font-size:14px;font-weight:600;letter-spacing:-.01em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">RIFE_v4.26</div>
+            <div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px">
+              <span class="chip chip-fi">Frame Interpolation</span>
+            </div>
+            <p class="clamp2" style="font-size:13px;line-height:20px;color:color-mix(in oklab,var(--foreground) 72%,transparent);margin:0;height:40px">RIFE v4.26 frame interpolation — concatenated 7-channel input format</p>
+            <div class="rule"></div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+              <div>
+                <div class="nano">Range</div>
+                <div class="mono" style="font-size:12px;margin-top:3px">0–1</div>
+              </div>
+              <div>
+                <div class="nano">Input</div>
+                <div class="mono" style="font-size:12px;margin-top:3px">concatenated</div>
+              </div>
+            </div>
+            <div class="mono" style="font-size:11px;color:color-mix(in oklab,var(--muted-foreground) 80%,transparent);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:auto">rife_v4.26.onnx</div>
+          </div>
+        </div>
+        </sc-if>
+
+      </div>
+
+      <sc-if value="{{noResults}}" hint-placeholder-val="{{false}}">
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:80px 0;text-align:center">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:32px;height:32px;color:color-mix(in oklab,var(--muted-foreground) 45%,transparent);margin-bottom:14px"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg>
+        <p style="font-size:14px;color:var(--muted-foreground);margin:0">No models found matching your criteria</p>
+      </div>
+      </sc-if>
+
+    </div>
+  </main>
+</div>
+</x-dc>
+
+<script data-dc-script data-props='{"theme":{"editor":"enum","options":["system","light","dark"],"default":"dark","section":"Theme"},"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { mode: null, filter: 'All', view: 'grid', query: '' };
+  }
+
+  currentMode() {
+    return this.state.mode ?? this.props.theme ?? 'dark';
+  }
+
+  resolvedTheme() {
+    const mode = this.currentMode();
+    if (mode !== 'system') return mode;
+    try {
+      return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    } catch (err) {
+      return 'dark';
+    }
+  }
+
+  matches(name, description, type) {
+    if (this.state.filter !== 'All' && this.state.filter !== type) return false;
+    const q = this.state.query.trim().toLowerCase();
+    if (!q) return true;
+    return name.toLowerCase().indexOf(q) !== -1 || description.toLowerCase().indexOf(q) !== -1;
+  }
+
+  renderVals() {
+    const cycle = ['system', 'light', 'dark'];
+    const labels = { system: 'System', light: 'Light', dark: 'Dark' };
+    const mode = this.currentMode();
+    const next = cycle[(cycle.indexOf(mode) + 1) % cycle.length];
+
+    const showEsrgan = this.matches('RealESRGAN_x4plus_anime_6B', 'RealESRGAN x4 anime-optimized model (6-block variant, 17.9 MB)', 'SuperResolution');
+    const showJanai = this.matches('AnimeJaNai_V3_L1_Sharp_HD_x2_FP16', 'AnimeJaNai V3 L1 Sharp HD 2x FP16 — Compact architecture, optimized for anime', 'SuperResolution');
+    const showRife = this.matches('RIFE_v4.26', 'RIFE v4.26 frame interpolation — concatenated 7-channel input format', 'FrameInterpolation');
+    const count = [showEsrgan, showJanai, showRife].filter(Boolean).length;
+    const filter = this.state.filter;
+    const view = this.state.view;
+
+    return {
+      theme: this.resolvedTheme(),
+      isSystem: mode === 'system',
+      isLight: mode === 'light',
+      isDark: mode === 'dark',
+      themeTitle: labels[mode] + ' — click for ' + labels[next],
+      cycleTheme: () => this.setState({ mode: next }),
+
+      subtitle: count === 1 ? '1 model available' : count + ' models available',
+      query: this.state.query,
+      onSearch: (event) => this.setState({ query: event.target.value }),
+
+      showEsrgan: showEsrgan,
+      showJanai: showJanai,
+      showRife: showRife,
+      noResults: count === 0,
+
+      allOn: filter === 'All' ? '1' : '0',
+      srOn: filter === 'SuperResolution' ? '1' : '0',
+      fiOn: filter === 'FrameInterpolation' ? '1' : '0',
+      filterAll: () => this.setState({ filter: 'All' }),
+      filterSr: () => this.setState({ filter: 'SuperResolution' }),
+      filterFi: () => this.setState({ filter: 'FrameInterpolation' }),
+
+      gridOn: view === 'grid' ? '1' : '0',
+      listOn: view === 'list' ? '1' : '0',
+      setGrid: () => this.setState({ view: 'grid' }),
+      setList: () => this.setState({ view: 'list' })
+    };
+  }
+}
+</script>
+</body>
+</html>

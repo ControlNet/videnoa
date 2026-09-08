@@ -1,0 +1,652 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&family=Manrope:wght@400;500;600;700&display=swap">
+  <style>
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;font-family:'Manrope','Avenir Next','Segoe UI',sans-serif;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+.app{
+  --background:oklch(0.98 0.005 260);
+  --foreground:oklch(0.15 0.02 260);
+  --card:oklch(1 0 0);
+  --popover:oklch(1 0 0);
+  --primary:oklch(0.55 0.22 292);
+  --primary-foreground:oklch(0.98 0.005 260);
+  --secondary:oklch(0.93 0.01 260);
+  --muted:oklch(0.93 0.01 260);
+  --muted-foreground:oklch(0.45 0.015 260);
+  --accent:oklch(0.93 0.01 260);
+  --destructive:oklch(0.50 0.20 25);
+  --border:oklch(0.88 0.01 260);
+  --input:oklch(0.88 0.01 260);
+  --ring:oklch(0.55 0.22 292);
+  --sidebar:oklch(0.96 0.008 260);
+  --red-400:oklch(70.4% 0.191 22.216);
+  --red-500:oklch(63.7% 0.237 25.331);
+  --orange-400:oklch(75% 0.183 55.934);
+  --orange-500:oklch(70.5% 0.213 47.604);
+  --yellow-300:oklch(90.5% 0.182 98.111);
+  --yellow-400:oklch(85.2% 0.199 91.936);
+  --yellow-500:oklch(79.5% 0.184 86.047);
+  --green-400:oklch(79.2% 0.209 151.711);
+  --green-500:oklch(72.3% 0.219 149.579);
+  --emerald-400:oklch(76.5% 0.177 163.223);
+  --emerald-500:oklch(69.6% 0.17 162.48);
+  --cyan-400:oklch(78.9% 0.154 211.53);
+  --cyan-500:oklch(71.5% 0.143 215.221);
+  --blue-400:oklch(70.7% 0.165 254.624);
+  --blue-500:oklch(62.3% 0.214 259.815);
+  --purple-400:oklch(71.4% 0.203 305.504);
+  --purple-500:oklch(62.7% 0.265 303.9);
+  --gray-400:oklch(70.7% 0.022 261.325);
+  --gray-500:oklch(55.1% 0.027 264.364);
+  --perf-cpu:hsl(262 83% 58%);
+  --perf-gpu:hsl(200 88% 46%);
+  --perf-ram:hsl(155 63% 43%);
+  --perf-vram:hsl(24 90% 52%);
+  --perf-free:hsl(220 14% 62%);
+  width:1440px;height:900px;display:flex;flex-direction:column;overflow:hidden;
+  background:var(--background);color:var(--foreground);font-size:14px;
+  font-family:'Manrope','Avenir Next','Segoe UI',sans-serif;
+  line-height:1.5;
+}
+/* Tailwind pairs a line-height with each text size; inline font-size alone does not. */
+.app [style*="font-size:12px"]{line-height:16px}
+.app [style*="font-size:14px"]{line-height:20px}
+.app [style*="font-size:16px"]{line-height:24px}
+.app [style*="font-size:20px"]{line-height:28px}
+.app[data-theme="dark"]{
+  color-scheme:dark;
+  --background:oklch(0.13 0.028 260);
+  --foreground:oklch(0.97 0.005 260);
+  --card:oklch(0.16 0.028 260);
+  --popover:oklch(0.16 0.028 260);
+  --primary:oklch(0.58 0.22 292);
+  --primary-foreground:oklch(0.97 0.005 260);
+  --secondary:oklch(0.24 0.02 260);
+  --muted:oklch(0.24 0.02 260);
+  --muted-foreground:oklch(0.7 0.015 260);
+  --accent:oklch(0.24 0.02 260);
+  --destructive:oklch(0.45 0.18 25);
+  --border:oklch(0.28 0.02 260);
+  --input:oklch(0.28 0.02 260);
+  --ring:oklch(0.58 0.22 292);
+  --sidebar:oklch(0.11 0.028 260);
+  --perf-cpu:hsl(262 90% 70%);
+  --perf-gpu:hsl(199 92% 62%);
+  --perf-ram:hsl(156 68% 58%);
+  --perf-vram:hsl(31 95% 64%);
+  --perf-free:hsl(220 16% 74%);
+}
+.mono{font-family:'Geist Mono','SFMono-Regular',Consolas,'Noto Sans Mono CJK SC',monospace}
+a{color:var(--primary);text-decoration:none}
+a:hover{color:var(--primary);opacity:.85}
+button{font:inherit;color:inherit;border:0;background:none;padding:0;cursor:pointer}
+input,select,textarea{font:inherit;color:inherit}
+.nav-item{transition:background-color .15s,color .15s}
+.nav-item:hover{background:var(--accent)}
+.ghost-btn{transition:background-color .15s,color .15s;border-radius:6px}
+.ghost-btn:hover{background:var(--accent)}
+.ctl{appearance:none;-webkit-appearance:none;border-radius:6px;border:1px solid color-mix(in oklab,var(--border) 50%,transparent);background:color-mix(in oklab,var(--background) 50%,transparent);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)}
+.ctl:focus{outline:none;box-shadow:0 0 0 1px var(--ring)}
+.scroll{overflow-y:auto;scrollbar-width:thin}
+@keyframes tw-pulse{0%,100%{opacity:1}50%{opacity:.5}}
+
+.pal-item{transition:background-color .15s,border-color .15s;border:1px solid transparent}
+.pal-item:hover{border-color:color-mix(in oklab,var(--border) 60%,transparent);background:color-mix(in oklab,var(--secondary) 40%,transparent)}
+.rf-node .node-x{opacity:0;transition:opacity .15s;border-radius:4px}
+.rf-node:hover .node-x{opacity:1}
+.rf-node .node-x:hover{background:rgb(255 255 255 / .2)}
+.rf-ctl button{transition:background-color .15s}
+.rf-ctl button:hover{background:var(--secondary)}
+@keyframes rf-dash{to{stroke-dashoffset:-10}}
+.rf-animated{stroke-dasharray:5;animation:rf-dash .5s linear infinite}
+@keyframes tensor-lane-rush{to{stroke-dashoffset:-30}}
+@keyframes tensor-aura-pulse{0%{opacity:.14}50%{opacity:.34}100%{opacity:.2}}
+@keyframes tensor-core-pulse{0%{opacity:.72}50%{opacity:1}100%{opacity:.84}}
+  </style>
+</helmet>
+
+<div class="app" data-theme="{{theme}}">
+
+  <header style="display:flex;align-items:center;height:48px;padding:0 16px;border-bottom:1px solid var(--border);flex-shrink:0;background:var(--background)">
+    <div style="display:flex;align-items:center;gap:10px;margin-right:24px">
+      <div title="Server connected: workflow running" style="height:24px;width:24px;border-radius:8px;border:1px solid color-mix(in oklab,var(--yellow-400) 50%,transparent);display:flex;align-items:center;justify-content:center;flex-shrink:0;background:color-mix(in oklab,var(--yellow-500) 20%,transparent)">
+        <div style="height:8px;width:8px;border-radius:50%;background:var(--yellow-300);box-shadow:0 0 10px rgba(253,224,71,.65);animation:tw-pulse 2s cubic-bezier(.4,0,.6,1) infinite"></div>
+      </div>
+      <a href="https://github.com/ControlNet/videnoa" class="mono" style="font-size:14px;font-weight:600;color:var(--foreground);white-space:nowrap">Videnoa</a>
+      <span class="mono" style="font-size:12px;color:var(--muted-foreground);white-space:nowrap">v0.1.3</span>
+    </div>
+
+    <nav style="display:flex;align-items:center;gap:4px">
+      <span class="nav-item" style="display:flex;align-items:center;gap:8px;border-radius:6px;padding:6px 12px;font-size:14px;font-weight:500;background:color-mix(in oklab,var(--primary) 15%,transparent);color:var(--primary)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><rect width="8" height="8" x="3" y="3" rx="2"/><path d="M7 11v4a2 2 0 0 0 2 2h4"/><rect width="8" height="8" x="13" y="13" rx="2"/></svg>
+        <span>Editor</span>
+      </span>
+      <span class="nav-item" style="display:flex;align-items:center;gap:8px;border-radius:6px;padding:6px 12px;font-size:14px;font-weight:500;color:var(--muted-foreground)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></svg>
+        <span>Jobs</span>
+      </span>
+      <span class="nav-item" style="display:flex;align-items:center;gap:8px;border-radius:6px;padding:6px 12px;font-size:14px;font-weight:500;color:var(--muted-foreground)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z"/><path d="M12 22V12"/><polyline points="3.29 7 12 12 20.71 7"/><path d="m7.5 4.27 9 5.15"/></svg>
+        <span>Models</span>
+      </span>
+      <span class="nav-item" style="display:flex;align-items:center;gap:8px;border-radius:6px;padding:6px 12px;font-size:14px;font-weight:500;color:var(--muted-foreground)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></svg>
+        <span>Performance</span>
+      </span>
+      <span class="nav-item" style="display:flex;align-items:center;gap:8px;border-radius:6px;padding:6px 12px;font-size:14px;font-weight:500;color:var(--muted-foreground)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></svg>
+        <span>Settings</span>
+      </span>
+    </nav>
+
+    <div style="margin-left:auto;display:flex;align-items:center;gap:4px">
+      <button class="ghost-btn" aria-label="Select language" title="Current language: English" style="height:32px;width:32px;display:flex;align-items:center;justify-content:center">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
+      </button>
+      <button class="ghost-btn" onClick="{{cycleTheme}}" title="{{themeTitle}}" aria-label="{{themeTitle}}" style="height:32px;width:32px;display:flex;align-items:center;justify-content:center">
+        <sc-if value="{{isSystem}}" hint-placeholder-val="{{true}}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg>
+        </sc-if>
+        <sc-if value="{{isLight}}" hint-placeholder-val="{{false}}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
+        </sc-if>
+        <sc-if value="{{isDark}}" hint-placeholder-val="{{false}}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/></svg>
+        </sc-if>
+      </button>
+    </div>
+  </header>
+
+  <main style="display:flex;flex:1;min-height:0">
+
+    <div style="display:flex;flex-direction:column;border-right:1px solid color-mix(in oklab,var(--border) 50%,transparent);background:color-mix(in oklab,var(--card) 80%,transparent);width: {{paletteWidth}}; flex-shrink:0">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:8px;border-bottom:1px solid color-mix(in oklab,var(--border) 40%,transparent);flex-shrink:0">
+        <sc-if value="{{expanded}}" hint-placeholder-val="{{true}}">
+          <span style="font-size:10px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--muted-foreground);padding-left:4px">Nodes</span>
+        </sc-if>
+        <button class="ghost-btn" onClick="{{toggleSidebar}}" style="height:28px;width:28px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+          <sc-if value="{{expanded}}" hint-placeholder-val="{{true}}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="m16 15-3-3 3-3"/></svg>
+          </sc-if>
+          <sc-if value="{{collapsed}}" hint-placeholder-val="{{false}}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="m14 9 3 3-3 3"/></svg>
+          </sc-if>
+        </button>
+      </div>
+
+      <sc-if value="{{expanded}}" hint-placeholder-val="{{true}}">
+      <div class="scroll" style="flex:1;min-height:0">
+        <div style="padding:8px;display:flex;flex-direction:column;gap:12px">
+          <div>
+            <div style="font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:color-mix(in oklab,var(--muted-foreground) 60%,transparent);padding:0 12px 4px">input</div>
+            <button class="pal-item" style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:6px;cursor:grab;width:100%;text-align:left">
+              <span style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:6px;flex-shrink:0;background:#A855F722;color:#A855F7"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M15.033 13.44a.647.647 0 0 1 0 1.12l-4.065 2.352a.645.645 0 0 1-.968-.56v-4.704a.645.645 0 0 1 .967-.56z"/></svg></span>
+              <span style="font-size:12px;font-weight:500;color:color-mix(in oklab,var(--foreground) 90%,transparent);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Video Input</span>
+            </button>
+            <button class="pal-item" style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:6px;cursor:grab;width:100%;text-align:left">
+              <span style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:6px;flex-shrink:0;background:#A855F722;color:#A855F7"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></svg></span>
+              <span style="font-size:12px;font-weight:500;color:color-mix(in oklab,var(--foreground) 90%,transparent);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Downloader</span>
+            </button>
+            <button class="pal-item" style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:6px;cursor:grab;width:100%;text-align:left">
+              <span style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:6px;flex-shrink:0;background:#A855F722;color:#A855F7"><svg viewBox="0 0 24 24" fill="none" style="width:14px;height:14px"><path fill="currentColor" d="M12 .002C8.826.002-1.398 18.537.16 21.666c1.56 3.129 22.14 3.094 23.682 0C25.384 18.573 15.177 0 12 0zm7.76 18.949c-1.008 2.028-14.493 2.05-15.514 0C3.224 16.9 9.92 4.755 12.003 4.755c2.081 0 8.77 12.166 7.759 14.196zM12 9.198c-1.054 0-4.446 6.15-3.93 7.189.518 1.04 7.348 1.027 7.86 0 .511-1.027-2.874-7.19-3.93-7.19z"/></svg></span>
+              <span style="font-size:12px;font-weight:500;color:color-mix(in oklab,var(--foreground) 90%,transparent);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Jellyfin Video</span>
+            </button>
+          </div>
+          <div>
+            <div style="font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:color-mix(in oklab,var(--muted-foreground) 60%,transparent);padding:0 12px 4px">processing</div>
+            <button class="pal-item" style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:6px;cursor:grab;width:100%;text-align:left">
+              <span style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:6px;flex-shrink:0;background:#F9731622;color:#F97316"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="M6 18h8"/><path d="M3 22h18"/><path d="M14 22a7 7 0 1 0 0-14h-1"/><path d="M9 14h2"/><path d="M9 12a2 2 0 0 1-2-2V6h6v4a2 2 0 0 1-2 2Z"/><path d="M12 6V3a1 1 0 0 0-1-1H9a1 1 0 0 0-1 1v3"/></svg></span>
+              <span style="font-size:12px;font-weight:500;color:color-mix(in oklab,var(--foreground) 90%,transparent);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Super Resolution</span>
+            </button>
+            <button class="pal-item" style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:6px;cursor:grab;width:100%;text-align:left">
+              <span style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:6px;flex-shrink:0;background:#06B6D422;color:#06B6D4"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M3 7.5h4"/><path d="M3 12h18"/><path d="M3 16.5h4"/><path d="M17 3v18"/><path d="M17 7.5h4"/><path d="M17 16.5h4"/></svg></span>
+              <span style="font-size:12px;font-weight:500;color:color-mix(in oklab,var(--foreground) 90%,transparent);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Frame Interpolation</span>
+            </button>
+            <button class="pal-item" style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:6px;cursor:grab;width:100%;text-align:left">
+              <span style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:6px;flex-shrink:0;background:#3B82F622;color:#3B82F6"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M14 15H9v-5"/><path d="M16 3h5v5"/><path d="M21 3 9 15"/></svg></span>
+              <span style="font-size:12px;font-weight:500;color:color-mix(in oklab,var(--foreground) 90%,transparent);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Resize</span>
+            </button>
+            <button class="pal-item" style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:6px;cursor:grab;width:100%;text-align:left">
+              <span style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:6px;flex-shrink:0;background:#3B82F622;color:#3B82F6"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M14 15H9v-5"/><path d="M16 3h5v5"/><path d="M21 3 9 15"/></svg></span>
+              <span style="font-size:12px;font-weight:500;color:color-mix(in oklab,var(--foreground) 90%,transparent);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Rescale</span>
+            </button>
+            <button class="pal-item" style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:6px;cursor:grab;width:100%;text-align:left">
+              <span style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:6px;flex-shrink:0;background:#EAB30822;color:#EAB308"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="M12 22a1 1 0 0 1 0-20 10 9 0 0 1 10 9 5 5 0 0 1-5 5h-2.25a1.75 1.75 0 0 0-1.4 2.8l.3.4a1.75 1.75 0 0 1-1.4 2.8z"/><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/></svg></span>
+              <span style="font-size:12px;font-weight:500;color:color-mix(in oklab,var(--foreground) 90%,transparent);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Color Space</span>
+            </button>
+            <button class="pal-item" style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:6px;cursor:grab;width:100%;text-align:left">
+              <span style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:6px;flex-shrink:0;background:#EF444422;color:#EF4444"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><circle cx="6" cy="6" r="3"/><path d="M8.12 8.12 12 12"/><path d="M20 4 8.12 15.88"/><circle cx="6" cy="18" r="3"/><path d="M14.8 14.8 20 20"/></svg></span>
+              <span style="font-size:12px;font-weight:500;color:color-mix(in oklab,var(--foreground) 90%,transparent);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Scene Detect</span>
+            </button>
+          </div>
+          <div>
+            <div style="font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:color-mix(in oklab,var(--muted-foreground) 60%,transparent);padding:0 12px 4px">output</div>
+            <button class="pal-item" style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:6px;cursor:grab;width:100%;text-align:left">
+              <span style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:6px;flex-shrink:0;background:#10B98122;color:#10B981"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><line x1="22" x2="2" y1="12" y2="12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><line x1="6" x2="6.01" y1="16" y2="16"/><line x1="10" x2="10.01" y1="16" y2="16"/></svg></span>
+              <span style="font-size:12px;font-weight:500;color:color-mix(in oklab,var(--foreground) 90%,transparent);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Video Output</span>
+            </button>
+            <button class="pal-item" style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:6px;cursor:grab;width:100%;text-align:left">
+              <span style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:6px;flex-shrink:0;background:#10B98122;color:#10B981"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="M16.247 7.761a6 6 0 0 1 0 8.478"/><path d="M19.075 4.933a10 10 0 0 1 0 14.134"/><path d="M4.925 19.067a10 10 0 0 1 0-14.134"/><path d="M7.753 16.239a6 6 0 0 1 0-8.478"/><circle cx="12" cy="12" r="2"/></svg></span>
+              <span style="font-size:12px;font-weight:500;color:color-mix(in oklab,var(--foreground) 90%,transparent);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Stream Output</span>
+            </button>
+          </div>
+          <div>
+            <div style="font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:color-mix(in oklab,var(--muted-foreground) 60%,transparent);padding:0 12px 4px">utility</div>
+            <button class="pal-item" style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:6px;cursor:grab;width:100%;text-align:left">
+              <span style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:6px;flex-shrink:0;background:#6366F122;color:#6366F1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><line x1="4" x2="20" y1="9" y2="9"/><line x1="4" x2="20" y1="15" y2="15"/><line x1="10" x2="8" y1="3" y2="21"/><line x1="16" x2="14" y1="3" y2="21"/></svg></span>
+              <span style="font-size:12px;font-weight:500;color:color-mix(in oklab,var(--foreground) 90%,transparent);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Constant</span>
+            </button>
+            <button class="pal-item" style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:6px;cursor:grab;width:100%;text-align:left">
+              <span style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:6px;flex-shrink:0;background:#6366F122;color:#6366F1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><line x1="4" x2="20" y1="9" y2="9"/><line x1="4" x2="20" y1="15" y2="15"/><line x1="10" x2="8" y1="3" y2="21"/><line x1="16" x2="14" y1="3" y2="21"/></svg></span>
+              <span style="font-size:12px;font-weight:500;color:color-mix(in oklab,var(--foreground) 90%,transparent);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Print</span>
+            </button>
+            <button class="pal-item" style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:6px;cursor:grab;width:100%;text-align:left">
+              <span style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:6px;flex-shrink:0;background:#6366F122;color:#6366F1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="M16 3h5v5"/><path d="M8 3H3v5"/><path d="M12 22v-8.3a4 4 0 0 0-1.172-2.872L3 3"/><path d="m15 9 6-6"/></svg></span>
+              <span style="font-size:12px;font-weight:500;color:color-mix(in oklab,var(--foreground) 90%,transparent);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Path Divider</span>
+            </button>
+            <button class="pal-item" style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:6px;cursor:grab;width:100%;text-align:left">
+              <span style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:6px;flex-shrink:0;background:#6366F122;color:#6366F1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="M16 3h5v5"/><path d="M8 3H3v5"/><path d="M12 22v-8.3a4 4 0 0 0-1.172-2.872L3 3"/><path d="m15 9 6-6"/></svg></span>
+              <span style="font-size:12px;font-weight:500;color:color-mix(in oklab,var(--foreground) 90%,transparent);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Path Joiner</span>
+            </button>
+            <button class="pal-item" style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:6px;cursor:grab;width:100%;text-align:left">
+              <span style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:6px;flex-shrink:0;background:#6366F122;color:#6366F1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5c0 1.1.9 2 2 2h1"/><path d="M16 21h1a2 2 0 0 0 2-2v-5c0-1.1.9-2 2-2a2 2 0 0 1-2-2V5a2 2 0 0 0-2-2h-1"/></svg></span>
+              <span style="font-size:12px;font-weight:500;color:color-mix(in oklab,var(--foreground) 90%,transparent);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">String Template</span>
+            </button>
+            <button class="pal-item" style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:6px;cursor:grab;width:100%;text-align:left">
+              <span style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:6px;flex-shrink:0;background:#6366F122;color:#6366F1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="M14 4a1 1 0 0 1 1-1"/><path d="M15 10a1 1 0 0 1-1-1"/><path d="M21 4a1 1 0 0 0-1-1"/><path d="M21 9a1 1 0 0 1-1 1"/><path d="m3 7 3 3 3-3"/><path d="M6 10V5a2 2 0 0 1 2-2h2"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg></span>
+              <span style="font-size:12px;font-weight:500;color:color-mix(in oklab,var(--foreground) 90%,transparent);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">String Replace</span>
+            </button>
+            <button class="pal-item" style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:6px;cursor:grab;width:100%;text-align:left">
+              <span style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:6px;flex-shrink:0;background:#6366F122;color:#6366F1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="M8 3 4 7l4 4"/><path d="M4 7h16"/><path d="m16 21 4-4-4-4"/><path d="M20 17H4"/></svg></span>
+              <span style="font-size:12px;font-weight:500;color:color-mix(in oklab,var(--foreground) 90%,transparent);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Type Conversion</span>
+            </button>
+            <button class="pal-item" style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:6px;cursor:grab;width:100%;text-align:left">
+              <span style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:6px;flex-shrink:0;background:#6366F122;color:#6366F1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg></span>
+              <span style="font-size:12px;font-weight:500;color:color-mix(in oklab,var(--foreground) 90%,transparent);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">HTTP Request</span>
+            </button>
+          </div>
+          <div>
+            <div style="font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:color-mix(in oklab,var(--muted-foreground) 60%,transparent);padding:0 12px 4px">workflow</div>
+            <button class="pal-item" style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:6px;cursor:grab;width:100%;text-align:left">
+              <span style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:6px;flex-shrink:0;background:#EAB30822;color:#EAB308"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="M12 17V3"/><path d="m6 11 6 6 6-6"/><path d="M19 21H5"/></svg></span>
+              <span style="font-size:12px;font-weight:500;color:color-mix(in oklab,var(--foreground) 90%,transparent);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Workflow Input</span>
+            </button>
+            <button class="pal-item" style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:6px;cursor:grab;width:100%;text-align:left">
+              <span style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:6px;flex-shrink:0;background:#EAB30822;color:#EAB308"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="m18 9-6-6-6 6"/><path d="M12 3v14"/><path d="M5 21h14"/></svg></span>
+              <span style="font-size:12px;font-weight:500;color:color-mix(in oklab,var(--foreground) 90%,transparent);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Workflow Output</span>
+            </button>
+            <button class="pal-item" style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:6px;cursor:grab;width:100%;text-align:left">
+              <span style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:6px;flex-shrink:0;background:#EAB30822;color:#EAB308"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><rect width="8" height="8" x="3" y="3" rx="2"/><path d="M7 11v4a2 2 0 0 0 2 2h4"/><rect width="8" height="8" x="13" y="13" rx="2"/></svg></span>
+              <span style="font-size:12px;font-weight:500;color:color-mix(in oklab,var(--foreground) 90%,transparent);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Workflow</span>
+            </button>
+          </div>
+        </div>
+      </div>
+      </sc-if>
+    </div>
+
+    <div style="position:relative;flex:1;min-width:0;overflow:hidden;background:var(--background);background-image:radial-gradient(circle at 1px 1px, var(--border) 1px, transparent 0);background-size:20px 20px">
+
+      <svg style="position:absolute;inset:0;width:100%;height:100%;overflow:visible;pointer-events:none">
+        <defs>
+          <linearGradient id="tensor-edge-aura" gradientUnits="userSpaceOnUse" x1="572" y1="201" x2="650" y2="201"><stop offset="0%" stop-color="#22D3EE"/><stop offset="100%" stop-color="#A78BFA"/></linearGradient>
+          <linearGradient id="tensor-edge-base" gradientUnits="userSpaceOnUse" x1="572" y1="201" x2="650" y2="201"><stop offset="0%" stop-color="#0284C7"/><stop offset="45%" stop-color="#06B6D4"/><stop offset="100%" stop-color="#7C3AED"/></linearGradient>
+          <linearGradient id="tensor-edge-lane" gradientUnits="userSpaceOnUse" x1="572" y1="201" x2="650" y2="201"><stop offset="0%" stop-color="#ECFEFF"/><stop offset="50%" stop-color="#67E8F9"/><stop offset="100%" stop-color="#DDD6FE"/></linearGradient>
+        </defs>
+        <path d="M266,351 C303,351 303,201 340,201" fill="none" stroke="#8B5CF6" stroke-width="2" class="rf-animated"/>
+        <path d="M266,399 C613,399 613,419 960,419" fill="none" stroke="#6B7280" stroke-width="2"/>
+        <path d="M882,201 C921,201 921,381 960,381" fill="none" stroke="#8B5CF6" stroke-width="2" class="rf-animated"/>
+        <path d="M572,201 C611,201 611,201 650,201" fill="none" stroke="url(#tensor-edge-aura)" stroke-width="12" opacity=".24" style="filter:blur(7px);animation:tensor-aura-pulse 1.5s ease-in-out infinite"/>
+        <path d="M572,201 C611,201 611,201 650,201" fill="none" stroke="url(#tensor-edge-base)" stroke-width="7" stroke-linecap="round" opacity=".9" style="animation:tensor-core-pulse .95s ease-in-out infinite"/>
+        <path d="M572,201 C611,201 611,201 650,201" fill="none" stroke="url(#tensor-edge-lane)" stroke-width="3.5" stroke-linecap="round" stroke-dasharray="20 10" style="animation:tensor-lane-rush .45s linear infinite"/>
+      </svg>
+
+      <div class="rf-node" style="position:absolute;left:40px;top:300px;width:236px;border-radius:8px;border:1px solid color-mix(in oklab,var(--border) 60%,transparent);box-shadow:0 10px 15px -3px rgb(0 0 0 / .3),0 4px 6px -4px rgb(0 0 0 / .3);overflow:hidden;background:var(--card)">
+        <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:#A855F7;color:#fff">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M15.033 13.44a.647.647 0 0 1 0 1.12l-4.065 2.352a.645.645 0 0 1-.968-.56v-4.704a.645.645 0 0 1 .967-.56z"/></svg>
+          <span style="font-size:12px;line-height:16px;font-weight:600;letter-spacing:.025em;flex:1">Video Input</span>
+          <button class="node-x" style="padding:2px;display:flex"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:12px;height:12px"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+        </div>
+        <div style="padding:6px 0">
+          <div style="display:flex;justify-content:space-between;padding:2px 0;gap:24px">
+            <div style="display:flex;flex-direction:column;gap:2px;min-width:0"></div>
+            <div style="display:flex;flex-direction:column;gap:2px;min-width:0;align-items:flex-end">
+              <div style="display:flex;align-items:center;gap:6px;height:22px;padding-right:6px">
+                <span style="font-size:10px;color:var(--muted-foreground)">frames</span>
+                <span style="width:8px;height:8px;border-radius:50%;background:#8B5CF6;border:2px solid #8B5CF6;flex-shrink:0"></span>
+              </div>
+              <div style="display:flex;align-items:center;gap:6px;height:22px;padding-right:6px">
+                <span style="font-size:10px;color:var(--muted-foreground)">metadata</span>
+                <span style="width:8px;height:8px;border-radius:50%;background:#3B82F6;border:2px solid #3B82F6;flex-shrink:0"></span>
+              </div>
+              <div style="display:flex;align-items:center;gap:6px;height:22px;padding-right:6px">
+                <span style="font-size:10px;color:var(--muted-foreground)">source_path</span>
+                <span style="width:8px;height:8px;border-radius:50%;background:#6B7280;border:2px solid #6B7280;flex-shrink:0"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div style="border-top:1px solid color-mix(in oklab,var(--border) 40%,transparent);padding:4px 0">
+          <div style="display:flex;align-items:center;gap:8px;min-height:28px;padding-left:6px;padding-right:8px">
+            <span style="width:8px;height:8px;border-radius:50%;background:#6B7280;border:2px solid #6B7280;flex-shrink:0"></span>
+            <span style="font-size:10px;line-height:1;color:var(--muted-foreground);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">path</span>
+            <input class="ctl mono" defaultValue="/media/anime/ep01.mkv" style="height:24px;width:150px;font-size:10px;padding:0 6px;flex-shrink:0">
+          </div>
+        </div>
+      </div>
+
+      <div class="rf-node" style="position:absolute;left:330px;top:150px;width:252px;border-radius:8px;border:1px solid color-mix(in oklab,var(--border) 60%,transparent);box-shadow:0 10px 15px -3px rgb(0 0 0 / .3),0 4px 6px -4px rgb(0 0 0 / .3);overflow:hidden;background:var(--card)">
+        <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:#F97316;color:#fff">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><path d="M6 18h8"/><path d="M3 22h18"/><path d="M14 22a7 7 0 1 0 0-14h-1"/><path d="M9 14h2"/><path d="M9 12a2 2 0 0 1-2-2V6h6v4a2 2 0 0 1-2 2Z"/><path d="M12 6V3a1 1 0 0 0-1-1H9a1 1 0 0 0-1 1v3"/></svg>
+          <span style="font-size:12px;line-height:16px;font-weight:600;letter-spacing:.025em;flex:1">Super Resolution</span>
+          <button class="node-x" style="padding:2px;display:flex"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:12px;height:12px"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+        </div>
+        <div style="padding:6px 0">
+          <div style="display:flex;justify-content:space-between;padding:2px 0;gap:24px">
+            <div style="display:flex;flex-direction:column;gap:2px;min-width:0">
+              <div style="display:flex;align-items:center;gap:6px;height:22px;padding-left:6px">
+                <span style="width:8px;height:8px;border-radius:50%;background:#8B5CF6;border:2px solid #8B5CF6;flex-shrink:0"></span>
+                <span style="font-size:10px;color:var(--muted-foreground)">frames</span>
+              </div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:2px;min-width:0;align-items:flex-end">
+              <div style="display:flex;align-items:center;gap:6px;height:22px;padding-right:6px">
+                <span style="font-size:10px;color:var(--muted-foreground)">frames</span>
+                <span style="width:8px;height:8px;border-radius:50%;background:#8B5CF6;border:2px solid #8B5CF6;flex-shrink:0"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div style="border-top:1px solid color-mix(in oklab,var(--border) 40%,transparent);padding:4px 0">
+          <div style="display:flex;align-items:center;gap:8px;min-height:28px;padding-left:6px;padding-right:8px">
+            <span style="width:8px;height:8px;border-radius:50%;background:#6B7280;border:2px solid #6B7280;flex-shrink:0"></span>
+            <span style="font-size:10px;line-height:1;color:var(--muted-foreground);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">model_path</span>
+            <span style="position:relative;flex-shrink:0;display:block">
+              <select class="ctl" style="height:24px;width:150px;font-size:10px;padding:0 24px 0 12px;display:block">
+                <option>AnimeJaNai_V3_L1_Sharp_HD_x2_FP16</option>
+                <option>RealESRGAN_x4plus_anime_6B</option>
+              </select>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;opacity:.5;position:absolute;right:6px;top:4px;pointer-events:none"><path d="m6 9 6 6 6-6"/></svg>
+            </span>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;min-height:28px;padding-left:6px;padding-right:8px">
+            <span style="width:8px;height:8px;border-radius:50%;background:#22C55E;border:2px solid #22C55E;flex-shrink:0"></span>
+            <span style="font-size:10px;line-height:1;color:var(--muted-foreground);flex:1;min-width:0">scale</span>
+            <input class="ctl" type="number" defaultValue="2" style="height:24px;width:80px;font-size:10px;padding:0 6px;flex-shrink:0">
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;min-height:28px;padding-left:6px;padding-right:8px">
+            <span style="width:8px;height:8px;border-radius:50%;background:#22C55E;border:2px solid #22C55E;flex-shrink:0"></span>
+            <span style="font-size:10px;line-height:1;color:var(--muted-foreground);flex:1;min-width:0">tile_size</span>
+            <input class="ctl" type="number" defaultValue="0" style="height:24px;width:80px;font-size:10px;padding:0 6px;flex-shrink:0">
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;min-height:28px;padding-left:6px;padding-right:8px">
+            <span style="width:8px;height:8px;border-radius:50%;background:#22C55E;border:2px solid #22C55E;flex-shrink:0"></span>
+            <span style="font-size:10px;line-height:1;color:var(--muted-foreground);flex:1;min-width:0">device_id</span>
+            <input class="ctl" type="number" defaultValue="0" style="height:24px;width:80px;font-size:10px;padding:0 6px;flex-shrink:0">
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;min-height:28px;padding-left:6px;padding-right:8px">
+            <span style="width:8px;height:8px;border-radius:50%;background:#EAB308;border:2px solid #EAB308;flex-shrink:0"></span>
+            <span style="font-size:10px;line-height:1;color:var(--muted-foreground);flex:1;min-width:0">backend</span>
+            <span style="position:relative;flex-shrink:0;display:block">
+              <select class="ctl" style="height:24px;width:110px;font-size:10px;padding:0 24px 0 12px;display:block">
+                <option selected>tensorrt</option>
+                <option>cuda</option>
+              </select>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;opacity:.5;position:absolute;right:6px;top:4px;pointer-events:none"><path d="m6 9 6 6 6-6"/></svg>
+            </span>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;min-height:28px;padding-left:6px;padding-right:8px">
+            <span style="width:8px;height:8px;border-radius:50%;background:#22C55E;border:2px solid #22C55E;flex-shrink:0"></span>
+            <span style="font-size:10px;line-height:1;color:var(--muted-foreground);flex:1;min-width:0">num_workers</span>
+            <input class="ctl" type="number" defaultValue="1" style="height:24px;width:80px;font-size:10px;padding:0 6px;flex-shrink:0">
+          </div>
+        </div>
+      </div>
+
+      <div class="rf-node" style="position:absolute;left:640px;top:150px;width:252px;border-radius:8px;border:1px solid color-mix(in oklab,var(--border) 60%,transparent);box-shadow:0 10px 15px -3px rgb(0 0 0 / .3),0 4px 6px -4px rgb(0 0 0 / .3);overflow:hidden;background:var(--card)">
+        <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:#06B6D4;color:#fff">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M3 7.5h4"/><path d="M3 12h18"/><path d="M3 16.5h4"/><path d="M17 3v18"/><path d="M17 7.5h4"/><path d="M17 16.5h4"/></svg>
+          <span style="font-size:12px;line-height:16px;font-weight:600;letter-spacing:.025em;flex:1">Frame Interpolation</span>
+          <button class="node-x" style="padding:2px;display:flex"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:12px;height:12px"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+        </div>
+        <div style="padding:6px 0">
+          <div style="display:flex;justify-content:space-between;padding:2px 0;gap:24px">
+            <div style="display:flex;flex-direction:column;gap:2px;min-width:0">
+              <div style="display:flex;align-items:center;gap:6px;height:22px;padding-left:6px">
+                <span style="width:8px;height:8px;border-radius:50%;background:#8B5CF6;border:2px solid #8B5CF6;flex-shrink:0"></span>
+                <span style="font-size:10px;color:var(--muted-foreground)">frames</span>
+              </div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:2px;min-width:0;align-items:flex-end">
+              <div style="display:flex;align-items:center;gap:6px;height:22px;padding-right:6px">
+                <span style="font-size:10px;color:var(--muted-foreground)">frames</span>
+                <span style="width:8px;height:8px;border-radius:50%;background:#8B5CF6;border:2px solid #8B5CF6;flex-shrink:0"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div style="border-top:1px solid color-mix(in oklab,var(--border) 40%,transparent);padding:4px 0">
+          <div style="display:flex;align-items:center;gap:8px;min-height:28px;padding-left:6px;padding-right:8px">
+            <span style="width:8px;height:8px;border-radius:50%;background:#6B7280;border:2px solid #6B7280;flex-shrink:0"></span>
+            <span style="font-size:10px;line-height:1;color:var(--muted-foreground);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">model_path</span>
+            <span style="position:relative;flex-shrink:0;display:block">
+              <select class="ctl" style="height:24px;width:150px;font-size:10px;padding:0 24px 0 12px;display:block">
+                <option>RIFE_v4.26</option>
+              </select>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;opacity:.5;position:absolute;right:6px;top:4px;pointer-events:none"><path d="m6 9 6 6 6-6"/></svg>
+            </span>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;min-height:28px;padding-left:6px;padding-right:8px">
+            <span style="width:8px;height:8px;border-radius:50%;background:#22C55E;border:2px solid #22C55E;flex-shrink:0"></span>
+            <span style="font-size:10px;line-height:1;color:var(--muted-foreground);flex:1;min-width:0">multiplier</span>
+            <input class="ctl" type="number" defaultValue="2" style="height:24px;width:80px;font-size:10px;padding:0 6px;flex-shrink:0">
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;min-height:28px;padding-left:6px;padding-right:8px">
+            <span style="width:8px;height:8px;border-radius:50%;background:#22C55E;border:2px solid #22C55E;flex-shrink:0"></span>
+            <span style="font-size:10px;line-height:1;color:var(--muted-foreground);flex:1;min-width:0">device_id</span>
+            <input class="ctl" type="number" defaultValue="0" style="height:24px;width:80px;font-size:10px;padding:0 6px;flex-shrink:0">
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;min-height:28px;padding-left:6px;padding-right:8px">
+            <span style="width:8px;height:8px;border-radius:50%;background:#EAB308;border:2px solid #EAB308;flex-shrink:0"></span>
+            <span style="font-size:10px;line-height:1;color:var(--muted-foreground);flex:1;min-width:0">backend</span>
+            <span style="position:relative;flex-shrink:0;display:block">
+              <select class="ctl" style="height:24px;width:110px;font-size:10px;padding:0 24px 0 12px;display:block">
+                <option selected>tensorrt</option>
+                <option>cuda</option>
+              </select>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;opacity:.5;position:absolute;right:6px;top:4px;pointer-events:none"><path d="m6 9 6 6 6-6"/></svg>
+            </span>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;min-height:28px;padding-left:6px;padding-right:8px">
+            <span style="width:8px;height:8px;border-radius:50%;background:#22C55E;border:2px solid #22C55E;flex-shrink:0"></span>
+            <span style="font-size:10px;line-height:1;color:var(--muted-foreground);flex:1;min-width:0">num_workers</span>
+            <input class="ctl" type="number" defaultValue="2" style="height:24px;width:80px;font-size:10px;padding:0 6px;flex-shrink:0">
+          </div>
+        </div>
+      </div>
+
+      <div class="rf-node" style="position:absolute;left:950px;top:330px;width:252px;border-radius:8px;border:1px solid color-mix(in oklab,var(--border) 60%,transparent);box-shadow:0 10px 15px -3px rgb(0 0 0 / .3),0 4px 6px -4px rgb(0 0 0 / .3);overflow:hidden;background:var(--card)">
+        <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:#10B981;color:#fff">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><line x1="22" x2="2" y1="12" y2="12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><line x1="6" x2="6.01" y1="16" y2="16"/><line x1="10" x2="10.01" y1="16" y2="16"/></svg>
+          <span style="font-size:12px;line-height:16px;font-weight:600;letter-spacing:.025em;flex:1">Video Output</span>
+          <button class="node-x" style="padding:2px;display:flex"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:12px;height:12px"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+        </div>
+        <div style="padding:6px 0">
+          <div style="display:flex;justify-content:space-between;padding:2px 0;gap:24px">
+            <div style="display:flex;flex-direction:column;gap:2px;min-width:0">
+              <div style="display:flex;align-items:center;gap:6px;height:22px;padding-left:6px">
+                <span style="width:8px;height:8px;border-radius:50%;background:#8B5CF6;border:2px solid #8B5CF6;flex-shrink:0"></span>
+                <span style="font-size:10px;color:var(--muted-foreground)">frames</span>
+              </div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:2px;min-width:0;align-items:flex-end">
+              <div style="display:flex;align-items:center;gap:6px;height:22px;padding-right:6px">
+                <span style="font-size:10px;color:var(--muted-foreground)">output_path</span>
+                <span style="width:8px;height:8px;border-radius:50%;background:#6B7280;border:2px solid #6B7280;flex-shrink:0"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div style="border-top:1px solid color-mix(in oklab,var(--border) 40%,transparent);padding:4px 0">
+          <div style="display:flex;align-items:center;gap:8px;min-height:28px;padding-left:6px;padding-right:8px">
+            <span style="width:8px;height:8px;border-radius:50%;background:#6B7280;border:2px solid #6B7280;flex-shrink:0"></span>
+            <span style="font-size:10px;line-height:1;color:var(--muted-foreground);flex:1;min-width:0">source_path</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;min-height:28px;padding-left:6px;padding-right:8px">
+            <span style="width:8px;height:8px;border-radius:50%;background:#6B7280;border:2px solid #6B7280;flex-shrink:0"></span>
+            <span style="font-size:10px;line-height:1;color:var(--muted-foreground);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">output_path</span>
+            <input class="ctl mono" defaultValue="/media/out/ep01_2x.mkv" style="height:24px;width:150px;font-size:10px;padding:0 6px;flex-shrink:0">
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;min-height:28px;padding-left:6px;padding-right:8px">
+            <span style="width:8px;height:8px;border-radius:50%;background:#EAB308;border:2px solid #EAB308;flex-shrink:0"></span>
+            <span style="font-size:10px;line-height:1;color:var(--muted-foreground);flex:1;min-width:0">codec</span>
+            <span style="position:relative;flex-shrink:0;display:block">
+              <select class="ctl" style="height:24px;width:110px;font-size:10px;padding:0 24px 0 12px;display:block">
+                <option selected>libx265</option>
+                <option>libx264</option>
+                <option>hevc_nvenc</option>
+                <option>h264_nvenc</option>
+              </select>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;opacity:.5;position:absolute;right:6px;top:4px;pointer-events:none"><path d="m6 9 6 6 6-6"/></svg>
+            </span>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;min-height:28px;padding-left:6px;padding-right:8px">
+            <span style="width:8px;height:8px;border-radius:50%;background:#22C55E;border:2px solid #22C55E;flex-shrink:0"></span>
+            <span style="font-size:10px;line-height:1;color:var(--muted-foreground);flex:1;min-width:0">crf</span>
+            <input class="ctl" type="number" defaultValue="18" style="height:24px;width:80px;font-size:10px;padding:0 6px;flex-shrink:0">
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;min-height:28px;padding-left:6px;padding-right:8px">
+            <span style="width:8px;height:8px;border-radius:50%;background:#EAB308;border:2px solid #EAB308;flex-shrink:0"></span>
+            <span style="font-size:10px;line-height:1;color:var(--muted-foreground);flex:1;min-width:0">x265_preset</span>
+            <span style="position:relative;flex-shrink:0;display:block">
+              <select class="ctl" style="height:24px;width:110px;font-size:10px;padding:0 24px 0 12px;display:block">
+                <option selected>medium</option>
+                <option>ultrafast</option>
+                <option>fast</option>
+                <option>slow</option>
+                <option>veryslow</option>
+              </select>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;opacity:.5;position:absolute;right:6px;top:4px;pointer-events:none"><path d="m6 9 6 6 6-6"/></svg>
+            </span>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;min-height:28px;padding-left:6px;padding-right:8px">
+            <span style="width:8px;height:8px;border-radius:50%;background:#EAB308;border:2px solid #EAB308;flex-shrink:0"></span>
+            <span style="font-size:10px;line-height:1;color:var(--muted-foreground);flex:1;min-width:0">pixel_format</span>
+            <span style="position:relative;flex-shrink:0;display:block">
+              <select class="ctl" style="height:24px;width:110px;font-size:10px;padding:0 24px 0 12px;display:block">
+                <option selected>yuv420p10le</option>
+                <option>yuv420p</option>
+              </select>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;opacity:.5;position:absolute;right:6px;top:4px;pointer-events:none"><path d="m6 9 6 6 6-6"/></svg>
+            </span>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;min-height:28px;padding-left:6px;padding-right:8px">
+            <span style="width:8px;height:8px;border-radius:50%;background:#22C55E;border:2px solid #22C55E;flex-shrink:0"></span>
+            <span style="font-size:10px;line-height:1;color:var(--muted-foreground);flex:1;min-width:0">width</span>
+            <input class="ctl" type="number" defaultValue="3840" style="height:24px;width:80px;font-size:10px;padding:0 6px;flex-shrink:0">
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;min-height:28px;padding-left:6px;padding-right:8px">
+            <span style="width:8px;height:8px;border-radius:50%;background:#22C55E;border:2px solid #22C55E;flex-shrink:0"></span>
+            <span style="font-size:10px;line-height:1;color:var(--muted-foreground);flex:1;min-width:0">height</span>
+            <input class="ctl" type="number" defaultValue="2160" style="height:24px;width:80px;font-size:10px;padding:0 6px;flex-shrink:0">
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;min-height:28px;padding-left:6px;padding-right:8px">
+            <span style="width:8px;height:8px;border-radius:50%;background:#EAB308;border:2px solid #EAB308;flex-shrink:0"></span>
+            <span style="font-size:10px;line-height:1;color:var(--muted-foreground);flex:1;min-width:0">fps</span>
+            <input class="ctl" defaultValue="47952/1000" style="height:24px;width:130px;font-size:10px;padding:0 6px;flex-shrink:0">
+          </div>
+        </div>
+      </div>
+
+      <div style="position:absolute;top:12px;left:50%;transform:translateX(-50%);z-index:10;display:flex;align-items:center;gap:4px;background:color-mix(in oklab,var(--card) 90%,transparent);backdrop-filter:blur(12px);border:1px solid color-mix(in oklab,var(--border) 50%,transparent);border-radius:8px;padding:4px 8px;box-shadow:0 10px 15px -3px rgb(0 0 0 / .3),0 4px 6px -4px rgb(0 0 0 / .3)">
+        <button class="ghost-btn" title="Undo" style="width:32px;height:32px;display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11"/></svg></button>
+        <button class="ghost-btn" title="Redo" disabled="{{true}}" style="width:32px;height:32px;display:flex;align-items:center;justify-content:center;opacity:.5;pointer-events:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5A5.5 5.5 0 0 0 4 14.5A5.5 5.5 0 0 0 9.5 20H13"/></svg></button>
+        <span style="width:1px;height:20px;background:color-mix(in oklab,var(--border) 50%,transparent);margin:0 4px"></span>
+        <button class="ghost-btn" title="Auto layout" style="width:32px;height:32px;display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/></svg></button>
+        <button class="ghost-btn" title="Fit view" style="width:32px;height:32px;display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg></button>
+        <span style="width:1px;height:20px;background:color-mix(in oklab,var(--border) 50%,transparent);margin:0 4px"></span>
+        <button class="ghost-btn" title="Clear canvas" style="width:32px;height:32px;display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
+        <button class="ghost-btn" title="Save workflow" style="width:32px;height:32px;display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7"/><path d="M7 3v4a1 1 0 0 0 1 1h7"/></svg></button>
+        <button class="ghost-btn" title="Download JSON" style="width:32px;height:32px;display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></svg></button>
+        <button class="ghost-btn" title="Load workflow or preset" style="width:32px;height:32px;display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></svg></button>
+        <span style="width:1px;height:20px;background:color-mix(in oklab,var(--border) 50%,transparent);margin:0 4px"></span>
+        <button class="ghost-btn" title="Run workflow" style="width:32px;height:32px;display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></svg></button>
+        <button class="ghost-btn" title="Batch processing" style="width:32px;height:32px;display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><path d="M2 9V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-1"/><path d="M2 13h10"/><path d="m9 16 3-3-3-3"/></svg></button>
+        <button class="ghost-btn" title="Preview" style="width:32px;height:32px;display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg></button>
+      </div>
+
+      <div class="rf-ctl" style="position:absolute;left:15px;bottom:15px;display:flex;flex-direction:column;border:1px solid color-mix(in oklab,var(--border) 50%,transparent);border-radius:2px;overflow:hidden;background:color-mix(in oklab,var(--card) 90%,transparent);box-shadow:0 10px 15px -3px rgb(0 0 0 / .3)">
+        <button title="Zoom in" style="width:26px;height:26px;display:flex;align-items:center;justify-content:center;border-bottom:1px solid color-mix(in oklab,var(--border) 50%,transparent)"><svg viewBox="0 0 32 32" style="width:12px;height:12px;fill:currentColor"><path d="M32 18.133H18.133V32h-4.266V18.133H0v-4.266h13.867V0h4.266v13.867H32z"/></svg></button>
+        <button title="Zoom out" style="width:26px;height:26px;display:flex;align-items:center;justify-content:center;border-bottom:1px solid color-mix(in oklab,var(--border) 50%,transparent)"><svg viewBox="0 0 32 5" style="width:12px;height:12px;fill:currentColor"><path d="M0 0h32v4.2H0z"/></svg></button>
+        <button title="Fit view" style="width:26px;height:26px;display:flex;align-items:center;justify-content:center;border-bottom:1px solid color-mix(in oklab,var(--border) 50%,transparent)"><svg viewBox="0 0 32 30" style="width:12px;height:12px;fill:currentColor"><path d="M3.692 4.63c0-.53.4-.938.939-.938h5.215V0H4.708C2.13 0 0 2.054 0 4.63v5.216h3.692V4.631zM27.354 0h-5.2v3.692h5.17c.53 0 .984.4.984.939v5.215H32V4.631A4.624 4.624 0 0027.354 0zm.954 24.83c0 .532-.4.94-.939.94h-5.215v3.768h5.215c2.577 0 4.631-2.13 4.631-4.707v-5.139h-3.692v5.139zm-23.677.94a.919.919 0 01-.939-.94v-5.138H0v5.139c0 2.577 2.13 4.707 4.708 4.707h5.138V25.77H4.631z"/></svg></button>
+        <button title="Toggle interactivity" style="width:26px;height:26px;display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 25 32" style="width:12px;height:12px;fill:currentColor"><path d="M21.333 10.667H19.81V7.619C19.81 3.429 16.38 0 12.19 0 8 0 4.571 3.429 4.571 7.619v3.048H3.048A3.056 3.056 0 000 13.714v15.238A3.056 3.056 0 003.048 32h18.285a3.056 3.056 0 003.048-3.048V13.714a3.056 3.056 0 00-3.048-3.047zM12.19 24.533a3.056 3.056 0 01-3.047-3.047 3.056 3.056 0 013.047-3.048 3.056 3.056 0 013.048 3.048 3.056 3.056 0 01-3.048 3.047zm4.724-13.866H7.467V7.619c0-2.6 2.123-4.724 4.723-4.724 2.6 0 4.724 2.124 4.724 4.724v3.048z"/></svg></button>
+      </div>
+
+      <div style="position:absolute;right:15px;bottom:15px;width:200px;height:150px;border:1px solid color-mix(in oklab,var(--border) 50%,transparent);border-radius:2px;background:color-mix(in oklab,var(--card) 80%,transparent);overflow:hidden">
+        <svg viewBox="0 0 1162 511" preserveAspectRatio="xMidYMid meet" style="width:100%;height:100%">
+          <rect x="0" y="150" width="236" height="155" rx="8" fill="#A855F7"/>
+          <rect x="290" y="0" width="252" height="247" rx="8" fill="#F97316"/>
+          <rect x="600" y="0" width="252" height="219" rx="8" fill="#06B6D4"/>
+          <rect x="910" y="180" width="252" height="331" rx="8" fill="#10B981"/>
+        </svg>
+      </div>
+
+    </div>
+  </main>
+</div>
+</x-dc>
+
+<script data-dc-script data-props='{"theme":{"editor":"enum","options":["system","light","dark"],"default":"dark","section":"Theme"},"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { mode: null, collapsed: false };
+  }
+
+  currentMode() {
+    return this.state.mode ?? this.props.theme ?? 'dark';
+  }
+
+  resolvedTheme() {
+    const mode = this.currentMode();
+    if (mode !== 'system') return mode;
+    try {
+      return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    } catch (err) {
+      return 'dark';
+    }
+  }
+
+
+  renderVals() {
+    const cycle = ['system', 'light', 'dark'];
+    const labels = { system: 'System', light: 'Light', dark: 'Dark' };
+    const mode = this.currentMode();
+    const next = cycle[(cycle.indexOf(mode) + 1) % cycle.length];
+    const collapsed = this.state.collapsed;
+
+    return {
+      theme: this.resolvedTheme(),
+      isSystem: mode === 'system',
+      isLight: mode === 'light',
+      isDark: mode === 'dark',
+      themeTitle: labels[mode] + ' — click for ' + labels[next],
+      cycleTheme: () => this.setState({ mode: next }),
+      collapsed: collapsed,
+      expanded: !collapsed,
+      paletteWidth: collapsed ? '42px' : '220px',
+      toggleSidebar: () => this.setState({ collapsed: !collapsed })
+    };
+  }
+}
+</script>
+</body>
+</html>

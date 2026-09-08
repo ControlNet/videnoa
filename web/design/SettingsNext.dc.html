@@ -1,0 +1,400 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&family=Manrope:wght@400;500;600;700&display=swap">
+  <style>
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;font-family:'Manrope','Avenir Next','Segoe UI',sans-serif;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+.app{
+  --background:oklch(0.965 0.006 260);
+  --foreground:oklch(0.15 0.02 260);
+  --card:oklch(1 0 0);
+  --popover:oklch(1 0 0);
+  --primary:oklch(0.55 0.22 292);
+  --primary-foreground:oklch(0.98 0.005 260);
+  --secondary:oklch(0.93 0.01 260);
+  --muted:oklch(0.93 0.01 260);
+  --muted-foreground:oklch(0.45 0.015 260);
+  --accent:oklch(0.93 0.01 260);
+  --destructive:oklch(0.50 0.20 25);
+  --border:oklch(0.88 0.01 260);
+  --input:oklch(0.88 0.01 260);
+  --ring:oklch(0.55 0.22 292);
+  --sidebar:oklch(0.96 0.008 260);
+  --red-400:oklch(70.4% 0.191 22.216);
+  --red-500:oklch(63.7% 0.237 25.331);
+  --orange-400:oklch(75% 0.183 55.934);
+  --orange-500:oklch(70.5% 0.213 47.604);
+  --yellow-300:oklch(90.5% 0.182 98.111);
+  --yellow-400:oklch(85.2% 0.199 91.936);
+  --yellow-500:oklch(79.5% 0.184 86.047);
+  --green-400:oklch(79.2% 0.209 151.711);
+  --green-500:oklch(72.3% 0.219 149.579);
+  --emerald-400:oklch(76.5% 0.177 163.223);
+  --emerald-500:oklch(69.6% 0.17 162.48);
+  --cyan-400:oklch(78.9% 0.154 211.53);
+  --cyan-500:oklch(71.5% 0.143 215.221);
+  --blue-400:oklch(70.7% 0.165 254.624);
+  --blue-500:oklch(62.3% 0.214 259.815);
+  --purple-400:oklch(71.4% 0.203 305.504);
+  --purple-500:oklch(62.7% 0.265 303.9);
+  --gray-400:oklch(70.7% 0.022 261.325);
+  --gray-500:oklch(55.1% 0.027 264.364);
+  --perf-cpu:hsl(262 83% 58%);
+  --perf-gpu:hsl(200 88% 46%);
+  --perf-ram:hsl(155 63% 43%);
+  --perf-vram:hsl(24 90% 52%);
+  --perf-free:hsl(220 14% 62%);
+  width:1440px;height:900px;display:flex;flex-direction:column;overflow:hidden;
+  background:var(--background);color:var(--foreground);font-size:14px;
+  font-family:'Manrope','Avenir Next','Segoe UI',sans-serif;
+}
+.app[data-theme="dark"]{
+  color-scheme:dark;
+  --background:oklch(0.115 0.03 260);
+  --foreground:oklch(0.97 0.005 260);
+  --card:oklch(0.16 0.028 260);
+  --popover:oklch(0.16 0.028 260);
+  --primary:oklch(0.58 0.22 292);
+  --primary-foreground:oklch(0.97 0.005 260);
+  --secondary:oklch(0.24 0.02 260);
+  --muted:oklch(0.24 0.02 260);
+  --muted-foreground:oklch(0.7 0.015 260);
+  --accent:oklch(0.24 0.02 260);
+  --destructive:oklch(0.45 0.18 25);
+  --border:oklch(0.28 0.02 260);
+  --input:oklch(0.28 0.02 260);
+  --ring:oklch(0.58 0.22 292);
+  --sidebar:oklch(0.11 0.028 260);
+  --perf-cpu:hsl(262 90% 70%);
+  --perf-gpu:hsl(199 92% 62%);
+  --perf-ram:hsl(156 68% 58%);
+  --perf-vram:hsl(31 95% 64%);
+  --perf-free:hsl(220 16% 74%);
+}
+.mono{font-family:'Geist Mono','SFMono-Regular',Consolas,'Noto Sans Mono CJK SC',monospace}
+a{color:var(--primary);text-decoration:none}
+a:hover{color:var(--primary);opacity:.85}
+button{font:inherit;color:inherit;border:0;background:none;padding:0;cursor:pointer}
+input,select,textarea{font:inherit;color:inherit}
+.nav-item{transition:background-color .15s,color .15s}
+.nav-item:hover{background:var(--accent)}
+.ghost-btn{transition:background-color .15s,color .15s;border-radius:6px}
+.ghost-btn:hover{background:var(--accent)}
+.ctl{appearance:none;-webkit-appearance:none;border-radius:6px;border:1px solid color-mix(in oklab,var(--border) 50%,transparent);background:color-mix(in oklab,var(--background) 50%,transparent);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)}
+.ctl:focus{outline:none;box-shadow:0 0 0 1px var(--ring)}
+.scroll{overflow-y:auto;scrollbar-width:thin}
+
+/* ── additions used only by the proposed boards ─────────────────────────── */
+.micro{font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted-foreground)}
+.nano{font-size:10px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted-foreground)}
+.panel{border:1px solid var(--border);border-radius:12px;background:var(--card)}
+
+/* Badges that hold up in BOTH themes: dark ink on a light tint, and the
+   reverse in dark. The current build uses text-*-400 on bg-*-500/20, which
+   is a dark-theme-only pairing. */
+.chip{display:inline-flex;align-items:center;gap:4px;border-radius:6px;padding:2px 8px;font-size:11px;font-weight:600;border:1px solid transparent;white-space:nowrap}
+.chip-sr{background:oklch(0.95 0.04 60);color:oklch(0.47 0.15 47);border-color:oklch(0.89 0.06 58)}
+.chip-fi{background:oklch(0.95 0.035 212);color:oklch(0.45 0.11 220);border-color:oklch(0.88 0.05 212)}
+.app[data-theme="dark"] .chip-sr{background:color-mix(in oklab,var(--orange-500) 16%,transparent);color:oklch(0.83 0.12 62);border-color:color-mix(in oklab,var(--orange-500) 34%,transparent)}
+.app[data-theme="dark"] .chip-fi{background:color-mix(in oklab,var(--cyan-500) 16%,transparent);color:oklch(0.85 0.1 208);border-color:color-mix(in oklab,var(--cyan-500) 34%,transparent)}
+.chip-spec{background:transparent;border-color:var(--border);color:var(--muted-foreground);font-family:'Geist Mono','SFMono-Regular',Consolas,monospace;font-size:11px;font-weight:500}
+
+/* One checkbox, everywhere. */
+.cbx{position:relative;display:inline-flex;width:16px;height:16px;flex-shrink:0}
+.cbx input{position:absolute;inset:0;opacity:0;margin:0;cursor:pointer;width:16px;height:16px}
+.cbx span{width:16px;height:16px;border-radius:4px;border:1px solid var(--border);background:var(--card);display:flex;align-items:center;justify-content:center;color:transparent;transition:background-color .12s,border-color .12s}
+.cbx input:checked + span{background:var(--primary);border-color:var(--primary);color:#fff}
+.cbx input:focus-visible + span{box-shadow:0 0 0 2px color-mix(in oklab,var(--ring) 50%,transparent)}
+
+/* Segmented control — one control height, a selected state you can see. */
+.seg{display:flex;align-items:center;gap:2px;padding:3px;border:1px solid var(--border);border-radius:8px;background:color-mix(in oklab,var(--secondary) 45%,transparent);height:36px}
+.seg button{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:28px;padding:0 12px;border-radius:5px;font-size:12px;font-weight:500;color:var(--muted-foreground);transition:background-color .12s,color .12s}
+.seg button:hover{color:var(--foreground)}
+.seg button[data-on="1"]{background:color-mix(in oklab,var(--primary) 14%,transparent);color:var(--primary);font-weight:600}
+.field-input{display:flex;height:36px;width:100%;border-radius:6px;border:1px solid var(--input);background:var(--card);padding:0 12px;font-size:14px}
+.field-input:focus{outline:none;border-color:var(--ring);box-shadow:0 0 0 1px var(--ring)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;white-space:nowrap;border-radius:6px;font-size:13px;font-weight:500;height:36px;padding:0 14px;transition:background-color .15s,color .15s,border-color .15s}
+.btn-primary{background:var(--primary);color:var(--primary-foreground)}
+.btn-primary:hover{filter:brightness(1.08)}
+.btn-outline{border:1px solid var(--border);background:var(--card)}
+.btn-outline:hover{background:var(--secondary)}
+.btn-ghost{color:var(--muted-foreground)}
+.btn-ghost:hover{background:var(--secondary);color:var(--foreground)}
+.rule{height:1px;background:var(--border)}
+.card-lift{transition:border-color .15s,transform .15s}
+.card-lift:hover{border-color:color-mix(in oklab,var(--primary) 45%,var(--border))}
+@keyframes tw-pulse{0%,100%{opacity:1}50%{opacity:.5}}
+
+.app [style*="font-size:12px"]{line-height:16px}
+.app [style*="font-size:14px"]{line-height:20px}
+.app [style*="font-size:16px"]{line-height:24px}
+.app [style*="font-size:20px"]{line-height:28px}
+
+/* Controller density, ported onto the Worker's palette.
+   Field 32px, label 11px, values in mono, recessed input on a raised page. */
+.app{--background-deep:oklch(0.93 0.01 260)}
+.app[data-theme="dark"]{--background-deep:oklch(0.085 0.03 260)}
+
+.s-nav{display:flex;flex-direction:column;gap:1px;padding:16px 8px;width:168px;flex-shrink:0}
+.s-nav a{display:flex;align-items:center;height:28px;padding:0 12px;border-radius:6px;color:var(--muted-foreground);font-size:12px;font-weight:500;text-decoration:none;transition:background-color .12s,color .12s}
+.s-nav a:hover{background:var(--secondary);color:var(--foreground)}
+.s-nav a[data-on="1"]{background:color-mix(in oklab,var(--primary) 13%,transparent);color:var(--primary);font-weight:600}
+
+.s-body{display:flex;flex-direction:column;gap:24px;min-width:0;flex:1;padding:20px 18px 20px 20px;border-left:1px solid var(--border);overflow-y:auto}
+.s-sec{display:flex;flex-direction:column;gap:12px;min-width:0}
+.s-sec > header{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:8px 16px;padding-bottom:8px;border-bottom:1px solid var(--border)}
+.s-sec > header h2{font-size:13px;line-height:18px;font-weight:600;margin:0}
+.s-sec > header p{color:color-mix(in oklab,var(--muted-foreground) 88%,transparent);font-size:11px;line-height:16px;margin:0}
+.s-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px 16px;align-items:start}
+.span2{grid-column:span 2}
+.span3{grid-column:span 3}
+.span4{grid-column:span 4}
+
+.fld{display:flex;flex-direction:column;gap:4px;min-width:0}
+.fld > span{font-size:11px;line-height:16px;font-weight:600;color:var(--muted-foreground)}
+.fld input:not([type="checkbox"]){display:flex;align-items:center;width:100%;height:32px;padding:0 12px;border:1px solid var(--border);border-radius:6px;background:var(--background-deep);color:var(--foreground);font-family:'Geist Mono','SFMono-Regular',Consolas,monospace;font-size:12.5px}
+.fld input[type="number"]{font-variant-numeric:tabular-nums}
+.fld input:hover:not(:disabled){border-color:var(--muted-foreground)}
+.fld input:focus{outline:none;border-color:var(--ring);box-shadow:0 0 0 1px var(--ring)}
+.chk{display:flex;align-items:center;gap:8px;height:32px;min-width:0;font-size:12.5px;cursor:pointer}
+.sbtn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:30px;padding:0 10px;border-radius:6px;font-size:12px;font-weight:500;white-space:nowrap;transition:background-color .12s,color .12s,border-color .12s}
+.sbtn-outline{border:1px solid var(--border);background:var(--card)}
+.sbtn-outline:hover{background:var(--secondary)}
+.sbtn-primary{background:var(--primary);color:var(--primary-foreground)}
+.sbtn-ghost{color:var(--muted-foreground)}
+.sbtn-ghost:hover{background:var(--secondary);color:var(--foreground)}
+.s-dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:6px 16px;font-size:12.5px;max-width:420px}
+.s-dl dt{color:var(--muted-foreground);margin:0}
+.s-dl dd{margin:0;font-family:'Geist Mono','SFMono-Regular',Consolas,monospace}
+  </style>
+</helmet>
+
+<div class="app" data-theme="{{theme}}">
+  <header style="display:flex;align-items:center;height:48px;padding:0 16px;border-bottom:1px solid var(--border);flex-shrink:0;background:var(--background)">
+    <div style="display:flex;align-items:center;gap:10px;margin-right:24px">
+      <div title="Server connected: workflow running" style="height:24px;width:24px;border-radius:8px;border:1px solid color-mix(in oklab,var(--yellow-400) 50%,transparent);display:flex;align-items:center;justify-content:center;flex-shrink:0;background:color-mix(in oklab,var(--yellow-500) 20%,transparent)">
+        <div style="height:8px;width:8px;border-radius:50%;background:var(--yellow-300);box-shadow:0 0 10px rgba(253,224,71,.65);animation:tw-pulse 2s cubic-bezier(.4,0,.6,1) infinite"></div>
+      </div>
+      <a href="https://github.com/ControlNet/videnoa" class="mono" style="font-size:14px;font-weight:600;color:var(--foreground);white-space:nowrap">Videnoa</a>
+      <span class="mono" style="font-size:12px;color:var(--muted-foreground);white-space:nowrap">v0.1.3</span>
+    </div>
+
+    <nav style="display:flex;align-items:center;gap:4px">
+      <span class="nav-item" style="display:flex;align-items:center;gap:8px;border-radius:6px;padding:6px 12px;font-size:14px;font-weight:500;color:var(--muted-foreground)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><rect width="8" height="8" x="3" y="3" rx="2"/><path d="M7 11v4a2 2 0 0 0 2 2h4"/><rect width="8" height="8" x="13" y="13" rx="2"/></svg>
+        <span>Editor</span>
+      </span>
+      <span class="nav-item" style="display:flex;align-items:center;gap:8px;border-radius:6px;padding:6px 12px;font-size:14px;font-weight:500;color:var(--muted-foreground)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></svg>
+        <span>Jobs</span>
+      </span>
+      <span class="nav-item" style="display:flex;align-items:center;gap:8px;border-radius:6px;padding:6px 12px;font-size:14px;font-weight:500;color:var(--muted-foreground)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z"/><path d="M12 22V12"/><polyline points="3.29 7 12 12 20.71 7"/><path d="m7.5 4.27 9 5.15"/></svg>
+        <span>Models</span>
+      </span>
+      <span class="nav-item" style="display:flex;align-items:center;gap:8px;border-radius:6px;padding:6px 12px;font-size:14px;font-weight:500;color:var(--muted-foreground)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></svg>
+        <span>Performance</span>
+      </span>
+      <span class="nav-item" style="display:flex;align-items:center;gap:8px;border-radius:6px;padding:6px 12px;font-size:14px;font-weight:500;background:color-mix(in oklab,var(--primary) 15%,transparent);color:var(--primary)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></svg>
+        <span>Settings</span>
+      </span>
+    </nav>
+
+    <div style="margin-left:auto;display:flex;align-items:center;gap:4px">
+      <button class="ghost-btn" aria-label="Select language" title="Current language: English" style="height:32px;width:32px;display:flex;align-items:center;justify-content:center">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
+      </button>
+      <button class="ghost-btn" onClick="{{cycleTheme}}" title="{{themeTitle}}" aria-label="{{themeTitle}}" style="height:32px;width:32px;display:flex;align-items:center;justify-content:center">
+        <sc-if value="{{isSystem}}" hint-placeholder-val="{{true}}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg>
+        </sc-if>
+        <sc-if value="{{isLight}}" hint-placeholder-val="{{false}}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
+        </sc-if>
+        <sc-if value="{{isDark}}" hint-placeholder-val="{{false}}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/></svg>
+        </sc-if>
+      </button>
+    </div>
+  </header>
+
+  <div style="display:flex;align-items:center;gap:12px;height:48px;padding:0 18px;border-bottom:1px solid var(--border);flex-shrink:0">
+    <h1 style="font-size:15px;line-height:20px;font-weight:600;letter-spacing:-.01em;margin:0">Settings</h1>
+    <span class="mono" style="font-size:11px;color:var(--muted-foreground)">data/config.toml</span>
+    <span style="flex:1"></span>
+    <span style="display:inline-flex;align-items:center;gap:7px;font-size:12px;color:var(--muted-foreground)">
+      <span style="width:6px;height:6px;border-radius:50%;background:var(--green-500)"></span>
+      Password protection enabled
+    </span>
+    <button class="sbtn sbtn-ghost">Sign out</button>
+  </div>
+
+  <main style="flex:1;min-height:0;display:flex">
+
+    <nav class="s-nav" aria-label="Settings sections">
+      <a href="#s-storage" data-on="1">Storage</a>
+      <a href="#s-password" data-on="0">Password</a>
+      <a href="#s-session" data-on="0">Session</a>
+      <a href="#s-remote" data-on="0">Remote access</a>
+      <a href="#s-diagnostics" data-on="0">Diagnostics</a>
+      <a href="#s-server" data-on="0">Server</a>
+    </nav>
+
+    <div class="s-body">
+
+      <section class="s-sec" id="s-storage">
+        <header><h2>Storage</h2><p>Relative paths resolve from the working directory</p></header>
+        <div class="s-grid" style="grid-template-columns:repeat(4,minmax(0,1fr))">
+          <label class="fld"><span>Models · models_dir</span><input defaultValue="models" onChange="{{markDirty}}"></label>
+          <label class="fld"><span>TensorRT cache · trt_cache_dir</span><input defaultValue="trt_cache" onChange="{{markDirty}}"></label>
+          <label class="fld"><span>Presets · presets_dir</span><input defaultValue="presets" onChange="{{markDirty}}"></label>
+          <label class="fld"><span>Workflows · workflows_dir</span><input defaultValue="data/workflows" onChange="{{markDirty}}"></label>
+        </div>
+      </section>
+
+      <section class="s-sec" id="s-password">
+        <header><h2>Password</h2><p>Applied immediately — not part of Save</p></header>
+        <div class="s-grid">
+          <label class="fld span2"><span>New password</span>
+            <span style="display:flex;gap:6px">
+              <input type="password">
+              <button class="sbtn sbtn-outline" aria-label="Show password" style="width:32px;height:32px;padding:0;flex-shrink:0"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg></button>
+            </span>
+          </label>
+          <label class="fld span2"><span>Confirm password</span>
+            <span style="display:flex;gap:6px">
+              <input type="password">
+              <button class="sbtn sbtn-outline" aria-label="Show password" style="width:32px;height:32px;padding:0;flex-shrink:0"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg></button>
+            </span>
+          </label>
+          <div class="span2" style="display:flex;align-items:flex-end;gap:6px;height:100%;padding-bottom:1px">
+            <button class="sbtn sbtn-primary" disabled="{{true}}" style="opacity:.5">Change password</button>
+            <button class="sbtn sbtn-outline">Disable</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="s-sec" id="s-session">
+        <header><h2>Session</h2><p>Shorter limits apply to existing sessions; sign in again to extend the maximum</p></header>
+        <div class="s-grid">
+          <label class="fld"><span>Maximum · seconds</span><input type="number" defaultValue="2592000" onChange="{{markDirty}}"></label>
+          <label class="fld"><span>Idle · seconds</span><input type="number" defaultValue="604800" onChange="{{markDirty}}"></label>
+          <label class="chk span3" style="align-self:end">
+            <span class="cbx"><input type="checkbox" onChange="{{markDirty}}"><span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="width:11px;height:11px"><path d="M20 6 9 17l-5-5"/></svg></span></span>
+            Require HTTPS for session cookies
+          </label>
+        </div>
+      </section>
+
+      <section class="s-sec" id="s-remote">
+        <header><h2>Remote access</h2><p>Lets the Controller reach this worker without a public port · iroh is running</p></header>
+        <div class="s-grid">
+          <label class="chk span2" style="align-self:end">
+            <span class="cbx"><input type="checkbox" checked="{{true}}" onChange="{{markDirty}}"><span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="width:11px;height:11px"><path d="M20 6 9 17l-5-5"/></svg></span></span>
+            Enable iroh
+          </label>
+          <label class="fld span4"><span>Endpoint ID</span>
+            <span style="display:flex;gap:6px">
+              <input readOnly="{{true}}" defaultValue="ee6f2a7d4c1b8095e3f7a26d5b0c94318af62d7e05c1b93a4f28e6d70b5a1c83" style="color:var(--muted-foreground)">
+              <button class="sbtn sbtn-outline" style="flex-shrink:0"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>Copy</button>
+            </span>
+          </label>
+        </div>
+      </section>
+
+      <section class="s-sec" id="s-diagnostics">
+        <header><h2>Diagnostics</h2><p>Feeds the Performance page · applies after saving</p></header>
+        <div class="s-grid">
+          <label class="chk span3">
+            <span class="cbx"><input type="checkbox" checked="{{profiling}}" onChange="{{toggleProfiling}}"><span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="width:11px;height:11px"><path d="M20 6 9 17l-5-5"/></svg></span></span>
+            Profiling telemetry — {{profilingLabel}}
+          </label>
+        </div>
+      </section>
+
+      <section class="s-sec" id="s-server">
+        <header><h2>Server</h2><p>Read-only · requires restart</p></header>
+        <dl class="s-dl">
+          <dt>port</dt><dd>3000</dd>
+          <dt>host</dt><dd>0.0.0.0</dd>
+        </dl>
+      </section>
+
+    </div>
+  </main>
+
+  <footer style="display:flex;align-items:center;gap:12px;min-height:52px;padding:8px 18px;border-top:1px solid var(--border);background:var(--background-deep);flex-shrink:0">
+    <sc-if value="{{dirty}}" hint-placeholder-val="{{true}}">
+      <span style="display:inline-flex;align-items:center;gap:7px;font-size:12px;color:var(--muted-foreground)">
+        <span style="width:6px;height:6px;border-radius:50%;background:var(--yellow-500)"></span>
+        Unsaved changes
+      </span>
+    </sc-if>
+    <span style="flex:1"></span>
+    <button class="sbtn sbtn-ghost" onClick="{{reset}}">Reset</button>
+    <button class="sbtn sbtn-primary" disabled="{{notDirty}}" onClick="{{reset}}" style="opacity: {{saveOpacity}}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7"/><path d="M7 3v4a1 1 0 0 0 1 1h7"/></svg>
+      Save and apply
+    </button>
+  </footer>
+</div>
+</x-dc>
+
+<script data-dc-script data-props='{"theme":{"editor":"enum","options":["system","light","dark"],"default":"dark","section":"Theme"},"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { mode: null, dirty: false, profiling: true };
+  }
+
+  currentMode() {
+    return this.state.mode ?? this.props.theme ?? 'dark';
+  }
+
+  resolvedTheme() {
+    const mode = this.currentMode();
+    if (mode !== 'system') return mode;
+    try {
+      return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    } catch (err) {
+      return 'dark';
+    }
+  }
+
+  renderVals() {
+    const cycle = ['system', 'light', 'dark'];
+    const labels = { system: 'System', light: 'Light', dark: 'Dark' };
+    const mode = this.currentMode();
+    const next = cycle[(cycle.indexOf(mode) + 1) % cycle.length];
+
+    return {
+      theme: this.resolvedTheme(),
+      isSystem: mode === 'system',
+      isLight: mode === 'light',
+      isDark: mode === 'dark',
+      themeTitle: labels[mode] + ' — click for ' + labels[next],
+      cycleTheme: () => this.setState({ mode: next }),
+
+      dirty: this.state.dirty,
+      notDirty: !this.state.dirty,
+      saveOpacity: this.state.dirty ? '1' : '.5',
+      markDirty: () => this.setState({ dirty: true }),
+      reset: () => this.setState({ dirty: false }),
+      profiling: this.state.profiling,
+      profilingLabel: this.state.profiling ? 'Enabled' : 'Disabled',
+      toggleProfiling: () => this.setState({ dirty: true, profiling: !this.state.profiling })
+    };
+  }
+}
+</script>
+</body>
+</html>
