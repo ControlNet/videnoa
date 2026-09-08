@@ -142,6 +142,7 @@ fn checkpoint_status(point: TransferCheckpointPoint) -> TestResult<TaskStatus> {
         TransferCheckpointPoint::DownloadVerified => TaskStatus::Downloading,
         TransferCheckpointPoint::BeforeDestinationStaging
         | TransferCheckpointPoint::PublicationFinalized
+        | TransferCheckpointPoint::PublicationCopyCreated
         | TransferCheckpointPoint::PublicationCopyStarted
         | TransferCheckpointPoint::PublicationCopyChunkWritten
         | TransferCheckpointPoint::PublicationCopyVerified => TaskStatus::Publishing,

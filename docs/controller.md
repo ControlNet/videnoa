@@ -205,6 +205,15 @@ rename retains the complete-file visibility guarantee. Neither route overwrites
 an existing destination, changes the requested path, or creates sibling staging
 files such as `.videnoa-*`, `.partial`, or `.staging`.
 
+If publication returns an error or its task is cancelled before any bytes are
+copied, Controller removes the empty destination it just created, provided its
+identity can still be verified through the original directory handle. This also
+covers failures before the copy ownership record is installed. The verified
+source remains available for retry. Existing files, replacement files, and
+nonempty partial copies are preserved. If cleanup itself fails, the logs include
+`copy.cleanup_empty_destination`; hard process termination or inaccessible mounts
+can still prevent cleanup. Older unowned empty remnants are not deleted automatically.
+
 Private copy evidence records the exclusively created output's file identity.
 After interruption, Controller validates that identity and the existing byte
 prefix before appending the remainder from the verified source. A replaced or
