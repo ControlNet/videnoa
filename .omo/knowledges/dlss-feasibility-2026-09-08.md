@@ -85,9 +85,59 @@ Assuming one developer and an available compatible RTX test machine:
 | Linux/Wine support | Additional 2-4+ weeks, no success guarantee | Driver/translation-layer and unattended runtime behavior |
 | Independently maintained native implementation | 2-3+ months research budget | Missing worker source, graphics interop, SDK suitability |
 
-These scopes overlap and should not be added mechanically. A native Linux
-implementation remains an unresolved feasibility question, not just a larger
-porting estimate.
+These scopes overlap and should not be added mechanically. The native-runtime
+estimate above is provisional: the follow-up below confirms that official
+Linux SR and FG runtimes and Vulkan APIs are available. The unresolved question
+is video adaptation and quality, not the existence of a Linux SDK.
+
+## Follow-up: official native Linux APIs exist
+
+The first assessment focused too narrowly on the ComfyUI worker and Streamline
+renderer guide. It must not be interpreted as saying DLSS requires Wine.
+
+Inspected NVIDIA/DLSS revision
+`a291cc7d2cc642a51566f3dfd5376f635cd1b284` (SDK 310.7.0). Its official
+`lib/Linux_x86_64/rel` tree contains all of:
+
+- `libnvidia-ngx-dlss.so.310.7.0` (SR)
+- `libnvidia-ngx-dlssd.so.310.7.0` (RR)
+- `libnvidia-ngx-dlssg.so.310.7.0` (FG)
+
+The SDK also supplies `libnvsdk_ngx.a` and Vulkan helpers. In particular,
+`include/nvsdk_ngx_helpers_dlssg_vk.h` exposes `NGX_VK_CREATE_DLSSG` and
+`NGX_VK_EVALUATE_DLSSG`. Its input/output structure includes backbuffer, depth,
+motion vectors, and an output interpolated-frame resource. This provides a
+concrete native NGX/Vulkan integration route without the ComfyUI Windows worker,
+Wine, or ReShade. Runtime capability and end-to-end file processing still need
+testing; header and binary availability is not proof of video quality.
+
+SR's Vulkan helper similarly expects depth, motion, and jitter information.
+Ordinary video lacks renderer-generated inputs, so motion/depth estimation,
+temporal history, Vulkan resource ownership, synchronization, and frame readback
+remain the main engineering work. The official tree inspection does not establish
+a native DLSS 5 NR feature-18 replacement for the ComfyUI carrier.
+
+Sources:
+
+- [Official Linux binaries](https://github.com/NVIDIA/DLSS/tree/a291cc7d2cc642a51566f3dfd5376f635cd1b284/lib/Linux_x86_64/rel)
+- [Official FG Vulkan helpers](https://github.com/NVIDIA/DLSS/blob/a291cc7d2cc642a51566f3dfd5376f635cd1b284/include/nvsdk_ngx_helpers_dlssg_vk.h)
+- [Official SR Vulkan helpers](https://github.com/NVIDIA/DLSS/blob/a291cc7d2cc642a51566f3dfd5376f635cd1b284/include/nvsdk_ngx_helpers_vk.h)
+
+For Linux-first work, prioritize a standalone NGX/Vulkan capability and frame
+evaluation experiment before spending time on Wine packaging. Budget a few
+days to a week for the first capability/resource probe, then revise estimates
+from real results. No native probe was implemented or executed during research.
+
+Two different NVIDIA video APIs are also relevant alternatives, not DLSS aliases:
+
+- [Maxine VFX Linux SDK](https://docs.nvidia.com/maxine/vfx/latest/LinuxVFXSDK/GetStartedonLinux.html)
+  and its [Super Resolution package](https://catalog.ngc.nvidia.com/orgs/nvidia/maxine/collections/nvvfxsuperres)
+  offer native video SR. Current Linux documentation explicitly targets server
+  deployment and does not officially support local client application use; this
+  matters for videnoa desktop packaging.
+- [NVOFA FRUC](https://docs.nvidia.com/video-technologies/optical-flow-sdk/nvfruc-programming-guide/index.html)
+  offers native Linux video interpolation using optical-flow hardware. It is
+  distinct from DLSS FG and merits a separate speed/quality comparison with RIFE.
 
 ## Recommended next experiment
 
