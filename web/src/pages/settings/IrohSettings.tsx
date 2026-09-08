@@ -1,9 +1,11 @@
+import { Copy } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/auth/store';
 import { authenticatedFetch } from '@/auth/transport';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { CheckRow, Field, SettingsGrid, SettingsSection, settingsInputClass } from './section';
 
 interface Status { enabled: boolean; running: boolean; endpoint_id: string | null; error: string | null }
 
@@ -42,15 +44,50 @@ export function IrohSettings({ enabled, savedEnabled, onChange }: { enabled: boo
     const timer = window.setInterval(() => void refresh(), 5000);
     return () => { active = false; window.clearInterval(timer); };
   }, [savedEnabled, passwordEnabled]);
-  return <Card>
-    <CardHeader><CardTitle>Iroh</CardTitle></CardHeader>
-    <CardContent className="space-y-4">
-      <label className="flex items-center gap-2"><input type="checkbox" checked={enabled} disabled={!passwordEnabled && !enabled} onChange={(event) => onChange(event.target.checked)} />{t('iroh.enable')}</label>
-      <p className="text-sm text-muted-foreground">{t(passwordEnabled ? 'iroh.description' : 'iroh.passwordRequired')}</p>
-      <label className="block space-y-2"><span className="text-sm">Endpoint ID</span><input ref={idInput} aria-label="Endpoint ID" className="w-full rounded border bg-transparent px-3 py-2 font-mono text-sm" readOnly value={status?.endpoint_id ?? ''} /></label>
-      <Button variant="outline" disabled={!status?.endpoint_id} onClick={() => void copyId()}>{t(copied ? 'iroh.copied' : 'iroh.copy')}</Button>
-      {copyFailed && <p role="alert">{t('iroh.copyFailed')}</p>}
-      <p role="status" className="text-sm">{t(error || status?.error ? 'iroh.error' : status?.running ? 'iroh.running' : 'iroh.stopped')}</p>
-    </CardContent>
-  </Card>;
+
+  const failed = error || status?.error !== null && status?.error !== undefined;
+  const stateKey = failed ? 'iroh.error' : status?.running ? 'iroh.running' : 'iroh.stopped';
+
+  return <SettingsSection
+    id="settings-remote"
+    title={t('iroh.title')}
+    note={<span role="status" className={failed ? 'text-destructive' : undefined}>{t(stateKey)}</span>}
+  >
+    <p className="text-[13px] leading-5 text-muted-foreground">{t(passwordEnabled ? 'iroh.description' : 'iroh.passwordRequired')}</p>
+    <SettingsGrid>
+      <CheckRow
+        id="settings-iroh-enabled"
+        className="sm:col-span-2 sm:self-end"
+        label={t('iroh.enable')}
+        checked={enabled}
+        disabled={!passwordEnabled && !enabled}
+        onChange={(event) => { onChange(event.target.checked); }}
+      />
+      <Field id="settings-iroh-endpoint" label="Endpoint ID" className="sm:col-span-4">
+        <div className="flex gap-1.5">
+          <Input
+            ref={idInput}
+            id="settings-iroh-endpoint"
+            aria-label="Endpoint ID"
+            className={`${settingsInputClass} text-muted-foreground`}
+            readOnly
+            value={status?.endpoint_id ?? ''}
+          />
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-8 shrink-0"
+            aria-label={t(copied ? 'iroh.copied' : 'iroh.copy')}
+            disabled={!status?.endpoint_id}
+            onClick={() => void copyId()}
+          >
+            <Copy className="size-3.5" />
+            {t(copied ? 'iroh.copiedShort' : 'iroh.copyShort')}
+          </Button>
+        </div>
+      </Field>
+    </SettingsGrid>
+    {copyFailed && <p role="alert" className="text-[11px] text-destructive">{t('iroh.copyFailed')}</p>}
+  </SettingsSection>;
 }

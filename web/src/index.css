@@ -2,7 +2,8 @@
 @import "@xyflow/react/dist/style.css";
 
 :root {
-  --background: oklch(0.98 0.005 260);
+  --background: oklch(0.965 0.006 260);
+  --background-deep: oklch(0.93 0.01 260);
   --foreground: oklch(0.15 0.02 260);
   --card: oklch(1.0 0 0);
   --card-foreground: oklch(0.15 0.02 260);
@@ -28,7 +29,8 @@
 }
 
 .dark {
-  --background: oklch(0.13 0.028 260);
+  --background: oklch(0.115 0.03 260);
+  --background-deep: oklch(0.085 0.03 260);
   --foreground: oklch(0.97 0.005 260);
   --card: oklch(0.16 0.028 260);
   --card-foreground: oklch(0.97 0.005 260);
@@ -54,6 +56,7 @@
 
 @theme inline {
   --color-background: var(--background);
+  --color-background-deep: var(--background-deep);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
   --color-card-foreground: var(--card-foreground);
@@ -97,6 +100,49 @@
     margin: 0;
     padding: 0;
   }
+}
+
+/*
+ * Type badges that hold up in both themes.
+ *
+ * The previous pairing -- bg-*-500/20 with text-*-400 -- is a dark-only
+ * combination: the 400 shades are meant to sit on a dark ground and wash out
+ * against white. These carry dark ink on a light tint, and invert in dark.
+ */
+.tone-badge {
+  border-color: var(--tone-border);
+  background: var(--tone-bg);
+  color: var(--tone-text);
+}
+
+.tone-superres {
+  --tone-bg: oklch(0.95 0.04 60);
+  --tone-text: oklch(0.47 0.15 47);
+  --tone-border: oklch(0.89 0.06 58);
+}
+
+.tone-interpolation {
+  --tone-bg: oklch(0.95 0.035 212);
+  --tone-text: oklch(0.45 0.11 220);
+  --tone-border: oklch(0.88 0.05 212);
+}
+
+.tone-spec {
+  --tone-bg: transparent;
+  --tone-text: var(--muted-foreground);
+  --tone-border: var(--border);
+}
+
+.dark .tone-superres {
+  --tone-bg: color-mix(in oklab, var(--color-orange-500) 16%, transparent);
+  --tone-text: oklch(0.83 0.12 62);
+  --tone-border: color-mix(in oklab, var(--color-orange-500) 34%, transparent);
+}
+
+.dark .tone-interpolation {
+  --tone-bg: color-mix(in oklab, var(--color-cyan-500) 16%, transparent);
+  --tone-text: oklch(0.85 0.1 208);
+  --tone-border: color-mix(in oklab, var(--color-cyan-500) 34%, transparent);
 }
 
 .react-flow__minimap {
