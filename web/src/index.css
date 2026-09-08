@@ -127,6 +127,18 @@
   --tone-border: oklch(0.88 0.05 212);
 }
 
+.tone-io {
+  --tone-bg: oklch(0.95 0.045 165);
+  --tone-text: oklch(0.42 0.11 163);
+  --tone-border: oklch(0.85 0.08 163);
+}
+
+.dark .tone-io {
+  --tone-bg: color-mix(in oklab, var(--color-emerald-500) 14%, transparent);
+  --tone-text: oklch(0.85 0.12 165);
+  --tone-border: color-mix(in oklab, var(--color-emerald-500) 40%, transparent);
+}
+
 .tone-spec {
   --tone-bg: transparent;
   --tone-text: var(--muted-foreground);
