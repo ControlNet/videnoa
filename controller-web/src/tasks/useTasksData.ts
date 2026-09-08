@@ -40,9 +40,21 @@ export function useTasksData(apiClient: ApiClient, query: TaskQuery): TasksData 
     void invalidation.generation
     void retryGeneration
     const controller = new AbortController()
+    /*
+     * The rendered page is deliberately left in place while this read is in
+     * flight.
+     *
+     * `page` below already resolves to null whenever the loaded path is not the
+     * requested one, so clearing it was redundant for a query change -- and for
+     * a refresh of the same query it was destructive. A task status change
+     * refuses the in-place merge and refetches, so clearing first tore down
+     * every row, mounted loading skeletons in their place, and then rebuilt the
+     * table: on a page of fifty rows that measured 58 rows destroyed and 116
+     * childList mutations for one row changing status. Keeping the rows lets
+     * React reconcile the one that actually changed.
+     */
     queueMicrotask(() => {
       if (!controller.signal.aborted) {
-        setLoadedPage(null)
         setLoading(true)
         setError(null)
       }

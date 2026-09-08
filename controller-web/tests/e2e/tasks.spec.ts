@@ -175,6 +175,24 @@ test("refetches one page and one count set when SSE changes active status member
   await expect.poll(() => journal.tasks.length).toBe(1)
   await expect.poll(() => journal.counts.length).toBe(1)
 
+  // And: every node added to or removed from the table is recorded from here on.
+  await page.evaluate(() => document.fonts.ready)
+  await page.evaluate(() => {
+    const table = document.querySelector("table")
+    if (table === null) return
+    const counts = { childList: 0, rowsRemoved: 0 }
+    const observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        counts.childList += 1
+        for (const node of Array.from(mutation.removedNodes)) {
+          if (node instanceof HTMLTableRowElement) counts.rowsRemoved += 1
+        }
+      }
+    })
+    observer.observe(table, { subtree: true, childList: true })
+    Reflect.set(window, "tableChurn", counts)
+  })
+
   // When: the row transitions to another active status.
   const processing = { ...current, version: 2, status: "processing" } as const
   liveApi.setTask(processing)
@@ -184,6 +202,15 @@ test("refetches one page and one count set when SSE changes active status member
   await expect.poll(() => journal.tasks.length).toBe(2)
   await expect.poll(() => journal.counts.length).toBe(2)
   await expect(page.getByRole("table").locator("tbody tr").first()).toContainText("Processing")
+
+  /*
+   * And the refetch replaced the rows in place. A status change refuses the
+   * in-place merge, so it always costs a read -- but clearing the rendered page
+   * first turned that read into a teardown: every row destroyed, loading
+   * skeletons mounted in their place, then the table rebuilt. On a page of
+   * fifty rows that measured 58 rows destroyed per status change.
+   */
+  expect(await page.evaluate(() => Reflect.get(window, "tableChurn"))).toEqual({ childList: 0, rowsRemoved: 0 })
 })
 
 test("refetches one page and one count set when SSE changes the sorted field", async ({ page }) => {
