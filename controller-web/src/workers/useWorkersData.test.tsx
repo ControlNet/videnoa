@@ -1,5 +1,5 @@
 import { act, renderHook, waitFor } from "@testing-library/react"
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 
 import { createApiClient } from "../api/client"
 import type { Worker } from "../api/workerSchemas"
@@ -44,6 +44,28 @@ function listApiClient() {
 }
 
 describe("worker deltas", () => {
+  it("preserves two worker deltas queued before either state update runs", async () => {
+    // Synthetic test-only workers expose stale-list overwrites across microtasks.
+    const other = { ...worker, id: "550e8400-e29b-41d4-a716-446655440001", name: "render-west" }
+    const apiClient = createApiClient({
+      fetcher: async () => Response.json({ items: [worker, other], total: 2 }),
+      onUnauthorized: () => undefined,
+    })
+    const { result } = renderHook(() => useWorkersData(apiClient))
+    await waitFor(() => expect(result.current.workers?.items).toHaveLength(2))
+    const pending: VoidFunction[] = []
+    const microtasks = vi.spyOn(globalThis, "queueMicrotask").mockImplementation((callback) => pending.push(callback))
+    try {
+      act(() => appWorkerUpdateStore.publish({ ...worker, version: 5, online: false }))
+      act(() => appWorkerUpdateStore.publish({ ...other, version: 5, online: false }))
+      expect(pending).toHaveLength(2)
+      act(() => pending.forEach((callback) => callback()))
+      expect(result.current.workers?.items.map((item) => item.online)).toEqual([false, false])
+    } finally {
+      microtasks.mockRestore()
+    }
+  })
+
   it("replaces a listed worker in place without another request", async () => {
     // Given: one loaded worker reported online.
     const { apiClient, requests } = listApiClient()

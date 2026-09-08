@@ -125,7 +125,7 @@ export function WorkerFormDialog(props: WorkerFormDialogProps) {
           label="Connection type"
           value={fields.transport}
           options={[{ value: "http", label: "HTTP / HTTPS" }, { value: "iroh", label: "Iroh" }]}
-          onChange={(transport) => setFields({ ...fields, transport, apiUrl: "" })}
+          onChange={(transport) => setFields((current) => ({ ...current, transport, apiUrl: "", clearPassword: false }))}
         />
         <Field ref={apiUrlRef} id="worker-api-url" label={fields.transport === "iroh" ? "Worker Endpoint ID" : "Worker API URL"} name={fields.transport === "iroh" ? "endpoint_id" : "api_url"} type={fields.transport === "iroh" ? "text" : "url"} autoComplete="off" spellCheck={false} value={fields.apiUrl} error={urlError} onChange={(event) => setFields({ ...fields, apiUrl: event.currentTarget.value })} />
         <div className="worker-password-field">

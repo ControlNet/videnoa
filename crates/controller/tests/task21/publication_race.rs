@@ -59,3 +59,40 @@ async fn duplicate_publication_finalizers_preserve_exactly_one_final_artifact() 
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn duplicate_publication_is_busy_while_the_first_finalizer_is_active() -> TestResult {
+    use crate::checkpoints::CheckpointGate;
+    use crate::transfer_support::zero_jitter;
+    use videnoa_controller::scheduler::{TransferCheckpointPoint, TransferError};
+
+    let server = MockVidenoa::start().await?;
+    // Synthetic test-only artifact, using the production publisher and a controlled pause.
+    let expected = b"single active publication".repeat(1024);
+    let (fixture, prepared) = verified_task(&server, &expected).await?;
+    let gate = CheckpointGate::new(TransferCheckpointPoint::BeforeDestinationStaging);
+    let executor = fixture.executor()?.with_checkpoint_observer(gate.clone());
+    let task_id = prepared.task_id;
+    let now = fixture.now;
+    let first = tokio::spawn(async move {
+        TestResult::Ok(executor.publish(task_id, now, zero_jitter()?).await?)
+    });
+    gate.wait().await?;
+    let duplicate = fixture
+        .executor()?
+        .publish(task_id, now, zero_jitter()?)
+        .await;
+    gate.release();
+    let outcome = first.await?;
+    assert!(
+        matches!(duplicate, Err(TransferError::Busy)),
+        "duplicate result: {duplicate:?}"
+    );
+    assert_eq!(outcome?, PublicationOutcome::Completed);
+    assert_eq!(
+        tokio::fs::read(output_path(&fixture, &prepared).await?).await?,
+        expected
+    );
+    assert_status(&fixture, &prepared, TaskStatus::Completed).await?;
+    Ok(())
+}

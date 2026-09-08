@@ -89,10 +89,14 @@ export function useWorkersData(apiClient: ApiClient): WorkersData {
         setRetryGeneration((generation) => generation + 1)
         return
       }
-      if (incoming.version <= current.version) return
-      setWorkers({
-        ...workers,
-        items: workers.items.map((worker) => (worker.id === incoming.id ? incoming : worker)),
+      setWorkers((previous) => {
+        if (previous === null) return previous
+        const latest = previous.items.find((worker) => worker.id === incoming.id)
+        if (latest === undefined || incoming.version <= latest.version) return previous
+        return {
+          ...previous,
+          items: previous.items.map((worker) => (worker.id === incoming.id ? incoming : worker)),
+        }
       })
     })
   }, [loading, update.generation, update.worker, workers])

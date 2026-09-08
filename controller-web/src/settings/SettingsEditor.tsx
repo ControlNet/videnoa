@@ -55,8 +55,21 @@ export const settingsFormId = "settings-editor-form"
 
 export function SettingsEditor({ settings, actionError, onSave }: SettingsEditorProps) {
   const formRef = useRef<HTMLFormElement>(null)
+  const [baseline, setBaseline] = useState(settings)
+  const [remoteChange, setRemoteChange] = useState(false)
   const [fields, setFields] = useState<SettingsFields>(() => fieldsFrom(settings))
   const [fieldErrors, setFieldErrors] = useState<Partial<Record<keyof SettingsFields, string>>>({})
+
+  // Reconcile only authoritative versions, not the versionless optimistic scheduler delta.
+  // Preserve dirty fields and refresh untouched ones without remounting focused inputs.
+  if (settings.version !== baseline.version) {
+    const previous = fieldsFrom(baseline)
+    const incoming = fieldsFrom(settings)
+    const dirty = (Object.keys(fields) as (keyof SettingsFields)[]).filter((key) => fields[key] !== previous[key])
+    setFields({ ...incoming, ...Object.fromEntries(dirty.map((key) => [key, fields[key]])) })
+    setBaseline(settings)
+    setRemoteChange(remoteChange || dirty.length > 0)
+  }
 
   function focusFirstError(errors: Partial<Record<keyof SettingsFields, string>>): void {
     const firstInvalidField = settingsFieldOrder.find((field) => errors[field] !== undefined)
@@ -125,6 +138,7 @@ export function SettingsEditor({ settings, actionError, onSave }: SettingsEditor
       </nav>
 
       <div className="settings-sections">
+        {remoteChange && <p className="alert" role="status">Settings changed on the Controller. Your unsaved edits are preserved; other fields reflect the latest settings. Review before saving: your edited values will replace the current values on the Controller.</p>}
         <SettingsSection id="settings-server" title="Server binding">
           <TextField label="Server host" name="host" value={fields.serverHost} error={fieldErrors.serverHost ?? serverErrors.serverHost} onChange={(serverHost) => setFields({ ...fields, serverHost })} />
           <NumberField label="Server port" name="port" value={fields.serverPort} min={1} max={65_535} error={fieldErrors.serverPort ?? serverErrors.serverPort} onChange={(serverPort) => setFields({ ...fields, serverPort })} />

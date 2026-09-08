@@ -63,7 +63,7 @@ export function useSettingsData(apiClient: ApiClient): SettingsData {
       (reason: unknown) => {
         if (controller.signal.aborted) return
         if (!(reason instanceof ApiClientError)) throw reason
-        setSettings(null)
+        // Keep any mounted draft available while the authoritative refresh is retried.
         setReadiness(null)
         setError(reason.code === "network_failure" ? "Controller could not be reached." : "Controller could not load settings.")
         setLoading(false)
@@ -78,8 +78,8 @@ export function useSettingsData(apiClient: ApiClient): SettingsData {
    * Both halves are needed. The delta carries the new scheduler status but no
    * settings version, and every mutation on this route sends one, so keeping
    * only the merged value would make the next save or pause answer 409. The
-   * read supplies the coherent version -- and reseeding the editor is correct
-   * here, because the scheduler fields it edits are exactly what changed.
+   * read supplies the coherent version. The editor reconciles untouched fields
+   * while retaining unsaved edits and notifying the operator of remote changes.
    */
   useEffect(() => {
     if (update.generation <= appliedUpdateGeneration.current) return

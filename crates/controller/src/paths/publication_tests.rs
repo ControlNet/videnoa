@@ -137,3 +137,63 @@ fn cross_filesystem_rename_is_typed_and_leaves_media_empty(
     assert_eq!(std::fs::read_dir(media.path())?.count(), 0);
     Ok(())
 }
+
+#[test]
+fn empty_copy_rollback_preserves_nonempty_and_replaced_files(
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Synthetic local files exercise rollback ownership without any network or media service.
+    for replacement in [false, true] {
+        let fixture = Fixture::new()?;
+        let path = fixture.root.join("final.bin");
+        let output = fixture.capabilities.reopen_output(&path)?;
+        let destination = output.open_copy(None)?;
+        if replacement {
+            std::fs::rename(&path, fixture.root.join("original.bin"))?;
+            std::fs::write(&path, [])?;
+        } else {
+            destination
+                .file()
+                .try_clone()?
+                .write_all(b"partial output")?;
+        }
+        drop(destination);
+        if replacement {
+            assert_eq!(std::fs::metadata(&path)?.len(), 0);
+        } else {
+            assert_eq!(std::fs::read(&path)?, b"partial output");
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn empty_copy_rollback_never_removes_preexisting_owned_files(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new()?;
+    let path = fixture.root.join("final.bin");
+    std::fs::write(&path, [])?;
+    let file = cap_std::fs::File::from_std(std::fs::File::open(&path)?);
+    let identity = super::RootedOutput::copy_identity(&file)?;
+    let output = fixture.capabilities.reopen_output(&path)?;
+    drop(output.open_copy(Some(identity))?);
+    assert_eq!(std::fs::metadata(&path)?.len(), 0);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn empty_copy_rollback_never_follows_replacement_symlinks() -> Result<(), Box<dyn std::error::Error>>
+{
+    let fixture = Fixture::new()?;
+    let path = fixture.root.join("final.bin");
+    let output = fixture.capabilities.reopen_output(&path)?;
+    let destination = output.open_copy(None)?;
+    std::fs::rename(&path, fixture.root.join("original.bin"))?;
+    let external = fixture.root.join("external.bin");
+    std::fs::write(&external, [])?;
+    std::os::unix::fs::symlink(&external, &path)?;
+    drop(destination);
+    assert!(std::fs::symlink_metadata(&path)?.file_type().is_symlink());
+    assert!(external.exists());
+    Ok(())
+}

@@ -72,11 +72,15 @@ impl TransferExecutor {
             .open_read()
             .at("copy.open_source")?
             .ok_or_else(|| OperationError::conflict("copy.source_missing"))?;
-        let destination = output
+        let mut destination = output
             .open_copy(ownership)
             .at("copy.open_owned_destination")?;
-        let identity = RootedOutput::copy_identity(&destination).at("copy.destination_identity")?;
+        self.checkpoint(TransferCheckpointPoint::PublicationCopyCreated)
+            .await;
+        let identity =
+            RootedOutput::copy_identity(destination.file()).at("copy.destination_identity")?;
         let length = destination
+            .file()
             .metadata()
             .at("copy.destination_metadata")?
             .len();
@@ -84,14 +88,22 @@ impl TransferExecutor {
             return Err(OperationError::conflict("copy.destination_too_long"));
         }
         if ownership.is_none() {
-            destination.sync_all().at("copy.sync_empty_destination")?;
+            destination
+                .file()
+                .sync_all()
+                .at("copy.sync_empty_destination")?;
             output.sync_parent().at("copy.sync_destination_parent")?;
             write_marker(&marker, identity, expected).await?;
         }
         self.checkpoint(TransferCheckpointPoint::PublicationCopyStarted)
             .await;
-        self.copy_suffix(source_file, destination, length, expected.size)
+        let copy_file = destination
+            .file()
+            .try_clone()
+            .at("copy.clone_destination")?;
+        self.copy_suffix(source_file, copy_file, length, expected.size)
             .await?;
+        destination.keep();
         let PublicationArtifact::Regular(final_file) =
             output.open_final().at("copy.open_destination")?
         else {

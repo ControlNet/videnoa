@@ -1,8 +1,9 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { describe, expect, it } from "vitest"
 
 import { createApiClient } from "../api/client"
 import { type SettingsResponse, settingsUpdateRequestSchema } from "../api/settingsSchemas"
+import { appSchedulerUpdateStore } from "../events/schedulerUpdates"
 import { SettingsPage } from "./SettingsPage"
 
 const testOnlySettings = {
@@ -211,4 +212,66 @@ describe("Settings page", () => {
     expect(healthTimeout).toHaveAttribute("aria-describedby", "settings-health_seconds-error")
     expect(screen.getByText("Enter a valid health timeout.")).toHaveAttribute("role", "alert")
   })
+})
+
+// Synthetic settings and HTTP responses exercise the real page and event store.
+it("preserves dirty fields, refreshes untouched fields, and saves the reconciled version", async () => {
+  let remote: SettingsResponse = testOnlySettings
+  const updates: unknown[] = []
+  const apiClient = createApiClient({ onUnauthorized: () => undefined, fetcher: async (input, init) => {
+    const request = new Request(input, init)
+    if (new URL(request.url).pathname === "/api/readiness") return Response.json({ status: "ready", checks: [] })
+    if (request.method === "PUT") {
+      const update = settingsUpdateRequestSchema.parse(await request.json())
+      updates.push(update)
+      remote = { ...remote, version: remote.version + 1, server: update.server, secure_cookie: update.auth.secure_cookie, session_absolute_seconds: update.auth.session_absolute_seconds, session_idle_seconds: update.auth.session_idle_seconds, scheduler: update.scheduler, timeouts: update.timeouts, retry: update.retry }
+    }
+    return Response.json(remote)
+  } })
+  render(<SettingsPage apiClient={apiClient} />)
+  const port = await screen.findByLabelText("Server port")
+  fireEvent.change(port, { target: { value: "4555" } })
+  fireEvent.change(screen.getByLabelText("Idle session seconds"), { target: { value: "1800" } })
+  fireEvent.change(screen.getByLabelText("Initial retry seconds"), { target: { value: "3" } })
+  remote = { ...remote, version: 4, server: { ...remote.server, port: 4000 }, scheduler: { ...remote.scheduler, paused: true, max_concurrent_uploads: 5 }, timeouts: { ...remote.timeouts, health_seconds: 20 } }
+  act(() => appSchedulerUpdateStore.publish(remote.scheduler))
+  await waitFor(() => expect(screen.getByLabelText("Concurrent uploads")).toHaveValue(5))
+  expect(screen.getByLabelText("Server port")).toBe(port)
+  expect(port).toHaveValue(4555)
+  expect(screen.getByLabelText("Idle session seconds")).toHaveValue(1800)
+  expect(screen.getByLabelText("Initial retry seconds")).toHaveValue(3)
+  expect(screen.getByLabelText("Health timeout seconds")).toHaveValue(20)
+  expect(screen.getByText(/Your unsaved edits are preserved/)).toBeInTheDocument()
+  fireEvent.click(screen.getByRole("button", { name: "Save and apply settings" }))
+  await waitFor(() => expect(updates).toHaveLength(1))
+  expect(updates[0]).toMatchObject({ version: 4, server: { port: 4555 }, auth: { session_idle_seconds: 1800 }, scheduler: { paused: true, max_concurrent_uploads: 5 }, timeouts: { health_seconds: 20 }, retry: { initial_seconds: 3 } })
+  await waitFor(() => expect(screen.queryByText(/Your unsaved edits are preserved/)).not.toBeInTheDocument())
+  // A saved draft becomes the new baseline; later remote edits are no longer masked.
+  remote = { ...remote, version: 6, server: { ...remote.server, port: 4666 } }
+  act(() => appSchedulerUpdateStore.publish(remote.scheduler))
+  await waitFor(() => expect(screen.getByLabelText("Server port")).toHaveValue(4666))
+})
+
+it("keeps the draft across a failed scheduler refresh and retries without allowing a stale save", async () => {
+  let failRead = false
+  let remote: SettingsResponse = testOnlySettings
+  const apiClient = createApiClient({ onUnauthorized: () => undefined, fetcher: async (input) => {
+    if (new URL(input instanceof Request ? input.url : input).pathname === "/api/readiness") return Response.json({ status: "ready", checks: [] })
+    if (failRead) return Response.json({ error: { code: "unavailable", message: "Synthetic refresh failure", retryable: true, field_errors: [] } }, { status: 503 })
+    return Response.json(remote)
+  } })
+  render(<SettingsPage apiClient={apiClient} />)
+  const port = await screen.findByLabelText("Server port")
+  fireEvent.change(port, { target: { value: "4555" } })
+  failRead = true
+  act(() => appSchedulerUpdateStore.publish({ ...remote.scheduler, paused: true }))
+  await screen.findByRole("button", { name: "Retry" })
+  expect(screen.getByLabelText("Server port")).toHaveValue(4555)
+  expect(screen.getByRole("button", { name: "Save and apply settings" })).toBeDisabled()
+  expect(screen.getByRole("button", { name: "Resume scheduler" })).toBeDisabled()
+  failRead = false
+  remote = { ...remote, version: 4, scheduler: { ...remote.scheduler, paused: true } }
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }))
+  await waitFor(() => expect(screen.getByRole("button", { name: "Save and apply settings" })).toBeEnabled())
+  expect(screen.getByLabelText("Server port")).toHaveValue(4555)
 })
