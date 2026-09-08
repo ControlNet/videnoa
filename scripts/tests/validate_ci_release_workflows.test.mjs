@@ -192,7 +192,7 @@ for (const target of ["D:/actions/package-target", "/tmp/package-target", "${{ r
 }
 {
 	const workflow = structuredClone(loadWorkflow(unitPath));
-	workflow.jobs["web-build-check"].steps = workflow.jobs["web-build-check"].steps.filter((step) => step.uses !== "actions/upload-artifact@v4");
+	workflow.jobs["web-build-check"].steps = workflow.jobs["web-build-check"].steps.filter((step) => step.uses !== "actions/upload-artifact@v6");
 	expectContractFailure("missing verified frontend artifact", () => validateUnitWorkflow(workflow), /upload-artifact/);
 }
 

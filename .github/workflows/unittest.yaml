@@ -25,11 +25,11 @@ jobs:
     name: Workflow contracts
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '24'
       - name: Install Controller web dependencies
         working-directory: controller-web
         run: npm ci --no-fund
@@ -44,7 +44,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@1.98.0
       - name: Install protobuf compiler (Linux)
@@ -52,10 +52,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler cmake
       - name: Install protobuf compiler (Windows)
         if: runner.os == 'Windows'
-        uses: arduino/setup-protoc@v3
-        with:
-          version: '33.5'
-          repo-token: ${{ github.token }}
+        shell: pwsh
+        run: ./scripts/install_protoc_windows.ps1
       - name: Verify protobuf compiler (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -74,11 +72,11 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '24'
       - name: Install web dependencies
         working-directory: web
         run: npm ci --no-fund
@@ -87,7 +85,7 @@ jobs:
         run: npm run build
       - name: Share Windows web assets
         if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: worker-web-windows
           path: web/dist
@@ -98,15 +96,15 @@ jobs:
     name: Controller Rust quality and tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@1.98.0
         with:
           components: rustfmt, clippy
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '24'
       - name: Install Controller web dependencies
         working-directory: controller-web
         run: npm ci --no-fund
@@ -125,13 +123,13 @@ jobs:
     needs: [controller-rust]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@1.98.0
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '24'
       - name: Run crash and outage suite
         run: cargo test -p videnoa-controller --test task20 -- --nocapture
       - name: Run production Argon2 executor contention regression
@@ -150,11 +148,11 @@ jobs:
     name: Controller web quality and E2E
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '24'
       - name: Install dependencies
         working-directory: controller-web
         run: npm ci --no-fund
@@ -183,13 +181,13 @@ jobs:
     needs: [controller-rust, controller-web]
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Set up Rust 1.98.0
         uses: dtolnay/rust-toolchain@1.98.0
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '24'
       - name: Validate archive root files
         run: bash scripts/tests/controller_archive_root_files_test.sh
       - name: Run Linux archive contracts
@@ -203,13 +201,13 @@ jobs:
     needs: [controller-rust, controller-web]
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Set up Rust 1.98.0
         uses: dtolnay/rust-toolchain@1.98.0
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '24'
       - name: Package Windows Controller archive
         shell: pwsh
         run: |
@@ -227,14 +225,14 @@ jobs:
     needs: [controller-rust, controller-web]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Build Controller image
         run: docker build -f Dockerfile.controller -t videnoa-controller:ci .
       - name: Verify Controller image and content
         run: bash scripts/check_controller_container.sh videnoa-controller:ci --all
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '24'
       - name: Install browser smoke dependencies
         working-directory: controller-web
         run: |
@@ -251,7 +249,7 @@ jobs:
     env:
       ARCHIVE_NAME: videnoa-linux64-smoke.7z
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@1.98.0
       - name: Cache package Rust dependencies
@@ -260,9 +258,9 @@ jobs:
           prefix-key: v1-package-target
           workspaces: ". -> ../videnoa-package-target"
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '24'
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -303,7 +301,7 @@ jobs:
     env:
       ARCHIVE_NAME: videnoa-win64-smoke.7z
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@1.98.0
       - name: Cache package Rust dependencies
@@ -312,14 +310,12 @@ jobs:
           prefix-key: v1-package-target
           workspaces: ". -> ../videnoa-package-target"
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '24'
       - name: Set up protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          version: '33.5'
-          repo-token: ${{ github.token }}
+        shell: pwsh
+        run: ./scripts/install_protoc_windows.ps1
       - name: Install dependencies
         shell: pwsh
         run: |
@@ -341,7 +337,7 @@ jobs:
             Write-Warning 'aria2 not available; package_dist.ps1 will fallback to curl/Invoke-WebRequest'
           }
       - name: Restore verified Windows web assets
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: worker-web-windows
           path: web/dist
@@ -406,7 +402,7 @@ jobs:
     needs: [rust-tests, web-build-check]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Build Docker image
         run: docker build -t videnoa-ci-smoke .
       - name: Run Docker CLI smoke
