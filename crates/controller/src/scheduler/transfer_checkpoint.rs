@@ -12,6 +12,7 @@ pub enum TransferCheckpointPoint {
     DestinationStaged,
     StagingVerified,
     PublicationFinalized,
+    PublicationCopyCreated,
     PublicationCopyStarted,
     PublicationCopyChunkWritten,
     PublicationCopyVerified,

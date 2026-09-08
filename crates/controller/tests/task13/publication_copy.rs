@@ -50,6 +50,7 @@ async fn cross_filesystem_move_publishes_verified_bytes_without_overwrite_or_sib
 async fn cross_filesystem_copy_crash_recovers_partial_and_complete_outputs_without_ai_replay(
 ) -> TestResult {
     for checkpoint in [
+        TransferCheckpointPoint::PublicationCopyCreated,
         TransferCheckpointPoint::PublicationCopyStarted,
         TransferCheckpointPoint::PublicationCopyChunkWritten,
         TransferCheckpointPoint::PublicationCopyVerified,
@@ -68,7 +69,11 @@ async fn cross_filesystem_copy_crash_recovers_partial_and_complete_outputs_witho
             tokio::spawn(async move { executor.publish(id, now, zero_jitter().unwrap()).await });
         tokio::time::timeout(Duration::from_secs(5), gate.wait()).await??;
         let length = std::fs::metadata(&destination)?.len();
-        if checkpoint == TransferCheckpointPoint::PublicationCopyStarted {
+        if matches!(
+            checkpoint,
+            TransferCheckpointPoint::PublicationCopyCreated
+                | TransferCheckpointPoint::PublicationCopyStarted
+        ) {
             assert_eq!(length, 0);
         } else if checkpoint == TransferCheckpointPoint::PublicationCopyChunkWritten {
             assert!(length > 0 && length < bytes.len() as u64);
@@ -79,6 +84,12 @@ async fn cross_filesystem_copy_crash_recovers_partial_and_complete_outputs_witho
         pending.abort();
         assert!(pending.await.unwrap_err().is_cancelled());
         assert_eq!(fixture.task(id).await?.status, TaskStatus::Publishing);
+        if length == 0 {
+            assert!(
+                !destination.exists(),
+                "cancelled copy retained an empty output"
+            );
+        }
         assert_eq!(
             publish(&fixture, &task).await?,
             PublicationOutcome::Completed
@@ -242,7 +253,7 @@ async fn legacy_cross_mount_failure_upgrade_enables_only_publication_retry() -> 
 }
 
 #[tokio::test]
-async fn marker_creation_failure_preserves_operation_and_followup_ambiguity_reason() -> TestResult {
+async fn marker_creation_failure_removes_empty_output_and_allows_retry() -> TestResult {
     use videnoa_controller::lifecycle::LifecycleService;
     // Synthetic filesystem fault: a directory occupies the pending-marker leaf.
     let server = MockVidenoa::start().await?;
@@ -265,11 +276,13 @@ async fn marker_creation_failure_preserves_operation_and_followup_ambiguity_reas
     assert!(failure.message.contains("io_kind="), "{}", failure.message);
     assert!(failure.message.contains("os_error="), "{}", failure.message);
     let destination = output_path(&fixture, &prepared).await?;
-    assert_eq!(std::fs::metadata(&destination)?.len(), 0);
+    assert!(!destination.exists());
     assert_eq!(
         std::fs::read(verified_path(&fixture.temp_root, prepared.task_id))?,
         bytes
     );
+    let runs = server.counters().await.get(Route::Run);
+    std::fs::remove_dir(workspace.join("publication-copy.pending"))?;
     LifecycleService::new(fixture.store.clone())
         .retry_downstream(
             &failed,
@@ -279,11 +292,74 @@ async fn marker_creation_failure_preserves_operation_and_followup_ambiguity_reas
         .await?;
     assert_eq!(
         publish(&fixture, &prepared).await?,
-        PublicationOutcome::Failed
+        PublicationOutcome::Completed
     );
-    let failure = fixture.task(prepared.task_id).await?.failure.unwrap();
-    assert_eq!(failure.failure_code, FailureCode::PublicationAmbiguous);
-    assert_eq!(failure.message, "copy.marker_missing: evidence_conflict");
+    assert_eq!(std::fs::read(&destination)?, bytes);
+    assert_eq!(server.counters().await.get(Route::Run), runs);
+    Ok(())
+}
+
+#[tokio::test]
+async fn changed_parent_failure_cleans_original_empty_output_and_preserves_replacement(
+) -> TestResult {
+    use videnoa_controller::config::PathConfig;
+    use videnoa_controller::lifecycle::LifecycleService;
+    use videnoa_controller::paths::PathCapabilities;
+    // Synthetic directory replacement on tmpfs reproduces the reported identity failure.
+    let server = MockVidenoa::start().await?;
+    let bytes = b"synthetic parent replacement output".repeat(1024);
+    let (mut fixture, task) = crossed(&server, &bytes).await?;
+    fixture.paths = PathCapabilities::open(&PathConfig {
+        input_roots: vec![fixture.input_root.clone()],
+        output_roots: vec![fixture.output_root.parent().unwrap().to_path_buf()],
+        data_root: fixture.directory.path().join("data"),
+        temp_root: fixture.temp_root.clone(),
+    })?;
+    let destination = output_path(&fixture, &task).await?;
+    let preserved = tempfile::TempDir::new_in("/dev/shm")?;
+    let old_parent = preserved.path().join("original-parent");
+    let gate = CheckpointGate::new(TransferCheckpointPoint::PublicationCopyCreated);
+    let executor = fixture.executor()?.with_checkpoint_observer(gate.clone());
+    let id = task.task_id;
+    let now = fixture.now;
+    let pending =
+        tokio::spawn(async move { executor.publish(id, now, zero_jitter().unwrap()).await });
+    gate.wait().await?;
     assert_eq!(std::fs::metadata(&destination)?.len(), 0);
+    std::fs::rename(&fixture.output_root, &old_parent)?;
+    std::fs::create_dir(&fixture.output_root)?;
+    // A different empty file at the same visible path must not be removed by rollback.
+    std::fs::write(&destination, [])?;
+    gate.release();
+    assert_eq!(pending.await??, PublicationOutcome::Failed);
+    let failed = fixture.task(id).await?;
+    assert_eq!(
+        failed.failure.as_ref().unwrap().message,
+        "copy.sync_destination_parent: output_parent_changed"
+    );
+    assert!(!old_parent.join(destination.file_name().unwrap()).exists());
+    assert_eq!(std::fs::metadata(&destination)?.len(), 0);
+    assert_eq!(std::fs::read(verified_path(&fixture.temp_root, id))?, bytes);
+    assert!(!fixture
+        .temp_root
+        .join(id.to_string())
+        .join("publication-copy.evidence")
+        .exists());
+    // Remove only the externally created synthetic conflict before retrying the same attempt.
+    std::fs::remove_file(&destination)?;
+    let runs = server.counters().await.get(Route::Run);
+    LifecycleService::new(fixture.store.clone())
+        .retry_downstream(
+            &failed,
+            &fixture.attempt(task.attempt_id).await?,
+            fixture.now,
+        )
+        .await?;
+    assert_eq!(
+        publish(&fixture, &task).await?,
+        PublicationOutcome::Completed
+    );
+    assert_eq!(std::fs::read(&destination)?, bytes);
+    assert_eq!(server.counters().await.get(Route::Run), runs);
     Ok(())
 }
