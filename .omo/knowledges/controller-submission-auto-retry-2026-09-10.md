@@ -18,6 +18,8 @@ The retry delay starts after request completion, uses `retry.initial_seconds`, d
 
 ## Verification
 
+The initial results below are historical. See [the follow-up verification](controller-submission-retry-verification-2026-09-10.md) for baseline comparison, storage evidence, and the corrected multi-worker request-count assertion.
+
 Tests use the isolated mock worker; no production video jobs or services are mutated.
 
 ```bash
