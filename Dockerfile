@@ -85,11 +85,26 @@ RUN pip install --no-cache-dir "tensorrt-cu12-libs==${TRT_VERSION}" \
     && cp /usr/local/lib/python3.12/site-packages/tensorrt_libs/libnvonnxparser.so.10 /trt-lib/
 
 # ---------------------------------------------------------------------------
-# Stage 4: Runtime image — CUDA + cuDNN + bundled ORT + TRT
+# Stage 4: Runtime image — minimal CUDA + cuDNN + bundled ORT + TRT
 # ---------------------------------------------------------------------------
-FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu22.04 AS runtime
+FROM nvidia/cuda:12.6.3-base-ubuntu22.04 AS runtime
+
+ARG CUDA_NVRTC_VERSION=12.6.85-1
+ARG CUBLAS_VERSION=12.6.4.1-1
+ARG CUFFT_VERSION=11.3.0.4-1
+ARG CURAND_VERSION=10.3.7.77-1
+ARG CUDNN_VERSION=9.5.1.17-1
+ARG NVFATBIN_VERSION=12.6.77-1
+ARG NVJITLINK_VERSION=12.6.85-1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+        cuda-nvrtc-12-6=${CUDA_NVRTC_VERSION} \
+        libcublas-12-6=${CUBLAS_VERSION} \
+        libcufft-12-6=${CUFFT_VERSION} \
+        libcurand-12-6=${CURAND_VERSION} \
+        libcudnn9-cuda-12=${CUDNN_VERSION} \
+        libnvfatbin-12-6=${NVFATBIN_VERSION} \
+        libnvjitlink-12-6=${NVJITLINK_VERSION} \
         ffmpeg \
         mkvtoolnix \
         ca-certificates \

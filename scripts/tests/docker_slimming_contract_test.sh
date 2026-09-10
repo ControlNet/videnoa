@@ -61,6 +61,24 @@ if grep -Fq '/usr/bin/mkvpropedit' "$WORKER_DOCKERFILE"; then
   fail 'Worker runtime removes required mkvpropedit'
 fi
 
+require_exact_line \
+  "$WORKER_DOCKERFILE" \
+  'FROM nvidia/cuda:12.6.3-base-ubuntu22.04 AS runtime' \
+  'Worker runtime must use the minimal CUDA base image'
+
+for required_cuda_package in \
+  cuda-nvrtc-12-6 \
+  libcublas-12-6 \
+  libcufft-12-6 \
+  libcurand-12-6 \
+  libcudnn9-cuda-12 \
+  libnvfatbin-12-6 \
+  libnvjitlink-12-6
+do
+  grep -Eq "^[[:space:]]+$required_cuda_package(=|[[:space:]]|\\\\$)" "$WORKER_DOCKERFILE" \
+    || fail "Worker runtime does not explicitly install $required_cuda_package"
+done
+
 if [[ -n "$WORKER_IMAGE" ]]; then
   docker run --rm --entrypoint /bin/sh "$WORKER_IMAGE" -c '
     set -eu
@@ -71,6 +89,42 @@ if [[ -n "$WORKER_IMAGE" ]]; then
     test ! -e /usr/bin/mkvmerge
     grep -a -q '\.symtab' /usr/local/bin/videnoa
     mkvpropedit --version >/dev/null
+
+    for required_cuda_package in \
+      cuda-cudart-12-6 \
+      cuda-nvrtc-12-6 \
+      libcublas-12-6 \
+      libcufft-12-6 \
+      libcurand-12-6 \
+      libcudnn9-cuda-12 \
+      libnvfatbin-12-6 \
+      libnvjitlink-12-6
+    do
+      dpkg-query -W "$required_cuda_package" >/dev/null 2>&1
+    done
+
+    for unused_cuda_package in \
+      cuda-opencl-12-6 \
+      libcusolver-12-6 \
+      libcusparse-12-6 \
+      libnccl2 \
+      libnpp-12-6 \
+      libcufile-12-6 \
+      libnvjpeg-12-6
+    do
+      if dpkg-query -W "$unused_cuda_package" >/dev/null 2>&1; then
+        echo "Unexpected CUDA package: $unused_cuda_package" >&2
+        exit 1
+      fi
+    done
+
+    for provider_library in \
+      /usr/local/lib/libonnxruntime_providers_cuda.so \
+      /usr/local/lib/libonnxruntime_providers_tensorrt.so
+    do
+      test -f "$provider_library"
+      ! ldd "$provider_library" | grep -q "not found"
+    done
   ' || fail 'Worker image content does not satisfy the slimming contract'
 
   docker run --rm --entrypoint /bin/sh "$WORKER_IMAGE" -c '
