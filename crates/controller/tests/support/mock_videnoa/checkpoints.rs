@@ -8,6 +8,7 @@ use super::state::HarnessError;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Checkpoint {
+    BeforeHealthResponse,
     BeforeAcceptingUpload,
     AfterUploadBytesAccepted,
     BeforeRunPersistence,
@@ -22,6 +23,7 @@ pub enum Checkpoint {
 impl Checkpoint {
     pub const fn name(self) -> &'static str {
         match self {
+            Self::BeforeHealthResponse => "before_health_response",
             Self::BeforeAcceptingUpload => "before_accepting_upload",
             Self::AfterUploadBytesAccepted => "after_upload_bytes_accepted",
             Self::BeforeRunPersistence => "before_run_persistence",
@@ -34,8 +36,9 @@ impl Checkpoint {
         }
     }
 
-    const fn all() -> [Self; 9] {
+    const fn all() -> [Self; 10] {
         [
+            Self::BeforeHealthResponse,
             Self::BeforeAcceptingUpload,
             Self::AfterUploadBytesAccepted,
             Self::BeforeRunPersistence,
