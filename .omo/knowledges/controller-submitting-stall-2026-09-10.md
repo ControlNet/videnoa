@@ -1,5 +1,7 @@
 # Controller submission stall diagnosis
 
+This records the pre-fix production diagnosis. The subsequent automatic confirmation retry implementation is documented in `controller-submission-auto-retry-2026-09-10.md`; its tests replace the historical restart-only test below.
+
 ## Live observations
 
 - Controller API reported task `ef500dc7-3d3d-4233-bcfa-86d8b7debd15` in `submitting`, with no remote job ID, failure, or scheduled retry. Attempt count remained one.

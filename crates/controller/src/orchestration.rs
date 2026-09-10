@@ -73,7 +73,6 @@ impl Orchestrator {
         self.recovery_page_size = page_size;
         self
     }
-
 }
 
 struct StageOutcome {
@@ -114,7 +113,8 @@ impl StageError {
                 | crate::recovery::RecoveryError::MissingAttempt
                 | crate::recovery::RecoveryError::MissingWorker
                 | crate::recovery::RecoveryError::MissingRemoteEvidence
-                | crate::recovery::RecoveryError::HealthDelayRange,
+                | crate::recovery::RecoveryError::HealthDelayRange
+                | crate::recovery::RecoveryError::SubmissionDelayRange,
             )
             | Self::Transfer(
                 crate::scheduler::TransferError::MissingEvidence

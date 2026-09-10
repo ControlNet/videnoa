@@ -79,8 +79,8 @@ impl Reconciler {
                     .await;
             }
         };
-        let _write = stage.begin_write();
-        service
+        let write = stage.begin_write();
+        let persisted = service
             .advance(
                 &task,
                 &attempt,
@@ -91,7 +91,16 @@ impl Reconciler {
                 }),
                 now,
             )
-            .await?;
+            .await;
+        drop(write);
+        if let Err(error) = persisted {
+            if error.code() == LifecycleErrorCode::Conflict {
+                self.retry_submission(&attempt, now, stage, &error).await?;
+                report.defer(task.id);
+                return Ok(());
+            }
+            return Err(error.into());
+        }
         drop(admission);
         report.push(task.id, RecoveryCommandKind::Poll);
         Ok(())
@@ -171,7 +180,14 @@ impl Reconciler {
             Err(VidenoaClientError::NotFound | VidenoaClientError::ClientStatus { .. }) => {
                 SubmissionCancellationReconciliation::NotAccepted
             }
-            Err(error) => return Err(error.into()),
+            Err(error) => {
+                if error.is_transient() || matches!(error, VidenoaClientError::RateLimited) {
+                    self.retry_submission(&attempt, now, stage, &error).await?;
+                    report.defer(task.id);
+                    return Ok(());
+                }
+                return Err(error.into());
+            }
         };
         let remote_job_id = match &reconciliation {
             SubmissionCancellationReconciliation::Accepted(value) => Some(value.remote_job_id),
@@ -179,10 +195,18 @@ impl Reconciler {
         };
         let service = LifecycleService::new(self.store.clone());
         let write = stage.begin_write();
-        service
+        let persisted = service
             .reconcile_submission_cancellation(&task, &attempt, reconciliation, now)
-            .await?;
+            .await;
         drop(write);
+        if let Err(error) = persisted {
+            if error.code() == LifecycleErrorCode::Conflict {
+                self.retry_submission(&attempt, now, stage, &error).await?;
+                report.defer(task.id);
+                return Ok(());
+            }
+            return Err(error.into());
+        }
         if let Some(job_id) = remote_job_id {
             match client.cancel_job(job_id).await {
                 Ok(()) | Err(VidenoaClientError::NotFound) => {}

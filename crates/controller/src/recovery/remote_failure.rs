@@ -31,6 +31,14 @@ impl Reconciler {
         stage: &StagePermit,
         report: &mut RecoveryReport,
     ) -> Result<(), RecoveryError> {
+        if error.is_transient() || matches!(error, VidenoaClientError::RateLimited) {
+            self.retry_submission(attempt, now, stage, &error).await?;
+            if matches!(error, VidenoaClientError::RateLimited) {
+                report.defer(task.id);
+                return Ok(());
+            }
+            return Err(error.into());
+        }
         self.resolve_remote_failure(
             RemoteFailureOperation::Submission,
             error,

@@ -272,6 +272,16 @@ Task statuses are `queued`, `reserved`, `uploading`, `staged`, `submitting`,
 
 Each compute attempt has a durable submission key before remote `POST /api/run`.
 The same key and body returns the existing remote job; a changed body conflicts.
+While `submitting`, network failures, timeouts, HTTP 429, and server errors
+automatically schedule another confirmation request on the same attempt. Backoff
+starts at `retry.initial_seconds`, doubles after each failure, and is capped at
+`retry.maximum_seconds`. Confirmation continues beyond `retry.max_attempts`
+because the worker may already be running the job. The attempt API exposes
+`retry_count` and `next_retry_at`; a WARN log records each scheduled retry.
+An in-flight request retains exclusive ownership within the controller generation;
+only a finished request releases its claim for retry. Restart preserves the retry
+deadline and submission identity. Successful confirmation clears retry metadata.
+Confirmation and cancellation recovery remain available while scheduling is paused.
 Transfer and cleanup failures use bounded persisted retry. Downstream retries do
 not repeat successful AI work.
 

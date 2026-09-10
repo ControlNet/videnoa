@@ -34,6 +34,8 @@ mod retry;
 mod shutdown;
 #[path = "task20/submission_ownership.rs"]
 mod submission_ownership;
+#[path = "task20/submission_retry.rs"]
+mod submission_retry;
 #[path = "task20/support/mod.rs"]
 mod support;
 #[path = "task20/worker_health.rs"]

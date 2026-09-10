@@ -22,6 +22,8 @@ pub enum RecoveryError {
     MissingRemoteEvidence,
     #[error("health retry delay cannot be represented as a timestamp")]
     HealthDelayRange,
+    #[error("submission retry delay cannot be represented as a timestamp")]
+    SubmissionDelayRange,
     #[error("durable compare-and-swap conflicted during recovery")]
     Conflict,
 }

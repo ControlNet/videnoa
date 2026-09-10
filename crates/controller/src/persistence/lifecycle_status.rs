@@ -45,8 +45,8 @@ pub(super) async fn update_task_status(
             expected_output_size = CASE WHEN ? = 'verifying' THEN ? ELSE expected_output_size END,
             expected_output_sha256 = CASE WHEN ? = 'verifying' THEN ? ELSE expected_output_sha256 END,
             destination_staging_name = CASE WHEN ? = 'publishing' THEN ? ELSE destination_staging_name END,
-            retry_count = CASE WHEN ? IN ('staged', 'verifying') THEN 0 ELSE retry_count END,
-            next_retry_at_ms = CASE WHEN ? IN ('staged', 'verifying') THEN NULL ELSE next_retry_at_ms END
+            retry_count = CASE WHEN ? IN ('staged', 'processing', 'verifying') THEN 0 ELSE retry_count END,
+            next_retry_at_ms = CASE WHEN ? IN ('staged', 'processing', 'verifying') THEN NULL ELSE next_retry_at_ms END
          WHERE (? != 'uploading' OR ? = 0)
            AND (? != 'submitting' OR (
                ? = 0
@@ -82,8 +82,8 @@ pub(super) async fn update_attempt_status(
             started_at_ms = CASE WHEN ? = 'processing' THEN ? ELSE started_at_ms END,
             completed_at_ms = CASE WHEN ? IN ('completed', 'failed', 'cancelled')
                 THEN ? ELSE completed_at_ms END,
-            retry_count = CASE WHEN ? IN ('staged', 'verifying') THEN 0 ELSE retry_count END,
-            next_retry_at_ms = CASE WHEN ? IN ('staged', 'verifying') THEN NULL ELSE next_retry_at_ms END
+            retry_count = CASE WHEN ? IN ('staged', 'processing', 'verifying') THEN 0 ELSE retry_count END,
+            next_retry_at_ms = CASE WHEN ? IN ('staged', 'processing', 'verifying') THEN NULL ELSE next_retry_at_ms END
          WHERE id = ? AND status = ? AND version = ?",
     )
     .bind(status).bind(occurred_at).bind(status).bind(occurred_at)
