@@ -23,7 +23,7 @@ test("keeps 20,000 task history bounded through filters, sorting, paging, and na
   await expect.poll(() => journal.tasks.length).toBe(2)
   await expect.poll(() => journal.counts.length).toBe(2)
   await page.getByLabel("Search task paths").fill("episode-00101")
-  await expect(page).toHaveURL(/search=episode-00101/)
+  await expect(page).toHaveURL(/\/tasks$/)
   await expect.poll(() => journal.tasks.length).toBe(3)
   await expect.poll(() => journal.counts.length).toBe(3)
 
@@ -44,9 +44,10 @@ test("keeps 20,000 task history bounded through filters, sorting, paging, and na
   await expect.poll(() => journal.tasks.length).toBe(5)
   await expect.poll(() => journal.counts.length).toBe(5)
   await page.getByRole("button", { name: "Next" }).click()
-  await expect(page).toHaveURL(/offset=50/)
   await expect.poll(() => journal.tasks.length).toBe(6)
   await expect.poll(() => journal.counts.length).toBe(6)
+  expect(new URLSearchParams(journal.tasks.at(-1)).get("offset")).toBe("50")
+  await expect(page).toHaveURL(/\/tasks$/)
   await expect(page.getByRole("table").locator("tbody tr")).toHaveCount(50)
 
   // Then: task and count requests remain independently one-per-trigger and bounded.
@@ -234,7 +235,7 @@ test("refetches one page and one count set when SSE changes the sorted field", a
 })
 
 test("corrects a deep empty page directly to the canonical last valid page", async ({ page }) => {
-  // Given: live shrinkage leaves a direct URL far beyond a 123-row result set.
+  // Given: a legacy deep link leaves the current view far beyond a 123-row result set.
   const journal = requestJournal()
   await installPagedApi(page, journal, 123)
 
@@ -242,7 +243,7 @@ test("corrects a deep empty page directly to the canonical last valid page", asy
   await page.goto("/tasks?limit=50&offset=10000")
 
   // Then: one correction reaches offset 100 without intermediate page requests.
-  await expect(page).toHaveURL(/offset=100(?:&|$)/)
+  await expect(page).toHaveURL(/\/tasks$/)
   await expect(page.getByRole("table").locator("tbody tr")).toHaveCount(23)
   expect(journal.tasks.map((request) => Number(new URLSearchParams(request).get("offset")))).toEqual([10_000, 100])
   expect(journal.counts).toHaveLength(2)

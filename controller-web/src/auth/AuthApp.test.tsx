@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { App } from "../App"
+import { taskViewStorageKey } from "../tasks/query"
 
 const session = {
   id: "550e8400-e29b-41d4-a716-446655440000",
@@ -199,14 +200,16 @@ describe("authenticated Controller shell", () => {
     // When: the valid setup pair is submitted.
     fireEvent.click(screen.getByRole("button", { name: "Create secure access" }))
 
-    // Then: the exact request enters the authenticated shell and no browser storage is used.
+    // Then: the exact request enters the authenticated shell and only non-secret view preferences are stored.
     expect(await screen.findByRole("heading", { name: "Tasks" })).toBeVisible()
     const setupRequest = requests.find((request) => new URL(request.url).pathname === "/api/auth/setup" && request.method === "POST")
     expect(await setupRequest?.json()).toEqual(Object.fromEntries([
       ["password", "synthetic-passphrase"],
       ["password_confirmation", "synthetic-passphrase"],
     ]))
-    expect(localStorage).toHaveLength(0)
+    expect(localStorage).toHaveLength(1)
+    expect(localStorage.key(0)).toBe(taskViewStorageKey)
+    expect(localStorage.getItem(taskViewStorageKey)).not.toContain("synthetic-passphrase")
     expect(sessionStorage).toHaveLength(0)
   })
 
@@ -276,7 +279,7 @@ describe("authenticated Controller shell", () => {
     expect(screen.queryByText("TASK 18")).not.toBeInTheDocument()
   })
 
-  it("logs in, navigates by links, and logs out without browser storage", async () => {
+  it("logs in, navigates by links, and logs out without storing credentials", async () => {
     // Given: an unauthenticated bootstrap followed by successful login and logout.
     const fetcher = vi.fn<typeof fetch>((input) => {
       switch (pathFor(input)) {
@@ -301,9 +304,11 @@ describe("authenticated Controller shell", () => {
     expect(await screen.findByRole("heading", { name: "Workers" })).toBeVisible()
     fireEvent.click(screen.getByRole("button", { name: "Sign out" }))
 
-    // Then: auth state clears, login returns, and storage remains empty.
+    // Then: auth state clears, login returns, and only non-secret view preferences remain.
     expect(await screen.findByRole("heading", { name: "Sign in to Videnoa Controller" })).toBeVisible()
-    expect(localStorage).toHaveLength(0)
+    expect(localStorage).toHaveLength(1)
+    expect(localStorage.key(0)).toBe(taskViewStorageKey)
+    expect(localStorage.getItem(taskViewStorageKey)).not.toContain("transient-password")
     expect(sessionStorage).toHaveLength(0)
   })
 

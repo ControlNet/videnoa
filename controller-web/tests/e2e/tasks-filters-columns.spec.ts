@@ -1,16 +1,18 @@
 import { expect, test } from "@playwright/test"
 
+import { taskViewStorageKey } from "../../src/tasks/query"
 import { capture, fulfillJson, installLiveApi, installPagedApi, requestJournal, task, taskDetail } from "./tasks-fixtures"
 
 test("persists server-backed Source and Failure Stage filters with independent task columns", async ({ page }) => {
-  // Given: bounded server data and every independent optional task column in the URL.
+  // Given: bounded server data and a legacy URL containing every independent optional task column.
   const journal = requestJournal()
   await installPagedApi(page, journal, 280)
   await page.setViewportSize({ width: 1280, height: 900 })
   await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" })
   await page.goto(
-    "/tasks?columns=input_path,output_path,attempts,duration,failure_stage,failure,error,remote_job_id",
+    "/tasks?columns=priority,input_path,output_path,attempts,duration,failure_stage,failure,error,remote_job_id",
   )
+  await expect(page).toHaveURL(/\/tasks$/)
   await expect(page.getByRole("table").locator("tbody tr")).toHaveCount(50)
   const filters = page.getByRole("group", { name: "Task filters" })
 
@@ -19,9 +21,9 @@ test("persists server-backed Source and Failure Stage filters with independent t
   await filters.getByRole("combobox", { name: "Failure Stage" }).selectOption("processing")
   await expect.poll(() => journal.tasks.length).toBe(3)
 
-  // Then: URL state and the actual bounded API request carry the same filters.
-  await expect.poll(() => new URL(page.url()).searchParams.get("source")).toBe("manual")
-  await expect.poll(() => new URL(page.url()).searchParams.get("failure_stage")).toBe("processing")
+  // Then: browser-local state and the actual bounded API request carry the same filters.
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key) ?? "{}").source, taskViewStorageKey)).toBe("manual")
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key) ?? "{}").failureStage, taskViewStorageKey)).toBe("processing")
   const filteredRequest = new URLSearchParams(journal.tasks.at(-1))
   expect(filteredRequest.get("source")).toBe("manual")
   expect(filteredRequest.get("failure_stage")).toBe("processing")
@@ -29,6 +31,7 @@ test("persists server-backed Source and Failure Stage filters with independent t
 
   // Then: every requested column is independently named and the legacy Path label is absent.
   for (const label of [
+    "Priority",
     "Input Path",
     "Output Path",
     "Attempts",
@@ -52,20 +55,22 @@ test("persists server-backed Source and Failure Stage filters with independent t
   // Then: Input Path remains, Output Path disappears, and client-only column state does not refetch.
   await expect(page.getByRole("columnheader", { name: "Input Path", exact: true })).toBeAttached()
   await expect(page.getByRole("columnheader", { name: "Output Path", exact: true })).toHaveCount(0)
-  expect(new URL(page.url()).searchParams.get("columns")?.split(",")).not.toContain("output_path")
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key) ?? "{}").columns, taskViewStorageKey))
+    .not.toContain("output_path")
+  await expect(page).toHaveURL(/\/tasks$/)
   expect(journal.tasks).toHaveLength(requestsBeforeColumnChange)
 
-  // When: the shareable route is reloaded.
+  // When: the clean route is reloaded.
   await page.reload()
 
-  // Then: filters and the independent column selection are restored from the URL.
+  // Then: filters and the independent column selection are restored from local storage.
   await expect(filters.getByRole("combobox", { name: "Source" })).toHaveValue("manual")
   await expect(filters.getByRole("combobox", { name: "Failure Stage" })).toHaveValue("processing")
   await expect(page.getByRole("columnheader", { name: "Input Path", exact: true })).toBeAttached()
   await expect(page.getByRole("columnheader", { name: "Output Path", exact: true })).toHaveCount(0)
 })
 
-test("keeps Error and all eight column toggles clickable above the task detail header with one Chinese task", async ({ page }) => {
+test("keeps Error and nine selected column toggles clickable above the task detail header with one Chinese task", async ({ page }) => {
   // Given: one Chinese task keeps the detail header directly beneath the open column picker.
   const journal = requestJournal()
   const selectedTask = task(0, {
@@ -83,6 +88,7 @@ test("keeps Error and all eight column toggles clickable above the task detail h
   // When: the operator enables every independent option through the overlapping picker.
   await page.getByText("Columns", { exact: true }).click()
   const optionalColumns = [
+    "Priority",
     "Input Path",
     "Output Path",
     "Attempts",
@@ -99,10 +105,10 @@ test("keeps Error and all eight column toggles clickable above the task detail h
     await expect(page.getByRole("columnheader", { name: label, exact: true })).toBeAttached()
   }
 
-  // Then: all eight clicks are accepted, persisted, and visible with detail still open.
-  await expect.poll(() => new URL(page.url()).searchParams.get("columns")).toBe(
-    "input_path,output_path,attempts,duration,failure_stage,failure,error,remote_job_id",
-  )
+  // Then: all nine clicks are accepted, persisted, and visible with detail still open.
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key) ?? "{}").columns, taskViewStorageKey))
+    .toEqual(["priority", "input_path", "output_path", "attempts", "duration", "failure_stage", "failure", "error", "remote_job_id"])
+  await expect(page).toHaveURL(/\/tasks$/)
   await expect(page.getByRole("region", { name: "Task Detail" })).toBeVisible()
   await capture(page, "columns-one-row-chinese-detail.png")
 })

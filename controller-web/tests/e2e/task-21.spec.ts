@@ -2,6 +2,7 @@ import AxeBuilder from "@axe-core/playwright"
 import { expect, test } from "@playwright/test"
 
 import type { Task } from "../../src/api/taskSchemas"
+import { taskViewStorageKey } from "../../src/tasks/query"
 import {
   alignDetailLabelBelowHeader,
   alignDetailPaneInViewport,
@@ -290,7 +291,7 @@ test("preserves accessible desktop and narrow detail layouts without browser sec
     indexedDatabases: await indexedDB.databases(),
     localStorage: Object.keys(localStorage),
     sessionStorage: Object.keys(sessionStorage),
-  }))).toEqual({ caches: [], indexedDatabases: [], localStorage: [], sessionStorage: [] })
+  }))).toEqual({ caches: [], indexedDatabases: [], localStorage: [taskViewStorageKey], sessionStorage: [] })
   expect((await context.cookies()).map(({ httpOnly, name, sameSite }) => ({ httpOnly, name, sameSite }))).toEqual([
     { httpOnly: true, name: "videnoa_session", sameSite: "Strict" },
   ])

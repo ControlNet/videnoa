@@ -83,7 +83,7 @@ test("replays one manual creation intent after a dropped response", async ({ pag
   await page.getByRole("combobox", { name: "Input Path", exact: true }).fill("/nas/input/Show/episode.01.mkv")
   await page.getByRole("combobox", { name: "Output Path", exact: true }).fill("/nas/output/Show/episode.01.mp4")
   await page.getByRole("combobox", { name: "Workflow", exact: true }).fill("anime-2x")
-  await page.getByLabel("Priority").fill("17")
+  await page.getByRole("spinbutton", { name: "Priority", exact: true }).fill("17")
   await page.getByRole("button", { name: "Create Task" }).click()
   await expect(page.getByRole("alert")).toContainText("response")
   const replay = page.getByRole("button", { name: "Retry Same Task" })

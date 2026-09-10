@@ -1,8 +1,85 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 
-import { canonicalLastOffset, parseTaskQuery, serializeTaskQuery, taskPagePath } from "./query"
+import {
+  canonicalLastOffset,
+  loadTaskQuery,
+  parseTaskQuery,
+  persistTaskQuery,
+  taskPagePath,
+  taskViewStorageKey,
+} from "./query"
 
 describe("task query state", () => {
+  it("restores durable view preferences without restoring transient search and paging", () => {
+    // Given: a previously saved browser-local Tasks view.
+    const storage = {
+      getItem: vi.fn(() => JSON.stringify({
+        status: "processing",
+        source: "api",
+        failureStage: "publication",
+        workflow: "anime",
+        worker: "node-1",
+        sort: "created_at",
+        order: "asc",
+        limit: 100,
+        columns: ["priority", "error"],
+        search: "must-not-return",
+        offset: 50,
+      })),
+    }
+
+    // When: the Tasks page initializes from local storage.
+    const query = loadTaskQuery(storage)
+
+    // Then: durable controls return while session-only state starts clean.
+    expect(storage.getItem).toHaveBeenCalledWith(taskViewStorageKey)
+    expect(query).toEqual({
+      status: "processing",
+      source: "api",
+      failureStage: "publication",
+      workflow: "anime",
+      worker: "node-1",
+      search: "",
+      sort: "created_at",
+      order: "asc",
+      limit: 100,
+      offset: 0,
+      columns: ["priority", "error"],
+    })
+  })
+
+  it("persists view preferences without writing transient search and paging", () => {
+    // Given: a Tasks query containing both view preferences and transient state.
+    const storage = { setItem: vi.fn() }
+    const query = parseTaskQuery(new URLSearchParams(
+      "status=failed&search=episode&sort=created_at&order=asc&limit=25&offset=50&columns=priority,error",
+    ))
+
+    // When: the browser-local view is saved.
+    persistTaskQuery(storage, query)
+
+    // Then: only durable controls are stored.
+    expect(storage.setItem).toHaveBeenCalledOnce()
+    const call = storage.setItem.mock.calls[0]
+    expect(call).toBeDefined()
+    const key = call?.[0]
+    const value = call?.[1]
+    expect(key).toBe(taskViewStorageKey)
+    expect(value).toBeTypeOf("string")
+    if (typeof value !== "string") throw new Error("stored task view must be serialized")
+    expect(JSON.parse(value)).toEqual({
+      status: "failed",
+      source: "all",
+      failureStage: "all",
+      workflow: "",
+      worker: "",
+      sort: "created_at",
+      order: "asc",
+      limit: 25,
+      columns: ["priority", "error"],
+    })
+  })
+
   it("returns the canonical last-page offset for bounded results", () => {
     // Given: empty, partial-page, and multi-page result totals.
     const cases = [
@@ -63,14 +140,4 @@ describe("task query state", () => {
     })
   })
 
-  it("serializes only meaningful canonical state", () => {
-    // Given: default filters with a non-default page and one optional column.
-    const query = parseTaskQuery(new URLSearchParams("offset=50&columns=error"))
-
-    // When: route state is serialized.
-    const parameters = serializeTaskQuery(query)
-
-    // Then: defaults are omitted and the bounded page remains shareable.
-    expect(parameters.toString()).toBe("offset=50&columns=error")
-  })
 })

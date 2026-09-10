@@ -1,7 +1,7 @@
 # Controller Tasks view state
 
-- The Tasks page derives filters, sorting, pagination, and optional columns from URL query parameters in `controller-web/src/tasks/query.ts`.
-- `TasksPage` updates those parameters with React Router `setSearchParams(..., { replace: true })`; it does not use browser storage or a Controller persistence API.
-- Non-default selections survive refreshes and Controller container restarts as long as the browser retains the parameterized URL. Opening bare `/tasks` restores defaults.
-- URL state remains useful for bookmarks and shared diagnostic views. If durable per-browser preferences are added, use URL values first and local storage only as a fallback for absent parameters.
-- Good preference candidates are optional columns, status, sort, order, and row count. Avoid persisting transient search text and pagination offset.
+- The Tasks page keeps its browser URL at `/tasks`; changing filters, sorting, pagination, and optional columns does not add query parameters.
+- Durable view controls are stored under the versioned browser-local key `videnoa.tasks.view.v1`: optional columns, status, source, failure stage, workflow, worker, sort, order, and row count.
+- Search text and pagination offset remain session-only state and reset on a page reload.
+- An old parameterized Tasks link is read once for compatibility, saved as browser-local preferences, and immediately replaced with the clean route.
+- This state does not require a Controller persistence API or database migration. It survives Controller container restarts because it belongs to the browser profile.

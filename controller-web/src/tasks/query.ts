@@ -71,6 +71,59 @@ const defaults: TaskQuery = {
   columns: [],
 }
 
+export const taskViewStorageKey = "videnoa.tasks.view.v1"
+
+type StoredTaskView = Omit<TaskQuery, "search" | "offset">
+
+export function loadTaskQuery(storage: Pick<Storage, "getItem">): TaskQuery {
+  let value: unknown
+  try {
+    const stored = storage.getItem(taskViewStorageKey)
+    if (stored === null) return defaults
+    value = JSON.parse(stored)
+  } catch {
+    return defaults
+  }
+  if (!isRecord(value)) return defaults
+
+  const parsedStatus = taskStatusSchema.safeParse(value["status"])
+  const parsedSource = taskSourceSchema.safeParse(value["source"])
+  const parsedFailureStage = failureStageSchema.safeParse(value["failureStage"])
+  return {
+    status: value["status"] === "all" ? "all" : parsedStatus.success ? parsedStatus.data : defaults.status,
+    source: value["source"] === "all" ? "all" : parsedSource.success ? parsedSource.data : defaults.source,
+    failureStage: value["failureStage"] === "all" ? "all" : parsedFailureStage.success ? parsedFailureStage.data : defaults.failureStage,
+    workflow: typeof value["workflow"] === "string" ? value["workflow"] : defaults.workflow,
+    worker: typeof value["worker"] === "string" ? value["worker"] : defaults.worker,
+    search: defaults.search,
+    sort: parseMember(value["sort"], taskSorts, defaults.sort),
+    order: parseMember(value["order"], taskOrders, defaults.order),
+    limit: taskLimits.find((candidate) => candidate === value["limit"]) ?? defaults.limit,
+    offset: defaults.offset,
+    columns: parseColumns(value["columns"]),
+  }
+}
+
+export function persistTaskQuery(storage: Pick<Storage, "setItem">, query: TaskQuery): void {
+  const view: StoredTaskView = {
+    status: query.status,
+    source: query.source,
+    failureStage: query.failureStage,
+    workflow: query.workflow,
+    worker: query.worker,
+    sort: query.sort,
+    order: query.order,
+    limit: query.limit,
+    columns: query.columns,
+  }
+  try {
+    storage.setItem(taskViewStorageKey, JSON.stringify(view))
+  } catch {
+    // The current in-memory view remains usable when browser storage is unavailable.
+  }
+}
+
+/** Reads an old Tasks link once before the page removes its query string. */
 export function parseTaskQuery(parameters: URLSearchParams): TaskQuery {
   const parsedStatus = taskStatusSchema.safeParse(parameters.get("status"))
   const parsedSource = taskSourceSchema.safeParse(parameters.get("source"))
@@ -97,22 +150,6 @@ export function parseTaskQuery(parameters: URLSearchParams): TaskQuery {
   }
 }
 
-export function serializeTaskQuery(query: TaskQuery): URLSearchParams {
-  const parameters = new URLSearchParams()
-  setMeaningful(parameters, "status", query.status, defaults.status)
-  setMeaningful(parameters, "source", query.source, defaults.source)
-  setMeaningful(parameters, "failure_stage", query.failureStage, defaults.failureStage)
-  setMeaningful(parameters, "workflow", query.workflow, defaults.workflow)
-  setMeaningful(parameters, "worker", query.worker, defaults.worker)
-  setMeaningful(parameters, "search", query.search, defaults.search)
-  setMeaningful(parameters, "sort", query.sort, defaults.sort)
-  setMeaningful(parameters, "order", query.order, defaults.order)
-  if (query.limit !== defaults.limit) parameters.set("limit", String(query.limit))
-  if (query.offset !== defaults.offset) parameters.set("offset", String(query.offset))
-  if (query.columns.length > 0) parameters.set("columns", query.columns.join(","))
-  return parameters
-}
-
 export function taskPagePath(query: TaskQuery): string {
   const parameters = new URLSearchParams({
     limit: String(query.limit),
@@ -133,10 +170,19 @@ export function canonicalLastOffset(total: number, limit: TaskLimit): number {
   return total === 0 ? 0 : Math.floor((total - 1) / limit) * limit
 }
 
-function parseMember<const T extends string>(value: string | null, members: readonly T[], fallback: T): T {
+function parseMember<const T extends string>(value: unknown, members: readonly T[], fallback: T): T {
   return members.find((member) => member === value) ?? fallback
 }
 
-function setMeaningful(parameters: URLSearchParams, key: string, value: string, fallback: string): void {
-  if (value !== fallback) parameters.set(key, value)
+function parseColumns(value: unknown): readonly OptionalColumn[] {
+  if (!Array.isArray(value)) return defaults.columns
+  return value.filter((candidate, index): candidate is OptionalColumn => (
+    typeof candidate === "string"
+    && optionalColumns.some((column) => column === candidate)
+    && value.indexOf(candidate) === index
+  ))
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
 }

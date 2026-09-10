@@ -78,7 +78,7 @@ describe("task Source and Failure Stage controls", () => {
 
 describe("task optional columns", () => {
   it("renders Input Path, Output Path, and failure evidence as independent columns", () => {
-    // Given: every optional column enabled through shareable URL state.
+    // Given: every optional column enabled in the current view state.
     const query = parseTaskQuery(new URLSearchParams(
       "columns=priority,input_path,output_path,attempts,duration,failure_stage,failure,error,remote_job_id",
     ))

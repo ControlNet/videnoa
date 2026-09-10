@@ -1,5 +1,6 @@
 import { expect, type Page, type Route, test } from "@playwright/test"
 
+import { taskViewStorageKey } from "../../src/tasks/query"
 import { installOperationalReadRoutes } from "./operations-fixtures"
 
 const evidenceDir = "../.omo/evidence/videnoa-controller/task-19/playwright-report/screenshots/task-15"
@@ -168,7 +169,10 @@ test("login, protected navigation, reload, narrow layout, and logout", async ({ 
   await page.screenshot({ path: `${evidenceDir}/shell-narrow.png`, fullPage: true })
 
   // Then: navigation remains usable, storage contains no auth material, and logout protects routes.
-  expect(await page.evaluate(() => ({ local: { ...localStorage }, session: { ...sessionStorage }, overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth }))).toEqual({ local: {}, session: {}, overflow: false })
+  const browserState = await page.evaluate(() => ({ local: { ...localStorage }, session: { ...sessionStorage }, overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth }))
+  expect(Object.keys(browserState.local)).toEqual([taskViewStorageKey])
+  expect(browserState.session).toEqual({})
+  expect(browserState.overflow).toBe(false)
   await page.getByRole("button", { name: "Sign out" }).click()
   await expect(page.getByRole("heading", { name: "Sign in to Videnoa Controller" })).toBeVisible()
   await page.goto("/workers")
