@@ -80,7 +80,7 @@ describe("task optional columns", () => {
   it("renders Input Path, Output Path, and failure evidence as independent columns", () => {
     // Given: every optional column enabled through shareable URL state.
     const query = parseTaskQuery(new URLSearchParams(
-      "columns=input_path,output_path,attempts,duration,failure_stage,failure,error,remote_job_id",
+      "columns=priority,input_path,output_path,attempts,duration,failure_stage,failure,error,remote_job_id",
     ))
 
     // When: one failed task renders in the dense result table.
@@ -96,6 +96,7 @@ describe("task optional columns", () => {
 
     // Then: exact headers and values remain distinct, with no ambiguous Path column.
     for (const label of [
+      /^Priority$/,
       /^Input Path$/,
       /^Output Path$/,
       /^Attempts$/,
@@ -108,6 +109,7 @@ describe("task optional columns", () => {
       expect(within(table).getByRole("columnheader", { name: label })).toBeInTheDocument()
     }
     expect(within(table).queryByRole("columnheader", { name: /^Path$/ })).not.toBeInTheDocument()
+    expect(within(row).getByText("1", { exact: true })).toBeInTheDocument()
     expect(within(row).getByText(failedTask.input_path, { exact: true })).toBeInTheDocument()
     expect(within(row).getByText(failedTask.output_path, { exact: true })).toBeInTheDocument()
     expect(within(row).getByText("processing", { exact: true })).toBeInTheDocument()

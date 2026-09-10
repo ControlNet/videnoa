@@ -23,7 +23,7 @@ describe("task query state", () => {
   it("parses supported filters and clamps invalid paging values", () => {
     // Given: a URL containing valid filters and invalid paging values.
     const parameters = new URLSearchParams(
-      "status=processing&source=api&failure_stage=publication&workflow=anime&worker=node-1&search=episode&sort=created_at&order=asc&limit=999&offset=-4&columns=input_path,output_path,failure_stage,remote_job_id",
+      "status=processing&source=api&failure_stage=publication&workflow=anime&worker=node-1&search=episode&sort=created_at&order=asc&limit=999&offset=-4&columns=priority,input_path,output_path,failure_stage,remote_job_id",
     )
 
     // When: the route parses the query boundary.
@@ -41,7 +41,7 @@ describe("task query state", () => {
       order: "asc",
       limit: 50,
       offset: 0,
-      columns: ["input_path", "output_path", "failure_stage", "remote_job_id"],
+      columns: ["priority", "input_path", "output_path", "failure_stage", "remote_job_id"],
     })
   })
 

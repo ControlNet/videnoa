@@ -17,6 +17,7 @@ export const taskLimits = [25, 50, 100] as const
 export type TaskLimit = (typeof taskLimits)[number]
 
 export const optionalColumns = [
+  "priority",
   "source",
   "input_path",
   "output_path",
@@ -30,6 +31,7 @@ export const optionalColumns = [
 export type OptionalColumn = (typeof optionalColumns)[number]
 
 export const optionalColumnLabels = {
+  priority: "Priority",
   source: "Source",
   input_path: "Input Path",
   output_path: "Output Path",
