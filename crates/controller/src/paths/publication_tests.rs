@@ -197,3 +197,45 @@ fn empty_copy_rollback_never_follows_replacement_symlinks() -> Result<(), Box<dy
     assert!(external.exists());
     Ok(())
 }
+
+#[test]
+fn copy_publication_tolerates_stale_parent_identity_for_the_same_visible_file(
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Synthetic metadata drift: only the saved parent identity is changed.
+    let fixture = Fixture::new()?;
+    let mut output = fixture
+        .capabilities
+        .reopen_output(fixture.root.join("copy.bin"))?;
+    let destination = output.open_copy(None)?;
+    output.parent_identity.inode = output.parent_identity.inode.wrapping_add(1);
+    assert!(matches!(
+        output.open_final(),
+        Err(super::PathError::OutputParentChanged { .. })
+    ));
+    destination.sync_parent()?;
+    destination.validate_visible(&output)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn retained_copy_directory_sync_does_not_follow_a_replacement_parent_link(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new()?;
+    let parent = fixture.root.join("copy-parent");
+    std::fs::create_dir(&parent)?;
+    let output = fixture
+        .capabilities
+        .reopen_output(parent.join("copy.bin"))?;
+    let destination = output.open_copy(None)?;
+    std::fs::rename(&parent, fixture.root.join("original-copy-parent"))?;
+    std::os::unix::fs::symlink("original-copy-parent", &parent)?;
+    destination.sync_parent()?;
+    assert!(matches!(
+        destination.validate_visible(&output),
+        Err(super::PathError::SymlinkComponent { .. })
+    ));
+    drop(destination);
+    assert!(!fixture.root.join("original-copy-parent/copy.bin").exists());
+    Ok(())
+}

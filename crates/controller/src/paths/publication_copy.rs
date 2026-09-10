@@ -17,6 +17,28 @@ impl CopyDestination {
         &self.file
     }
 
+    pub(crate) fn sync_parent(&self) -> io::Result<()> {
+        sync_directory(&self.directory)
+    }
+
+    pub(crate) fn validate_visible(&self, output: &RootedOutput) -> Result<(), PathError> {
+        let super::PublicationArtifact::Regular(file) = output.open_copy_final()? else {
+            return Err(PathError::OutputParentChanged {
+                path: output.display_path.clone(),
+            });
+        };
+        let current = RootedOutput::copy_identity(&file)
+            .map_err(|source| io_error(&output.display_path, source))?;
+        let owned = RootedOutput::copy_identity(&self.file)
+            .map_err(|source| io_error(&output.display_path, source))?;
+        if current != owned {
+            return Err(PathError::OutputParentChanged {
+                path: output.display_path.clone(),
+            });
+        }
+        Ok(())
+    }
+
     pub(crate) fn keep(&mut self) {
         self.remove_empty_on_drop = false;
     }

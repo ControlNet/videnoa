@@ -77,22 +77,23 @@ impl TransferExecutor {
             .at("copy.open_owned_destination")?;
         self.checkpoint(TransferCheckpointPoint::PublicationCopyCreated)
             .await;
-        let identity =
-            RootedOutput::copy_identity(destination.file()).at("copy.destination_identity")?;
-        let length = destination
-            .file()
-            .metadata()
-            .at("copy.destination_metadata")?
-            .len();
+        let file = destination.file();
+        let identity = RootedOutput::copy_identity(file).at("copy.destination_identity")?;
+        let length = file.metadata().at("copy.destination_metadata")?.len();
         if length > expected.size {
             return Err(OperationError::conflict("copy.destination_too_long"));
         }
+        destination
+            .validate_visible(output)
+            .at("copy.validate_destination")?;
         if ownership.is_none() {
             destination
                 .file()
                 .sync_all()
                 .at("copy.sync_empty_destination")?;
-            output.sync_parent().at("copy.sync_destination_parent")?;
+            destination
+                .sync_parent()
+                .at("copy.sync_destination_parent")?;
             write_marker(&marker, identity, expected).await?;
         }
         self.checkpoint(TransferCheckpointPoint::PublicationCopyStarted)
@@ -105,7 +106,7 @@ impl TransferExecutor {
             .await?;
         destination.keep();
         let PublicationArtifact::Regular(final_file) =
-            output.open_final().at("copy.open_destination")?
+            output.open_copy_final().at("copy.open_destination")?
         else {
             return Err(OperationError::conflict("copy.final_not_regular"));
         };
@@ -118,12 +119,14 @@ impl TransferExecutor {
                 "copy.final_identity_or_content_mismatch",
             ));
         }
-        output.sync_parent().at("copy.sync_destination_parent")?;
+        destination
+            .sync_parent()
+            .at("copy.sync_destination_parent")?;
         self.checkpoint(TransferCheckpointPoint::PublicationCopyVerified)
             .await;
         // Keep the verified source until the destination is durable and fully validated.
         let PublicationArtifact::Regular(final_file) =
-            output.open_final().at("copy.open_destination")?
+            output.open_copy_final().at("copy.open_destination")?
         else {
             return Err(OperationError::conflict(
                 "copy.final_not_regular_before_source_removal",

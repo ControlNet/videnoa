@@ -88,25 +88,32 @@ impl RootedOutput {
     }
 
     fn open_existing(&self, leaf: &Path) -> Result<PublicationArtifact, PathError> {
-        self.open_existing_with(leaf, || Ok(()))
+        self.open_existing_in(leaf, self.open_parent(false))
     }
 
-    fn open_existing_with<F>(
+    /// Resolves the visible final path without requiring intermediate inode stability.
+    /// Root identity and no-follow traversal remain enforced.
+    pub(crate) fn open_copy_final(&self) -> Result<PublicationArtifact, PathError> {
+        self.root.ensure_current()?;
+        let mut parent = self.parent.clone();
+        for component in &self.missing_directories {
+            parent.push(component);
+        }
+        self.open_existing_in(&self.leaf, self.root.open_directory(&parent))
+    }
+
+    fn open_existing_in(
         &self,
         leaf: &Path,
-        checkpoint: F,
-    ) -> Result<PublicationArtifact, PathError>
-    where
-        F: FnOnce() -> Result<(), io::Error>,
-    {
-        let directory = match self.open_parent(false) {
+        parent: Result<Dir, PathError>,
+    ) -> Result<PublicationArtifact, PathError> {
+        let directory = match parent {
             Ok(directory) => directory,
             Err(PathError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
                 return Ok(PublicationArtifact::Missing);
             }
             Err(error) => return Err(error),
         };
-        checkpoint().map_err(|source| io_error(&self.display_path, source))?;
         let mut options = OpenOptions::new();
         options.read(true).follow(FollowSymlinks::No).nonblock(true);
         let display = self.root.display_path().join(&self.parent).join(leaf);
