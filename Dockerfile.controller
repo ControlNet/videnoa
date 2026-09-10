@@ -21,6 +21,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/build/target \
     cargo build --release --locked -p videnoa-controller \
     && cp /build/target/release/videnoa-controller /usr/local/bin/videnoa-controller
+RUN strip --strip-unneeded /usr/local/bin/videnoa-controller
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update \

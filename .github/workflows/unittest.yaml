@@ -226,6 +226,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - name: Validate Docker slimming contracts
+        run: bash scripts/tests/docker_slimming_contract_test.sh
       - name: Build Controller image
         run: docker build -f Dockerfile.controller -t videnoa-controller:ci .
       - name: Verify Controller image and content
@@ -403,7 +405,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - name: Validate Docker slimming contracts
+        run: bash scripts/tests/docker_slimming_contract_test.sh
       - name: Build Docker image
         run: docker build -t videnoa-ci-smoke .
+      - name: Verify Docker slimming image contract
+        run: bash scripts/tests/docker_slimming_contract_test.sh videnoa-ci-smoke
       - name: Run Docker CLI smoke
         run: docker run --rm videnoa-ci-smoke videnoa --help >/dev/null

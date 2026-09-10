@@ -56,6 +56,7 @@ COPY crates/ crates/
 
 ENV VIDENOA_WEB_PREBUILT=1
 RUN cargo build --release --locked -p videnoa-app --bin videnoa
+RUN strip --strip-unneeded /build/target/release/videnoa
 
 # ---------------------------------------------------------------------------
 # Stage 2: Download ONNX Runtime GPU
@@ -94,12 +95,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         mkvtoolnix \
         ca-certificates \
         curl \
+    && rm -f \
+        /usr/bin/mkvextract \
+        /usr/bin/mkvinfo \
+        /usr/bin/mkvmerge \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 COPY --from=builder /build/target/release/videnoa /usr/local/bin/videnoa
-COPY --from=builder /build/web/dist /app/web/dist
 
 COPY --from=ort-download /ort-lib/ /usr/local/lib/
 COPY --from=trt-download /trt-lib/ /usr/local/lib/
