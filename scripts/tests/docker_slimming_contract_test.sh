@@ -63,17 +63,40 @@ fi
 
 require_exact_line \
   "$WORKER_DOCKERFILE" \
-  'FROM nvidia/cuda:12.6.3-base-ubuntu22.04 AS runtime' \
-  'Worker runtime must use the minimal CUDA base image'
+  'FROM nvidia/cuda:12.8.0-base-ubuntu22.04 AS runtime' \
+  'Worker runtime must use the release-aligned minimal CUDA base image'
+require_exact_line \
+  "$WORKER_DOCKERFILE" \
+  'ARG ORT_VERSION=1.23.2' \
+  'Worker runtime must use the release ONNX Runtime version'
+require_exact_line \
+  "$WORKER_DOCKERFILE" \
+  'ARG TRT_VERSION=10.9.0.34' \
+  'Worker runtime must use the RIFE-compatible TensorRT release'
+
+for release_version_pin in \
+  'ARG CUDA_NVRTC_VERSION=12.8.61-1' \
+  'ARG CUBLAS_VERSION=12.8.3.14-1' \
+  'ARG CUFFT_VERSION=11.3.3.41-1' \
+  'ARG CURAND_VERSION=10.3.9.55-1' \
+  'ARG CUDNN_VERSION=9.14.0.64-1' \
+  'ARG NVFATBIN_VERSION=12.8.55-1' \
+  'ARG NVJITLINK_VERSION=12.8.61-1'
+do
+  require_exact_line \
+    "$WORKER_DOCKERFILE" \
+    "$release_version_pin" \
+    "Worker runtime is missing release version pin: $release_version_pin"
+done
 
 for required_cuda_package in \
-  cuda-nvrtc-12-6 \
-  libcublas-12-6 \
-  libcufft-12-6 \
-  libcurand-12-6 \
+  cuda-nvrtc-12-8 \
+  libcublas-12-8 \
+  libcufft-12-8 \
+  libcurand-12-8 \
   libcudnn9-cuda-12 \
-  libnvfatbin-12-6 \
-  libnvjitlink-12-6
+  libnvfatbin-12-8 \
+  libnvjitlink-12-8
 do
   grep -Eq "^[[:space:]]+$required_cuda_package(=|[[:space:]]|\\\\$)" "$WORKER_DOCKERFILE" \
     || fail "Worker runtime does not explicitly install $required_cuda_package"
@@ -89,28 +112,33 @@ if [[ -n "$WORKER_IMAGE" ]]; then
     test ! -e /usr/bin/mkvmerge
     grep -a -q '\.symtab' /usr/local/bin/videnoa
     mkvpropedit --version >/dev/null
+    test -f /usr/local/lib/libonnxruntime.so.1.23.2
+    test -f /usr/local/lib/libnvinfer_builder_resource.so.10.9.0
 
-    for required_cuda_package in \
-      cuda-cudart-12-6 \
-      cuda-nvrtc-12-6 \
-      libcublas-12-6 \
-      libcufft-12-6 \
-      libcurand-12-6 \
-      libcudnn9-cuda-12 \
-      libnvfatbin-12-6 \
-      libnvjitlink-12-6
-    do
-      dpkg-query -W "$required_cuda_package" >/dev/null 2>&1
-    done
+    require_package_version() {
+      package="$1"
+      expected_version="$2"
+      actual_version="$(dpkg-query -W -f="\${Version}" "$package")"
+      test "$actual_version" = "$expected_version"
+    }
+
+    require_package_version cuda-cudart-12-8 12.8.57-1
+    require_package_version cuda-nvrtc-12-8 12.8.61-1
+    require_package_version libcublas-12-8 12.8.3.14-1
+    require_package_version libcufft-12-8 11.3.3.41-1
+    require_package_version libcurand-12-8 10.3.9.55-1
+    require_package_version libcudnn9-cuda-12 9.14.0.64-1
+    require_package_version libnvfatbin-12-8 12.8.55-1
+    require_package_version libnvjitlink-12-8 12.8.61-1
 
     for unused_cuda_package in \
-      cuda-opencl-12-6 \
-      libcusolver-12-6 \
-      libcusparse-12-6 \
+      cuda-opencl-12-8 \
+      libcusolver-12-8 \
+      libcusparse-12-8 \
       libnccl2 \
-      libnpp-12-6 \
-      libcufile-12-6 \
-      libnvjpeg-12-6
+      libnpp-12-8 \
+      libcufile-12-8 \
+      libnvjpeg-12-8
     do
       if dpkg-query -W "$unused_cuda_package" >/dev/null 2>&1; then
         echo "Unexpected CUDA package: $unused_cuda_package" >&2

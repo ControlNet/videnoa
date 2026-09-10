@@ -37,7 +37,7 @@ available. The Controller continues to use
 ## CUDA runtime reduction
 
 - The Worker runtime now starts from
-  `nvidia/cuda:12.6.3-base-ubuntu22.04` and installs only the pinned CUDA 12.6
+  `nvidia/cuda:12.8.0-base-ubuntu22.04` and installs only the pinned CUDA 12.8
   libraries required by the bundled ONNX Runtime CUDA/TensorRT providers:
   CUDA runtime, NVRTC, cuBLAS/cuBLASLt, cuFFT, cuRAND, cuDNN, nvFatBin, and
   nvJitLink.
@@ -54,6 +54,21 @@ available. The Controller continues to use
   package set, omitted package set, and resolved ELF dependencies for both GPU
   providers.
 
+## Release runtime alignment
+
+- The Worker Docker runtime matches the published release environment at the
+  component-version level: CUDA runtime 12.8.57, NVRTC 12.8.61, cuBLAS
+  12.8.3.14, cuFFT 11.3.3.41, cuRAND 10.3.9.55, nvFatBin 12.8.55, nvJitLink
+  12.8.61, cuDNN 9.14.0.64, TensorRT 10.9.0.34, and ONNX Runtime 1.23.2.
+- The cuDNN, TensorRT, and ONNX Runtime core/provider libraries in the image
+  are byte-identical to the corresponding published-release bundle files.
+  CUDA packages use NVIDIA's Ubuntu packages rather than the release build's
+  conda packages, but their upstream component versions are pinned exactly.
+- The aligned image is 6,444,257,914 bytes unpacked versus 4,765,685,963 bytes
+  for the CUDA 12.6/TensorRT 10.7 slim image. Most of the 1,678,571,951-byte
+  increase comes from TensorRT 10.9's required builder resource, which is kept
+  so a clean installation can compile TensorRT engines.
+
 ## CUDA/TensorRT manual QA
 
 - Hardware: NVIDIA A40-24Q, compute capability 8.6, driver 580.65.06.
@@ -68,7 +83,18 @@ available. The Controller continues to use
   byte-identical decoded frame-hash stream.
 - Direct FFmpeg `h264_cuvid` decode through `h264_nvenc` encode completed with
   exit code zero when NVIDIA video driver capabilities were mounted.
-- The current RIFE v4.26 graph does not cold-compile under the current
-  ONNX Runtime/TensorRT configuration because TensorRT rejects its ScatterND
-  reduction attribute and an unspecified Pad shape. The same error reproduces
-  in the full baseline image, so it is not caused by the CUDA package reduction.
+- With TensorRT 10.9, RIFE v4.26 now cold-compiles successfully from an empty
+  cache at 1920x1080 on SM86. The 24-frame real fixture produced 47 frames. A
+  warm rerun reused the 13,966,230-byte engine/profile cache without changing
+  its size or timestamps and completed the same workflow in about seven seconds.
+- A TensorRT 10.7 super-resolution cache does not prevent upgrading. TensorRT
+  10.9 creates a separate engine beside the old engine on the first run, then
+  reuses the new engine without modifying the cache on the next run.
+- Direct FFmpeg `h264_cuvid` decode through `h264_nvenc` encode still completes
+  successfully with the aligned runtime.
+- CUDA RIFE processes and writes the expected 47-frame output with the aligned
+  runtime, but then reports `corrupted double-linked list` while tearing down
+  and exits non-zero. The same post-completion failure reproduces outside Docker
+  with the published release binary and release dependency environment, with
+  both one and two inference workers. It is therefore an existing release-path
+  teardown defect rather than a Docker alignment mismatch.
