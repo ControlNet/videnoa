@@ -1,14 +1,23 @@
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, Ipv4Addr};
+use std::path::PathBuf;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RawControllerConfig {
     pub server: RawServerConfig,
+    pub paths: RawPathConfig,
     pub auth: RawAuthConfig,
     pub scheduler: RawSchedulerConfig,
     pub timeouts: RawTimeoutConfig,
     pub retry: RawRetryConfig,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RawPathConfig {
+    pub data_root: PathBuf,
+    pub cache_root: PathBuf,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -61,6 +70,10 @@ impl Default for RawControllerConfig {
             server: RawServerConfig {
                 host: IpAddr::V4(Ipv4Addr::LOCALHOST),
                 port: 3001,
+            },
+            paths: RawPathConfig {
+                data_root: PathBuf::from("data"),
+                cache_root: PathBuf::from("data"),
             },
             auth: RawAuthConfig {
                 secure_cookie: false,

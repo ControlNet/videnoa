@@ -50,7 +50,6 @@ pub struct OperationsState {
     events: EventHub,
     payload_limits: PayloadLimits,
     listener: Option<ListenerHandle>,
-    workspace: std::path::PathBuf,
     settings_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
     shutdown: Option<CancellationToken>,
 }
@@ -59,13 +58,6 @@ impl OperationsState {
     #[must_use]
     pub fn new(dependencies: OperationsDependencies) -> Self {
         let events = dependencies.events.clone();
-        let workspace = dependencies
-            .config
-            .paths
-            .input_roots
-            .first()
-            .cloned()
-            .unwrap_or_else(|| std::path::PathBuf::from("."));
         dependencies
             .store
             .observe_changes(ChangeObserver::new(move |change| {
@@ -81,7 +73,6 @@ impl OperationsState {
             paths: dependencies.paths,
             config: dependencies.config,
             payload_limits: dependencies.payload_limits,
-            workspace,
             listener: None,
             settings_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             shutdown: None,
@@ -89,13 +80,8 @@ impl OperationsState {
     }
 
     #[must_use]
-    pub fn with_configuration_listener(
-        mut self,
-        listener: ListenerHandle,
-        workspace: std::path::PathBuf,
-    ) -> Self {
+    pub fn with_configuration_listener(mut self, listener: ListenerHandle) -> Self {
         self.listener = Some(listener);
-        self.workspace = workspace;
         self
     }
 

@@ -78,6 +78,38 @@ fn relative_roots_resolve_from_the_process_directory() -> TestResult {
 }
 
 #[test]
+fn additional_controller_root_is_rejected_as_media() -> TestResult {
+    // Given: the bootstrap root remains inside an otherwise valid media root.
+    let directory = TempDir::new()?;
+    let media = directory.path().join("media");
+    let data = directory.path().join("active-data");
+    let cache = directory.path().join("cache");
+    let bootstrap = media.join("bootstrap-data");
+    for path in [&media, &data, &cache, &bootstrap] {
+        fs::create_dir_all(path)?;
+    }
+    let private_file = bootstrap.join("controller.sqlite3");
+    fs::write(&private_file, b"private")?;
+    let config = PathConfig {
+        input_roots: vec![media.clone()],
+        output_roots: vec![media],
+        data_root: data,
+        temp_root: cache,
+    };
+
+    // When: capabilities retain the bootstrap root as additional private storage.
+    let capabilities =
+        PathCapabilities::open_with_additional_private_roots(&config, [bootstrap.as_path()])?;
+
+    // Then: tasks cannot read Controller state left in that root.
+    assert!(matches!(
+        capabilities.open_input(private_file),
+        Err(PathError::OutsideRoots { .. })
+    ));
+    Ok(())
+}
+
+#[test]
 fn media_root_with_a_symlinked_ancestor_is_resolved() -> TestResult {
     // Given: a configured root reached through a symlinked ancestor directory.
     let directory = TempDir::new()?;

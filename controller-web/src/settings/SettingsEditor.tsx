@@ -12,6 +12,8 @@ type SettingsEditorProps = {
 }
 
 type SettingsFields = {
+  readonly dataRoot: string
+  readonly cacheRoot: string
   readonly serverHost: string
   readonly serverPort: string
   readonly secureCookie: boolean
@@ -30,6 +32,8 @@ type SettingsFields = {
 }
 
 const settingsFieldOrder = [
+  "dataRoot",
+  "cacheRoot",
   "serverHost",
   "serverPort",
   "sessionAbsolute",
@@ -46,6 +50,7 @@ const settingsFieldOrder = [
   "retryAttempts",
 ] as const satisfies readonly (keyof SettingsFields)[]
 const settingsFieldNames = {
+  dataRoot: "data_root", cacheRoot: "cache_root",
   serverHost: "host", serverPort: "port", secureCookie: "secure_cookie", sessionAbsolute: "session_absolute_seconds", sessionIdle: "session_idle_seconds",
   defaultSlots: "default_compute_slots", prefetch: "prefetch_per_worker", uploads: "max_concurrent_uploads", downloads: "max_concurrent_downloads",
   health: "health_seconds", poll: "poll_seconds", transfer: "transfer_seconds", retryInitial: "initial_seconds", retryMaximum: "maximum_seconds", retryAttempts: "max_attempts",
@@ -89,6 +94,10 @@ export function SettingsEditor({ settings, actionError, onSave }: SettingsEditor
   async function submit(): Promise<void> {
     const parsed = settingsUpdateRequestSchema.safeParse({
       version: settings.version,
+      paths: {
+        data_root: fields.dataRoot.trim(),
+        cache_root: fields.cacheRoot.trim(),
+      },
       server: {
         host: fields.serverHost.trim(),
         port: Number(fields.serverPort),
@@ -139,6 +148,15 @@ export function SettingsEditor({ settings, actionError, onSave }: SettingsEditor
 
       <div className="settings-sections">
         {remoteChange && <p className="alert" role="status">Settings changed on the Controller. Your unsaved edits are preserved; other fields reflect the latest settings. Review before saving: your edited values will replace the current values on the Controller.</p>}
+        <SettingsSection id="settings-paths" title="Paths">
+          <TextField label="Data root" name="data_root" value={fields.dataRoot} error={fieldErrors.dataRoot ?? serverErrors.dataRoot} hint="Stores controller.toml, the task database, authentication state, and Controller identity." onChange={(dataRoot) => setFields({ ...fields, dataRoot })} />
+          <TextField label="Cache root" name="cache_root" value={fields.cacheRoot} error={fieldErrors.cacheRoot ?? serverErrors.cacheRoot} hint="Stores downloaded output before publication. Use a dedicated directory on the output filesystem." onChange={(cacheRoot) => setFields({ ...fields, cacheRoot })} />
+          <p className="settings-path-note settings-span-2">
+            {settings.restart_required
+              ? "Restart the Controller to activate these paths. The scheduler remains paused until restart."
+              : "Path changes require a Controller restart. Pause the scheduler and wait for active tasks to finish before saving."}
+          </p>
+        </SettingsSection>
         <SettingsSection id="settings-server" title="Server binding">
           <TextField label="Server host" name="host" value={fields.serverHost} error={fieldErrors.serverHost ?? serverErrors.serverHost} onChange={(serverHost) => setFields({ ...fields, serverHost })} />
           <NumberField label="Server port" name="port" value={fields.serverPort} min={1} max={65_535} error={fieldErrors.serverPort ?? serverErrors.serverPort} onChange={(serverPort) => setFields({ ...fields, serverPort })} />
@@ -173,6 +191,7 @@ export function SettingsEditor({ settings, actionError, onSave }: SettingsEditor
 }
 
 const sectionIndex = [
+  { id: "settings-paths", title: "Paths" },
   { id: "settings-server", title: "Server binding" },
   { id: "settings-auth", title: "Authentication" },
   { id: "settings-scheduler", title: "Scheduler" },
@@ -182,7 +201,7 @@ const sectionIndex = [
 
 type NumberFieldProps = { readonly label: string; readonly name: string; readonly value: string; readonly min: number; readonly max?: number; readonly error: string | undefined; readonly onChange: (value: string) => void }
 
-type TextFieldProps = { readonly label: string; readonly name: string; readonly value: string; readonly error: string | undefined; readonly onChange: (value: string) => void }
+type TextFieldProps = { readonly label: string; readonly name: string; readonly value: string; readonly error: string | undefined; readonly hint?: React.ReactNode; readonly onChange: (value: string) => void }
 
 function TextField(props: TextFieldProps) {
   return (
@@ -194,6 +213,7 @@ function TextField(props: TextFieldProps) {
       spellCheck={false}
       value={props.value}
       error={props.error}
+      hint={props.hint}
       onChange={(event) => props.onChange(event.currentTarget.value)}
     />
   )
@@ -227,6 +247,7 @@ function SettingsSection({ id, title, children }: { readonly id: string; readonl
 
 function fieldsFrom(settings: SettingsResponse): SettingsFields {
   return {
+    dataRoot: settings.paths.data_root, cacheRoot: settings.paths.cache_root,
     serverHost: settings.server.host, serverPort: String(settings.server.port), secureCookie: settings.secure_cookie,
     sessionAbsolute: String(settings.session_absolute_seconds), sessionIdle: String(settings.session_idle_seconds),
     defaultSlots: String(settings.scheduler.default_compute_slots), prefetch: String(settings.scheduler.prefetch_per_worker),
@@ -238,6 +259,8 @@ function fieldsFrom(settings: SettingsResponse): SettingsFields {
 
 function fieldForPath(path: readonly string[]): keyof SettingsFields | null {
   const field = path.at(-1)
+  if (field === "data_root" || field === "paths") return "dataRoot"
+  if (field === "cache_root") return "cacheRoot"
   if (field === "host" || field === "server") return "serverHost"
   if (field === "port") return "serverPort"
   if (field === "session_absolute_seconds") return "sessionAbsolute"

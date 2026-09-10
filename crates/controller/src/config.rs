@@ -11,6 +11,8 @@ mod document;
 mod local;
 #[path = "config/private.rs"]
 mod private;
+#[path = "config/root_locator.rs"]
+mod root_locator;
 #[path = "config/raw.rs"]
 mod raw;
 #[path = "config/server_override.rs"]

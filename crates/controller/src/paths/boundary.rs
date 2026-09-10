@@ -6,6 +6,9 @@ impl PathCapabilities {
     pub(super) fn media_spelling(&self, path: &Path, roots: &[Root]) -> Result<PathBuf, PathError> {
         self.data.ensure_current()?;
         self.temp.ensure_current()?;
+        self.additional_private
+            .iter()
+            .try_for_each(Root::ensure_current)?;
         let path = if path.is_absolute() {
             path.to_path_buf()
         } else {
@@ -33,7 +36,7 @@ impl PathCapabilities {
             return Err(PathError::InvalidPath { path });
         }
         let path: PathBuf = path.components().collect();
-        if reserved(&path, self.data.display_path()) || reserved(&path, self.temp.display_path()) {
+        if self.is_private(&path) {
             return Err(PathError::OutsideRoots { path });
         }
         Ok(path)
@@ -55,12 +58,19 @@ impl PathCapabilities {
     pub(super) fn media_path(&self, path: &Path, roots: &[Root]) -> Result<PathBuf, PathError> {
         let path = self.media_spelling(path, roots)?;
         let resolved = resolve_media_path(&path)?;
-        if reserved(&resolved, self.data.display_path())
-            || reserved(&resolved, self.temp.display_path())
-        {
+        if self.is_private(&resolved) {
             return Err(PathError::OutsideRoots { path });
         }
         Ok(resolved)
+    }
+
+    fn is_private(&self, path: &Path) -> bool {
+        reserved(path, self.data.display_path())
+            || reserved(path, self.temp.display_path())
+            || self
+                .additional_private
+                .iter()
+                .any(|root| reserved(path, root.display_path()))
     }
 }
 

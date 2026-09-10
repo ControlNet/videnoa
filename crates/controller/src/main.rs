@@ -1,6 +1,6 @@
 use std::net::{IpAddr, SocketAddr};
 use std::num::NonZeroU16;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::Parser;
@@ -69,10 +69,11 @@ async fn main() -> anyhow::Result<()> {
 
 async fn run_controller(cli: Cli) -> anyhow::Result<()> {
     let workspace = std::env::current_dir()?.canonicalize()?;
-    let store = open_store(&workspace).await?;
-    let config = load_configuration(&workspace, &store, &cli)?;
+    let bootstrap = ConfigBootstrap::open(&workspace)?;
+    let store = open_store(&bootstrap.config().paths.data_root).await?;
+    let config = load_configuration(&bootstrap, &store, &cli)?;
     let address = SocketAddr::new(config.server.host, config.server.port);
-    let paths = PathCapabilities::open(&config.paths)?;
+    let paths = open_path_capabilities(&bootstrap, &config)?;
     let recovery = recovery_runtime(&config, &store, &paths)?;
     let scheduler = recovery.scheduler;
     let shutdown = recovery.shutdown;
@@ -109,7 +110,7 @@ async fn run_controller(cli: Cli) -> anyhow::Result<()> {
         events: events.clone(),
         payload_limits,
     })
-    .with_configuration_listener(listener, workspace);
+    .with_configuration_listener(listener);
     let router = controller_app_router(
         &assets,
         auth,
@@ -166,20 +167,31 @@ async fn run_controller(cli: Cli) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn open_store(workspace: &Path) -> anyhow::Result<Store> {
-    let data_root = ConfigBootstrap::prepare_data_root(workspace)?;
-    videnoa_controller::remote::configure_iroh(&data_root)?;
+fn open_path_capabilities(
+    bootstrap: &ConfigBootstrap,
+    config: &ControllerConfig,
+) -> Result<PathCapabilities, videnoa_controller::paths::PathError> {
+    PathCapabilities::open_with_additional_private_roots(
+        &config.paths,
+        bootstrap
+            .retained_private_roots()
+            .iter()
+            .map(PathBuf::as_path),
+    )
+}
+
+async fn open_store(data_root: &Path) -> anyhow::Result<Store> {
+    videnoa_controller::remote::configure_iroh(data_root)?;
     let database =
         Database::open(DatabaseOptions::new(data_root.join("controller.sqlite3"))).await?;
     Ok(Store::new(database))
 }
 
 fn load_configuration(
-    workspace: &Path,
+    bootstrap: &ConfigBootstrap,
     store: &Store,
     cli: &Cli,
 ) -> anyhow::Result<ControllerConfig> {
-    let bootstrap = ConfigBootstrap::open(workspace)?;
     bootstrap
         .initialize_with_server_override(
             store,

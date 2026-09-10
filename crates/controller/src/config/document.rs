@@ -71,8 +71,24 @@ impl ControllerConfig {
     /// # Errors
     /// Returns an error when the document schema or a typed configuration bound is invalid.
     pub fn from_toml_in(source: &str, workspace: &Path) -> Result<Self, ConfigError> {
-        let figment = Figment::from(Serialized::defaults(RawControllerConfig::default()))
-            .merge(Toml::string(source));
+        Self::from_toml_in_with_path_defaults(
+            source,
+            workspace,
+            &workspace.join("data"),
+            &workspace.join("data"),
+        )
+    }
+
+    pub(super) fn from_toml_in_with_path_defaults(
+        source: &str,
+        workspace: &Path,
+        data_root: &Path,
+        cache_root: &Path,
+    ) -> Result<Self, ConfigError> {
+        let mut defaults = RawControllerConfig::default();
+        defaults.paths.data_root = data_root.to_path_buf();
+        defaults.paths.cache_root = cache_root.to_path_buf();
+        let figment = Figment::from(Serialized::defaults(defaults)).merge(Toml::string(source));
         let raw =
             figment
                 .extract::<RawControllerConfig>()
@@ -151,6 +167,10 @@ impl From<&ControllerConfig> for RawControllerConfig {
             server: raw::RawServerConfig {
                 host: config.server.host,
                 port: u64::from(config.server.port),
+            },
+            paths: raw::RawPathConfig {
+                data_root: config.paths.data_root.clone(),
+                cache_root: config.paths.temp_root.clone(),
             },
             auth: raw::RawAuthConfig {
                 secure_cookie: config.auth.secure_cookie,

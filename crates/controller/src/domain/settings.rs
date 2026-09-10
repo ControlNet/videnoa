@@ -7,9 +7,8 @@ use super::{ComputeSlots, ConcurrencyLimit};
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SettingsPaths {
-    pub workspace: PathBuf,
     pub data_root: PathBuf,
-    pub config_file: PathBuf,
+    pub cache_root: PathBuf,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -58,6 +57,7 @@ pub struct SchedulerStatus {
 pub struct SettingsResponse {
     pub version: u64,
     pub paths: SettingsPaths,
+    pub restart_required: bool,
     pub server: ServerSettingsDto,
     pub secure_cookie: bool,
     pub session_absolute_seconds: u64,
@@ -71,6 +71,7 @@ pub struct SettingsResponse {
 #[serde(deny_unknown_fields)]
 pub struct SettingsUpdateRequest {
     pub version: u64,
+    pub paths: SettingsPaths,
     pub server: ServerSettingsDto,
     pub auth: AuthSettingsDto,
     pub scheduler: SchedulerStatus,

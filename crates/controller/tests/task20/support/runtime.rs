@@ -53,12 +53,13 @@ pub(super) async fn start_runtime(
     let config = ControllerConfig {
         server: videnoa_controller::config::ServerConfig {
             host: Ipv4Addr::LOCALHOST.into(),
-            port: 0,
+            port: 3001,
         },
         paths: path_config.clone(),
         auth: auth_config.clone(),
         ..ControllerConfig::default()
     };
+    store.config_manager().initialize(config.clone(), None);
     let settings = store.config_manager().settings()?;
     let mut runtime_timeouts = settings.timeouts;
     runtime_timeouts.health_seconds = 1;

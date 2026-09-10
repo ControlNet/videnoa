@@ -2,7 +2,7 @@ import { CirclePause, CirclePlay, Save } from "lucide-react"
 import { useState } from "react"
 
 import type { ApiClient, ApiClientError } from "../api/client"
-import type { Readiness, ServerSettings, SettingsResponse, SettingsUpdateRequest } from "../api/settingsSchemas"
+import type { ServerSettings, SettingsUpdateRequest } from "../api/settingsSchemas"
 import { Button } from "../ui/Button"
 import { Status } from "../ui/Status"
 import "../operations.css"
@@ -12,7 +12,7 @@ import { useSettingsData } from "./useSettingsData"
 type SettingsPageProps = { readonly apiClient: ApiClient }
 
 type SettingsSaveReceipt = {
-  readonly configFile: string
+  readonly restartRequired: boolean
   readonly reconnectHref: string | null
 }
 
@@ -48,7 +48,7 @@ export function SettingsPage({ apiClient }: SettingsPageProps) {
       || previousSettings.server.port !== nextSettings.server.port
     setDegradedReconnect(null)
     setSaveReceipt({
-      configFile: nextSettings.paths.config_file,
+      restartRequired: nextSettings.restart_required,
       reconnectHref: endpointChanged ? reconnectHref(nextSettings.server) : null,
     })
     return true
@@ -68,7 +68,7 @@ export function SettingsPage({ apiClient }: SettingsPageProps) {
             <Button
               size="sm"
               aria-label={settings.scheduler.paused ? "Resume scheduler" : "Pause scheduler"}
-              disabled={!actionsEnabled}
+              disabled={!actionsEnabled || settings.restart_required}
               onClick={() => void data.setPaused(!settings.scheduler.paused)}
             >
               {settings.scheduler.paused ? <CirclePlay size={13} aria-hidden="true" /> : <CirclePause size={13} aria-hidden="true" />}
@@ -82,7 +82,6 @@ export function SettingsPage({ apiClient }: SettingsPageProps) {
       {saveReceipt === null ? null : <ConfigurationSaveReceipt receipt={saveReceipt} />}
       {settings === null ? <output className="operation-loading">{data.loading ? "Loading runtime settings..." : "Runtime settings are unavailable."}</output> : <>
         <SettingsEditor key={editorGeneration} settings={settings} actionError={data.actionError} onSave={save} />
-        <ReadOnlyConfiguration settings={settings} readiness={data.readiness} />
         {/* Pinned as the route's last child: a long form never hides its own commit. */}
         <footer className="settings-save-bar">
           <span className="spacer" />
@@ -97,16 +96,10 @@ export function SettingsPage({ apiClient }: SettingsPageProps) {
 }
 
 function ConfigurationSaveReceipt({ receipt }: { readonly receipt: SettingsSaveReceipt }) {
-  return <output className="settings-save-receipt" aria-live="polite"><span className="settings-receipt-block"><strong>Settings saved and applied</strong><span>Configuration file {receipt.configFile} was written and the returned settings are active.</span></span>{receipt.reconnectHref === null ? null : <span className="settings-receipt-block"><span>The Controller address changed and this page may disconnect.</span><a href={receipt.reconnectHref}>Open Controller at the new address</a></span>}</output>
-}
-
-function ReadOnlyConfiguration({ settings, readiness }: { readonly settings: SettingsResponse; readonly readiness: Readiness | null }) {
-  const rows = [
-    ["Workspace", settings.paths.workspace],
-    ["Data root", settings.paths.data_root],
-    ["Configuration file", settings.paths.config_file],
-  ] as const
-  return <section className="operation-section read-only-settings"><header><div><h2>Controller paths</h2></div><span className={`operation-status ${readiness?.status === "ready" ? "healthy" : "offline"}`}>{readiness?.status === "ready" ? "Ready" : "Not ready"}</span></header><dl>{rows.map(([label, value]) => <div key={label}><dt>{label}</dt><dd title={value}>{value}</dd></div>)}</dl>{readiness?.checks.map((check) => <p className="readiness-check" key={check.name}><strong>{check.name}</strong><span>{check.ready ? "Ready" : check.message ?? "Not ready"}</span></p>)}</section>
+  const message = receipt.restartRequired
+    ? "Path changes were saved. Restart the Controller to prepare and activate the new paths."
+    : "The returned settings are active."
+  return <output className="settings-save-receipt" aria-live="polite"><span className="settings-receipt-block"><strong>{receipt.restartRequired ? "Settings saved — restart required" : "Settings saved and applied"}</strong><span>{message}</span></span>{receipt.reconnectHref === null ? null : <span className="settings-receipt-block"><span>The Controller address changed and this page may disconnect.</span><a href={receipt.reconnectHref}>Open Controller at the new address</a></span>}</output>
 }
 
 function reconnectHref(server: ServerSettings): string {

@@ -55,8 +55,8 @@ fn policy_only_config_loads_with_workspace_derived_paths() -> TestResult {
 }
 
 #[test]
-fn paths_and_password_fields_are_rejected() {
-    // Given: legacy user-defined filesystem fields.
+fn removed_path_and_password_fields_are_rejected() {
+    // Given: removed media-root and credential-path fields.
     let legacy = format!(
         "{}\n[paths]\ninput_roots = [\"input\"]\n",
         complete_config()
@@ -70,7 +70,7 @@ fn paths_and_password_fields_are_rejected() {
     let legacy_result = ControllerConfig::from_toml(&legacy);
     let password_result = ControllerConfig::from_toml(&password);
 
-    // Then: neither legacy capability nor credential path becomes runtime input.
+    // Then: neither removed capability nor credential path becomes runtime input.
     assert!(matches!(legacy_result, Err(ConfigError::Schema { .. })));
     assert!(matches!(password_result, Err(ConfigError::Schema { .. })));
 }
@@ -109,9 +109,32 @@ fn serialization_roundtrip_preserves_every_public_field() -> TestResult {
     let projected = config.to_toml()?;
     let reloaded = ControllerConfig::from_toml(&projected)?;
 
-    // Then: the typed public policy is unchanged and no private paths are serialized.
+    // Then: editable paths and public policy survive without exposing credentials.
     assert_eq!(reloaded, config);
-    assert!(!projected.contains("paths"));
+    assert!(projected.contains("[paths]"));
+    assert!(projected.contains("data_root"));
+    assert!(projected.contains("cache_root"));
     assert!(!projected.contains("password"));
+    Ok(())
+}
+
+#[test]
+fn configured_paths_resolve_relative_to_workspace() -> TestResult {
+    // Given: portable relative roots in the public configuration document.
+    let workspace = TempDir::new()?;
+    let source = format!(
+        "{}\n[paths]\ndata_root = \"state\"\ncache_root = \"media/.videnoa-cache\"\n",
+        complete_config()
+    );
+
+    // When: Controller loads the document from its workspace.
+    let config = ControllerConfig::from_toml_in(&source, workspace.path())?;
+
+    // Then: both roots become unambiguous Controller-visible paths.
+    assert_eq!(config.paths.data_root, workspace.path().join("state"));
+    assert_eq!(
+        config.paths.temp_root,
+        workspace.path().join("media/.videnoa-cache")
+    );
     Ok(())
 }

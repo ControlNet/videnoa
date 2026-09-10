@@ -46,12 +46,15 @@ async fn update_runtime_settings(fixture: &Fixture) -> TestResult {
         .await?;
     let settings = json_body(response).await?;
     assert_eq!(settings["version"], 0);
-    assert_eq!(settings["paths"]["workspace"], json!(fixture.workspace));
     assert_eq!(
         settings["paths"]["data_root"],
         json!(fixture.workspace.join("data"))
     );
-    assert_eq!(settings["paths"]["config_file"], json!(fixture.config_file));
+    assert_eq!(
+        settings["paths"]["cache_root"],
+        json!(fixture.workspace.join("data"))
+    );
+    assert_eq!(settings["restart_required"], false);
 
     let updated = fixture
         .router
@@ -190,6 +193,7 @@ async fn invalid_settings_and_cancelled_retry_return_typed_conflicts() -> TestRe
 fn settings_update(settings: &Value, health_seconds: u64, transfer_seconds: u64) -> Value {
     json!({
         "version": settings["version"],
+        "paths": settings["paths"],
         "server": settings["server"],
         "auth": {
             "secure_cookie": settings["secure_cookie"],

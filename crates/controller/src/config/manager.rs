@@ -12,7 +12,7 @@ struct State {
     config: ControllerConfig,
     generation: u64,
     updated_at: chrono::DateTime<Utc>,
-    workspace: Option<PathBuf>,
+    config_file: Option<PathBuf>,
 }
 
 /// Shared runtime configuration. TOML is its only durable backing store.
@@ -30,7 +30,7 @@ impl Default for ConfigManager {
                 config: ControllerConfig::default(),
                 generation: 0,
                 updated_at: Utc::now(),
-                workspace: None,
+                config_file: None,
             })),
             admission: Arc::new(tokio::sync::RwLock::new(())),
         }
@@ -41,9 +41,10 @@ impl ConfigManager {
     /// Installs a startup snapshot before runtime components start.
     /// `None` supplies ephemeral configuration for embedded callers and tests.
     pub fn initialize(&self, config: ControllerConfig, workspace: Option<PathBuf>) {
+        let config_file = workspace.map(|_| config.paths.data_root.join("controller.toml"));
         *self.write() = State {
             config,
-            workspace,
+            config_file,
             generation: 0,
             updated_at: Utc::now(),
         };
@@ -143,14 +144,9 @@ impl ConfigManager {
             return Ok(CasOutcome::Conflict);
         }
         let document = config.to_toml()?;
-        let workspace = config
-            .paths
-            .data_root
-            .parent()
-            .unwrap_or_else(|| std::path::Path::new("."));
-        ControllerConfig::from_toml_in(&document, workspace)?;
-        if let Some(workspace) = &state.workspace {
-            ConfigBootstrap::persist_document(workspace, &document)?;
+        ControllerConfig::from_toml_in(&document, std::path::Path::new("."))?;
+        if let Some(config_file) = &state.config_file {
+            ConfigBootstrap::persist_document_at(config_file, &document)?;
         }
         state.config = config;
         state.generation += 1;

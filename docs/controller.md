@@ -59,6 +59,7 @@ not as a required installation step. Raw TOML accepts exactly these sections:
 | Section | Fields |
 |---|---|
 | `server` | `host`, `port` |
+| `paths` | `data_root`, `cache_root` |
 | `auth` | `secure_cookie`, `session_absolute_seconds`, `session_idle_seconds` |
 | `scheduler` | `paused`, `default_compute_slots`, `prefetch_per_worker`, `max_concurrent_uploads`, `max_concurrent_downloads` |
 | `timeouts` | `health_seconds`, `poll_seconds`, `transfer_seconds` |
@@ -68,6 +69,11 @@ Unknown fields are rejected. Defaults are loopback port 3001, non-Secure
 cookies, 30-day absolute sessions, seven-day idle sessions, one compute slot,
 one prefetched task, one upload, one download, health/poll/transfer timeouts of
 10/5/300 seconds, retry delays of 1 through 60 seconds, and five attempts.
+Both path defaults are `data` relative to the startup working directory.
+`DATA ROOT` owns `controller.toml`, SQLite, authentication state, Controller
+identity, and migration state. `CACHE ROOT` owns the per-task download and
+verification workspaces used before publication. Relative TOML paths resolve
+from the startup working directory; Web Settings requires absolute paths.
 Active tasks are polled again one second after the previous poll completes.
 This cadence is independent of `timeouts.poll_seconds`, which controls the remote
 control-request timeout. `timeouts.transfer_seconds` is a transfer inactivity
@@ -90,7 +96,7 @@ remain unchanged: set `auth.session_absolute_seconds = 2592000` and
 file (restart after manual edits). Log in again to receive the longer absolute
 lifetime; increasing the policy does not extend an existing session's deadline.
 
-`data/controller.toml` is the sole persisted Controller configuration source.
+`<DATA ROOT>/controller.toml` is the sole persisted Controller configuration source.
 The in-memory `ControllerConfig` is the active runtime configuration.
 `controller.sqlite3` holds durable operational/application state: tasks, attempts,
 workers, recovery evidence, idempotency, administrator credential, and sessions.
@@ -181,7 +187,7 @@ Relative paths resolve from the Controller workspace (the startup working
 directory). With workspace `/opt/videnoa-controller`, `media/E08.mkv` resolves to
 `/opt/videnoa-controller/media/E08.mkv`. Task records store normalized absolute
 paths. The workspace is only Controller's working location, not a media sandbox.
-The entire `<workspace>/data/**` subtree is private and forbidden for task input,
+The configured DATA ROOT and CACHE ROOT are private and forbidden for task input,
 output, and recovery capabilities, including indirect symlink paths.
 
 Input must be an existing regular file with an extension. Output is an exact,
@@ -192,7 +198,7 @@ changed file identity/content, non-regular input, and existing or
 racing output fail closed. Controller never overwrites or auto-renames output. An existing final output
 symlink counts as an occupied destination; only output parent links are resolved.
 
-Downloaded bytes are verified in private UUID task directories under `data`.
+Downloaded bytes are verified in private UUID task directories under CACHE ROOT.
 Publication first attempts atomic no-replace rename. If it returns `EXDEV`
 (including separate bind mounts on the same host disk), Controller falls back to
 move semantics: exclusively create the requested final file, copy and fsync its
@@ -529,16 +535,22 @@ including zero counts.
 | `GET` | `/api/workers` | Worker list, capabilities, and capacity |
 | `POST` | `/api/workers` | Create `name`, `api_url`, `enabled`, `compute_slots` |
 | `PUT` | `/api/workers/{id}` | Current version plus all mutable fields |
-| `GET` | `/api/settings` | Version, path metadata, server, auth policy, scheduler, timeouts, retry |
-| `PUT` | `/api/settings` | Current `version` plus complete `server`, `auth`, `scheduler`, `timeouts`, `retry` |
+| `GET` | `/api/settings` | Version, editable paths, restart state, server, auth policy, scheduler, timeouts, retry |
+| `PUT` | `/api/settings` | Current `version` plus complete `paths`, `server`, `auth`, `scheduler`, `timeouts`, `retry` |
 | `POST` | `/api/scheduler/pause` | `{"version":N}` |
 | `POST` | `/api/scheduler/resume` | `{"version":N}` |
 
-Settings path metadata is read-only and contains `workspace`, `data_root`, and
-`config_file`. The response exposes server plus scalar auth policy. The update
-groups auth policy under `auth`. Every mutable field is persisted and
-hot-applied, including listener and authentication policy. A listener update is
-rejected before persistence when the requested address cannot be bound.
+Settings exposes only `data_root` and `cache_root`; workspace, derived
+configuration-file location, and internal readiness checks are not part of the
+Settings page. Path changes require a paused scheduler and no nonterminal tasks.
+They are persisted immediately and reported with `restart_required=true`, then
+activated during the next Controller start. Startup copies durable state into a
+new empty DATA ROOT before opening SQLite and keeps the original root as rollback
+evidence. The configuration file is always `<DATA ROOT>/controller.toml`.
+
+Other mutable fields are persisted and hot-applied, including listener and
+authentication policy. A listener update is rejected before persistence when
+the requested address cannot be bound.
 
 ### SSE Semantics
 
@@ -561,8 +573,10 @@ For a source-accurate filesystem backup:
 
 1. Pause scheduling through Web UI Settings or `/api/scheduler/pause`.
 2. Let work reach known states and stop Controller cleanly.
-3. Copy the complete workspace `data` directory, including SQLite sidecars and
+3. Copy the complete configured DATA ROOT, including SQLite sidecars and
    transient task directories.
+   If DATA ROOT was moved, also copy the default `data` directory because its
+   `.videnoa-data-root.toml` file locates the active root.
 4. Preserve task media and every worker's persistent Videnoa data, especially
    `jobs.db` and worker workspaces.
 5. Record Controller and worker versions without recording credentials.
@@ -639,6 +653,12 @@ Open `http://localhost:3001` for first-access setup. Configuration and database
 files persist in `./data/controller.toml` and `./data/controller.sqlite3` on the
 host. `/workspace/data` is private and forbidden for task input/output. Use task
 paths such as `/media/input.mkv` and `/media/output.mp4`.
+
+When Paths uses custom container paths, bind mount both DATA ROOT and CACHE ROOT
+to persistent host directories. Keep `/workspace/data` mounted as well; it owns
+the small locator that lets Controller find a moved DATA ROOT on its next start.
+To keep publication on one filesystem, place CACHE ROOT in a dedicated directory
+on the same mounted volume as the output media.
 
 Separate data and media bind mounts are supported. Their final rename can return
 `EXDEV` even on the same host disk, activating the verified copy-and-delete

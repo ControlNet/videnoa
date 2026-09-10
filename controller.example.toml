@@ -2,6 +2,10 @@
 host = "127.0.0.1"
 port = 3001
 
+[paths]
+data_root = "data"
+cache_root = "data"
+
 [auth]
 secure_cookie = false
 session_absolute_seconds = 2592000
