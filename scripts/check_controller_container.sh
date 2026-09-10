@@ -58,7 +58,7 @@ check_image_contract() {
   image_volumes="$(docker image inspect --format '{{json .Config.Volumes}}' "$IMAGE")"
   [[ "$image_volumes" == 'null' ]] || fail "image declares legacy volumes: $image_volumes"
   docker run --rm --entrypoint /bin/sh "$IMAGE" -c \
-    'test "$(id -u)" = 10001 && test "$(id -g)" = 10001 && test "$PWD" = /workspace && test ! -e /usr/local/bin/videnoa && ! command -v node && ! command -v npm' \
+    'test "$(id -u)" = 10001 && test "$(id -g)" = 10001 && test "$PWD" = /workspace && test ! -e /usr/local/bin/videnoa && ! command -v node && ! command -v npm && grep -a -q "\.symtab" /usr/local/bin/videnoa-controller' \
     || fail "runtime identity or minimal-image contract failed"
   linked_libraries="$(docker run --rm --entrypoint /usr/bin/ldd "$IMAGE" /usr/local/bin/videnoa-controller)"
   packages="$(docker run --rm --entrypoint /usr/bin/dpkg-query "$IMAGE" -W -f='${binary:Package}\n')"

@@ -56,7 +56,6 @@ COPY crates/ crates/
 
 ENV VIDENOA_WEB_PREBUILT=1
 RUN cargo build --release --locked -p videnoa-app --bin videnoa
-RUN strip --strip-unneeded /build/target/release/videnoa
 
 # ---------------------------------------------------------------------------
 # Stage 2: Download ONNX Runtime GPU

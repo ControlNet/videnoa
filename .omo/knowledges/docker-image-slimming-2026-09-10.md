@@ -5,19 +5,24 @@
 - The repository-root `.dockerignore` excludes local build outputs, runtime data,
   model/runtime libraries, media, frontend dependency/build directories, agent
   state, and common secret files from both Docker build contexts.
-- Both release binaries are stripped in a separate builder layer. Keeping the
-  Cargo build command unchanged preserves its existing Docker cache key.
 - The Worker runtime no longer copies `/app/web/dist`; release builds serve the
   same frontend from the assets embedded by `rust-embed`.
 - The Worker keeps `mkvpropedit` but removes the unused `mkvextract`, `mkvinfo`,
   and `mkvmerge` executables in the same layer that installs MKVToolNix.
 
-## Measured results
+## Symbol retention decision
 
-- `videnoa-controller:slim-qa`: 121,373,776 bytes, down from 133,269,488 bytes.
-- `videnoa:slim-qa`: 5,803,568,734 bytes. This is 4,875,426 bytes below the
-  local v0.1.3 image despite the current v0.1.4/Iroh Worker binary being larger.
-- The stripped Worker binary is 32,500,080 bytes.
+- Stripping was evaluated and then reverted. It saved about 13 MB of unpacked
+  size per binary but only about 1.7 MB after gzip compression.
+- Release binaries retain their symbol tables so production panic backtraces,
+  core dumps, and offline address symbolization remain useful.
+- The source contract rejects future `strip` commands in either Dockerfile.
+- The retained-symbol QA images measured 5,815,081,126 bytes for the Worker and
+  133,269,696 bytes for the Controller. The remaining Worker changes remove
+  about 20 MB of unpacked payload from the duplicate WebUI and unused MKV tools.
+
+## Measured build context
+
 - The Docker build context observed during the Worker build was 4.54 MB. The
   Controller build transferred a 45.17 kB incremental context.
 

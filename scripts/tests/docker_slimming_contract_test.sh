@@ -41,10 +41,12 @@ do
   require_exact_line "$DOCKERIGNORE" "$ignored_path" ".dockerignore is missing $ignored_path"
 done
 
-grep -Eq 'strip --strip-unneeded /build/target/release/videnoa$' "$WORKER_DOCKERFILE" \
-  || fail 'Worker release binary is not stripped in the builder stage'
-grep -Eq 'strip --strip-unneeded /usr/local/bin/videnoa-controller' "$CONTROLLER_DOCKERFILE" \
-  || fail 'Controller release binary is not stripped in the builder stage'
+if grep -Eq '(^|[[:space:]])strip([[:space:]]|$)' "$WORKER_DOCKERFILE"; then
+  fail 'Worker release binary must retain symbols for production diagnostics'
+fi
+if grep -Eq '(^|[[:space:]])strip([[:space:]]|$)' "$CONTROLLER_DOCKERFILE"; then
+  fail 'Controller release binary must retain symbols for production diagnostics'
+fi
 
 if grep -Fq 'COPY --from=builder /build/web/dist /app/web/dist' "$WORKER_DOCKERFILE"; then
   fail 'Worker runtime still duplicates the embedded WebUI'
@@ -67,6 +69,7 @@ if [[ -n "$WORKER_IMAGE" ]]; then
     test ! -e /usr/bin/mkvextract
     test ! -e /usr/bin/mkvinfo
     test ! -e /usr/bin/mkvmerge
+    grep -a -q '\.symtab' /usr/local/bin/videnoa
     mkvpropedit --version >/dev/null
   ' || fail 'Worker image content does not satisfy the slimming contract'
 
