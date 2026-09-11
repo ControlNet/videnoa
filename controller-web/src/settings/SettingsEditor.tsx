@@ -1,3 +1,4 @@
+import { RotateCcw } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 
 import { CheckField, Field } from "../ui/Field"
@@ -148,14 +149,19 @@ export function SettingsEditor({ settings, actionError, onSave }: SettingsEditor
 
       <div className="settings-sections">
         {remoteChange && <p className="alert" role="status">Settings changed on the Controller. Your unsaved edits are preserved; other fields reflect the latest settings. Review before saving: your edited values will replace the current values on the Controller.</p>}
-        <SettingsSection id="settings-paths" title="Paths">
+        <SettingsSection id="settings-paths" title="Paths" description="Applied when the Controller restarts." layout="stack">
+          {/* The pending restart leads the section: it is the state that explains why the scheduler controls are locked. */}
+          {!settings.restart_required ? null : (
+            <p className="settings-notice">
+              <RotateCcw size={13} aria-hidden="true" />
+              <span>Restart the Controller to activate these paths. The scheduler remains paused until restart.</span>
+            </p>
+          )}
           <TextField label="Data root" name="data_root" value={fields.dataRoot} error={fieldErrors.dataRoot ?? serverErrors.dataRoot} hint="Stores controller.toml, the task database, authentication state, and Controller identity." onChange={(dataRoot) => setFields({ ...fields, dataRoot })} />
           <TextField label="Cache root" name="cache_root" value={fields.cacheRoot} error={fieldErrors.cacheRoot ?? serverErrors.cacheRoot} hint="Stores downloaded output before publication. Use a dedicated directory on the output filesystem." onChange={(cacheRoot) => setFields({ ...fields, cacheRoot })} />
-          <p className="settings-path-note settings-span-2">
-            {settings.restart_required
-              ? "Restart the Controller to activate these paths. The scheduler remains paused until restart."
-              : "Path changes require a Controller restart. Pause the scheduler and wait for active tasks to finish before saving."}
-          </p>
+          {settings.restart_required ? null : (
+            <p className="settings-path-note">Pause the scheduler and let active tasks finish before saving a path change.</p>
+          )}
         </SettingsSection>
         <SettingsSection id="settings-server" title="Server binding">
           <TextField label="Server host" name="host" value={fields.serverHost} error={fieldErrors.serverHost ?? serverErrors.serverHost} onChange={(serverHost) => setFields({ ...fields, serverHost })} />
@@ -236,11 +242,23 @@ function NumberField(props: NumberFieldProps) {
   )
 }
 
-function SettingsSection({ id, title, children }: { readonly id: string; readonly title: string; readonly children: React.ReactNode }) {
+/*
+ * Numeric runtime values tile into the shared grid; a stack is for the sections
+ * whose values are long strings and need the full row to stay readable.
+ */
+type SettingsSectionProps = {
+  readonly id: string
+  readonly title: string
+  readonly description?: string
+  readonly layout?: "grid" | "stack"
+  readonly children: React.ReactNode
+}
+
+function SettingsSection({ id, title, description, layout = "grid", children }: SettingsSectionProps) {
   return (
     <section id={id} className="operation-section" aria-label={title}>
-      <header className="section-head"><h2>{title}</h2></header>
-      <div className="settings-grid">{children}</div>
+      <header className="section-head"><h2>{title}</h2>{description === undefined ? null : <p>{description}</p>}</header>
+      <div className={layout === "stack" ? "settings-paths" : "settings-grid"}>{children}</div>
     </section>
   )
 }

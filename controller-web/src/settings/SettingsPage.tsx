@@ -1,4 +1,4 @@
-import { CirclePause, CirclePlay, Save } from "lucide-react"
+import { CirclePause, CirclePlay, RotateCcw, Save } from "lucide-react"
 import { useState } from "react"
 
 import type { ApiClient, ApiClientError } from "../api/client"
@@ -61,8 +61,15 @@ export function SettingsPage({ apiClient }: SettingsPageProps) {
       <div className="command-row">
         <h1>Settings</h1>
         <span className="spacer" />
-        {settings === null ? null : (
-          <span className={settings.scheduler.paused ? "scheduler-pill scheduler-pill--paused" : "scheduler-pill"}>
+        {settings === null ? null : <>
+          {/* A pending restart is page state, not a Paths detail: it is what disables the control beside it. */}
+          {!settings.restart_required ? null : (
+            <span className="restart-pill"><RotateCcw size={12} aria-hidden="true" />Restart required</span>
+          )}
+          <span
+            className={settings.scheduler.paused ? "scheduler-pill scheduler-pill--paused" : "scheduler-pill"}
+            title={settings.restart_required ? "Scheduler control resumes once the Controller restarts on the saved paths." : undefined}
+          >
             <Status tone={settings.scheduler.paused ? "quiet" : "positive"} label={settings.scheduler.paused ? "Scheduler paused" : "Scheduler running"} live={!settings.scheduler.paused} />
             <span className="scheduler-pill-divider" aria-hidden="true" />
             <Button
@@ -75,7 +82,7 @@ export function SettingsPage({ apiClient }: SettingsPageProps) {
               {settings.scheduler.paused ? "Resume" : "Pause"}
             </Button>
           </span>
-        )}
+        </>}
       </div>
       {data.error === null ? null : <div className="operation-error alert alert--danger" role="alert"><span>{data.error}</span><button type="button" onClick={data.retry}>Retry</button></div>}
       {data.actionError === null ? null : <div className={degradedReconnectHref === null ? "operation-error alert alert--danger" : "operation-error alert alert--danger settings-degraded-error"} role="alert"><span>{settingsActionErrorMessage(data.actionError, data.loading, data.error)}{degradedReconnectHref === null ? null : " The Controller address changed and this page may disconnect."}</span>{degradedReconnectHref === null ? null : <a href={degradedReconnectHref}>Open Controller at the new address</a>}</div>}
@@ -99,7 +106,9 @@ function ConfigurationSaveReceipt({ receipt }: { readonly receipt: SettingsSaveR
   const message = receipt.restartRequired
     ? "Path changes were saved. Restart the Controller to prepare and activate the new paths."
     : "The returned settings are active."
-  return <output className="settings-save-receipt" aria-live="polite"><span className="settings-receipt-block"><strong>{receipt.restartRequired ? "Settings saved — restart required" : "Settings saved and applied"}</strong><span>{message}</span></span>{receipt.reconnectHref === null ? null : <span className="settings-receipt-block"><span>The Controller address changed and this page may disconnect.</span><a href={receipt.reconnectHref}>Open Controller at the new address</a></span>}</output>
+  // Green is reserved for "this is live"; a save that still owes a restart is not.
+  const tone = receipt.restartRequired ? "settings-save-receipt settings-save-receipt--pending" : "settings-save-receipt"
+  return <output className={tone} aria-live="polite"><span className="settings-receipt-block"><strong>{receipt.restartRequired ? "Settings saved — restart required" : "Settings saved and applied"}</strong><span>{message}</span></span>{receipt.reconnectHref === null ? null : <span className="settings-receipt-block"><span>The Controller address changed and this page may disconnect.</span><a href={receipt.reconnectHref}>Open Controller at the new address</a></span>}</output>
 }
 
 function reconnectHref(server: ServerSettings): string {

@@ -337,11 +337,95 @@
   font-size: var(--type-micro);
 }
 
+/*
+ * Paths are prose-length values, not numbers.
+ *
+ * The auto-fit numeric grid above gave each one an 11rem column, which clipped
+ * an ordinary absolute path and left its description stranded in a third
+ * column. Here a value owns a full row and its description sits above the box,
+ * where it is read before the operator types rather than after. The measure is
+ * capped so a path field does not stretch into a rule on a wide console.
+ */
+.settings-paths {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.settings-paths > .field,
+.settings-paths > .settings-notice,
+.settings-path-note {
+  max-inline-size: var(--measure-path);
+}
+
+/*
+ * Stacked, the label is a heading over its description rather than a caption
+ * beside a number, so it takes the full text colour to stay distinct from the
+ * quiet line underneath it.
+ */
+.settings-paths > .field > span:first-child {
+  order: 1;
+  color: var(--color-text);
+}
+
+.settings-paths > .field > .field-hint {
+  order: 2;
+}
+
+.settings-paths > .field > input {
+  order: 3;
+  margin-block-start: var(--space-1);
+}
+
+.settings-paths > .field > small[role="alert"] {
+  order: 4;
+}
+
 .settings-path-note {
   margin: 0;
   color: var(--color-text-quiet);
   font-size: var(--type-chip);
   line-height: 1.55;
+}
+
+/*
+ * Restart pending is neither success nor failure: it is work the operator still
+ * owes the Controller. It takes the accent wash that already marks the engaged
+ * state everywhere else instead of inventing a sixth colour, and it never uses
+ * the green reserved for "this is live".
+ */
+.settings-notice,
+.restart-pill {
+  border: 1px solid color-mix(in oklch, var(--color-accent) 35%, transparent);
+  background: var(--color-accent-wash);
+  color: var(--color-accent);
+  font-size: var(--type-chip);
+  font-weight: 600;
+}
+
+.settings-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-lg);
+  line-height: 1.55;
+}
+
+.settings-notice svg {
+  flex-shrink: 0;
+  margin-block-start: 2px;
+}
+
+.restart-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  block-size: var(--control-md);
+  padding-inline: var(--space-3);
+  border-radius: var(--radius-md);
+  white-space: nowrap;
 }
 
 .settings-save-bar {
@@ -383,6 +467,15 @@
 .settings-receipt-block strong {
   color: var(--color-healthy);
   font-size: var(--type-cell);
+}
+
+.settings-save-receipt--pending {
+  border-color: color-mix(in oklch, var(--color-accent) 40%, transparent);
+  background: var(--color-accent-wash);
+}
+
+.settings-save-receipt--pending .settings-receipt-block strong {
+  color: var(--color-accent);
 }
 
 .settings-save-receipt a,

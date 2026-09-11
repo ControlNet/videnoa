@@ -185,7 +185,7 @@ test("desktop Settings wheel scroll reaches final content while Sign out stays v
   await installApi(page)
   await signIn(page)
   await page.getByRole("link", { name: "Settings" }).click()
-  await expect(page.getByRole("heading", { name: "Controller paths" })).toBeVisible()
+  await expect(page.getByRole("heading", { name: "Paths" })).toBeVisible()
   await page.locator(".app-frame").evaluate(async (element) => {
     await Promise.all(element.getAnimations({ subtree: true }).map((animation) => animation.finished))
   })
@@ -200,7 +200,7 @@ test("desktop Settings wheel scroll reaches final content while Sign out stays v
   const scrollableHeight = await main.evaluate((element) => element.scrollHeight - element.clientHeight)
   if (scrollableHeight > 0) await expect.poll(() => main.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
   await expect(page.getByRole("button", { name: "Save and apply settings" })).toBeInViewport({ ratio: 1 })
-  await expect(page.locator(".read-only-settings .readiness-check").last()).toBeInViewport({ ratio: 1 })
+  await expect(page.getByLabel("Maximum retry attempts")).toBeInViewport({ ratio: 1 })
   await expect(page.getByRole("button", { name: "Sign out" })).toBeInViewport({ ratio: 1 })
   expect(await page.evaluate(() => {
     const frame = document.querySelector(".app-frame")

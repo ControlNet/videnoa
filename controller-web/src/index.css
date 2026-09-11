@@ -84,6 +84,8 @@
   --table-row: 2.125rem;
   --drawer-width: 35rem;
   --measure-dialog: 42rem;
+  /* Long enough for a real absolute path, short enough to stay one glance. */
+  --measure-path: 44rem;
   --gutter: 1.125rem;
 
   --radius-sm: 0.3125rem;

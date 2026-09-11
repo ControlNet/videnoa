@@ -137,6 +137,19 @@
 }
 
 /*
+ * A hint explains the field before anything goes wrong; the error above reports
+ * that something already did. Sharing one element type is fine, sharing one
+ * colour is not: an unstyled hint inherited the alarm and every description on
+ * the form read as a validation failure. The selector carries `small` so it
+ * outranks that rule wherever the two land on the same node.
+ */
+.field small.field-hint {
+  color: var(--color-text-quiet);
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+/*
  * Segmented field: a closed set of options, all of them visible.
  *
  * The track is recessed and sized to `--control-field`, so it lines up with the
@@ -572,6 +585,7 @@
 
 .section-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   gap: var(--space-3);
   padding-block-end: var(--space-2);
