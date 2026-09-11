@@ -395,10 +395,19 @@
   white-space: nowrap;
 }
 
+/*
+ * Sticky pins the commit bar while a long form scrolls, but sticky only ever
+ * pulls an element up toward the edge -- it will not push one down past where
+ * it already sits. A form shorter than the viewport therefore left the bar
+ * stranded mid-route with empty background beneath it. The auto margin eats
+ * that free space so the bar rests on the bottom edge; when the form overflows
+ * there is none to eat, the margin resolves to zero and sticky takes over.
+ */
 .settings-save-bar {
   position: sticky;
   z-index: 5;
   inset-block-end: 0;
+  margin-block-start: auto;
   display: flex;
   align-items: center;
   gap: var(--space-3);

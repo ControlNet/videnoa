@@ -209,6 +209,27 @@ test("desktop Settings wheel scroll reaches final content while Sign out stays v
   })).toEqual({ documentScrollTop: 0, frameScrollTop: 0, frameClientHeight: 900, frameScrollHeight: 900 })
 })
 
+test("Settings commit bar rests on the viewport edge when the form does not scroll", async ({ page }) => {
+  // Given: a viewport tall enough to hold the whole form, so nothing scrolls.
+  await page.setViewportSize({ width: 1440, height: 1200 })
+  await installApi(page)
+  await signIn(page)
+  await page.getByRole("link", { name: "Settings" }).click()
+  await expect(page.getByRole("heading", { name: "Paths" })).toBeVisible()
+
+  // Then: sticky has no scroll to act on, so the bar must already sit on the bottom edge
+  // rather than stranded above empty background where the form happens to end.
+  expect(await page.evaluate(() => {
+    const main = document.querySelector(".shell-main")
+    const bar = document.querySelector(".settings-save-bar")
+    if (!(main instanceof HTMLElement) || !(bar instanceof HTMLElement)) throw new TypeError("Settings commit bar is missing")
+    return {
+      scrolls: main.scrollHeight > main.clientHeight,
+      gapBelowBar: Math.round(main.getBoundingClientRect().bottom - bar.getBoundingClientRect().bottom),
+    }
+  })).toEqual({ scrolls: false, gapBelowBar: 0 })
+})
+
 test("wrong password, malformed response, network failure, and expiry remain recoverable", async ({ page }) => {
   // Given: deterministic failure modes at the same-origin login boundary.
   let attempt = 0
