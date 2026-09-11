@@ -341,51 +341,18 @@
  * Paths are prose-length values, not numbers.
  *
  * The auto-fit numeric grid above gave each one an 11rem column, which clipped
- * an ordinary absolute path and left its description stranded in a third
- * column. Here a value owns a full row and its description sits above the box,
- * where it is read before the operator types rather than after. The measure is
- * capped so a path field does not stretch into a rule on a wide console.
+ * an ordinary absolute path. Here a value owns a full row, capped at a measure
+ * so the box does not stretch into a rule on a wide console.
  */
 .settings-paths {
   display: flex;
   flex-direction: column;
-  gap: var(--space-5);
+  gap: var(--space-4);
 }
 
 .settings-paths > .field,
-.settings-paths > .settings-notice,
-.settings-path-note {
+.settings-paths > .settings-notice {
   max-inline-size: var(--measure-path);
-}
-
-/*
- * Stacked, the label is a heading over its description rather than a caption
- * beside a number, so it takes the full text colour to stay distinct from the
- * quiet line underneath it.
- */
-.settings-paths > .field > span:first-child {
-  order: 1;
-  color: var(--color-text);
-}
-
-.settings-paths > .field > .field-hint {
-  order: 2;
-}
-
-.settings-paths > .field > input {
-  order: 3;
-  margin-block-start: var(--space-1);
-}
-
-.settings-paths > .field > small[role="alert"] {
-  order: 4;
-}
-
-.settings-path-note {
-  margin: 0;
-  color: var(--color-text-quiet);
-  font-size: var(--type-chip);
-  line-height: 1.55;
 }
 
 /*

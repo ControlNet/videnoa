@@ -149,7 +149,7 @@ export function SettingsEditor({ settings, actionError, onSave }: SettingsEditor
 
       <div className="settings-sections">
         {remoteChange && <p className="alert" role="status">Settings changed on the Controller. Your unsaved edits are preserved; other fields reflect the latest settings. Review before saving: your edited values will replace the current values on the Controller.</p>}
-        <SettingsSection id="settings-paths" title="Paths" description="Applied when the Controller restarts." layout="stack">
+        <SettingsSection id="settings-paths" title="Paths" layout="stack">
           {/* The pending restart leads the section: it is the state that explains why the scheduler controls are locked. */}
           {!settings.restart_required ? null : (
             <p className="settings-notice">
@@ -157,11 +157,8 @@ export function SettingsEditor({ settings, actionError, onSave }: SettingsEditor
               <span>Restart the Controller to activate these paths. The scheduler remains paused until restart.</span>
             </p>
           )}
-          <TextField label="Data root" name="data_root" value={fields.dataRoot} error={fieldErrors.dataRoot ?? serverErrors.dataRoot} hint="Stores controller.toml, the task database, authentication state, and Controller identity." onChange={(dataRoot) => setFields({ ...fields, dataRoot })} />
-          <TextField label="Cache root" name="cache_root" value={fields.cacheRoot} error={fieldErrors.cacheRoot ?? serverErrors.cacheRoot} hint="Stores downloaded output before publication. Use a dedicated directory on the output filesystem." onChange={(cacheRoot) => setFields({ ...fields, cacheRoot })} />
-          {settings.restart_required ? null : (
-            <p className="settings-path-note">Pause the scheduler and let active tasks finish before saving a path change.</p>
-          )}
+          <TextField label="Data root" name="data_root" value={fields.dataRoot} error={fieldErrors.dataRoot ?? serverErrors.dataRoot} onChange={(dataRoot) => setFields({ ...fields, dataRoot })} />
+          <TextField label="Cache root" name="cache_root" value={fields.cacheRoot} error={fieldErrors.cacheRoot ?? serverErrors.cacheRoot} onChange={(cacheRoot) => setFields({ ...fields, cacheRoot })} />
         </SettingsSection>
         <SettingsSection id="settings-server" title="Server binding">
           <TextField label="Server host" name="host" value={fields.serverHost} error={fieldErrors.serverHost ?? serverErrors.serverHost} onChange={(serverHost) => setFields({ ...fields, serverHost })} />
@@ -207,7 +204,7 @@ const sectionIndex = [
 
 type NumberFieldProps = { readonly label: string; readonly name: string; readonly value: string; readonly min: number; readonly max?: number; readonly error: string | undefined; readonly onChange: (value: string) => void }
 
-type TextFieldProps = { readonly label: string; readonly name: string; readonly value: string; readonly error: string | undefined; readonly hint?: React.ReactNode; readonly onChange: (value: string) => void }
+type TextFieldProps = { readonly label: string; readonly name: string; readonly value: string; readonly error: string | undefined; readonly onChange: (value: string) => void }
 
 function TextField(props: TextFieldProps) {
   return (
@@ -219,7 +216,6 @@ function TextField(props: TextFieldProps) {
       spellCheck={false}
       value={props.value}
       error={props.error}
-      hint={props.hint}
       onChange={(event) => props.onChange(event.currentTarget.value)}
     />
   )
@@ -249,15 +245,14 @@ function NumberField(props: NumberFieldProps) {
 type SettingsSectionProps = {
   readonly id: string
   readonly title: string
-  readonly description?: string
   readonly layout?: "grid" | "stack"
   readonly children: React.ReactNode
 }
 
-function SettingsSection({ id, title, description, layout = "grid", children }: SettingsSectionProps) {
+function SettingsSection({ id, title, layout = "grid", children }: SettingsSectionProps) {
   return (
     <section id={id} className="operation-section" aria-label={title}>
-      <header className="section-head"><h2>{title}</h2>{description === undefined ? null : <p>{description}</p>}</header>
+      <header className="section-head"><h2>{title}</h2></header>
       <div className={layout === "stack" ? "settings-paths" : "settings-grid"}>{children}</div>
     </section>
   )

@@ -103,12 +103,9 @@ export function SettingsPage({ apiClient }: SettingsPageProps) {
 }
 
 function ConfigurationSaveReceipt({ receipt }: { readonly receipt: SettingsSaveReceipt }) {
-  const message = receipt.restartRequired
-    ? "Path changes were saved. Restart the Controller to prepare and activate the new paths."
-    : "The returned settings are active."
   // Green is reserved for "this is live"; a save that still owes a restart is not.
   const tone = receipt.restartRequired ? "settings-save-receipt settings-save-receipt--pending" : "settings-save-receipt"
-  return <output className={tone} aria-live="polite"><span className="settings-receipt-block"><strong>{receipt.restartRequired ? "Settings saved — restart required" : "Settings saved and applied"}</strong><span>{message}</span></span>{receipt.reconnectHref === null ? null : <span className="settings-receipt-block"><span>The Controller address changed and this page may disconnect.</span><a href={receipt.reconnectHref}>Open Controller at the new address</a></span>}</output>
+  return <output className={tone} aria-live="polite"><span className="settings-receipt-block"><strong>{receipt.restartRequired ? "Settings saved — restart required" : "Settings saved and applied"}</strong></span>{receipt.reconnectHref === null ? null : <span className="settings-receipt-block"><span>The Controller address changed and this page may disconnect.</span><a href={receipt.reconnectHref}>Open Controller at the new address</a></span>}</output>
 }
 
 function reconnectHref(server: ServerSettings): string {
