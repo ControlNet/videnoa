@@ -63,8 +63,11 @@ console.log("[workflow-contracts][positive] complete CI/release matrix: PASS");
 
 {
 	const workflow = structuredClone(loadWorkflow(unitPath));
-	workflow.jobs["controller-docker-smoke"].steps[1].run =
-		"docker build -t videnoa-controller:ci .";
+	const buildStep = workflow.jobs["controller-docker-smoke"].steps.find(
+		(step) => step.name === "Build Controller image",
+	);
+	assert.ok(buildStep, "controller-docker-smoke: missing image build step");
+	buildStep.run = "docker build -t videnoa-controller:ci .";
 	expectContractFailure(
 		"missing Controller Dockerfile",
 		() => validateUnitWorkflow(workflow),

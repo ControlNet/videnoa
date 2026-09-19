@@ -4,14 +4,15 @@
 
 - Run `videnoa-controller` from the workspace current directory.
 - First start creates `./data/controller.toml` and `./data/controller.sqlite3`.
-- SQLite sidecars and transient per-task UUID directories are allowed only under
-  `data`; no generic input, output, config, secret, or auth directories are
-  prepared.
+- SQLite sidecars live under DATA ROOT, while transient per-task UUID directories
+  live under CACHE ROOT. Both default to `data`; no generic input, output,
+  config, secret, or auth directories are prepared.
 - Task media paths are task-defined within the workspace. Relative paths resolve
-  from the workspace, while the complete `data` subtree is excluded from task
-  input, output, and recovery capabilities.
-- Raw TOML sections are exactly `server`, `auth`, `scheduler`, `timeouts`, and
-  `retry`. There is no paths section or password credential path.
+  from the workspace, while configured DATA ROOT and CACHE ROOT are excluded
+  from task input, output, and recovery capabilities.
+- Raw TOML sections are exactly `server`, `paths`, `auth`, `scheduler`,
+  `timeouts`, and `retry`. The paths section contains `data_root` and
+  `cache_root`; there is no password credential path.
 
 ## Authentication and settings
 
@@ -20,11 +21,12 @@
 - Passwords require at least 12 bytes. Only the Argon2id hash is stored in
   SQLite. Setup returns the normal login cookie and CSRF response; repeat setup
   conflicts.
-- Settings GET returns read-only `workspace`, `data_root`, and `config_file`
-  metadata, server settings, and scalar auth policy.
-- Settings PUT sends `version` plus complete `server`, `auth`, `scheduler`,
-  `timeouts`, and `retry`. Accepted changes persist and hot-apply, including the
-  listener and auth policy.
+- Settings GET returns active/configured path state, server settings, and scalar
+  auth policy.
+- Settings PUT sends `version` plus complete `server`, `paths`, `auth`,
+  `scheduler`, `timeouts`, and `retry`. Path changes are staged for restart;
+  other accepted changes persist and hot-apply, including the listener and auth
+  policy.
 
 ## Container and archive
 
@@ -55,3 +57,14 @@
   `recovery/shutdown.rs`. Do not attribute those errors to distribution files.
 - Full Docker build/runtime setup/restart smoke was deferred to lead integration
   because the current Controller binary cannot compile until peer changes land.
+
+## Contract maintenance on 2026-09-20
+
+- Archive root validation now requires the legitimate `[paths]` section while
+  continuing to reject credential material and prepared password-hash files.
+- Workflow negative tests locate the Controller image build step by name rather
+  than by a positional step index, so inserting independent checks does not
+  silently mutate the wrong step.
+- `node scripts/tests/validate_ci_release_workflows.test.mjs`,
+  `bash scripts/tests/controller_archive_root_files_test.sh`, and
+  `bash scripts/tests/package_controller_test.sh` passed.

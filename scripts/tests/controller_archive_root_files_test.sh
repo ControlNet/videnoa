@@ -15,12 +15,12 @@ done
 if grep -Eiq '^\s*(password|password_hash|admin_password)\s*=' "$REPO_ROOT/controller.example.toml"; then
   fail "example configuration contains credential material"
 fi
-for section in server auth scheduler timeouts retry; do
+for section in server paths auth scheduler timeouts retry; do
   grep -Fq "[$section]" "$REPO_ROOT/controller.example.toml" \
     || fail "example configuration is missing [$section]"
 done
-if grep -Eq '\[paths\]|password_hash_file|hash-password|admin-password\.phc' "$REPO_ROOT/controller.example.toml" "$REPO_ROOT/README-controller.md"; then
-  fail "archive root files still require prepared paths or password hashes"
+if grep -Eq 'password_hash_file|hash-password|admin-password\.phc' "$REPO_ROOT/controller.example.toml" "$REPO_ROOT/README-controller.md"; then
+  fail "archive root files still require prepared password hashes"
 fi
 grep -Fq './videnoa-controller' "$REPO_ROOT/README-controller.md" \
   || fail "Controller README is missing zero-config startup"
