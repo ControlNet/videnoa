@@ -98,13 +98,28 @@ build_frontend_assets() {
 download_release_asset() {
   local asset_name="$1"
   local output_file="$2"
+  local max_attempts=4
+  local attempt
   local release_url
   release_url="https://github.com/${REPO}/releases/download/${RELEASE_TAG}/${asset_name}"
 
   log "downloading asset: ${asset_name}"
-  if ! wget -q -O "$output_file" "$release_url"; then
-    die "failed to download asset '${asset_name}' from ${release_url}"
-  fi
+  for ((attempt = 1; attempt <= max_attempts; attempt++)); do
+    if wget -q --continue --tries=8 --retry-connrefused \
+      --retry-on-http-error=429,500,502,503,504 --waitretry=3 \
+      --timeout=120 --read-timeout=120 -O "$output_file" "$release_url"; then
+      [[ -s "$output_file" ]] \
+        || die "downloaded asset is empty: ${asset_name}"
+      return
+    fi
+
+    if ((attempt < max_attempts)); then
+      warn "download attempt ${attempt}/${max_attempts} failed for ${asset_name}; retrying"
+      sleep "$((attempt * 2))"
+    fi
+  done
+
+  die "failed to download asset '${asset_name}' from ${release_url} after ${max_attempts} attempts"
 }
 
 validate_source_tree() {
