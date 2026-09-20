@@ -74,7 +74,7 @@ for field in input_path output_path workflow priority source source_reference; d
   require_text "$GUIDE" "$field"
 done
 
-expected_sections="$(printf '%s\n' '[server]' '[auth]' '[scheduler]' '[timeouts]' '[retry]')"
+expected_sections="$(printf '%s\n' '[server]' '[paths]' '[auth]' '[scheduler]' '[timeouts]' '[retry]')"
 actual_sections="$(grep -E '^\[[a-z]+\]$' "$CONFIG")"
 [[ "$actual_sections" == "$expected_sections" ]] || fail "controller.example.toml has unsupported sections: $actual_sections"
 
@@ -83,7 +83,7 @@ for text in \
   './data/controller.sqlite3' \
   'password_confirmation' \
   'workspace' \
-  'config_file' \
+  '<DATA ROOT>/controller.toml' \
   'hot-applied' \
   '$(id -u):$(id -g)' \
   '--host 0.0.0.0'; do
@@ -102,7 +102,7 @@ if grep -Ein '^[[:space:]]*(password|token|secret|cookie|csrf)[[:space:]]*=[[:sp
   fail 'documentation contains a plaintext secret assignment'
 fi
 
-if grep -Eiq '\[paths\]|password_hash_file|hash-password|admin-password\.phc|/run/secrets|/etc/videnoa-controller|/var/lib/videnoa-controller|input_roots|output_roots|temp_root' "$CONFIG" "$GUIDE" "$ARCHIVE_GUIDE"; then
+if grep -Eiq 'password_hash_file|hash-password|admin-password\.phc|/run/secrets|/etc/videnoa-controller|/var/lib/videnoa-controller|input_roots|output_roots|temp_root' "$CONFIG" "$GUIDE" "$ARCHIVE_GUIDE"; then
   fail 'documentation contains the obsolete prepared-root or password-file contract'
 fi
 
