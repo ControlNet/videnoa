@@ -69,6 +69,7 @@ export function validateUnitWorkflow(workflow) {
 	requireText(jobs["package-win64-smoke"], "package-win64-smoke", ["actions/download-artifact@v7", "worker-web-windows", "-FrontendDist"]);
 	requireText(requireJob(jobs, "workflow-contracts"), "workflow-contracts", [
 		"npm ci --no-fund",
+		"scripts/tests/package_dist_download_test.sh",
 		"validate_ci_release_workflows.test.mjs",
 	]);
 	requireText(requireJob(jobs, "controller-rust"), "controller-rust", [
