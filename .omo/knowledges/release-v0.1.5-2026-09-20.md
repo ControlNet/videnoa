@@ -65,3 +65,17 @@ Release preparation changes only the workspace version, five workspace lockfile
 versions, this release record, and the stale documentation contract discovered by
 the candidate checks. Candidate CI and published artifact verification are
 recorded separately after they actually complete.
+
+## Publication retry
+
+- Candidate run https://github.com/ControlNet/videnoa/actions/runs/35484980882
+  passed all 14 jobs for release commit `1d46f50`.
+- The first master-triggered publication run
+  https://github.com/ControlNet/videnoa/actions/runs/35486240752 failed while
+  downloading the 2 GB `lib_linux64.zip.001` prerequisite. The asset remained
+  present and uploaded in the `misc` release; the Linux script had only one
+  silent `wget` attempt, while the Windows script already retried and resumed.
+- Linux release downloads now use bounded retries, retryable HTTP statuses,
+  timeouts, and partial-file continuation. A deterministic test-only `wget`
+  command double verifies two failures followed by a successful resume without
+  downloading the real multi-gigabyte asset.
