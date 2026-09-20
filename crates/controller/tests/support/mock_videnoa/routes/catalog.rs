@@ -17,6 +17,12 @@ use crate::mock_videnoa::journal::{JournalOutcome, Route};
 use crate::mock_videnoa::state::SharedState;
 
 pub(crate) async fn health(State(state): State<Arc<SharedState>>, request: Request) -> Response {
+    state
+        .checkpoint(
+            crate::mock_videnoa::checkpoints::Checkpoint::BeforeHealthResponse,
+            &mut BTreeMap::new(),
+        )
+        .await;
     simple(state, request, Route::Health, json!({"status": "ok"})).await
 }
 

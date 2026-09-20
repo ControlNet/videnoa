@@ -76,7 +76,7 @@ RUN wget -q "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_V
 # ---------------------------------------------------------------------------
 FROM python:3.12-slim-bookworm AS trt-download
 
-ARG TRT_VERSION=10.7.0
+ARG TRT_VERSION=10.9.0.34
 RUN pip install --no-cache-dir "tensorrt-cu12-libs==${TRT_VERSION}" \
     && mkdir /trt-lib \
     && cp /usr/local/lib/python3.12/site-packages/tensorrt_libs/libnvinfer.so.10 /trt-lib/ \
@@ -85,21 +85,40 @@ RUN pip install --no-cache-dir "tensorrt-cu12-libs==${TRT_VERSION}" \
     && cp /usr/local/lib/python3.12/site-packages/tensorrt_libs/libnvonnxparser.so.10 /trt-lib/
 
 # ---------------------------------------------------------------------------
-# Stage 4: Runtime image — CUDA + cuDNN + bundled ORT + TRT
+# Stage 4: Runtime image — minimal CUDA + cuDNN + bundled ORT + TRT
 # ---------------------------------------------------------------------------
-FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu22.04 AS runtime
+FROM nvidia/cuda:12.8.0-base-ubuntu22.04 AS runtime
+
+# Keep these runtime pins aligned with the published release dependency set.
+ARG CUDA_NVRTC_VERSION=12.8.61-1
+ARG CUBLAS_VERSION=12.8.3.14-1
+ARG CUFFT_VERSION=11.3.3.41-1
+ARG CURAND_VERSION=10.3.9.55-1
+ARG CUDNN_VERSION=9.14.0.64-1
+ARG NVFATBIN_VERSION=12.8.55-1
+ARG NVJITLINK_VERSION=12.8.61-1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+        cuda-nvrtc-12-8=${CUDA_NVRTC_VERSION} \
+        libcublas-12-8=${CUBLAS_VERSION} \
+        libcufft-12-8=${CUFFT_VERSION} \
+        libcurand-12-8=${CURAND_VERSION} \
+        libcudnn9-cuda-12=${CUDNN_VERSION} \
+        libnvfatbin-12-8=${NVFATBIN_VERSION} \
+        libnvjitlink-12-8=${NVJITLINK_VERSION} \
         ffmpeg \
         mkvtoolnix \
         ca-certificates \
         curl \
+    && rm -f \
+        /usr/bin/mkvextract \
+        /usr/bin/mkvinfo \
+        /usr/bin/mkvmerge \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 COPY --from=builder /build/target/release/videnoa /usr/local/bin/videnoa
-COPY --from=builder /build/web/dist /app/web/dist
 
 COPY --from=ort-download /ort-lib/ /usr/local/lib/
 COPY --from=trt-download /trt-lib/ /usr/local/lib/

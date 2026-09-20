@@ -1,3 +1,4 @@
+import { RotateCcw } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 
 import { CheckField, Field } from "../ui/Field"
@@ -12,6 +13,8 @@ type SettingsEditorProps = {
 }
 
 type SettingsFields = {
+  readonly dataRoot: string
+  readonly cacheRoot: string
   readonly serverHost: string
   readonly serverPort: string
   readonly secureCookie: boolean
@@ -30,6 +33,8 @@ type SettingsFields = {
 }
 
 const settingsFieldOrder = [
+  "dataRoot",
+  "cacheRoot",
   "serverHost",
   "serverPort",
   "sessionAbsolute",
@@ -46,6 +51,7 @@ const settingsFieldOrder = [
   "retryAttempts",
 ] as const satisfies readonly (keyof SettingsFields)[]
 const settingsFieldNames = {
+  dataRoot: "data_root", cacheRoot: "cache_root",
   serverHost: "host", serverPort: "port", secureCookie: "secure_cookie", sessionAbsolute: "session_absolute_seconds", sessionIdle: "session_idle_seconds",
   defaultSlots: "default_compute_slots", prefetch: "prefetch_per_worker", uploads: "max_concurrent_uploads", downloads: "max_concurrent_downloads",
   health: "health_seconds", poll: "poll_seconds", transfer: "transfer_seconds", retryInitial: "initial_seconds", retryMaximum: "maximum_seconds", retryAttempts: "max_attempts",
@@ -89,6 +95,10 @@ export function SettingsEditor({ settings, actionError, onSave }: SettingsEditor
   async function submit(): Promise<void> {
     const parsed = settingsUpdateRequestSchema.safeParse({
       version: settings.version,
+      paths: {
+        data_root: fields.dataRoot.trim(),
+        cache_root: fields.cacheRoot.trim(),
+      },
       server: {
         host: fields.serverHost.trim(),
         port: Number(fields.serverPort),
@@ -139,6 +149,17 @@ export function SettingsEditor({ settings, actionError, onSave }: SettingsEditor
 
       <div className="settings-sections">
         {remoteChange && <p className="alert" role="status">Settings changed on the Controller. Your unsaved edits are preserved; other fields reflect the latest settings. Review before saving: your edited values will replace the current values on the Controller.</p>}
+        <SettingsSection id="settings-paths" title="Paths" layout="stack">
+          {/* The pending restart leads the section: it is the state that explains why the scheduler controls are locked. */}
+          {!settings.restart_required ? null : (
+            <p className="settings-notice">
+              <RotateCcw size={13} aria-hidden="true" />
+              <span>Restart the Controller to activate these paths. The scheduler remains paused until restart.</span>
+            </p>
+          )}
+          <TextField label="Data root" name="data_root" value={fields.dataRoot} error={fieldErrors.dataRoot ?? serverErrors.dataRoot} onChange={(dataRoot) => setFields({ ...fields, dataRoot })} />
+          <TextField label="Cache root" name="cache_root" value={fields.cacheRoot} error={fieldErrors.cacheRoot ?? serverErrors.cacheRoot} onChange={(cacheRoot) => setFields({ ...fields, cacheRoot })} />
+        </SettingsSection>
         <SettingsSection id="settings-server" title="Server binding">
           <TextField label="Server host" name="host" value={fields.serverHost} error={fieldErrors.serverHost ?? serverErrors.serverHost} onChange={(serverHost) => setFields({ ...fields, serverHost })} />
           <NumberField label="Server port" name="port" value={fields.serverPort} min={1} max={65_535} error={fieldErrors.serverPort ?? serverErrors.serverPort} onChange={(serverPort) => setFields({ ...fields, serverPort })} />
@@ -173,6 +194,7 @@ export function SettingsEditor({ settings, actionError, onSave }: SettingsEditor
 }
 
 const sectionIndex = [
+  { id: "settings-paths", title: "Paths" },
   { id: "settings-server", title: "Server binding" },
   { id: "settings-auth", title: "Authentication" },
   { id: "settings-scheduler", title: "Scheduler" },
@@ -216,17 +238,29 @@ function NumberField(props: NumberFieldProps) {
   )
 }
 
-function SettingsSection({ id, title, children }: { readonly id: string; readonly title: string; readonly children: React.ReactNode }) {
+/*
+ * Numeric runtime values tile into the shared grid; a stack is for the sections
+ * whose values are long strings and need the full row to stay readable.
+ */
+type SettingsSectionProps = {
+  readonly id: string
+  readonly title: string
+  readonly layout?: "grid" | "stack"
+  readonly children: React.ReactNode
+}
+
+function SettingsSection({ id, title, layout = "grid", children }: SettingsSectionProps) {
   return (
     <section id={id} className="operation-section" aria-label={title}>
       <header className="section-head"><h2>{title}</h2></header>
-      <div className="settings-grid">{children}</div>
+      <div className={layout === "stack" ? "settings-paths" : "settings-grid"}>{children}</div>
     </section>
   )
 }
 
 function fieldsFrom(settings: SettingsResponse): SettingsFields {
   return {
+    dataRoot: settings.paths.data_root, cacheRoot: settings.paths.cache_root,
     serverHost: settings.server.host, serverPort: String(settings.server.port), secureCookie: settings.secure_cookie,
     sessionAbsolute: String(settings.session_absolute_seconds), sessionIdle: String(settings.session_idle_seconds),
     defaultSlots: String(settings.scheduler.default_compute_slots), prefetch: String(settings.scheduler.prefetch_per_worker),
@@ -238,6 +272,8 @@ function fieldsFrom(settings: SettingsResponse): SettingsFields {
 
 function fieldForPath(path: readonly string[]): keyof SettingsFields | null {
   const field = path.at(-1)
+  if (field === "data_root" || field === "paths") return "dataRoot"
+  if (field === "cache_root") return "cacheRoot"
   if (field === "host" || field === "server") return "serverHost"
   if (field === "port") return "serverPort"
   if (field === "session_absolute_seconds") return "sessionAbsolute"

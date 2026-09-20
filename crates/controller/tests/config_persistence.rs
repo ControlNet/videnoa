@@ -139,3 +139,97 @@ async fn graceful_shutdown_preserves_manual_toml_edits_for_restart() -> TestResu
     assert!(!restarted.config_manager().scheduler().paused);
     Ok(())
 }
+
+#[test]
+fn restart_migrates_data_root_once_and_recovers_without_ephemeral_state() -> TestResult {
+    // Given: an initialized Controller with durable state and newly configured roots.
+    let workspace = TempDir::new()?;
+    let bootstrap = ConfigBootstrap::open(workspace.path())?;
+    let original_root = workspace.path().join("data");
+    let moved_root = workspace.path().join("moved-data");
+    let cache_root = workspace.path().join("media/.videnoa-cache");
+    fs::write(original_root.join("durable-state"), "before migration")?;
+    let mut changed = bootstrap.config().clone();
+    changed.paths.data_root.clone_from(&moved_root);
+    changed.paths.temp_root.clone_from(&cache_root);
+    bootstrap.persist(&changed.to_toml()?)?;
+
+    // When: startup applies the pending root change.
+    let migrated = ConfigBootstrap::open(workspace.path())?;
+
+    // Then: configuration and durable state live under DATA ROOT, and CACHE ROOT is ready.
+    assert_eq!(migrated.config_file(), moved_root.join("controller.toml"));
+    assert_eq!(migrated.config().paths.data_root, moved_root);
+    assert_eq!(migrated.config().paths.temp_root, cache_root);
+    assert!(migrated.retained_private_roots().contains(&original_root));
+    assert_eq!(
+        fs::read_to_string(moved_root.join("durable-state"))?,
+        "before migration"
+    );
+    assert!(cache_root.is_dir());
+
+    // When: the bootstrap locator is lost with an ephemeral container layer.
+    fs::write(moved_root.join("durable-state"), "after migration")?;
+    let current_config = fs::read_to_string(moved_root.join("controller.toml"))?;
+    fs::write(
+        moved_root.join("controller.toml"),
+        current_config.replace("port = 3001", "port = 32123"),
+    )?;
+    fs::remove_file(original_root.join(".videnoa-data-root.toml"))?;
+    let recovered = ConfigBootstrap::open(workspace.path())?;
+
+    // Then: the activated destination is rediscovered without overwriting newer state.
+    assert_eq!(recovered.config_file(), moved_root.join("controller.toml"));
+    assert_eq!(recovered.config().server.port, 32123);
+    assert!(recovered.retained_private_roots().contains(&original_root));
+    assert_eq!(
+        fs::read_to_string(moved_root.join("durable-state"))?,
+        "after migration"
+    );
+
+    // When: DATA ROOT is moved again.
+    let second_root = workspace.path().join("second-data");
+    let mut second_config = recovered.config().clone();
+    second_config.paths.data_root.clone_from(&second_root);
+    recovered.persist(&second_config.to_toml()?)?;
+    let moved_again = ConfigBootstrap::open(workspace.path())?;
+
+    // Then: every retained root remains classified as private Controller storage.
+    assert_eq!(
+        moved_again.config_file(),
+        second_root.join("controller.toml")
+    );
+    assert!(moved_again
+        .retained_private_roots()
+        .contains(&original_root));
+    assert!(moved_again.retained_private_roots().contains(&moved_root));
+    assert_eq!(
+        fs::read_to_string(second_root.join("durable-state"))?,
+        "after migration"
+    );
+    Ok(())
+}
+
+#[test]
+fn restart_rejects_a_data_root_nested_inside_the_active_root() -> TestResult {
+    // Given: a configured destination nested inside the directory being copied.
+    let workspace = TempDir::new()?;
+    let bootstrap = ConfigBootstrap::open(workspace.path())?;
+    let mut changed = bootstrap.config().clone();
+    changed.paths.data_root = workspace.path().join("data/nested");
+    bootstrap.persist(&changed.to_toml()?)?;
+
+    // When: startup tries to activate the nested destination.
+    let result = ConfigBootstrap::open(workspace.path());
+
+    // Then: migration stops before recursive self-copy can begin.
+    assert!(matches!(
+        result,
+        Err(videnoa_controller::config::ConfigError::InvalidRoot {
+            field: "paths.data_root",
+            ..
+        })
+    ));
+    assert!(!workspace.path().join("data/nested").exists());
+    Ok(())
+}

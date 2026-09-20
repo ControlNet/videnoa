@@ -10,10 +10,10 @@ import {
 const testOnlySettings = {
   version: 3,
   paths: {
-    workspace: "/srv/videnoa/workspace",
     data_root: "/var/lib/videnoa",
-    config_file: "/var/lib/videnoa/controller.toml",
+    cache_root: "/mnt/media/.videnoa-cache",
   },
+  restart_required: false,
   server: { host: "0.0.0.0", port: 3001 },
   secure_cookie: true,
   session_absolute_seconds: 31_536_000,
@@ -38,12 +38,12 @@ const testOnlySettings = {
 } as const
 
 describe("settings API schemas", () => {
-  it("parses editable server and auth settings with safe read-only paths", () => {
+  it("parses editable path, server, and auth settings", () => {
     // Given: the exact GET /api/settings response.
     // When: it crosses the frontend boundary.
     const parsed = settingsResponseSchema.safeParse(testOnlySettings)
 
-    // Then: editable configuration and safe path context remain structurally distinct.
+    // Then: every editable configuration group is accepted.
     expect(parsed.success).toBe(true)
   })
 
@@ -70,6 +70,7 @@ describe("settings API schemas", () => {
     // Given: a settings update at every server boundary.
     const payload = {
       version: testOnlySettings.version,
+      paths: testOnlySettings.paths,
       scheduler: {
         paused: false,
         default_compute_slots: 65_535,
@@ -90,7 +91,7 @@ describe("settings API schemas", () => {
     expect(parsed.success).toBe(true)
   })
 
-  type SettingsPatch = Partial<Pick<SettingsUpdateRequest, "scheduler" | "timeouts" | "retry" | "server" | "auth">>
+  type SettingsPatch = Partial<Pick<SettingsUpdateRequest, "paths" | "scheduler" | "timeouts" | "retry" | "server" | "auth">>
   const invalidCases: readonly (readonly [string, SettingsPatch])[] = [
     ["zero upload limit", { scheduler: { ...testOnlySettings.scheduler, max_concurrent_uploads: 0 } }],
     ["excess prefetch", { scheduler: { ...testOnlySettings.scheduler, prefetch_per_worker: 65_536 } }],
@@ -102,6 +103,8 @@ describe("settings API schemas", () => {
     ["zero server port", { server: { ...testOnlySettings.server, port: 0 } }],
     ["excess server port", { server: { ...testOnlySettings.server, port: 65_536 } }],
     ["blank server host", { server: { ...testOnlySettings.server, host: "" } }],
+    ["blank data root", { paths: { ...testOnlySettings.paths, data_root: "" } }],
+    ["blank cache root", { paths: { ...testOnlySettings.paths, cache_root: "" } }],
     ["zero absolute session", { auth: { secure_cookie: true, session_absolute_seconds: 0, session_idle_seconds: 1 } }],
     ["excess idle session", { auth: { secure_cookie: true, session_absolute_seconds: 604_800, session_idle_seconds: 604_801 } }],
     ["idle session above absolute", { auth: { secure_cookie: true, session_absolute_seconds: 60, session_idle_seconds: 61 } }],
@@ -111,6 +114,7 @@ describe("settings API schemas", () => {
     // Given: one update value outside the Rust validation contract.
     const payload = {
       version: testOnlySettings.version,
+      paths: patch.paths ?? testOnlySettings.paths,
       scheduler: patch.scheduler ?? testOnlySettings.scheduler,
       timeouts: patch.timeouts ?? testOnlySettings.timeouts,
       retry: patch.retry ?? testOnlySettings.retry,

@@ -42,8 +42,11 @@ fn example_config_exposes_only_public_runtime_sections() -> Result<(), Box<dyn s
     keys.sort_unstable();
 
     // Then: only settings supported by the Web UI and persisted TOML are present.
-    assert_eq!(keys, ["auth", "retry", "scheduler", "server", "timeouts"]);
+    assert_eq!(
+        keys,
+        ["auth", "paths", "retry", "scheduler", "server", "timeouts"]
+    );
     assert!(!source.contains("password_hash_file"));
-    assert!(!source.contains("[paths]"));
+    assert!(source.contains("[paths]"));
     Ok(())
 }

@@ -1,0 +1,697 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&family=Manrope:wght@400;500;600;700&display=swap">
+  <style>
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;font-family:'Manrope','Avenir Next','Segoe UI',sans-serif;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+.app{
+  --background:oklch(0.98 0.005 260);
+  --foreground:oklch(0.15 0.02 260);
+  --card:oklch(1 0 0);
+  --popover:oklch(1 0 0);
+  --primary:oklch(0.55 0.22 292);
+  --primary-foreground:oklch(0.98 0.005 260);
+  --secondary:oklch(0.93 0.01 260);
+  --muted:oklch(0.93 0.01 260);
+  --muted-foreground:oklch(0.45 0.015 260);
+  --accent:oklch(0.93 0.01 260);
+  --destructive:oklch(0.50 0.20 25);
+  --border:oklch(0.88 0.01 260);
+  --input:oklch(0.88 0.01 260);
+  --ring:oklch(0.55 0.22 292);
+  --sidebar:oklch(0.96 0.008 260);
+  --red-400:oklch(70.4% 0.191 22.216);
+  --red-500:oklch(63.7% 0.237 25.331);
+  --orange-400:oklch(75% 0.183 55.934);
+  --orange-500:oklch(70.5% 0.213 47.604);
+  --yellow-300:oklch(90.5% 0.182 98.111);
+  --yellow-400:oklch(85.2% 0.199 91.936);
+  --yellow-500:oklch(79.5% 0.184 86.047);
+  --green-400:oklch(79.2% 0.209 151.711);
+  --green-500:oklch(72.3% 0.219 149.579);
+  --emerald-400:oklch(76.5% 0.177 163.223);
+  --emerald-500:oklch(69.6% 0.17 162.48);
+  --cyan-400:oklch(78.9% 0.154 211.53);
+  --cyan-500:oklch(71.5% 0.143 215.221);
+  --blue-400:oklch(70.7% 0.165 254.624);
+  --blue-500:oklch(62.3% 0.214 259.815);
+  --purple-400:oklch(71.4% 0.203 305.504);
+  --purple-500:oklch(62.7% 0.265 303.9);
+  --gray-400:oklch(70.7% 0.022 261.325);
+  --gray-500:oklch(55.1% 0.027 264.364);
+  --perf-cpu:hsl(262 83% 58%);
+  --perf-gpu:hsl(200 88% 46%);
+  --perf-ram:hsl(155 63% 43%);
+  --perf-vram:hsl(24 90% 52%);
+  --perf-free:hsl(220 14% 62%);
+  width:1440px;height:900px;display:flex;flex-direction:column;overflow:hidden;
+  background:var(--background);color:var(--foreground);font-size:14px;
+  font-family:'Manrope','Avenir Next','Segoe UI',sans-serif;
+  line-height:1.5;
+}
+/* Tailwind pairs a line-height with each text size; inline font-size alone does not. */
+.app [style*="font-size:12px"]{line-height:16px}
+.app [style*="font-size:14px"]{line-height:20px}
+.app [style*="font-size:16px"]{line-height:24px}
+.app [style*="font-size:20px"]{line-height:28px}
+.app[data-theme="dark"]{
+  color-scheme:dark;
+  --background:oklch(0.13 0.028 260);
+  --foreground:oklch(0.97 0.005 260);
+  --card:oklch(0.16 0.028 260);
+  --popover:oklch(0.16 0.028 260);
+  --primary:oklch(0.58 0.22 292);
+  --primary-foreground:oklch(0.97 0.005 260);
+  --secondary:oklch(0.24 0.02 260);
+  --muted:oklch(0.24 0.02 260);
+  --muted-foreground:oklch(0.7 0.015 260);
+  --accent:oklch(0.24 0.02 260);
+  --destructive:oklch(0.45 0.18 25);
+  --border:oklch(0.28 0.02 260);
+  --input:oklch(0.28 0.02 260);
+  --ring:oklch(0.58 0.22 292);
+  --sidebar:oklch(0.11 0.028 260);
+  --perf-cpu:hsl(262 90% 70%);
+  --perf-gpu:hsl(199 92% 62%);
+  --perf-ram:hsl(156 68% 58%);
+  --perf-vram:hsl(31 95% 64%);
+  --perf-free:hsl(220 16% 74%);
+}
+.mono{font-family:'Geist Mono','SFMono-Regular',Consolas,'Noto Sans Mono CJK SC',monospace}
+a{color:var(--primary);text-decoration:none}
+a:hover{color:var(--primary);opacity:.85}
+button{font:inherit;color:inherit;border:0;background:none;padding:0;cursor:pointer}
+input,select,textarea{font:inherit;color:inherit}
+.nav-item{transition:background-color .15s,color .15s}
+.nav-item:hover{background:var(--accent)}
+.ghost-btn{transition:background-color .15s,color .15s;border-radius:6px}
+.ghost-btn:hover{background:var(--accent)}
+.ctl{appearance:none;-webkit-appearance:none;border-radius:6px;border:1px solid color-mix(in oklab,var(--border) 50%,transparent);background:color-mix(in oklab,var(--background) 50%,transparent);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)}
+.ctl:focus{outline:none;box-shadow:0 0 0 1px var(--ring)}
+.scroll{overflow-y:auto;scrollbar-width:thin}
+@keyframes tw-pulse{0%,100%{opacity:1}50%{opacity:.5}}
+
+.job-row{transition:background-color .15s}
+.job-row:hover{background:color-mix(in oklab,var(--secondary) 40%,transparent)}
+  </style>
+</helmet>
+
+<div class="app" data-theme="{{theme}}">
+  <header style="display:flex;align-items:center;height:48px;padding:0 16px;border-bottom:1px solid var(--border);flex-shrink:0;background:var(--background)">
+    <div style="display:flex;align-items:center;gap:10px;margin-right:24px">
+      <div title="Server connected: workflow running" style="height:24px;width:24px;border-radius:8px;border:1px solid color-mix(in oklab,var(--yellow-400) 50%,transparent);display:flex;align-items:center;justify-content:center;flex-shrink:0;background:color-mix(in oklab,var(--yellow-500) 20%,transparent)">
+        <div style="height:8px;width:8px;border-radius:50%;background:var(--yellow-300);box-shadow:0 0 10px rgba(253,224,71,.65);animation:tw-pulse 2s cubic-bezier(.4,0,.6,1) infinite"></div>
+      </div>
+      <a href="https://github.com/ControlNet/videnoa" class="mono" style="font-size:14px;font-weight:600;color:var(--foreground);white-space:nowrap">Videnoa</a>
+      <span class="mono" style="font-size:12px;color:var(--muted-foreground);white-space:nowrap">v0.1.3</span>
+    </div>
+
+    <nav style="display:flex;align-items:center;gap:4px">
+      <span class="nav-item" style="display:flex;align-items:center;gap:8px;border-radius:6px;padding:6px 12px;font-size:14px;font-weight:500;color:var(--muted-foreground)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><rect width="8" height="8" x="3" y="3" rx="2"/><path d="M7 11v4a2 2 0 0 0 2 2h4"/><rect width="8" height="8" x="13" y="13" rx="2"/></svg>
+        <span>Editor</span>
+      </span>
+      <span class="nav-item" style="display:flex;align-items:center;gap:8px;border-radius:6px;padding:6px 12px;font-size:14px;font-weight:500;background:color-mix(in oklab,var(--primary) 15%,transparent);color:var(--primary)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></svg>
+        <span>Jobs</span>
+      </span>
+      <span class="nav-item" style="display:flex;align-items:center;gap:8px;border-radius:6px;padding:6px 12px;font-size:14px;font-weight:500;color:var(--muted-foreground)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z"/><path d="M12 22V12"/><polyline points="3.29 7 12 12 20.71 7"/><path d="m7.5 4.27 9 5.15"/></svg>
+        <span>Models</span>
+      </span>
+      <span class="nav-item" style="display:flex;align-items:center;gap:8px;border-radius:6px;padding:6px 12px;font-size:14px;font-weight:500;color:var(--muted-foreground)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></svg>
+        <span>Performance</span>
+      </span>
+      <span class="nav-item" style="display:flex;align-items:center;gap:8px;border-radius:6px;padding:6px 12px;font-size:14px;font-weight:500;color:var(--muted-foreground)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></svg>
+        <span>Settings</span>
+      </span>
+    </nav>
+
+    <div style="margin-left:auto;display:flex;align-items:center;gap:4px">
+      <button class="ghost-btn" aria-label="Select language" title="Current language: English" style="height:32px;width:32px;display:flex;align-items:center;justify-content:center">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
+      </button>
+      <button class="ghost-btn" onClick="{{cycleTheme}}" title="{{themeTitle}}" aria-label="{{themeTitle}}" style="height:32px;width:32px;display:flex;align-items:center;justify-content:center">
+        <sc-if value="{{isSystem}}" hint-placeholder-val="{{true}}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg>
+        </sc-if>
+        <sc-if value="{{isLight}}" hint-placeholder-val="{{false}}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
+        </sc-if>
+        <sc-if value="{{isDark}}" hint-placeholder-val="{{false}}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/></svg>
+        </sc-if>
+      </button>
+    </div>
+  </header>
+  <main style="flex:1;min-height:0;overflow:auto">
+    <div style="padding:24px">
+      <h2 style="font-size:18px;line-height:28px;font-weight:600;letter-spacing:-.025em;margin:0 0 24px">Jobs</h2>
+
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-top:-16px;margin-bottom:24px">
+        <p style="color:var(--muted-foreground);font-size:14px;margin:0">6 jobs total</p>
+        <button style="display:inline-flex;align-items:center;justify-content:center;gap:8px;white-space:nowrap;border-radius:6px;font-size:12px;font-weight:500;height:32px;padding:0 12px;background:var(--primary);color:var(--primary-foreground)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;flex-shrink:0"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></svg>
+          Run Workflow
+        </button>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:24px">
+
+        <div style="border-radius:12px;border:1px solid color-mix(in oklab,var(--blue-500) 30%,transparent);background:color-mix(in oklab,var(--blue-500) 5%,transparent);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+          <div style="padding:24px 24px 12px">
+            <div style="display:flex;align-items:center;justify-content:space-between">
+              <div style="display:flex;align-items:center;gap:12px">
+                <div style="display:flex;height:32px;width:32px;align-items:center;justify-content:center;border-radius:8px;background:color-mix(in oklab,var(--blue-500) 20%,transparent);color:var(--blue-400)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></svg></div>
+                <div>
+                  <div style="font-size:16px;font-weight:600;line-height:1;letter-spacing:-.025em">Active Job</div>
+                  <p class="mono" style="font-size:12px;color:var(--muted-foreground);margin:2px 0 0">a3f19c2b</p>
+                </div>
+              </div>
+              <button style="display:inline-flex;align-items:center;justify-content:center;gap:8px;white-space:nowrap;border-radius:6px;font-size:12px;font-weight:500;height:32px;padding:0 12px;background:var(--destructive);color:#fff">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;flex-shrink:0"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                Cancel
+              </button>
+            </div>
+          </div>
+          <div style="padding:0 24px 24px;display:flex;flex-direction:column;gap:16px">
+            <div style="display:flex;flex-direction:column;gap:8px">
+              <div style="position:relative;height:12px;width:100%;overflow:hidden;border-radius:9999px;background:color-mix(in oklab,var(--primary) 20%,transparent)">
+                <div style="height:100%;width:100%;background:var(--primary);transform:translateX(-53%)"></div>
+              </div>
+              <div style="display:flex;align-items:center;justify-content:space-between;font-size:12px;color:var(--muted-foreground)">
+                <span style="font-weight:600;color:var(--foreground);font-size:14px">47%</span>
+                <span>15234 / 32410 frames</span>
+              </div>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px">
+            <div style="display:flex;align-items:flex-start;gap:8px;border-radius:8px;background:color-mix(in oklab,var(--secondary) 50%,transparent);padding:8px 12px">
+              <span style="margin-top:2px;color:var(--muted-foreground);display:flex"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;flex-shrink:0"><path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></svg></span>
+              <div style="min-width:0">
+                <p style="font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted-foreground);margin:0">Input FPS</p>
+                <p style="font-size:14px;font-weight:500;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">23.7</p>
+              </div>
+            </div>
+            <div style="display:flex;align-items:flex-start;gap:8px;border-radius:8px;background:color-mix(in oklab,var(--secondary) 50%,transparent);padding:8px 12px">
+              <span style="margin-top:2px;color:var(--muted-foreground);display:flex"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;flex-shrink:0"><line x1="10" x2="14" y1="2" y2="2"/><line x1="12" x2="15" y1="14" y2="11"/><circle cx="12" cy="14" r="8"/></svg></span>
+              <div style="min-width:0">
+                <p style="font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted-foreground);margin:0">ETA</p>
+                <p style="font-size:14px;font-weight:500;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">~00:12:31 remaining</p>
+              </div>
+            </div>
+            <div style="display:flex;align-items:flex-start;gap:8px;border-radius:8px;background:color-mix(in oklab,var(--secondary) 50%,transparent);padding:8px 12px">
+              <span style="margin-top:2px;color:var(--muted-foreground);display:flex"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;flex-shrink:0"><path d="M12 6v6l4 2"/><circle cx="12" cy="12" r="10"/></svg></span>
+              <div style="min-width:0">
+                <p style="font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted-foreground);margin:0">Elapsed</p>
+                <p style="font-size:14px;font-weight:500;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">00:02:14</p>
+              </div>
+            </div>
+            <div style="display:flex;align-items:flex-start;gap:8px;border-radius:8px;background:color-mix(in oklab,var(--secondary) 50%,transparent);padding:8px 12px">
+              <span style="margin-top:2px;color:var(--muted-foreground);display:flex"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;flex-shrink:0"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></svg></span>
+              <div style="min-width:0">
+                <p style="font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted-foreground);margin:0">Status</p>
+                <p style="font-size:14px;font-weight:500;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Running</p>
+              </div>
+            </div>
+            </div>
+          </div>
+        </div>
+
+        <div style="border-radius:12px;border:1px solid var(--border);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+          <div style="padding:24px 24px 12px">
+            <div style="font-size:16px;font-weight:600;line-height:1;letter-spacing:-.025em">Job History</div>
+          </div>
+          <div>
+            <div style="display:flex;align-items:center;gap:16px;border-bottom:1px solid color-mix(in oklab,var(--border) 50%,transparent);padding:8px 16px;font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted-foreground)">
+              <span style="width:14px;flex-shrink:0"></span>
+          <span style="width:80px;flex-shrink:0;">ID</span>
+          <span style="width:96px;flex-shrink:0;">Status</span>
+          <span style="width:144px;flex-shrink:0;">Workflow</span>
+          <span style="width:112px;flex-shrink:0;">Created</span>
+          <span style="width:96px;flex-shrink:0;">Duration</span>
+          <span style="width:96px;flex-shrink:0;">Params</span>
+              <span style="min-width:0;flex:1">Error</span>
+          <span style="width:144px;flex-shrink:0;text-align:right">Actions</span>
+            </div>
+            <div style="height:1px;background:var(--border)"></div>
+            <div style="max-height:480px;overflow-y:auto">
+        <div>
+          <div class="job-row" style="display:flex;width:100%;align-items:center;padding:8px 16px;font-size:14px">
+            <button onClick="{{toggle0}}" style="display:flex;min-width:0;flex:1;align-items:center;gap:16px;padding:4px 0;text-align:left">
+              <span style="color:var(--muted-foreground);display:flex">
+                <sc-if value="{{open0}}" hint-placeholder-val="{{false}}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;flex-shrink:0"><path d="m6 9 6 6 6-6"/></svg></sc-if>
+                <sc-if value="{{closed0}}" hint-placeholder-val="{{true}}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;flex-shrink:0"><path d="m9 18 6-6-6-6"/></svg></sc-if>
+              </span>
+              <span class="mono" style="width:80px;font-size:12px;color:var(--muted-foreground);flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">a3f19c2b</span>
+              <span style="width:96px;flex-shrink:0">
+                <span style="display:inline-flex;align-items:center;border-radius:6px;border:1px solid;padding:2px 10px;font-size:12px;font-weight:600;background:color-mix(in oklab,var(--blue-500) 20%,transparent);color:var(--blue-400);border-color:color-mix(in oklab,var(--blue-500) 30%,transparent)">Running</span>
+              </span>
+              <span style="width:144px;font-size:12px;color:var(--muted-foreground);flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Anime 2x + Interpolation 2x</span>
+              <span style="width:112px;font-size:12px;color:var(--muted-foreground);flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">2 min ago</span>
+              <span style="width:96px;font-size:12px;color:var(--muted-foreground);flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">00:02:14</span>
+              <span style="width:96px;font-size:12px;color:var(--muted-foreground);flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">2 params</span>
+              <span style="min-width:0;flex:1;font-size:12px;color:color-mix(in oklab,var(--red-400) 80%,transparent);overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+            </button>
+            <div style="display:flex;width:144px;flex-shrink:0;align-items:center;justify-content:flex-end;gap:4px;padding-left:12px">
+          <button style="display:inline-flex;align-items:center;justify-content:center;gap:8px;white-space:nowrap;border-radius:6px;font-size:12px;font-weight:500;height:32px;padding:0 12px;border:1px solid var(--input);background:var(--background)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;flex-shrink:0"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+            Retry
+          </button>
+          <button style="display:inline-flex;align-items:center;justify-content:center;gap:8px;white-space:nowrap;border-radius:6px;font-size:12px;font-weight:500;height:32px;padding:0 12px;border:1px solid var(--input);background:var(--background)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;flex-shrink:0"><path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            Delete
+          </button>
+            </div>
+          </div>
+          <sc-if value="{{open0}}" hint-placeholder-val="{{false}}">
+          <div style="border-top:1px solid color-mix(in oklab,var(--border) 50%,transparent);background:color-mix(in oklab,var(--secondary) 20%,transparent);padding:12px 16px 12px 48px">
+            <div style="display:grid;grid-template-columns:1fr 1fr;column-gap:32px;row-gap:8px;font-size:12px">
+              <div>
+                <span style="color:var(--muted-foreground)">Full ID:</span> <span class="mono">a3f19c2b-6d40-4c1e-9f77-0b2e51ac8d33</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Status:</span> <span>Running</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Workflow:</span> <span>Anime 2x + Interpolation 2x</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Workflow Source:</span> <span class="mono">presets/anime-2x-interpolation-2x.json</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Created:</span> <span>9/8/2026, 1:12:04 AM</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Started:</span> <span>9/8/2026, 1:12:06 AM</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Completed:</span> <span>—</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Duration:</span> <span>00:02:14</span>
+              </div>
+              <div style="grid-column:span 2">
+                <p style="color:var(--muted-foreground);margin:0">Params JSON:</p>
+                <pre class="mono" style="margin:4px 0 0;border-radius:6px;border:1px solid color-mix(in oklab,var(--border) 60%,transparent);background:color-mix(in oklab,var(--background) 50%,transparent);padding:8px 12px;white-space:pre-wrap;word-break:break-all;font-size:12px;color:var(--foreground)">{
+  "input": "/media/anime/ep01.mkv",
+  "output": "/media/out/ep01_2x.mkv"
+}</pre>
+              </div>
+            </div>
+          </div>
+          </sc-if>
+        </div>
+        <div>
+          <div class="job-row" style="display:flex;width:100%;align-items:center;padding:8px 16px;font-size:14px">
+            <button onClick="{{toggle1}}" style="display:flex;min-width:0;flex:1;align-items:center;gap:16px;padding:4px 0;text-align:left">
+              <span style="color:var(--muted-foreground);display:flex">
+                <sc-if value="{{open1}}" hint-placeholder-val="{{false}}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;flex-shrink:0"><path d="m6 9 6 6 6-6"/></svg></sc-if>
+                <sc-if value="{{closed1}}" hint-placeholder-val="{{true}}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;flex-shrink:0"><path d="m9 18 6-6-6-6"/></svg></sc-if>
+              </span>
+              <span class="mono" style="width:80px;font-size:12px;color:var(--muted-foreground);flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">7d21e4f0</span>
+              <span style="width:96px;flex-shrink:0">
+                <span style="display:inline-flex;align-items:center;border-radius:6px;border:1px solid;padding:2px 10px;font-size:12px;font-weight:600;background:color-mix(in oklab,var(--green-500) 20%,transparent);color:var(--green-400);border-color:color-mix(in oklab,var(--green-500) 30%,transparent)">Completed</span>
+              </span>
+              <span style="width:144px;font-size:12px;color:var(--muted-foreground);flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Anime 4x Upscale</span>
+              <span style="width:112px;font-size:12px;color:var(--muted-foreground);flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">41 min ago</span>
+              <span style="width:96px;font-size:12px;color:var(--muted-foreground);flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">00:38:52</span>
+              <span style="width:96px;font-size:12px;color:var(--muted-foreground);flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">2 params</span>
+              <span style="min-width:0;flex:1;font-size:12px;color:color-mix(in oklab,var(--red-400) 80%,transparent);overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+            </button>
+            <div style="display:flex;width:144px;flex-shrink:0;align-items:center;justify-content:flex-end;gap:4px;padding-left:12px">
+          <button style="display:inline-flex;align-items:center;justify-content:center;gap:8px;white-space:nowrap;border-radius:6px;font-size:12px;font-weight:500;height:32px;padding:0 12px;border:1px solid var(--input);background:var(--background)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;flex-shrink:0"><path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            Delete
+          </button>
+            </div>
+          </div>
+          <sc-if value="{{open1}}" hint-placeholder-val="{{false}}">
+          <div style="border-top:1px solid color-mix(in oklab,var(--border) 50%,transparent);background:color-mix(in oklab,var(--secondary) 20%,transparent);padding:12px 16px 12px 48px">
+            <div style="display:grid;grid-template-columns:1fr 1fr;column-gap:32px;row-gap:8px;font-size:12px">
+              <div>
+                <span style="color:var(--muted-foreground)">Full ID:</span> <span class="mono">7d21e4f0-1a8b-49d2-b0c5-77ef2c9a4e10</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Status:</span> <span>Completed</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Workflow:</span> <span>Anime 4x Upscale</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Workflow Source:</span> <span class="mono">presets/anime-4x-upscale.json</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Created:</span> <span>9/8/2026, 12:33:18 AM</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Started:</span> <span>9/8/2026, 12:33:20 AM</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Completed:</span> <span>9/8/2026, 1:12:12 AM</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Duration:</span> <span>00:38:52</span>
+              </div>
+              <div style="grid-column:span 2">
+                <p style="color:var(--muted-foreground);margin:0">Params JSON:</p>
+                <pre class="mono" style="margin:4px 0 0;border-radius:6px;border:1px solid color-mix(in oklab,var(--border) 60%,transparent);background:color-mix(in oklab,var(--background) 50%,transparent);padding:8px 12px;white-space:pre-wrap;word-break:break-all;font-size:12px;color:var(--foreground)">{
+  "input": "/media/anime/movie_bd.mkv",
+  "output": "/media/out/movie_bd_4x.mkv"
+}</pre>
+              </div>
+            </div>
+          </div>
+          </sc-if>
+        </div>
+        <div>
+          <div class="job-row" style="display:flex;width:100%;align-items:center;padding:8px 16px;font-size:14px">
+            <button onClick="{{toggle2}}" style="display:flex;min-width:0;flex:1;align-items:center;gap:16px;padding:4px 0;text-align:left">
+              <span style="color:var(--muted-foreground);display:flex">
+                <sc-if value="{{open2}}" hint-placeholder-val="{{false}}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;flex-shrink:0"><path d="m6 9 6 6 6-6"/></svg></sc-if>
+                <sc-if value="{{closed2}}" hint-placeholder-val="{{true}}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;flex-shrink:0"><path d="m9 18 6-6-6-6"/></svg></sc-if>
+              </span>
+              <span class="mono" style="width:80px;font-size:12px;color:var(--muted-foreground);flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">1c8b90aa</span>
+              <span style="width:96px;flex-shrink:0">
+                <span style="display:inline-flex;align-items:center;border-radius:6px;border:1px solid;padding:2px 10px;font-size:12px;font-weight:600;background:color-mix(in oklab,var(--green-500) 20%,transparent);color:var(--green-400);border-color:color-mix(in oklab,var(--green-500) 30%,transparent)">Completed</span>
+              </span>
+              <span style="width:144px;font-size:12px;color:var(--muted-foreground);flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Interpolation 2x</span>
+              <span style="width:112px;font-size:12px;color:var(--muted-foreground);flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">3 hours ago</span>
+              <span style="width:96px;font-size:12px;color:var(--muted-foreground);flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">00:12:07</span>
+              <span style="width:96px;font-size:12px;color:var(--muted-foreground);flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">2 params</span>
+              <span style="min-width:0;flex:1;font-size:12px;color:color-mix(in oklab,var(--red-400) 80%,transparent);overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+            </button>
+            <div style="display:flex;width:144px;flex-shrink:0;align-items:center;justify-content:flex-end;gap:4px;padding-left:12px">
+          <button style="display:inline-flex;align-items:center;justify-content:center;gap:8px;white-space:nowrap;border-radius:6px;font-size:12px;font-weight:500;height:32px;padding:0 12px;border:1px solid var(--input);background:var(--background)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;flex-shrink:0"><path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            Delete
+          </button>
+            </div>
+          </div>
+          <sc-if value="{{open2}}" hint-placeholder-val="{{false}}">
+          <div style="border-top:1px solid color-mix(in oklab,var(--border) 50%,transparent);background:color-mix(in oklab,var(--secondary) 20%,transparent);padding:12px 16px 12px 48px">
+            <div style="display:grid;grid-template-columns:1fr 1fr;column-gap:32px;row-gap:8px;font-size:12px">
+              <div>
+                <span style="color:var(--muted-foreground)">Full ID:</span> <span class="mono">1c8b90aa-52f3-4d67-8e19-cb40d7a15b92</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Status:</span> <span>Completed</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Workflow:</span> <span>Interpolation 2x</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Workflow Source:</span> <span class="mono">presets/interpolation-2x.json</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Created:</span> <span>9/7/2026, 10:05:47 PM</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Started:</span> <span>9/7/2026, 10:05:49 PM</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Completed:</span> <span>9/7/2026, 10:17:56 PM</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Duration:</span> <span>00:12:07</span>
+              </div>
+              <div style="grid-column:span 2">
+                <p style="color:var(--muted-foreground);margin:0">Params JSON:</p>
+                <pre class="mono" style="margin:4px 0 0;border-radius:6px;border:1px solid color-mix(in oklab,var(--border) 60%,transparent);background:color-mix(in oklab,var(--background) 50%,transparent);padding:8px 12px;white-space:pre-wrap;word-break:break-all;font-size:12px;color:var(--foreground)">{
+  "input": "/media/anime/ep01.mkv",
+  "output": "/media/out/ep01_2x.mkv"
+}</pre>
+              </div>
+            </div>
+          </div>
+          </sc-if>
+        </div>
+        <div>
+          <div class="job-row" style="display:flex;width:100%;align-items:center;padding:8px 16px;font-size:14px">
+            <button onClick="{{toggle3}}" style="display:flex;min-width:0;flex:1;align-items:center;gap:16px;padding:4px 0;text-align:left">
+              <span style="color:var(--muted-foreground);display:flex">
+                <sc-if value="{{open3}}" hint-placeholder-val="{{false}}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;flex-shrink:0"><path d="m6 9 6 6 6-6"/></svg></sc-if>
+                <sc-if value="{{closed3}}" hint-placeholder-val="{{true}}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;flex-shrink:0"><path d="m9 18 6-6-6-6"/></svg></sc-if>
+              </span>
+              <span class="mono" style="width:80px;font-size:12px;color:var(--muted-foreground);flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">e50427d6</span>
+              <span style="width:96px;flex-shrink:0">
+                <span style="display:inline-flex;align-items:center;border-radius:6px;border:1px solid;padding:2px 10px;font-size:12px;font-weight:600;background:color-mix(in oklab,var(--red-500) 20%,transparent);color:var(--red-400);border-color:color-mix(in oklab,var(--red-500) 30%,transparent)">Failed</span>
+              </span>
+              <span style="width:144px;font-size:12px;color:var(--muted-foreground);flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Anime 2x + Interpolation 2x</span>
+              <span style="width:112px;font-size:12px;color:var(--muted-foreground);flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">5 hours ago</span>
+              <span style="width:96px;font-size:12px;color:var(--muted-foreground);flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">00:01:36</span>
+              <span style="width:96px;font-size:12px;color:var(--muted-foreground);flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">2 params</span>
+              <span style="min-width:0;flex:1;font-size:12px;color:color-mix(in oklab,var(--red-400) 80%,transparent);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">TensorRT engine build failed: no kernel image is available f</span>
+            </button>
+            <div style="display:flex;width:144px;flex-shrink:0;align-items:center;justify-content:flex-end;gap:4px;padding-left:12px">
+          <button style="display:inline-flex;align-items:center;justify-content:center;gap:8px;white-space:nowrap;border-radius:6px;font-size:12px;font-weight:500;height:32px;padding:0 12px;border:1px solid var(--input);background:var(--background)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;flex-shrink:0"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+            Retry
+          </button>
+          <button style="display:inline-flex;align-items:center;justify-content:center;gap:8px;white-space:nowrap;border-radius:6px;font-size:12px;font-weight:500;height:32px;padding:0 12px;border:1px solid var(--input);background:var(--background)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;flex-shrink:0"><path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            Delete
+          </button>
+            </div>
+          </div>
+          <sc-if value="{{open3}}" hint-placeholder-val="{{false}}">
+          <div style="border-top:1px solid color-mix(in oklab,var(--border) 50%,transparent);background:color-mix(in oklab,var(--secondary) 20%,transparent);padding:12px 16px 12px 48px">
+            <div style="display:grid;grid-template-columns:1fr 1fr;column-gap:32px;row-gap:8px;font-size:12px">
+              <div>
+                <span style="color:var(--muted-foreground)">Full ID:</span> <span class="mono">e50427d6-9c14-4b8a-a2f0-3d6178ee5c04</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Status:</span> <span>Failed</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Workflow:</span> <span>Anime 2x + Interpolation 2x</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Workflow Source:</span> <span class="mono">presets/anime-2x-interpolation-2x.json</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Created:</span> <span>9/7/2026, 8:22:11 PM</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Started:</span> <span>9/7/2026, 8:22:13 PM</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Completed:</span> <span>9/7/2026, 8:23:49 PM</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Duration:</span> <span>00:01:36</span>
+              </div>
+              <div style="grid-column:span 2">
+                <p style="color:var(--muted-foreground);margin:0">Params JSON:</p>
+                <pre class="mono" style="margin:4px 0 0;border-radius:6px;border:1px solid color-mix(in oklab,var(--border) 60%,transparent);background:color-mix(in oklab,var(--background) 50%,transparent);padding:8px 12px;white-space:pre-wrap;word-break:break-all;font-size:12px;color:var(--foreground)">{
+  "input": "/media/anime/ep01.mkv",
+  "output": "/media/out/ep01_2x.mkv"
+}</pre>
+              </div>
+              <div style="grid-column:span 2">
+                <span style="color:var(--muted-foreground)">Error:</span> <span style="color:var(--red-400)">TensorRT engine build failed: no kernel image is available for execution on the device</span>
+              </div>
+            </div>
+          </div>
+          </sc-if>
+        </div>
+        <div>
+          <div class="job-row" style="display:flex;width:100%;align-items:center;padding:8px 16px;font-size:14px">
+            <button onClick="{{toggle4}}" style="display:flex;min-width:0;flex:1;align-items:center;gap:16px;padding:4px 0;text-align:left">
+              <span style="color:var(--muted-foreground);display:flex">
+                <sc-if value="{{open4}}" hint-placeholder-val="{{false}}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;flex-shrink:0"><path d="m6 9 6 6 6-6"/></svg></sc-if>
+                <sc-if value="{{closed4}}" hint-placeholder-val="{{true}}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;flex-shrink:0"><path d="m9 18 6-6-6-6"/></svg></sc-if>
+              </span>
+              <span class="mono" style="width:80px;font-size:12px;color:var(--muted-foreground);flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">9b3ac715</span>
+              <span style="width:96px;flex-shrink:0">
+                <span style="display:inline-flex;align-items:center;border-radius:6px;border:1px solid;padding:2px 10px;font-size:12px;font-weight:600;background:color-mix(in oklab,var(--gray-500) 20%,transparent);color:var(--gray-400);border-color:color-mix(in oklab,var(--gray-500) 30%,transparent)">Cancelled</span>
+              </span>
+              <span style="width:144px;font-size:12px;color:var(--muted-foreground);flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Anime 4x Upscale</span>
+              <span style="width:112px;font-size:12px;color:var(--muted-foreground);flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">1 day ago</span>
+              <span style="width:96px;font-size:12px;color:var(--muted-foreground);flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">00:07:41</span>
+              <span style="width:96px;font-size:12px;color:var(--muted-foreground);flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">2 params</span>
+              <span style="min-width:0;flex:1;font-size:12px;color:color-mix(in oklab,var(--red-400) 80%,transparent);overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+            </button>
+            <div style="display:flex;width:144px;flex-shrink:0;align-items:center;justify-content:flex-end;gap:4px;padding-left:12px">
+          <button style="display:inline-flex;align-items:center;justify-content:center;gap:8px;white-space:nowrap;border-radius:6px;font-size:12px;font-weight:500;height:32px;padding:0 12px;border:1px solid var(--input);background:var(--background)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;flex-shrink:0"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+            Retry
+          </button>
+          <button style="display:inline-flex;align-items:center;justify-content:center;gap:8px;white-space:nowrap;border-radius:6px;font-size:12px;font-weight:500;height:32px;padding:0 12px;border:1px solid var(--input);background:var(--background)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;flex-shrink:0"><path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            Delete
+          </button>
+            </div>
+          </div>
+          <sc-if value="{{open4}}" hint-placeholder-val="{{false}}">
+          <div style="border-top:1px solid color-mix(in oklab,var(--border) 50%,transparent);background:color-mix(in oklab,var(--secondary) 20%,transparent);padding:12px 16px 12px 48px">
+            <div style="display:grid;grid-template-columns:1fr 1fr;column-gap:32px;row-gap:8px;font-size:12px">
+              <div>
+                <span style="color:var(--muted-foreground)">Full ID:</span> <span class="mono">9b3ac715-0e62-4a35-bd88-15c9f4703a6d</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Status:</span> <span>Cancelled</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Workflow:</span> <span>Anime 4x Upscale</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Workflow Source:</span> <span class="mono">presets/anime-4x-upscale.json</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Created:</span> <span>9/6/2026, 11:48:02 PM</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Started:</span> <span>9/6/2026, 11:48:04 PM</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Completed:</span> <span>9/6/2026, 11:55:45 PM</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Duration:</span> <span>00:07:41</span>
+              </div>
+              <div style="grid-column:span 2">
+                <p style="color:var(--muted-foreground);margin:0">Params JSON:</p>
+                <pre class="mono" style="margin:4px 0 0;border-radius:6px;border:1px solid color-mix(in oklab,var(--border) 60%,transparent);background:color-mix(in oklab,var(--background) 50%,transparent);padding:8px 12px;white-space:pre-wrap;word-break:break-all;font-size:12px;color:var(--foreground)">{
+  "input": "/media/anime/movie_bd.mkv",
+  "output": "/media/out/movie_bd_4x.mkv"
+}</pre>
+              </div>
+            </div>
+          </div>
+          </sc-if>
+        </div>
+        <div>
+          <div class="job-row" style="display:flex;width:100%;align-items:center;padding:8px 16px;font-size:14px">
+            <button onClick="{{toggle5}}" style="display:flex;min-width:0;flex:1;align-items:center;gap:16px;padding:4px 0;text-align:left">
+              <span style="color:var(--muted-foreground);display:flex">
+                <sc-if value="{{open5}}" hint-placeholder-val="{{false}}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;flex-shrink:0"><path d="m6 9 6 6 6-6"/></svg></sc-if>
+                <sc-if value="{{closed5}}" hint-placeholder-val="{{true}}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;flex-shrink:0"><path d="m9 18 6-6-6-6"/></svg></sc-if>
+              </span>
+              <span class="mono" style="width:80px;font-size:12px;color:var(--muted-foreground);flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">4f6d2e88</span>
+              <span style="width:96px;flex-shrink:0">
+                <span style="display:inline-flex;align-items:center;border-radius:6px;border:1px solid;padding:2px 10px;font-size:12px;font-weight:600;background:color-mix(in oklab,var(--green-500) 20%,transparent);color:var(--green-400);border-color:color-mix(in oklab,var(--green-500) 30%,transparent)">Completed</span>
+              </span>
+              <span style="width:144px;font-size:12px;color:var(--muted-foreground);flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Interpolation 3x + Anime 2x</span>
+              <span style="width:112px;font-size:12px;color:var(--muted-foreground);flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">2 days ago</span>
+              <span style="width:96px;font-size:12px;color:var(--muted-foreground);flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">01:24:19</span>
+              <span style="width:96px;font-size:12px;color:var(--muted-foreground);flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">2 params</span>
+              <span style="min-width:0;flex:1;font-size:12px;color:color-mix(in oklab,var(--red-400) 80%,transparent);overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+            </button>
+            <div style="display:flex;width:144px;flex-shrink:0;align-items:center;justify-content:flex-end;gap:4px;padding-left:12px">
+          <button style="display:inline-flex;align-items:center;justify-content:center;gap:8px;white-space:nowrap;border-radius:6px;font-size:12px;font-weight:500;height:32px;padding:0 12px;border:1px solid var(--input);background:var(--background)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;flex-shrink:0"><path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            Delete
+          </button>
+            </div>
+          </div>
+          <sc-if value="{{open5}}" hint-placeholder-val="{{false}}">
+          <div style="border-top:1px solid color-mix(in oklab,var(--border) 50%,transparent);background:color-mix(in oklab,var(--secondary) 20%,transparent);padding:12px 16px 12px 48px">
+            <div style="display:grid;grid-template-columns:1fr 1fr;column-gap:32px;row-gap:8px;font-size:12px">
+              <div>
+                <span style="color:var(--muted-foreground)">Full ID:</span> <span class="mono">4f6d2e88-77a0-4e5b-91d3-6c2b0af9e417</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Status:</span> <span>Completed</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Workflow:</span> <span>Interpolation 3x + Anime 2x</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Workflow Source:</span> <span class="mono">presets/interpolation-3x-anime-2x.json</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Created:</span> <span>9/5/2026, 9:14:30 PM</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Started:</span> <span>9/5/2026, 9:14:32 PM</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Completed:</span> <span>9/5/2026, 10:38:51 PM</span>
+              </div>
+              <div>
+                <span style="color:var(--muted-foreground)">Duration:</span> <span>01:24:19</span>
+              </div>
+              <div style="grid-column:span 2">
+                <p style="color:var(--muted-foreground);margin:0">Params JSON:</p>
+                <pre class="mono" style="margin:4px 0 0;border-radius:6px;border:1px solid color-mix(in oklab,var(--border) 60%,transparent);background:color-mix(in oklab,var(--background) 50%,transparent);padding:8px 12px;white-space:pre-wrap;word-break:break-all;font-size:12px;color:var(--foreground)">{
+  "input": "/media/anime/ep01.mkv",
+  "output": "/media/out/ep01_2x.mkv"
+}</pre>
+              </div>
+            </div>
+          </div>
+          </sc-if>
+        </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </main>
+</div>
+</x-dc>
+
+<script data-dc-script data-props='{"theme":{"editor":"enum","options":["system","light","dark"],"default":"dark","section":"Theme"},"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { mode: null, open: {} };
+  }
+
+  currentMode() {
+    return this.state.mode ?? this.props.theme ?? 'dark';
+  }
+
+  resolvedTheme() {
+    const mode = this.currentMode();
+    if (mode !== 'system') return mode;
+    try {
+      return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    } catch (err) {
+      return 'dark';
+    }
+  }
+
+  renderVals() {
+    const cycle = ['system', 'light', 'dark'];
+    const labels = { system: 'System', light: 'Light', dark: 'Dark' };
+    const mode = this.currentMode();
+    const next = cycle[(cycle.indexOf(mode) + 1) % cycle.length];
+
+    const vals = {
+      theme: this.resolvedTheme(),
+      isSystem: mode === 'system',
+      isLight: mode === 'light',
+      isDark: mode === 'dark',
+      themeTitle: labels[mode] + ' — click for ' + labels[next],
+      cycleTheme: () => this.setState({ mode: next })
+    };
+
+    for (let i = 0; i < 6; i += 1) {
+      const key = String(i);
+      const isOpen = this.state.open[key] === true;
+      vals['open' + key] = isOpen;
+      vals['closed' + key] = !isOpen;
+      vals['toggle' + key] = () => {
+        const open = Object.assign({}, this.state.open);
+        open[key] = !isOpen;
+        this.setState({ open: open });
+      };
+    }
+
+    return vals;
+  }
+}
+</script>
+</body>
+</html>

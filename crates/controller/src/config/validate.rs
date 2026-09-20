@@ -1,5 +1,5 @@
 use std::num::{NonZeroU16, NonZeroU32};
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use super::raw::RawControllerConfig;
@@ -37,8 +37,8 @@ pub(super) fn build_config(
         paths: PathConfig {
             input_roots: vec![workspace.to_path_buf()],
             output_roots: vec![workspace.to_path_buf()],
-            data_root: workspace.join("data"),
-            temp_root: workspace.join("data"),
+            data_root: configured_root("paths.data_root", &raw.paths.data_root, workspace)?,
+            temp_root: configured_root("paths.cache_root", &raw.paths.cache_root, workspace)?,
         },
         auth: AuthConfig {
             secure_cookie: raw.auth.secure_cookie,
@@ -75,6 +75,36 @@ pub(super) fn build_config(
             max_attempts: positive_nonzero_u32("retry.max_attempts", raw.retry.max_attempts)?,
         },
     })
+}
+
+fn configured_root(
+    field: &'static str,
+    configured: &Path,
+    workspace: &Path,
+) -> Result<PathBuf, ConfigError> {
+    if configured.as_os_str().is_empty() {
+        return Err(ConfigError::InvalidRoot {
+            field,
+            path: configured.to_path_buf(),
+            reason: "path must not be empty",
+        });
+    }
+    let absolute = if configured.is_absolute() {
+        configured.to_path_buf()
+    } else {
+        workspace.join(configured)
+    };
+    if absolute
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(ConfigError::InvalidRoot {
+            field,
+            path: absolute,
+            reason: "parent traversal is not allowed",
+        });
+    }
+    Ok(absolute.components().collect())
 }
 
 fn positive_duration(field: &'static str, value: u64) -> Result<Duration, ConfigError> {

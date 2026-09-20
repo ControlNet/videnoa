@@ -8,7 +8,8 @@ import { SettingsPage } from "./SettingsPage"
 
 const testOnlySettings = {
   version: 3,
-  paths: { workspace: "/synthetic/workspace", data_root: "/synthetic/data", config_file: "/synthetic/controller.toml" },
+  paths: { data_root: "/synthetic/data", cache_root: "/synthetic/cache" },
+  restart_required: false,
   server: { host: "0.0.0.0", port: 3001 },
   secure_cookie: true,
   session_absolute_seconds: 86_400,
@@ -19,7 +20,7 @@ const testOnlySettings = {
 } as const
 
 describe("Settings page", () => {
-  it("edits every public configuration group and reports file persistence plus hot apply", async () => {
+  it("edits every public configuration group and reports applied settings", async () => {
     // Given: synthetic test-only settings with a server endpoint that can be changed.
     const requests: Request[] = []
     const fetcher: typeof fetch = async (input, init) => {
@@ -30,7 +31,10 @@ describe("Settings page", () => {
         const update = settingsUpdateRequestSchema.parse(await request.clone().json())
         return Response.json({
           ...testOnlySettings,
-          version: 4,
+          version: update.version + 1,
+          paths: update.paths,
+          restart_required: update.paths.data_root !== testOnlySettings.paths.data_root
+            || update.paths.cache_root !== testOnlySettings.paths.cache_root,
           server: update.server,
           secure_cookie: update.auth.secure_cookie,
           session_absolute_seconds: update.auth.session_absolute_seconds,
@@ -46,8 +50,12 @@ describe("Settings page", () => {
     const apiClient = createApiClient({ fetcher, onUnauthorized: () => undefined })
     render(<SettingsPage apiClient={apiClient} />)
 
-    // When: server, authentication, and scheduler values are changed and saved.
+    // When: paths, server, authentication, and scheduler values are changed and saved.
     expect(await screen.findByLabelText("Default compute slots")).toHaveValue(2)
+    expect(screen.getByRole("heading", { name: "Paths" })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Pause scheduler" }))
+    expect(await screen.findByText("Scheduler paused")).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText(/Cache root/), { target: { value: "/media/.videnoa-cache" } })
     fireEvent.change(screen.getByLabelText("Server port"), { target: { value: "4555" } })
     fireEvent.click(screen.getByLabelText("Require secure session cookie"))
     fireEvent.change(screen.getByLabelText("Absolute session seconds"), { target: { value: "31536000" } })
@@ -62,8 +70,9 @@ describe("Settings page", () => {
       return request
     })
     expect(await updateRequest?.json()).toEqual({
-      version: 3,
-      scheduler: { ...testOnlySettings.scheduler, max_concurrent_uploads: 5 },
+      version: 4,
+      paths: { ...testOnlySettings.paths, cache_root: "/media/.videnoa-cache" },
+      scheduler: { ...testOnlySettings.scheduler, paused: true, max_concurrent_uploads: 5 },
       timeouts: testOnlySettings.timeouts,
       retry: testOnlySettings.retry,
       server: { host: "0.0.0.0", port: 4555 },
@@ -73,10 +82,12 @@ describe("Settings page", () => {
     expect(screen.getByLabelText("Idle session seconds")).not.toHaveAttribute("max")
     expect(screen.getByLabelText("Concurrent uploads")).toHaveAttribute("min", "1")
     expect(screen.getByLabelText("Transfer timeout seconds")).toHaveAttribute("max", "604800")
-    expect(screen.getByText("/synthetic/workspace")).toBeInTheDocument()
-    expect(screen.getByText("/synthetic/controller.toml")).toBeInTheDocument()
-    expect(screen.queryByText(/input roots|output roots|temporary root|password hash/i)).not.toBeInTheDocument()
-    expect(await screen.findByRole("status")).toHaveTextContent("saved and applied")
+    expect(screen.queryByText("/synthetic/workspace")).not.toBeInTheDocument()
+    expect(screen.queryByText("/synthetic/controller.toml")).not.toBeInTheDocument()
+    expect(screen.queryByText(/migrations|root_handles/i)).not.toBeInTheDocument()
+    expect(await screen.findByRole("status")).toHaveTextContent("restart required")
+    expect(screen.getByRole("button", { name: "Resume scheduler" })).toBeDisabled()
+    expect(screen.getByText(/scheduler remains paused until restart/i)).toBeInTheDocument()
     expect(screen.getByRole("link", { name: /open Controller at the new address/i })).toHaveAttribute("href", "http://localhost:4555/")
   })
 
@@ -98,6 +109,7 @@ describe("Settings page", () => {
         currentSettings = {
           ...currentSettings,
           version: currentSettings.version + 1,
+          paths: update.paths,
           server: update.server,
           secure_cookie: update.auth.secure_cookie,
           session_absolute_seconds: update.auth.session_absolute_seconds,
@@ -224,7 +236,7 @@ it("preserves dirty fields, refreshes untouched fields, and saves the reconciled
     if (request.method === "PUT") {
       const update = settingsUpdateRequestSchema.parse(await request.json())
       updates.push(update)
-      remote = { ...remote, version: remote.version + 1, server: update.server, secure_cookie: update.auth.secure_cookie, session_absolute_seconds: update.auth.session_absolute_seconds, session_idle_seconds: update.auth.session_idle_seconds, scheduler: update.scheduler, timeouts: update.timeouts, retry: update.retry }
+      remote = { ...remote, version: remote.version + 1, paths: update.paths, server: update.server, secure_cookie: update.auth.secure_cookie, session_absolute_seconds: update.auth.session_absolute_seconds, session_idle_seconds: update.auth.session_idle_seconds, scheduler: update.scheduler, timeouts: update.timeouts, retry: update.retry }
     }
     return Response.json(remote)
   } })

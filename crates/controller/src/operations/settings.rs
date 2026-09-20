@@ -5,7 +5,9 @@ use chrono::Utc;
 use std::net::SocketAddr;
 
 use crate::config::PreparedListener;
-use crate::domain::{SettingsPaths, SettingsResponse, SettingsUpdateRequest, TaskActionRequest};
+use crate::domain::{
+    SettingsPaths, SettingsResponse, SettingsUpdateRequest, TaskActionRequest, TaskStatus,
+};
 use crate::persistence::{CasOutcome, SettingsRecord};
 
 use super::request_failure::OperationsError;
@@ -64,6 +66,7 @@ async fn set_paused(
         state,
         SettingsUpdateRequest {
             version: action.version,
+            paths: configured_paths(state),
             server: record.server,
             auth: record.auth,
             scheduler,
@@ -89,6 +92,7 @@ async fn apply(
             "settings changed since they were read",
         ));
     }
+    validate_path_transition(state, &request).await?;
     let config = validate_request::build_config(&state.config.paths, &request)?;
     let prepared = prepare_listener(&record, &request, state.listener.is_some()).await?;
     let handoff = match (prepared, &state.listener) {
@@ -165,13 +169,16 @@ fn current(state: &OperationsState) -> Result<SettingsResponse, OperationsError>
 }
 
 fn response(state: &OperationsState, record: SettingsRecord) -> SettingsResponse {
+    let configured = state.store.config_manager().config();
+    let restart_required = configured.paths.data_root != state.config.paths.data_root
+        || configured.paths.temp_root != state.config.paths.temp_root;
     SettingsResponse {
         version: record.version,
         paths: SettingsPaths {
-            workspace: state.workspace.clone(),
-            data_root: state.config.paths.data_root.clone(),
-            config_file: state.workspace.join("data/controller.toml"),
+            data_root: configured.paths.data_root,
+            cache_root: configured.paths.temp_root,
         },
+        restart_required,
         server: record.server,
         secure_cookie: record.auth.secure_cookie,
         session_absolute_seconds: record.auth.session_absolute_seconds,
@@ -180,4 +187,50 @@ fn response(state: &OperationsState, record: SettingsRecord) -> SettingsResponse
         timeouts: record.timeouts,
         retry: record.retry,
     }
+}
+
+fn configured_paths(state: &OperationsState) -> SettingsPaths {
+    let paths = state.store.config_manager().config().paths;
+    SettingsPaths {
+        data_root: paths.data_root,
+        cache_root: paths.temp_root,
+    }
+}
+
+async fn validate_path_transition(
+    state: &OperationsState,
+    request: &SettingsUpdateRequest,
+) -> Result<(), OperationsError> {
+    let changing = request.paths.data_root != state.config.paths.data_root
+        || request.paths.cache_root != state.config.paths.temp_root;
+    if !changing {
+        return Ok(());
+    }
+    if !request.scheduler.paused {
+        return Err(OperationsError::InvalidField(
+            "paths",
+            "pause the scheduler before changing paths",
+        ));
+    }
+    let active = state
+        .store
+        .task_status_counts()
+        .await
+        .map_err(|_| OperationsError::Internal)?
+        .into_iter()
+        .filter(|(status, _)| {
+            !matches!(
+                status,
+                TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled
+            )
+        })
+        .try_fold(0_u64, |total, (_, count)| total.checked_add(count))
+        .ok_or(OperationsError::Internal)?;
+    if active > 0 {
+        return Err(OperationsError::InvalidField(
+            "paths",
+            "wait for active tasks to finish or cancel them before changing paths",
+        ));
+    }
+    Ok(())
 }

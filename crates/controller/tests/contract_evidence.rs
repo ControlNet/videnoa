@@ -115,10 +115,10 @@ fn settings() -> Value {
     json!({
         "version": 3,
         "paths": {
-            "workspace": "/workspace",
             "data_root": "/workspace/data",
-            "config_file": "/workspace/data/controller.toml"
+            "cache_root": "/workspace/cache"
         },
+        "restart_required": false,
         "server": {"host": "127.0.0.1", "port": 3001},
         "secure_cookie": true,
         "session_absolute_seconds": 86400,
@@ -203,6 +203,7 @@ fn all_public_http_contracts_roundtrip_and_can_write_evidence() -> TestResult {
         "settings": roundtrip::<SettingsResponse>(settings_value.clone())?,
         "settings_update": roundtrip::<SettingsUpdateRequest>(json!({
             "version": 3,
+            "paths": settings_value["paths"],
             "server": {"host": "0.0.0.0", "port": 3101},
             "auth": {
                 "secure_cookie": false,

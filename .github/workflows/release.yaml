@@ -28,7 +28,7 @@ jobs:
       publish: ${{ steps.gate.outputs.publish }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -156,15 +156,15 @@ jobs:
       ARCHIVE_NAME: videnoa-linux64-${{ needs.version-gate.outputs.version }}.7z
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@1.98.0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '24'
 
       - name: Install dependencies
         run: |
@@ -199,7 +199,7 @@ jobs:
         run: bash scripts/package_dist_archive.sh verify "$RUNNER_TEMP/${{ env.ARCHIVE_NAME }}"
 
       - name: Upload Linux artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: videnoa-linux64-${{ env.DIST_VERSION }}
           path: ${{ runner.temp }}/${{ env.ARCHIVE_NAME }}*
@@ -214,21 +214,19 @@ jobs:
       ARCHIVE_NAME: videnoa-win64-${{ needs.version-gate.outputs.version }}.7z
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@1.98.0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '24'
 
       - name: Set up protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          version: '33.5'
-          repo-token: ${{ github.token }}
+        shell: pwsh
+        run: ./scripts/install_protoc_windows.ps1
 
       - name: Install dependencies
         shell: pwsh
@@ -296,7 +294,7 @@ jobs:
           }
 
       - name: Upload Windows artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: videnoa-win64-${{ env.DIST_VERSION }}
           path: ${{ runner.temp }}/${{ env.ARCHIVE_NAME }}*
@@ -310,19 +308,19 @@ jobs:
       ARCHIVE_NAME: videnoa-controller-v${{ needs.version-gate.outputs.version }}-linux-x86_64.tar.gz
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Set up Rust 1.98.0
         uses: dtolnay/rust-toolchain@1.98.0
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '24'
       - name: Package Linux Controller archive
         run: bash scripts/package_controller.sh --target x86_64-unknown-linux-gnu --output-dir "$RUNNER_TEMP/controller-linux"
       - name: Verify Linux Controller archive
         run: bash scripts/package_controller.sh --verify-archive "$RUNNER_TEMP/controller-linux/${{ env.ARCHIVE_NAME }}"
       - name: Upload Linux Controller artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: videnoa-controller-linux-${{ needs.version-gate.outputs.version }}
           path: ${{ runner.temp }}/controller-linux/${{ env.ARCHIVE_NAME }}
@@ -337,13 +335,13 @@ jobs:
       ARCHIVE_NAME: videnoa-controller-v${{ needs.version-gate.outputs.version }}-windows-x86_64.zip
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Set up Rust 1.98.0
         uses: dtolnay/rust-toolchain@1.98.0
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '24'
       - name: Package Windows Controller archive
         shell: pwsh
         run: pwsh -File scripts/package_controller.ps1 -Target x86_64-pc-windows-msvc -OutputDir "$env:RUNNER_TEMP\controller-windows"
@@ -351,7 +349,7 @@ jobs:
         shell: pwsh
         run: pwsh -File scripts/package_controller.ps1 -VerifyArchive (Join-Path $env:RUNNER_TEMP "controller-windows\$env:ARCHIVE_NAME")
       - name: Upload Windows Controller artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: videnoa-controller-windows-${{ needs.version-gate.outputs.version }}
           path: ${{ runner.temp }}/controller-windows/${{ env.ARCHIVE_NAME }}
@@ -364,7 +362,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Preflight DockerHub credentials
         env:
@@ -381,16 +379,16 @@ jobs:
           fi
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Login to DockerHub
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true
@@ -405,7 +403,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Preflight DockerHub credentials
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -420,14 +418,14 @@ jobs:
             exit 1
           fi
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
       - name: Login to DockerHub
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Build and push Controller Docker image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile.controller
@@ -448,30 +446,30 @@ jobs:
       RELEASE_TAG: ${{ needs.version-gate.outputs.tag }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
       - name: Download Linux release artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: videnoa-linux64-${{ env.DIST_VERSION }}
           path: ${{ runner.temp }}/release/linux64
 
       - name: Download Windows release artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: videnoa-win64-${{ env.DIST_VERSION }}
           path: ${{ runner.temp }}/release/win64
 
       - name: Download Linux Controller release artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: videnoa-controller-linux-${{ env.DIST_VERSION }}
           path: ${{ runner.temp }}/release/controller-linux
 
       - name: Download Windows Controller release artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: videnoa-controller-windows-${{ env.DIST_VERSION }}
           path: ${{ runner.temp }}/release/controller-windows
@@ -497,7 +495,7 @@ jobs:
           git push origin "${RELEASE_TAG}"
 
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           name: ${{ env.RELEASE_TAG }}

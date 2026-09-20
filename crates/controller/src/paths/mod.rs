@@ -65,6 +65,7 @@ pub struct PathCapabilities {
     outputs: Vec<Root>,
     data: Root,
     temp: Root,
+    additional_private: Vec<Root>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -120,6 +121,17 @@ impl PathCapabilities {
     /// # Errors
     /// Returns a typed path error when a root is missing, replaced, or symbolic.
     pub fn open(config: &PathConfig) -> Result<Self, PathError> {
+        Self::open_with_additional_private_roots(config, std::iter::empty::<&Path>())
+    }
+
+    /// Opens path capabilities while reserving additional Controller-owned roots.
+    ///
+    /// # Errors
+    /// Returns a typed path error when any configured root is missing, replaced, or symbolic.
+    pub fn open_with_additional_private_roots<'a>(
+        config: &PathConfig,
+        additional_private_roots: impl IntoIterator<Item = &'a Path>,
+    ) -> Result<Self, PathError> {
         let inputs = config
             .input_roots
             .iter()
@@ -132,11 +144,16 @@ impl PathCapabilities {
             .collect::<Result<_, _>>()?;
         let temp = Root::open(&config.temp_root)?;
         let data = Root::open(&config.data_root)?;
+        let additional_private = additional_private_roots
+            .into_iter()
+            .map(Root::open)
+            .collect::<Result<_, _>>()?;
         Ok(Self {
             inputs,
             outputs,
             data,
             temp,
+            additional_private,
         })
     }
 
@@ -148,7 +165,10 @@ impl PathCapabilities {
             .chain(&self.outputs)
             .try_for_each(Root::ensure_current)?;
         self.data.ensure_current()?;
-        self.temp.ensure_current()
+        self.temp.ensure_current()?;
+        self.additional_private
+            .iter()
+            .try_for_each(Root::ensure_current)
     }
 
     /// Opens a regular input and records its descriptor-derived identity and metadata.

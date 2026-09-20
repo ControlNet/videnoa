@@ -6,7 +6,8 @@ import { useSettingsData } from "./useSettingsData"
 
 const testOnlySettings = {
   version: 3,
-  paths: { workspace: "/synthetic/workspace", data_root: "/synthetic/data", config_file: "/synthetic/controller.toml" },
+  paths: { data_root: "/synthetic/data", cache_root: "/synthetic/cache" },
+  restart_required: false,
   server: { host: "127.0.0.1", port: 3001 },
   secure_cookie: true,
   session_absolute_seconds: 86_400,
@@ -36,8 +37,8 @@ describe("settings data requests", () => {
     // When: the operator pauses scheduling.
     await act(async () => result.current.setPaused(true))
 
-    // Then: the version is submitted and both authoritative read endpoints refresh.
-    await waitFor(() => expect(requests.filter((request) => request.method === "GET")).toHaveLength(4))
+    // Then: the version is submitted and authoritative settings refresh.
+    await waitFor(() => expect(requests.filter((request) => request.method === "GET")).toHaveLength(2))
     expect(await requests.find((request) => request.method === "POST")?.json()).toEqual({ version: 3 })
     expect(result.current.actionError?.code).toBe("conflict")
   })
@@ -72,6 +73,7 @@ describe("settings data requests", () => {
     // When: the operator saves the new listener address.
     await act(async () => result.current.save({
       version: 3,
+      paths: testOnlySettings.paths,
       server: { host: "127.0.0.1", port: 4555 },
       auth: { secure_cookie: true, session_absolute_seconds: 86_400, session_idle_seconds: 3_600 },
       scheduler: testOnlySettings.scheduler,
@@ -84,6 +86,6 @@ describe("settings data requests", () => {
     expect(result.current.settings?.server.port).toBe(4555)
     expect(result.current.actionError?.code).toBe("unavailable")
     expect(result.current.actionError?.retryable).toBe(true)
-    expect(requests.filter((request) => request.method === "GET")).toHaveLength(4)
+    expect(requests.filter((request) => request.method === "GET")).toHaveLength(2)
   })
 })

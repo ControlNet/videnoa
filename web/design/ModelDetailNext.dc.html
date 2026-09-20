@@ -1,0 +1,533 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&family=Manrope:wght@400;500;600;700&display=swap">
+  <style>
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;font-family:'Manrope','Avenir Next','Segoe UI',sans-serif;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+.app{
+  --background:oklch(0.965 0.006 260);
+  --foreground:oklch(0.15 0.02 260);
+  --card:oklch(1 0 0);
+  --popover:oklch(1 0 0);
+  --primary:oklch(0.55 0.22 292);
+  --primary-foreground:oklch(0.98 0.005 260);
+  --secondary:oklch(0.93 0.01 260);
+  --muted:oklch(0.93 0.01 260);
+  --muted-foreground:oklch(0.45 0.015 260);
+  --accent:oklch(0.93 0.01 260);
+  --destructive:oklch(0.50 0.20 25);
+  --border:oklch(0.88 0.01 260);
+  --input:oklch(0.88 0.01 260);
+  --ring:oklch(0.55 0.22 292);
+  --sidebar:oklch(0.96 0.008 260);
+  --red-400:oklch(70.4% 0.191 22.216);
+  --red-500:oklch(63.7% 0.237 25.331);
+  --orange-400:oklch(75% 0.183 55.934);
+  --orange-500:oklch(70.5% 0.213 47.604);
+  --yellow-300:oklch(90.5% 0.182 98.111);
+  --yellow-400:oklch(85.2% 0.199 91.936);
+  --yellow-500:oklch(79.5% 0.184 86.047);
+  --green-400:oklch(79.2% 0.209 151.711);
+  --green-500:oklch(72.3% 0.219 149.579);
+  --emerald-400:oklch(76.5% 0.177 163.223);
+  --emerald-500:oklch(69.6% 0.17 162.48);
+  --cyan-400:oklch(78.9% 0.154 211.53);
+  --cyan-500:oklch(71.5% 0.143 215.221);
+  --blue-400:oklch(70.7% 0.165 254.624);
+  --blue-500:oklch(62.3% 0.214 259.815);
+  --purple-400:oklch(71.4% 0.203 305.504);
+  --purple-500:oklch(62.7% 0.265 303.9);
+  --gray-400:oklch(70.7% 0.022 261.325);
+  --gray-500:oklch(55.1% 0.027 264.364);
+  --perf-cpu:hsl(262 83% 58%);
+  --perf-gpu:hsl(200 88% 46%);
+  --perf-ram:hsl(155 63% 43%);
+  --perf-vram:hsl(24 90% 52%);
+  --perf-free:hsl(220 14% 62%);
+  width:1440px;height:900px;display:flex;flex-direction:column;overflow:hidden;
+  background:var(--background);color:var(--foreground);font-size:14px;
+  font-family:'Manrope','Avenir Next','Segoe UI',sans-serif;
+}
+.app[data-theme="dark"]{
+  color-scheme:dark;
+  --background:oklch(0.115 0.03 260);
+  --foreground:oklch(0.97 0.005 260);
+  --card:oklch(0.16 0.028 260);
+  --popover:oklch(0.16 0.028 260);
+  --primary:oklch(0.58 0.22 292);
+  --primary-foreground:oklch(0.97 0.005 260);
+  --secondary:oklch(0.24 0.02 260);
+  --muted:oklch(0.24 0.02 260);
+  --muted-foreground:oklch(0.7 0.015 260);
+  --accent:oklch(0.24 0.02 260);
+  --destructive:oklch(0.45 0.18 25);
+  --border:oklch(0.28 0.02 260);
+  --input:oklch(0.28 0.02 260);
+  --ring:oklch(0.58 0.22 292);
+  --sidebar:oklch(0.11 0.028 260);
+  --perf-cpu:hsl(262 90% 70%);
+  --perf-gpu:hsl(199 92% 62%);
+  --perf-ram:hsl(156 68% 58%);
+  --perf-vram:hsl(31 95% 64%);
+  --perf-free:hsl(220 16% 74%);
+}
+.mono{font-family:'Geist Mono','SFMono-Regular',Consolas,'Noto Sans Mono CJK SC',monospace}
+a{color:var(--primary);text-decoration:none}
+a:hover{color:var(--primary);opacity:.85}
+button{font:inherit;color:inherit;border:0;background:none;padding:0;cursor:pointer}
+input,select,textarea{font:inherit;color:inherit}
+.nav-item{transition:background-color .15s,color .15s}
+.nav-item:hover{background:var(--accent)}
+.ghost-btn{transition:background-color .15s,color .15s;border-radius:6px}
+.ghost-btn:hover{background:var(--accent)}
+.ctl{appearance:none;-webkit-appearance:none;border-radius:6px;border:1px solid color-mix(in oklab,var(--border) 50%,transparent);background:color-mix(in oklab,var(--background) 50%,transparent);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)}
+.ctl:focus{outline:none;box-shadow:0 0 0 1px var(--ring)}
+.scroll{overflow-y:auto;scrollbar-width:thin}
+
+/* ── additions used only by the proposed boards ─────────────────────────── */
+.micro{font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted-foreground)}
+.nano{font-size:10px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted-foreground)}
+.panel{border:1px solid var(--border);border-radius:12px;background:var(--card)}
+
+/* Badges that hold up in BOTH themes: dark ink on a light tint, and the
+   reverse in dark. The current build uses text-*-400 on bg-*-500/20, which
+   is a dark-theme-only pairing. */
+.chip{display:inline-flex;align-items:center;gap:4px;border-radius:6px;padding:2px 8px;font-size:11px;font-weight:600;border:1px solid transparent;white-space:nowrap}
+.chip-sr{background:oklch(0.95 0.04 60);color:oklch(0.47 0.15 47);border-color:oklch(0.89 0.06 58)}
+.chip-fi{background:oklch(0.95 0.035 212);color:oklch(0.45 0.11 220);border-color:oklch(0.88 0.05 212)}
+.app[data-theme="dark"] .chip-sr{background:color-mix(in oklab,var(--orange-500) 16%,transparent);color:oklch(0.83 0.12 62);border-color:color-mix(in oklab,var(--orange-500) 34%,transparent)}
+.app[data-theme="dark"] .chip-fi{background:color-mix(in oklab,var(--cyan-500) 16%,transparent);color:oklch(0.85 0.1 208);border-color:color-mix(in oklab,var(--cyan-500) 34%,transparent)}
+.chip-spec{background:transparent;border-color:var(--border);color:var(--muted-foreground);font-family:'Geist Mono','SFMono-Regular',Consolas,monospace;font-size:11px;font-weight:500}
+
+/* One checkbox, everywhere. */
+.cbx{position:relative;display:inline-flex;width:16px;height:16px;flex-shrink:0}
+.cbx input{position:absolute;inset:0;opacity:0;margin:0;cursor:pointer;width:16px;height:16px}
+.cbx span{width:16px;height:16px;border-radius:4px;border:1px solid var(--border);background:var(--card);display:flex;align-items:center;justify-content:center;color:transparent;transition:background-color .12s,border-color .12s}
+.cbx input:checked + span{background:var(--primary);border-color:var(--primary);color:#fff}
+.cbx input:focus-visible + span{box-shadow:0 0 0 2px color-mix(in oklab,var(--ring) 50%,transparent)}
+
+/* Segmented control — one control height, a selected state you can see. */
+.seg{display:flex;align-items:center;gap:2px;padding:3px;border:1px solid var(--border);border-radius:8px;background:color-mix(in oklab,var(--secondary) 45%,transparent);height:36px}
+.seg button{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:28px;padding:0 12px;border-radius:5px;font-size:12px;font-weight:500;color:var(--muted-foreground);transition:background-color .12s,color .12s}
+.seg button:hover{color:var(--foreground)}
+.seg button[data-on="1"]{background:color-mix(in oklab,var(--primary) 14%,transparent);color:var(--primary);font-weight:600}
+.field-input{display:flex;height:36px;width:100%;border-radius:6px;border:1px solid var(--input);background:var(--card);padding:0 12px;font-size:14px}
+.field-input:focus{outline:none;border-color:var(--ring);box-shadow:0 0 0 1px var(--ring)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;white-space:nowrap;border-radius:6px;font-size:13px;font-weight:500;height:36px;padding:0 14px;transition:background-color .15s,color .15s,border-color .15s}
+.btn-primary{background:var(--primary);color:var(--primary-foreground)}
+.btn-primary:hover{filter:brightness(1.08)}
+.btn-outline{border:1px solid var(--border);background:var(--card)}
+.btn-outline:hover{background:var(--secondary)}
+.btn-ghost{color:var(--muted-foreground)}
+.btn-ghost:hover{background:var(--secondary);color:var(--foreground)}
+.rule{height:1px;background:var(--border)}
+.card-lift{transition:border-color .15s,transform .15s}
+.card-lift:hover{border-color:color-mix(in oklab,var(--primary) 45%,var(--border))}
+@keyframes tw-pulse{0%,100%{opacity:1}50%{opacity:.5}}
+
+.app [style*="font-size:12px"]{line-height:16px}
+.app [style*="font-size:14px"]{line-height:20px}
+.app [style*="font-size:16px"]{line-height:24px}
+.app [style*="font-size:20px"]{line-height:28px}
+
+.app{--io-bg:oklch(0.95 0.04 165);--io-border:oklch(0.86 0.07 163);--io-text:oklch(0.42 0.11 163);--edge:color-mix(in oklab,var(--foreground) 32%,transparent)}
+.app[data-theme="dark"]{--io-bg:color-mix(in oklab,var(--emerald-500) 14%,transparent);--io-border:color-mix(in oklab,var(--emerald-500) 40%,transparent);--io-text:oklch(0.85 0.12 165)}
+  </style>
+</helmet>
+
+<div class="app" data-theme="{{theme}}">
+  <header style="display:flex;align-items:center;height:48px;padding:0 16px;border-bottom:1px solid var(--border);flex-shrink:0;background:var(--background)">
+    <div style="display:flex;align-items:center;gap:10px;margin-right:24px">
+      <div title="Server connected: workflow running" style="height:24px;width:24px;border-radius:8px;border:1px solid color-mix(in oklab,var(--yellow-400) 50%,transparent);display:flex;align-items:center;justify-content:center;flex-shrink:0;background:color-mix(in oklab,var(--yellow-500) 20%,transparent)">
+        <div style="height:8px;width:8px;border-radius:50%;background:var(--yellow-300);box-shadow:0 0 10px rgba(253,224,71,.65);animation:tw-pulse 2s cubic-bezier(.4,0,.6,1) infinite"></div>
+      </div>
+      <a href="https://github.com/ControlNet/videnoa" class="mono" style="font-size:14px;font-weight:600;color:var(--foreground);white-space:nowrap">Videnoa</a>
+      <span class="mono" style="font-size:12px;color:var(--muted-foreground);white-space:nowrap">v0.1.3</span>
+    </div>
+
+    <nav style="display:flex;align-items:center;gap:4px">
+      <span class="nav-item" style="display:flex;align-items:center;gap:8px;border-radius:6px;padding:6px 12px;font-size:14px;font-weight:500;color:var(--muted-foreground)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><rect width="8" height="8" x="3" y="3" rx="2"/><path d="M7 11v4a2 2 0 0 0 2 2h4"/><rect width="8" height="8" x="13" y="13" rx="2"/></svg>
+        <span>Editor</span>
+      </span>
+      <span class="nav-item" style="display:flex;align-items:center;gap:8px;border-radius:6px;padding:6px 12px;font-size:14px;font-weight:500;color:var(--muted-foreground)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></svg>
+        <span>Jobs</span>
+      </span>
+      <span class="nav-item" style="display:flex;align-items:center;gap:8px;border-radius:6px;padding:6px 12px;font-size:14px;font-weight:500;background:color-mix(in oklab,var(--primary) 15%,transparent);color:var(--primary)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z"/><path d="M12 22V12"/><polyline points="3.29 7 12 12 20.71 7"/><path d="m7.5 4.27 9 5.15"/></svg>
+        <span>Models</span>
+      </span>
+      <span class="nav-item" style="display:flex;align-items:center;gap:8px;border-radius:6px;padding:6px 12px;font-size:14px;font-weight:500;color:var(--muted-foreground)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></svg>
+        <span>Performance</span>
+      </span>
+      <span class="nav-item" style="display:flex;align-items:center;gap:8px;border-radius:6px;padding:6px 12px;font-size:14px;font-weight:500;color:var(--muted-foreground)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></svg>
+        <span>Settings</span>
+      </span>
+    </nav>
+
+    <div style="margin-left:auto;display:flex;align-items:center;gap:4px">
+      <button class="ghost-btn" aria-label="Select language" title="Current language: English" style="height:32px;width:32px;display:flex;align-items:center;justify-content:center">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
+      </button>
+      <button class="ghost-btn" onClick="{{cycleTheme}}" title="{{themeTitle}}" aria-label="{{themeTitle}}" style="height:32px;width:32px;display:flex;align-items:center;justify-content:center">
+        <sc-if value="{{isSystem}}" hint-placeholder-val="{{true}}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg>
+        </sc-if>
+        <sc-if value="{{isLight}}" hint-placeholder-val="{{false}}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
+        </sc-if>
+        <sc-if value="{{isDark}}" hint-placeholder-val="{{false}}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/></svg>
+        </sc-if>
+      </button>
+    </div>
+  </header>
+
+  <div style="display:flex;align-items:center;gap:12px;height:48px;padding:0 18px;border-bottom:1px solid var(--border);flex-shrink:0">
+    <button class="btn btn-ghost" style="height:28px;padding:0 8px;gap:6px;font-size:12px">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="m15 18-6-6 6-6"/></svg>
+      Models
+    </button>
+    <span style="width:1px;height:18px;background:var(--border)"></span>
+    <span class="mono" style="font-size:15px;font-weight:600;letter-spacing:-.01em">AnimeJaNai_V3_L1_Sharp_HD_x2_FP16</span>
+    <span class="chip chip-sr">Super-Resolution</span>
+    <span class="chip chip-spec">2x</span>
+    <span class="chip chip-spec">FP16</span>
+    <div class="seg" style="margin-left:auto;height:30px">
+      <button data-on="{{graphOn}}" onClick="{{showGraph}}" style="height:22px;font-size:12px">Architecture</button>
+      <button data-on="{{listOn}}" onClick="{{showList}}" style="height:22px;font-size:12px">Operators</button>
+    </div>
+  </div>
+
+  <main style="flex:1;min-height:0;display:flex">
+
+    <div style="flex:1;min-width:0;position:relative;overflow:hidden;background:var(--background)">
+
+      <sc-if value="{{graphView}}" hint-placeholder-val="{{true}}">
+      <div style="position:absolute;inset:0;background-image:radial-gradient(circle at 1px 1px, var(--border) 1px, transparent 0);background-size:16px 16px">
+        <svg style="position:absolute;inset:0;width:100%;height:100%;overflow:visible;pointer-events:none">
+        <path d="M190,159 H240" stroke="var(--edge)" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M420,159 H470" stroke="var(--edge)" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M670,159 H720" stroke="var(--edge)" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M900,159 H950" stroke="var(--edge)" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M115,186 V343 Q115,363 135,363 H240" stroke="var(--edge)" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M1020,186 V500 Q1020,520 1000,520 H690 Q670,520 670,540" stroke="var(--edge)" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M440,363 H540 Q560,363 560,383 V547 Q560,567 580,567 H600" stroke="var(--edge)" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M740,567 H780" stroke="var(--edge)" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M920,567 H950" stroke="var(--edge)" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <div style="position:absolute;left:40px;top:132px;width:150px;padding:10px 12px;border-radius:8px;border:1px solid var(--io-border);background:var(--io-bg)">
+          <div class="mono" style="font-size:13px;line-height:18px;font-weight:600;color:var(--io-text)">input</div>
+          <div class="mono" style="font-size:11px;line-height:16px;color:var(--muted-foreground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">float16 [?, 3, ?, ?]</div>
+        </div>
+        <div class="panel" style="position:absolute;left:240px;top:132px;width:180px;padding:10px 12px;border-radius:8px">
+          <div style="font-size:13px;line-height:18px;font-weight:600">Conv → PRelu</div>
+          <div class="mono" style="font-size:11px;line-height:16px;color:var(--muted-foreground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">3→24 · k3 s1 p1</div>
+        </div>
+        <div class="panel" style="position:absolute;left:470px;top:132px;width:200px;padding:10px 12px;border-radius:8px;border-style:dashed;border-color:color-mix(in oklab,var(--muted-foreground) 55%,transparent)">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+            <div style="font-size:13px;line-height:18px;font-weight:600">Conv → PRelu</div>
+            <span class="chip chip-spec" style="font-size:10px;padding:1px 6px">×8</span>
+          </div>
+          <div class="mono" style="font-size:11px;line-height:16px;color:var(--muted-foreground)">24→24 · k3 s1 p1</div>
+        </div>
+        <div class="panel" style="position:absolute;left:720px;top:132px;width:180px;padding:10px 12px;border-radius:8px">
+          <div style="font-size:13px;line-height:18px;font-weight:600">Conv</div>
+          <div class="mono" style="font-size:11px;line-height:16px;color:var(--muted-foreground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">24→12 · k3 s1 p1</div>
+        </div>
+        <div class="panel" style="position:absolute;left:950px;top:132px;width:140px;padding:10px 12px;border-radius:8px">
+          <div style="font-size:13px;line-height:18px;font-weight:600">DepthToSpace</div>
+          <div class="mono" style="font-size:11px;line-height:16px;color:var(--muted-foreground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">blocksize 2 · CRD</div>
+        </div>
+        <div class="panel" style="position:absolute;left:240px;top:336px;width:200px;padding:10px 12px;border-radius:8px">
+          <div style="font-size:13px;line-height:18px;font-weight:600">Resize</div>
+          <div class="mono" style="font-size:11px;line-height:16px;color:var(--muted-foreground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">nearest · asymmetric</div>
+        </div>
+        <div class="panel" style="position:absolute;left:600px;top:540px;width:140px;padding:10px 12px;border-radius:8px">
+          <div style="font-size:13px;line-height:18px;font-weight:600">Add</div>
+          <div class="mono" style="font-size:11px;line-height:16px;color:var(--muted-foreground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">residual join</div>
+        </div>
+        <div class="panel" style="position:absolute;left:780px;top:540px;width:140px;padding:10px 12px;border-radius:8px">
+          <div style="font-size:13px;line-height:18px;font-weight:600">Clip</div>
+          <div class="mono" style="font-size:11px;line-height:16px;color:var(--muted-foreground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">clamp to range</div>
+        </div>
+        <div style="position:absolute;left:950px;top:540px;width:140px;padding:10px 12px;border-radius:8px;border:1px solid var(--io-border);background:var(--io-bg)">
+          <div class="mono" style="font-size:13px;line-height:18px;font-weight:600;color:var(--io-text)">output</div>
+          <div class="mono" style="font-size:11px;line-height:16px;color:var(--muted-foreground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">float16 [?, 3, ?, ?]</div>
+        </div>
+        <div style="position:absolute;left:40px;bottom:24px;display:flex;align-items:center;gap:8px;font-size:11px;color:var(--muted-foreground)">
+          <span style="display:inline-flex;align-items:center;gap:6px"><span style="width:10px;height:10px;border-radius:3px;border:1px solid var(--io-border);background:var(--io-bg)"></span>graph input / output</span>
+          <span style="display:inline-flex;align-items:center;gap:6px;margin-left:8px"><span style="width:10px;height:10px;border-radius:3px;border:1px dashed var(--border);background:var(--card)"></span>repeated block</span>
+          <span style="margin-left:8px">32 Constant nodes hidden — they carry weights, not structure</span>
+        </div>
+      </div>
+      </sc-if>
+
+      <sc-if value="{{listView}}" hint-placeholder-val="{{false}}">
+      <div style="position:absolute;inset:0;display:grid;grid-template-columns:1fr 1fr;gap:32px;padding:24px 28px;overflow:auto">
+        <div>
+          <div class="micro" style="margin-bottom:10px">By type · 55 operations</div>
+          <div class="rule" style="margin-bottom:14px"></div>
+          <div style="display:flex;flex-direction:column;gap:10px">
+            <div style="display:flex;align-items:center;gap:12px">
+              <span class="mono" style="width:104px;flex-shrink:0;font-size:12px">Constant</span>
+              <span style="flex:1;height:6px;border-radius:3px;background:color-mix(in oklab,var(--foreground) 8%,transparent);overflow:hidden"><span style="display:block;height:100%;width:100.0%;border-radius:3px;background:color-mix(in oklab,var(--foreground) 26%,transparent)"></span></span>
+              <span class="mono" style="width:26px;flex-shrink:0;text-align:right;font-size:12px;color:var(--muted-foreground)">32</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:12px">
+              <span class="mono" style="width:104px;flex-shrink:0;font-size:12px">Conv</span>
+              <span style="flex:1;height:6px;border-radius:3px;background:color-mix(in oklab,var(--foreground) 8%,transparent);overflow:hidden"><span style="display:block;height:100%;width:31.3%;border-radius:3px;background:var(--primary)"></span></span>
+              <span class="mono" style="width:26px;flex-shrink:0;text-align:right;font-size:12px;color:var(--muted-foreground)">10</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:12px">
+              <span class="mono" style="width:104px;flex-shrink:0;font-size:12px">PRelu</span>
+              <span style="flex:1;height:6px;border-radius:3px;background:color-mix(in oklab,var(--foreground) 8%,transparent);overflow:hidden"><span style="display:block;height:100%;width:28.1%;border-radius:3px;background:var(--primary)"></span></span>
+              <span class="mono" style="width:26px;flex-shrink:0;text-align:right;font-size:12px;color:var(--muted-foreground)">9</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:12px">
+              <span class="mono" style="width:104px;flex-shrink:0;font-size:12px">DepthToSpace</span>
+              <span style="flex:1;height:6px;border-radius:3px;background:color-mix(in oklab,var(--foreground) 8%,transparent);overflow:hidden"><span style="display:block;height:100%;width:3.1%;border-radius:3px;background:var(--primary)"></span></span>
+              <span class="mono" style="width:26px;flex-shrink:0;text-align:right;font-size:12px;color:var(--muted-foreground)">1</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:12px">
+              <span class="mono" style="width:104px;flex-shrink:0;font-size:12px">Resize</span>
+              <span style="flex:1;height:6px;border-radius:3px;background:color-mix(in oklab,var(--foreground) 8%,transparent);overflow:hidden"><span style="display:block;height:100%;width:3.1%;border-radius:3px;background:var(--primary)"></span></span>
+              <span class="mono" style="width:26px;flex-shrink:0;text-align:right;font-size:12px;color:var(--muted-foreground)">1</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:12px">
+              <span class="mono" style="width:104px;flex-shrink:0;font-size:12px">Add</span>
+              <span style="flex:1;height:6px;border-radius:3px;background:color-mix(in oklab,var(--foreground) 8%,transparent);overflow:hidden"><span style="display:block;height:100%;width:3.1%;border-radius:3px;background:var(--primary)"></span></span>
+              <span class="mono" style="width:26px;flex-shrink:0;text-align:right;font-size:12px;color:var(--muted-foreground)">1</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:12px">
+              <span class="mono" style="width:104px;flex-shrink:0;font-size:12px">Clip</span>
+              <span style="flex:1;height:6px;border-radius:3px;background:color-mix(in oklab,var(--foreground) 8%,transparent);overflow:hidden"><span style="display:block;height:100%;width:3.1%;border-radius:3px;background:var(--primary)"></span></span>
+              <span class="mono" style="width:26px;flex-shrink:0;text-align:right;font-size:12px;color:var(--muted-foreground)">1</span>
+            </div>
+          </div>
+        </div>
+        <div style="min-width:0">
+          <div class="micro" style="margin-bottom:10px">Sequence · 23 excluding Constant</div>
+          <div class="rule" style="margin-bottom:10px"></div>
+          <div style="display:flex;flex-direction:column">
+            <div style="display:flex;align-items:center;gap:10px;height:22px">
+              <span class="mono" style="width:22px;flex-shrink:0;text-align:right;font-size:11px;color:color-mix(in oklab,var(--muted-foreground) 75%,transparent)">1</span>
+              <span style="width:96px;flex-shrink:0;font-size:12px;font-weight:500">Conv</span>
+              <span class="mono" style="flex:1;min-width:0;font-size:11px;color:var(--muted-foreground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">/Conv</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;height:22px">
+              <span class="mono" style="width:22px;flex-shrink:0;text-align:right;font-size:11px;color:color-mix(in oklab,var(--muted-foreground) 75%,transparent)">2</span>
+              <span style="width:96px;flex-shrink:0;font-size:12px;font-weight:500">PRelu</span>
+              <span class="mono" style="flex:1;min-width:0;font-size:11px;color:var(--muted-foreground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">/PRelu</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;height:22px">
+              <span class="mono" style="width:22px;flex-shrink:0;text-align:right;font-size:11px;color:color-mix(in oklab,var(--muted-foreground) 75%,transparent)">3</span>
+              <span style="width:96px;flex-shrink:0;font-size:12px;font-weight:500">Conv</span>
+              <span class="mono" style="flex:1;min-width:0;font-size:11px;color:var(--muted-foreground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">/Conv_1</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;height:22px">
+              <span class="mono" style="width:22px;flex-shrink:0;text-align:right;font-size:11px;color:color-mix(in oklab,var(--muted-foreground) 75%,transparent)">4</span>
+              <span style="width:96px;flex-shrink:0;font-size:12px;font-weight:500">PRelu</span>
+              <span class="mono" style="flex:1;min-width:0;font-size:11px;color:var(--muted-foreground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">/PRelu_1</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;height:22px">
+              <span class="mono" style="width:22px;flex-shrink:0;text-align:right;font-size:11px;color:color-mix(in oklab,var(--muted-foreground) 75%,transparent)">5</span>
+              <span style="width:96px;flex-shrink:0;font-size:12px;font-weight:500">Conv</span>
+              <span class="mono" style="flex:1;min-width:0;font-size:11px;color:var(--muted-foreground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">/Conv_2</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;height:22px">
+              <span class="mono" style="width:22px;flex-shrink:0;text-align:right;font-size:11px;color:color-mix(in oklab,var(--muted-foreground) 75%,transparent)">6</span>
+              <span style="width:96px;flex-shrink:0;font-size:12px;font-weight:500">PRelu</span>
+              <span class="mono" style="flex:1;min-width:0;font-size:11px;color:var(--muted-foreground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">/PRelu_2</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;height:22px">
+              <span class="mono" style="width:22px;flex-shrink:0;text-align:right;font-size:11px;color:color-mix(in oklab,var(--muted-foreground) 75%,transparent)">7</span>
+              <span style="width:96px;flex-shrink:0;font-size:12px;font-weight:500">Conv</span>
+              <span class="mono" style="flex:1;min-width:0;font-size:11px;color:var(--muted-foreground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">/Conv_3</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;height:22px">
+              <span class="mono" style="width:22px;flex-shrink:0;text-align:right;font-size:11px;color:color-mix(in oklab,var(--muted-foreground) 75%,transparent)">8</span>
+              <span style="width:96px;flex-shrink:0;font-size:12px;font-weight:500">PRelu</span>
+              <span class="mono" style="flex:1;min-width:0;font-size:11px;color:var(--muted-foreground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">/PRelu_3</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;height:22px">
+              <span class="mono" style="width:22px;flex-shrink:0;text-align:right;font-size:11px;color:color-mix(in oklab,var(--muted-foreground) 75%,transparent)">9</span>
+              <span style="width:96px;flex-shrink:0;font-size:12px;font-weight:500">Conv</span>
+              <span class="mono" style="flex:1;min-width:0;font-size:11px;color:var(--muted-foreground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">/Conv_4</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;height:22px">
+              <span class="mono" style="width:22px;flex-shrink:0;text-align:right;font-size:11px;color:color-mix(in oklab,var(--muted-foreground) 75%,transparent)">10</span>
+              <span style="width:96px;flex-shrink:0;font-size:12px;font-weight:500">PRelu</span>
+              <span class="mono" style="flex:1;min-width:0;font-size:11px;color:var(--muted-foreground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">/PRelu_4</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;height:22px">
+              <span class="mono" style="width:22px;flex-shrink:0;text-align:right;font-size:11px;color:color-mix(in oklab,var(--muted-foreground) 75%,transparent)">11</span>
+              <span style="width:96px;flex-shrink:0;font-size:12px;font-weight:500">Conv</span>
+              <span class="mono" style="flex:1;min-width:0;font-size:11px;color:var(--muted-foreground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">/Conv_5</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;height:22px">
+              <span class="mono" style="width:22px;flex-shrink:0;text-align:right;font-size:11px;color:color-mix(in oklab,var(--muted-foreground) 75%,transparent)">12</span>
+              <span style="width:96px;flex-shrink:0;font-size:12px;font-weight:500">PRelu</span>
+              <span class="mono" style="flex:1;min-width:0;font-size:11px;color:var(--muted-foreground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">/PRelu_5</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;height:22px">
+              <span class="mono" style="width:22px;flex-shrink:0;text-align:right;font-size:11px;color:color-mix(in oklab,var(--muted-foreground) 75%,transparent)">13</span>
+              <span style="width:96px;flex-shrink:0;font-size:12px;font-weight:500">Conv</span>
+              <span class="mono" style="flex:1;min-width:0;font-size:11px;color:var(--muted-foreground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">/Conv_6</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;height:22px">
+              <span class="mono" style="width:22px;flex-shrink:0;text-align:right;font-size:11px;color:color-mix(in oklab,var(--muted-foreground) 75%,transparent)">14</span>
+              <span style="width:96px;flex-shrink:0;font-size:12px;font-weight:500">PRelu</span>
+              <span class="mono" style="flex:1;min-width:0;font-size:11px;color:var(--muted-foreground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">/PRelu_6</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;height:22px">
+              <span class="mono" style="width:22px;flex-shrink:0;text-align:right;font-size:11px;color:color-mix(in oklab,var(--muted-foreground) 75%,transparent)">15</span>
+              <span style="width:96px;flex-shrink:0;font-size:12px;font-weight:500">Conv</span>
+              <span class="mono" style="flex:1;min-width:0;font-size:11px;color:var(--muted-foreground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">/Conv_7</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;height:22px">
+              <span class="mono" style="width:22px;flex-shrink:0;text-align:right;font-size:11px;color:color-mix(in oklab,var(--muted-foreground) 75%,transparent)">16</span>
+              <span style="width:96px;flex-shrink:0;font-size:12px;font-weight:500">PRelu</span>
+              <span class="mono" style="flex:1;min-width:0;font-size:11px;color:var(--muted-foreground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">/PRelu_7</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;height:22px">
+              <span class="mono" style="width:22px;flex-shrink:0;text-align:right;font-size:11px;color:color-mix(in oklab,var(--muted-foreground) 75%,transparent)">17</span>
+              <span style="width:96px;flex-shrink:0;font-size:12px;font-weight:500">Conv</span>
+              <span class="mono" style="flex:1;min-width:0;font-size:11px;color:var(--muted-foreground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">/Conv_8</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;height:22px">
+              <span class="mono" style="width:22px;flex-shrink:0;text-align:right;font-size:11px;color:color-mix(in oklab,var(--muted-foreground) 75%,transparent)">18</span>
+              <span style="width:96px;flex-shrink:0;font-size:12px;font-weight:500">PRelu</span>
+              <span class="mono" style="flex:1;min-width:0;font-size:11px;color:var(--muted-foreground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">/PRelu_8</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;height:22px">
+              <span class="mono" style="width:22px;flex-shrink:0;text-align:right;font-size:11px;color:color-mix(in oklab,var(--muted-foreground) 75%,transparent)">19</span>
+              <span style="width:96px;flex-shrink:0;font-size:12px;font-weight:500">Conv</span>
+              <span class="mono" style="flex:1;min-width:0;font-size:11px;color:var(--muted-foreground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">/Conv_9</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;height:22px">
+              <span class="mono" style="width:22px;flex-shrink:0;text-align:right;font-size:11px;color:color-mix(in oklab,var(--muted-foreground) 75%,transparent)">20</span>
+              <span style="width:96px;flex-shrink:0;font-size:12px;font-weight:500">DepthToSpace</span>
+              <span class="mono" style="flex:1;min-width:0;font-size:11px;color:var(--muted-foreground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">/DepthToSpace</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;height:22px">
+              <span class="mono" style="width:22px;flex-shrink:0;text-align:right;font-size:11px;color:color-mix(in oklab,var(--muted-foreground) 75%,transparent)">21</span>
+              <span style="width:96px;flex-shrink:0;font-size:12px;font-weight:500">Resize</span>
+              <span class="mono" style="flex:1;min-width:0;font-size:11px;color:var(--muted-foreground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">/Resize</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;height:22px">
+              <span class="mono" style="width:22px;flex-shrink:0;text-align:right;font-size:11px;color:color-mix(in oklab,var(--muted-foreground) 75%,transparent)">22</span>
+              <span style="width:96px;flex-shrink:0;font-size:12px;font-weight:500">Add</span>
+              <span class="mono" style="flex:1;min-width:0;font-size:11px;color:var(--muted-foreground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">/Add</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;height:22px">
+              <span class="mono" style="width:22px;flex-shrink:0;text-align:right;font-size:11px;color:color-mix(in oklab,var(--muted-foreground) 75%,transparent)">23</span>
+              <span style="width:96px;flex-shrink:0;font-size:12px;font-weight:500">Clip</span>
+              <span class="mono" style="flex:1;min-width:0;font-size:11px;color:var(--muted-foreground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">/Clip</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      </sc-if>
+
+    </div>
+
+    <aside style="width:320px;flex-shrink:0;border-left:1px solid var(--border);background:var(--card);overflow-y:auto;padding:18px">
+      <div class="micro" style="margin-bottom:8px">File</div>
+      <div class="rule" style="margin-bottom:12px"></div>
+      <p class="mono" style="font-size:11px;line-height:17px;color:var(--muted-foreground);margin:0 0 20px;word-break:break-all">the_database_AnimeJaNaiV3L1_sharp_HD_x2_fp16_op17.onnx</p>
+
+      <div class="micro" style="margin-bottom:8px">Metadata</div>
+      <div class="rule" style="margin-bottom:12px"></div>
+      <div style="display:grid;grid-template-columns:auto 1fr;gap:8px 16px;font-size:12px;margin-bottom:6px">
+        <span style="color:var(--muted-foreground)">IR version</span><span class="mono" style="text-align:right">8</span>
+        <span style="color:var(--muted-foreground)">Opset</span><span class="mono" style="text-align:right">17</span>
+        <span style="color:var(--muted-foreground)">Producer</span><span class="mono" style="text-align:right">pytorch 2.1.2</span>
+        <span style="color:var(--muted-foreground)">Model version</span><span class="mono" style="text-align:right">0</span>
+        <span style="color:var(--muted-foreground)">Operations</span><span class="mono" style="text-align:right">55</span>
+        <span style="color:var(--muted-foreground)">Parameters</span><span class="mono" style="text-align:right">0</span>
+      </div>
+      <p style="font-size:11px;line-height:16px;color:color-mix(in oklab,var(--muted-foreground) 85%,transparent);margin:0 0 20px">Counted from initializers, of which this model has none — its 44,940 weights are stored as Constant nodes.</p>
+
+      <div class="micro" style="margin-bottom:8px">Inputs</div>
+      <div class="rule" style="margin-bottom:12px"></div>
+      <div style="margin-bottom:20px">
+        <div class="mono" style="font-size:12px;font-weight:500">input</div>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
+          <span class="chip chip-spec" style="font-size:10px;padding:1px 6px">float16</span>
+          <span class="mono" style="font-size:11px;color:var(--muted-foreground)">[?, 3, ?, ?]</span>
+        </div>
+      </div>
+
+      <div class="micro" style="margin-bottom:8px">Outputs</div>
+      <div class="rule" style="margin-bottom:12px"></div>
+      <div>
+        <div class="mono" style="font-size:12px;font-weight:500">output</div>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
+          <span class="chip chip-spec" style="font-size:10px;padding:1px 6px">float16</span>
+          <span class="mono" style="font-size:11px;color:var(--muted-foreground)">[?, 3, ?, ?]</span>
+        </div>
+      </div>
+    </aside>
+  </main>
+</div>
+</x-dc>
+
+<script data-dc-script data-props='{"theme":{"editor":"enum","options":["system","light","dark"],"default":"dark","section":"Theme"},"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { mode: null, view: 'graph' };
+  }
+
+  currentMode() {
+    return this.state.mode ?? this.props.theme ?? 'dark';
+  }
+
+  resolvedTheme() {
+    const mode = this.currentMode();
+    if (mode !== 'system') return mode;
+    try {
+      return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    } catch (err) {
+      return 'dark';
+    }
+  }
+
+  renderVals() {
+    const cycle = ['system', 'light', 'dark'];
+    const labels = { system: 'System', light: 'Light', dark: 'Dark' };
+    const mode = this.currentMode();
+    const next = cycle[(cycle.indexOf(mode) + 1) % cycle.length];
+    const view = this.state.view;
+
+    return {
+      theme: this.resolvedTheme(),
+      isSystem: mode === 'system',
+      isLight: mode === 'light',
+      isDark: mode === 'dark',
+      themeTitle: labels[mode] + ' — click for ' + labels[next],
+      cycleTheme: () => this.setState({ mode: next }),
+
+      graphView: view === 'graph',
+      listView: view === 'list',
+      graphOn: view === 'graph' ? '1' : '0',
+      listOn: view === 'list' ? '1' : '0',
+      showGraph: () => this.setState({ view: 'graph' }),
+      showList: () => this.setState({ view: 'list' })
+    };
+  }
+}
+</script>
+</body>
+</html>

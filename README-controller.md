@@ -63,14 +63,14 @@ Relative paths resolve from the Controller workspace (the startup working
 directory). With workspace `/opt/videnoa-controller`, `media/E08.mkv` resolves to
 `/opt/videnoa-controller/media/E08.mkv`. Task records store normalized absolute
 paths. The workspace is only Controller's working location, not a media sandbox.
-The entire `<workspace>/data/**` subtree is private and forbidden for task input,
+The configured DATA ROOT and CACHE ROOT are private and forbidden for task input,
 output, and recovery capabilities, including indirect symlink paths.
 
 Input must be a regular file. Media symlinks are resolved to real target paths at
 admission. Parent traversal, changed input identity, and existing or racing output fail closed. Input and output
 extensions may differ.
 
-Downloaded bytes are verified in private UUID task directories under `data`.
+Downloaded bytes are verified in private UUID task directories under CACHE ROOT.
 Publication first attempts atomic no-replace rename. If it returns `EXDEV`
 (including separate bind mounts on the same host disk), Controller falls back to
 move semantics: exclusively create the requested final file, copy and fsync its
@@ -103,7 +103,7 @@ workflows.
 ## Settings and Security
 
 The generated `./data/controller.toml` and the shipped example contain only
-`server`, `auth`, `scheduler`, `timeouts`, and `retry`. Unknown fields are
+`server`, `paths`, `auth`, `scheduler`, `timeouts`, and `retry`. Unknown fields are
 rejected. Defaults are loopback port 3001, non-Secure cookies for trusted local
 HTTP, 24-hour absolute sessions, one-hour idle sessions, one compute slot, one
 prefetched task, one upload, one download, health/poll/transfer timeouts of
@@ -113,13 +113,30 @@ This cadence is independent of `timeouts.poll_seconds`, which controls the remot
 request timeout. Changed progress is pushed immediately through SSE; unavailable
 workers still follow retry backoff. Existing TOML files need no cadence update.
 
+The Settings page has a **Paths** section with **Data root** and **Cache root**.
+DATA ROOT contains `controller.toml`, SQLite, authentication state, Controller
+identity, and migration state. CACHE ROOT contains downloaded output while it is
+verified and published. Put CACHE ROOT in a dedicated directory on the output
+filesystem when you want final publication to use atomic rename. Relative TOML
+paths resolve from the startup working directory; the Web UI accepts absolute
+paths so the saved location is unambiguous.
+
+Path changes are staged rather than switched under running tasks. Pause the
+scheduler and wait for every task to become terminal before saving them. The UI
+then reports that a restart is required. On restart Controller creates CACHE ROOT
+and, when DATA ROOT changed, copies the durable state into the new empty root
+before opening SQLite. It records the activated root in the original default
+data mount so container restarts can find it, and retains the previous data as
+rollback evidence. The active configuration file is always
+`<DATA ROOT>/controller.toml`.
+
 Plain HTTP on a trusted LAN is a supported deployment, including access through
 a LAN IP address or hostname. Setup, login, task operations, Workers, Settings,
 and live updates work with the default `secure_cookie=false`; HTTPS and public
 Internet exposure are not required. Leave **Require secure session cookie** off
 for HTTP deployments. That option explicitly requires HTTPS for session use.
 
-`data/controller.toml` is the sole persisted Controller configuration source.
+`<DATA ROOT>/controller.toml` is the sole persisted Controller configuration source.
 The in-memory `ControllerConfig` is the active runtime configuration.
 `controller.sqlite3` holds durable operational/application state: tasks, attempts,
 workers, recovery evidence, idempotency, administrator credential, and sessions.
@@ -170,11 +187,12 @@ request without creating another task. See [task request fields](docs/controller
 ## Data and Backup
 
 SQLite is authoritative for operational state; TOML owns configuration.
-Stop Controller cleanly before a simple filesystem
-backup, then copy the complete `./data` directory. Include SQLite WAL sidecars
-and transient task directories when present. The administrator hash, settings,
-sessions, tasks, attempts, idempotency, retry state, and recovery evidence are
-inside this durable data.
+Stop Controller cleanly before a simple filesystem backup, then copy the
+complete configured DATA ROOT. Include SQLite WAL sidecars and transient task
+directories when present. If DATA ROOT was moved, also preserve the default
+`./data` directory because its `.videnoa-data-root.toml` file locates the active
+root. The administrator hash, settings, sessions, tasks, attempts, idempotency,
+retry state, and recovery evidence are inside this durable data.
 
 Preserve task-defined source and destination media separately according to your
 normal storage backup policy. Every worker must also preserve its own Videnoa
@@ -182,10 +200,11 @@ data, especially `jobs.db` and task workspaces. Losing worker job identity while
 Controller has active work creates `remote_state_ambiguous`; Controller does not
 authorize blind resubmission.
 
-Restore only while Controller is stopped. Restore the full `./data` snapshot,
-matching media at its recorded absolute paths, and matching worker data. Start
-the same or a compatible Controller version, then inspect health, authenticated
-readiness, Workers, and every nonterminal task before resuming scheduling.
+Restore only while Controller is stopped. Restore the configured DATA ROOT and
+the default `./data` locator directory, matching media at its recorded absolute
+paths, and matching worker data. Start the same or a compatible Controller
+version, then inspect health, authenticated readiness, Workers, and every
+nonterminal task before resuming scheduling.
 
 ## Critical Recovery
 
@@ -248,6 +267,12 @@ Open `http://localhost:3001` for first-access setup. Configuration and database
 files persist in `./data/controller.toml` and `./data/controller.sqlite3` on the
 host. `/workspace/data` is private and forbidden for task input/output. Use task
 paths such as `/media/input.mkv` and `/media/output.mp4`.
+
+When Paths uses custom container paths, bind mount both DATA ROOT and CACHE ROOT
+to persistent host directories. Keep `/workspace/data` mounted as well; it owns
+the small locator that lets Controller find a moved DATA ROOT on its next start.
+To keep publication on one filesystem, place CACHE ROOT in a dedicated directory
+on the same mounted volume as the output media.
 
 Separate data and media bind mounts are supported. Their final rename can return
 `EXDEV` even on the same host disk, activating the verified copy-and-delete

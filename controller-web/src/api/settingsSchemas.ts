@@ -57,6 +57,7 @@ export const retrySettingsSchema = z
 export const settingsUpdateRequestSchema = z
   .object({
     version: unsignedIntegerSchema,
+    paths: z.object({ data_root: z.string().min(1), cache_root: z.string().min(1) }).strict(),
     server: serverSettingsSchema,
     auth: authSettingsSchema,
     scheduler: schedulerStatusSchema,
@@ -70,11 +71,11 @@ export const settingsResponseSchema = z
     version: unsignedIntegerSchema,
     paths: z
       .object({
-        workspace: z.string(),
         data_root: z.string(),
-        config_file: z.string(),
+        cache_root: z.string(),
       })
       .strict(),
+    restart_required: z.boolean(),
     server: serverSettingsSchema,
     secure_cookie: z.boolean(),
     session_absolute_seconds: sessionDurationSchema,

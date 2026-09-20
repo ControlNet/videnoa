@@ -1,22 +1,26 @@
 use std::collections::BTreeMap;
 
 use crate::mock_videnoa::checkpoints::Checkpoint;
+use crate::mock_videnoa::faults::Fault;
 use crate::mock_videnoa::journal::{
     sanitize_entries, HeaderValueSnapshot, JournalEntry, JournalHeader, JournalOutcome, Route,
 };
 use crate::mock_videnoa::server::MockVidenoa;
 use crate::support::{
-    assert_completed_pipeline, complete_mock_job, wait_for_completed, ControllerFixture, TestResult,
+    assert_restarted_pipeline, complete_mock_job, wait_for_completed, ControllerFixture, TestResult,
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn three_worker_real_http_pipeline_uses_all_capacity_without_duplicates() -> TestResult {
-    // Given: three one-slot persistent workers registered through Controller HTTP.
+    // Given: three one-slot workers each lose their first accepted submission response.
     let workers = [
         MockVidenoa::start_persistent().await?,
         MockVidenoa::start_persistent().await?,
         MockVidenoa::start_persistent().await?,
     ];
+    for worker in &workers {
+        worker.set_fault(Fault::AcceptThenDropRunResponse).await;
+    }
     let fixture = ControllerFixture::start().await?;
     let mut registered = Vec::new();
     for (index, worker) in workers.iter().enumerate() {
@@ -26,15 +30,9 @@ async fn three_worker_real_http_pipeline_uses_all_capacity_without_duplicates() 
                 .await?,
         );
     }
-    let run_a = workers[0]
-        .pause(Checkpoint::AfterRunPersistedBeforeResponse)
-        .await;
-    let run_b = workers[1]
-        .pause(Checkpoint::AfterRunPersistedBeforeResponse)
-        .await;
-    let run_c = workers[2]
-        .pause(Checkpoint::AfterRunPersistedBeforeResponse)
-        .await;
+    let run_a = workers[0].pause(Checkpoint::BeforePollResponse).await;
+    let run_b = workers[1].pause(Checkpoint::BeforePollResponse).await;
+    let run_c = workers[2].pause(Checkpoint::BeforePollResponse).await;
 
     // When: three independent tasks enter through the authenticated HTTP boundary.
     let tasks = [
@@ -67,7 +65,7 @@ async fn three_worker_real_http_pipeline_uses_all_capacity_without_duplicates() 
         workers[2].job_count().await,
     );
 
-    // Then: all three workers must receive one keyed run without slot leakage.
+    // Then: replay recovers all three jobs and reaches polling without slot leakage.
     tokio::try_join!(
         workers[0].await_checkpoint(&run_a),
         workers[1].await_checkpoint(&run_b),
@@ -104,7 +102,7 @@ async fn three_worker_real_http_pipeline_uses_all_capacity_without_duplicates() 
         wait_for_completed(&fixture, &workers[*worker_index], task).await?;
     }
     for (task, worker_index) in tasks.iter().zip(assigned_workers) {
-        assert_completed_pipeline(
+        assert_restarted_pipeline(
             &fixture,
             &workers[worker_index],
             task,
@@ -115,8 +113,37 @@ async fn three_worker_real_http_pipeline_uses_all_capacity_without_duplicates() 
     for worker in &registered {
         assert_eq!(fixture.store.worker_used_slots(worker.id).await?, 0);
     }
+    for worker in &workers {
+        assert_idempotent_run_replay(worker).await;
+    }
     write_evidence(&workers).await?;
     Ok(())
+}
+
+async fn assert_idempotent_run_replay(worker: &MockVidenoa) {
+    assert_eq!(worker.counters().await.get(Route::Run), 2);
+    let runs = worker
+        .journal()
+        .await
+        .into_iter()
+        .filter(|entry| entry.route == Route::Run)
+        .collect::<Vec<_>>();
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[0].body, runs[1].body);
+    let keys = runs
+        .iter()
+        .map(|entry| {
+            entry
+                .headers
+                .iter()
+                .find_map(|header| (header.name == "idempotency-key").then_some(&header.value))
+        })
+        .collect::<Vec<_>>();
+    assert!(matches!(
+        keys.as_slice(),
+        [Some(HeaderValueSnapshot::Bytes(first)), Some(HeaderValueSnapshot::Bytes(second))]
+            if !first.is_empty() && first == second
+    ));
 }
 
 async fn write_evidence(workers: &[MockVidenoa; 3]) -> TestResult {

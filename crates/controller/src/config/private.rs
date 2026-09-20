@@ -7,46 +7,48 @@ use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use super::ConfigError;
 
 pub(super) fn prepare_data_root(workspace: &Path) -> Result<PathBuf, ConfigError> {
-    let data_root = workspace.join("data");
-    match fs::symlink_metadata(&data_root) {
+    prepare_root(&workspace.join("data"), "data_root")
+}
+
+pub(super) fn prepare_root(path: &Path, field: &'static str) -> Result<PathBuf, ConfigError> {
+    match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
-            return Err(redirected("data_root", &data_root));
+            return Err(redirected(field, path));
         }
         Ok(metadata) if metadata.is_dir() => {}
         Ok(_) => {
             return Err(ConfigError::InvalidRoot {
-                field: "data_root",
-                path: data_root,
+                field,
+                path: path.to_path_buf(),
                 reason: "path is not a directory",
             });
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let mut builder = fs::DirBuilder::new();
+            builder.recursive(true);
             #[cfg(unix)]
             builder.mode(0o700);
-            builder
-                .create(&data_root)
-                .map_err(|source| ConfigError::Io {
-                    path: data_root.clone(),
-                    source,
-                })?;
+            builder.create(path).map_err(|source| ConfigError::Io {
+                path: path.to_path_buf(),
+                source,
+            })?;
         }
         Err(source) => {
             return Err(ConfigError::Io {
-                path: data_root,
+                path: path.to_path_buf(),
                 source,
             });
         }
     }
-    make_private_directory(&data_root)?;
-    let canonical = fs::canonicalize(&data_root).map_err(|source| ConfigError::Io {
-        path: data_root.clone(),
+    make_private_directory(path)?;
+    let canonical = fs::canonicalize(path).map_err(|source| ConfigError::Io {
+        path: path.to_path_buf(),
         source,
     })?;
-    if canonical != data_root {
-        return Err(redirected("data_root", &data_root));
+    if canonical != path {
+        return Err(redirected(field, path));
     }
-    Ok(data_root)
+    Ok(canonical)
 }
 
 pub(super) fn prepare_config_file(path: &Path) -> Result<(), ConfigError> {

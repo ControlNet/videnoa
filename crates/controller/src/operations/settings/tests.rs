@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 use super::{apply, OperationsError};
 use crate::auth::AuthService;
 use crate::config::{listener_channel, serve_reconfigurable, ConfigBootstrap, PreparedListener};
-use crate::domain::{ComputeSlots, ConcurrencyLimit, SettingsUpdateRequest};
+use crate::domain::{ComputeSlots, ConcurrencyLimit, SettingsPaths, SettingsUpdateRequest};
 use crate::operations::{EventHub, OperationsDependencies, OperationsState};
 use crate::paths::PathCapabilities;
 use crate::persistence::{Database, DatabaseOptions, Store};
@@ -106,13 +106,17 @@ async fn settings_update_persists_toml_and_hot_applies_every_public_field() -> T
         events: EventHub::new(),
         payload_limits: PayloadLimits::new(1024 * 1024, 64 * 1024)?,
     })
-    .with_configuration_listener(listener, workspace.path().to_path_buf());
+    .with_configuration_listener(listener);
     let current = store.config_manager().settings()?;
     let reservation = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
     let new_port = reservation.local_addr()?.port();
     drop(reservation);
     let mut request = SettingsUpdateRequest {
         version: current.version,
+        paths: SettingsPaths {
+            data_root: workspace.path().join("data"),
+            cache_root: workspace.path().join("data"),
+        },
         server: current.server,
         auth: current.auth,
         scheduler: current.scheduler,
@@ -162,6 +166,121 @@ async fn settings_update_persists_toml_and_hot_applies_every_public_field() -> T
 }
 
 #[tokio::test]
+async fn path_change_is_staged_for_restart_after_scheduler_is_drained() -> TestResult {
+    // Given: an idle Controller with its scheduler paused.
+    let workspace = TempDir::new()?;
+    let bootstrap = ConfigBootstrap::open(workspace.path())?;
+    let database = Database::open(DatabaseOptions::new(
+        workspace.path().join("data/controller.sqlite3"),
+    ))
+    .await?;
+    let store = Store::new(database);
+    let config = bootstrap.initialize(&store)?;
+    let active_paths = config.paths.clone();
+    let paths = PathCapabilities::open(&active_paths)?;
+    let scheduler = Scheduler::load(store.clone())?;
+    let auth = AuthService::new(config.auth.clone(), store.clone())?;
+    let state = OperationsState::new(OperationsDependencies {
+        auth,
+        store: store.clone(),
+        scheduler,
+        paths,
+        config,
+        events: EventHub::new(),
+        payload_limits: PayloadLimits::new(1024 * 1024, 64 * 1024)?,
+    });
+    let current = store.config_manager().settings()?;
+    let moved_data = workspace.path().join("moved-data");
+    let moved_cache = workspace.path().join("media/.videnoa-cache");
+    let request = SettingsUpdateRequest {
+        version: current.version,
+        paths: SettingsPaths {
+            data_root: moved_data.clone(),
+            cache_root: moved_cache.clone(),
+        },
+        server: current.server,
+        auth: current.auth,
+        scheduler: crate::domain::SchedulerStatus {
+            paused: true,
+            ..current.scheduler
+        },
+        timeouts: current.timeouts,
+        retry: current.retry,
+    };
+
+    // When: the operator saves the new roots.
+    let response = apply(&state, request)
+        .await
+        .map_err(|error| std::io::Error::other(format!("settings update failed: {error:?}")))?
+        .0;
+
+    // Then: the desired roots are durable while open runtime capabilities stay unchanged.
+    assert_eq!(response.paths.data_root, moved_data);
+    assert_eq!(response.paths.cache_root, moved_cache);
+    assert!(response.restart_required);
+    assert_eq!(state.config.paths, active_paths);
+    let document = std::fs::read_to_string(bootstrap.config_file())?;
+    assert!(document.contains(&format!(
+        "data_root = {}",
+        toml::Value::String(moved_data.display().to_string())
+    )));
+    assert!(document.contains(&format!(
+        "cache_root = {}",
+        toml::Value::String(moved_cache.display().to_string())
+    )));
+    Ok(())
+}
+
+#[tokio::test]
+async fn path_change_requires_paused_scheduler() -> TestResult {
+    // Given: an idle Controller whose scheduler is still running.
+    let workspace = TempDir::new()?;
+    let bootstrap = ConfigBootstrap::open(workspace.path())?;
+    let database = Database::open(DatabaseOptions::new(
+        workspace.path().join("data/controller.sqlite3"),
+    ))
+    .await?;
+    let store = Store::new(database);
+    let config = bootstrap.initialize(&store)?;
+    let paths = PathCapabilities::open(&config.paths)?;
+    let scheduler = Scheduler::load(store.clone())?;
+    let auth = AuthService::new(config.auth.clone(), store.clone())?;
+    let state = OperationsState::new(OperationsDependencies {
+        auth,
+        store: store.clone(),
+        scheduler,
+        paths,
+        config,
+        events: EventHub::new(),
+        payload_limits: PayloadLimits::new(1024 * 1024, 64 * 1024)?,
+    });
+    let current = store.config_manager().settings()?;
+    let request = SettingsUpdateRequest {
+        version: current.version,
+        paths: SettingsPaths {
+            data_root: workspace.path().join("moved-data"),
+            cache_root: workspace.path().join("moved-cache"),
+        },
+        server: current.server,
+        auth: current.auth,
+        scheduler: current.scheduler,
+        timeouts: current.timeouts,
+        retry: current.retry,
+    };
+
+    // When: the running scheduler receives a path change.
+    let result = apply(&state, request).await;
+
+    // Then: no configuration is committed until the scheduler is paused.
+    assert!(matches!(
+        result,
+        Err(OperationsError::InvalidField("paths", _))
+    ));
+    assert_eq!(store.config_manager().settings()?.version, current.version);
+    Ok(())
+}
+
+#[tokio::test]
 async fn toml_failure_changes_neither_runtime_nor_generation() -> TestResult {
     // Given: a runtime whose temporary TOML path is blocked after initialization.
     let workspace = TempDir::new()?;
@@ -187,6 +306,10 @@ async fn toml_failure_changes_neither_runtime_nor_generation() -> TestResult {
     let current = store.config_manager().settings()?;
     let mut request = SettingsUpdateRequest {
         version: current.version,
+        paths: SettingsPaths {
+            data_root: workspace.path().join("data"),
+            cache_root: workspace.path().join("data"),
+        },
         server: current.server,
         auth: current.auth,
         scheduler: current.scheduler,
@@ -244,6 +367,10 @@ async fn server_change_without_listener_capability_is_rejected_before_commit() -
     let reservation = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
     let mut request = SettingsUpdateRequest {
         version: current.version,
+        paths: SettingsPaths {
+            data_root: workspace.path().join("data"),
+            cache_root: workspace.path().join("data"),
+        },
         server: current.server,
         auth: current.auth,
         scheduler: current.scheduler,

@@ -1,3 +1,4 @@
+use std::path::{Component, Path};
 use std::time::Duration;
 
 use crate::config::{
@@ -20,7 +21,12 @@ pub(super) fn build_config(
             host: request.server.host,
             port: request.server.port,
         },
-        paths: paths.clone(),
+        paths: PathConfig {
+            input_roots: paths.input_roots.clone(),
+            output_roots: paths.output_roots.clone(),
+            data_root: request.paths.data_root.clone(),
+            temp_root: request.paths.cache_root.clone(),
+        },
         auth: AuthConfig {
             secure_cookie: request.auth.secure_cookie,
             session_absolute: Duration::from_secs(request.auth.session_absolute_seconds),
@@ -50,6 +56,8 @@ pub(super) fn build_config(
 }
 
 pub(super) fn validate(request: &SettingsUpdateRequest) -> Result<(), OperationsError> {
+    validate_path("paths.data_root", &request.paths.data_root)?;
+    validate_path("paths.cache_root", &request.paths.cache_root)?;
     if request.server.port == 0 {
         return Err(OperationsError::InvalidField(
             "server.port",
@@ -82,6 +90,25 @@ pub(super) fn validate(request: &SettingsUpdateRequest) -> Result<(), Operations
         return Err(OperationsError::InvalidField(
             "max_attempts",
             "value must be between 1 and 100",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_path(field: &'static str, path: &Path) -> Result<(), OperationsError> {
+    if path.as_os_str().is_empty() || !path.is_absolute() {
+        return Err(OperationsError::InvalidField(
+            field,
+            "path must be absolute",
+        ));
+    }
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(OperationsError::InvalidField(
+            field,
+            "parent traversal is not allowed",
         ));
     }
     Ok(())

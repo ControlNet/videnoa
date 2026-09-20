@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 
 use crate::domain::TaskId;
 use crate::persistence::{WorkerHealthUpdate, WorkerRecord};
-use crate::workers::WorkerRegistry;
+use crate::workers::{WorkerRegistry, WorkerRegistryError};
 
 use super::{Reconciler, RecoveryError, RecoveryReport, StagePermit};
 
@@ -44,7 +44,7 @@ impl Reconciler {
             "worker health check failed during recovery"
         };
         let _write = stage.begin_write();
-        WorkerRegistry::new(self.store.clone())
+        let result = WorkerRegistry::new(self.store.clone())
             .refresh_health(WorkerHealthUpdate {
                 id: worker.id,
                 expected_version: worker.version,
@@ -56,7 +56,16 @@ impl Reconciler {
                 last_error: Some(last_error.to_owned()),
                 updated_at: now,
             })
-            .await?;
+            .await;
+        match result {
+            Ok(_) => {}
+            Err(WorkerRegistryError::Conflict) => {
+                // A concurrent edit or health probe superseded this worker snapshot.
+                // Preserve the newer record and retry the task with fresh state.
+                tracing::debug!(worker_id = %worker.id, %task_id, "Worker changed during recovery health update; task deferred");
+            }
+            Err(error) => return Err(error.into()),
+        }
         report.defer(task_id);
         Ok(())
     }

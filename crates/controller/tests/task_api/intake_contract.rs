@@ -176,7 +176,7 @@ async fn https_session_can_enable_secure_cookies_then_requires_https_proof() -> 
         .await?;
     let settings = json_body(response).await?;
     let mut body = json!({
-        "version": settings["version"], "server": settings["server"],
+        "version": settings["version"], "paths": settings["paths"], "server": settings["server"],
         "auth": { "secure_cookie": true,
             "session_absolute_seconds": settings["session_absolute_seconds"],
             "session_idle_seconds": settings["session_idle_seconds"] },

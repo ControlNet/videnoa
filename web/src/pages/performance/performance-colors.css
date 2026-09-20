@@ -1,10 +1,15 @@
+/*
+ * One hue per metric, and each composition bar is drawn in the colour of the
+ * metric it belongs to: the RAM bar is green because it is RAM, not purple
+ * because "process" used to borrow the CPU hue.
+ */
 :root {
 	--performance-color-cpu: 262 83% 58%;
 	--performance-color-gpu: 200 88% 46%;
 	--performance-color-ram: 155 63% 43%;
 	--performance-color-vram: 24 90% 52%;
-	--performance-color-process: var(--performance-color-cpu);
-	--performance-color-others: var(--performance-color-ram);
+	--performance-color-ram-soft: 155 42% 70%;
+	--performance-color-vram-soft: 24 68% 77%;
 	--performance-color-free-idle: 220 14% 62%;
 }
 
@@ -13,7 +18,7 @@
 	--performance-color-gpu: 199 92% 62%;
 	--performance-color-ram: 156 68% 58%;
 	--performance-color-vram: 31 95% 64%;
-	--performance-color-process: var(--performance-color-cpu);
-	--performance-color-others: var(--performance-color-ram);
-	--performance-color-free-idle: 220 16% 74%;
+	--performance-color-ram-soft: 156 34% 38%;
+	--performance-color-vram-soft: 31 46% 42%;
+	--performance-color-free-idle: 220 10% 34%;
 }

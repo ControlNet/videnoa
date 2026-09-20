@@ -253,3 +253,56 @@ fn reconciler(fixture: &Fixture, shutdown: ShutdownCoordinator) -> Reconciler {
         shutdown,
     )
 }
+
+#[tokio::test]
+async fn concurrent_worker_edit_defers_recovery_without_aborting_or_overwriting() -> TestResult {
+    // Synthetic HTTP worker: hold a failed health response while registration changes.
+    let server = MockVidenoa::start().await?;
+    let fixture = Fixture::new(&server, 2).await?;
+    let task = fixture.task_at(TaskStatus::Processing).await?;
+    let before = fixture.load_task(task.task_id).await?;
+    let worker = fixture.store.worker(fixture.worker_id).await?.unwrap();
+    let gate = server
+        .pause(super::mock_videnoa::checkpoints::Checkpoint::BeforeHealthResponse)
+        .await;
+    server
+        .set_fault(Fault::Response(ResponseFault {
+            route: Route::Health,
+            status: 503,
+            body: Vec::new(),
+        }))
+        .await;
+    let recovery = reconciler(&fixture, ShutdownCoordinator::new());
+    let edit = async {
+        server.await_checkpoint(&gate).await?;
+        let updated = videnoa_controller::workers::WorkerRegistry::new(fixture.store.clone())
+            .set_enabled(worker.id, worker.version, false, fixture.now)
+            .await?;
+        server.release(gate).await?;
+        Ok::<_, Box<dyn Error + Send + Sync>>(updated)
+    };
+    let (report, edited) =
+        tokio::join!(recovery.reconcile_task_id(task.task_id, fixture.now), edit);
+    let edited = edited?;
+    let report = report?;
+    assert_eq!(report.deferred().len(), 1);
+    assert_eq!(report.deferred()[0].task_id, task.task_id);
+    let durable = fixture.store.worker(worker.id).await?.unwrap();
+    assert_eq!(durable.version, edited.version);
+    assert!(!durable.enabled);
+    assert_eq!(durable.health_retry_count, edited.health_retry_count);
+    assert_eq!(durable.last_error, edited.last_error);
+    let after = fixture.load_task(task.task_id).await?;
+    assert_eq!(after.status, before.status);
+    assert_eq!(after.version, before.version);
+    assert_eq!(fixture.store.worker_used_slots(worker.id).await?, 1);
+    // A later healthy probe can still poll the same assigned task after the conflict.
+    let resumed = recovery
+        .reconcile_task_id(task.task_id, fixture.now)
+        .await?;
+    assert_eq!(
+        resumed.command_kind(task.task_id),
+        Some(RecoveryCommandKind::Poll)
+    );
+    Ok(())
+}

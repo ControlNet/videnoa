@@ -1,5 +1,6 @@
 import { expect, type Page, type Route, test } from "@playwright/test"
 
+import { taskViewStorageKey } from "../../src/tasks/query"
 import { installOperationalReadRoutes } from "./operations-fixtures"
 
 const evidenceDir = "../.omo/evidence/videnoa-controller/task-19/playwright-report/screenshots/task-15"
@@ -168,7 +169,10 @@ test("login, protected navigation, reload, narrow layout, and logout", async ({ 
   await page.screenshot({ path: `${evidenceDir}/shell-narrow.png`, fullPage: true })
 
   // Then: navigation remains usable, storage contains no auth material, and logout protects routes.
-  expect(await page.evaluate(() => ({ local: { ...localStorage }, session: { ...sessionStorage }, overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth }))).toEqual({ local: {}, session: {}, overflow: false })
+  const browserState = await page.evaluate(() => ({ local: { ...localStorage }, session: { ...sessionStorage }, overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth }))
+  expect(Object.keys(browserState.local)).toEqual([taskViewStorageKey])
+  expect(browserState.session).toEqual({})
+  expect(browserState.overflow).toBe(false)
   await page.getByRole("button", { name: "Sign out" }).click()
   await expect(page.getByRole("heading", { name: "Sign in to Videnoa Controller" })).toBeVisible()
   await page.goto("/workers")
@@ -181,7 +185,7 @@ test("desktop Settings wheel scroll reaches final content while Sign out stays v
   await installApi(page)
   await signIn(page)
   await page.getByRole("link", { name: "Settings" }).click()
-  await expect(page.getByRole("heading", { name: "Controller paths" })).toBeVisible()
+  await expect(page.getByRole("heading", { name: "Paths" })).toBeVisible()
   await page.locator(".app-frame").evaluate(async (element) => {
     await Promise.all(element.getAnimations({ subtree: true }).map((animation) => animation.finished))
   })
@@ -196,13 +200,34 @@ test("desktop Settings wheel scroll reaches final content while Sign out stays v
   const scrollableHeight = await main.evaluate((element) => element.scrollHeight - element.clientHeight)
   if (scrollableHeight > 0) await expect.poll(() => main.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
   await expect(page.getByRole("button", { name: "Save and apply settings" })).toBeInViewport({ ratio: 1 })
-  await expect(page.locator(".read-only-settings .readiness-check").last()).toBeInViewport({ ratio: 1 })
+  await expect(page.getByLabel("Maximum retry attempts")).toBeInViewport({ ratio: 1 })
   await expect(page.getByRole("button", { name: "Sign out" })).toBeInViewport({ ratio: 1 })
   expect(await page.evaluate(() => {
     const frame = document.querySelector(".app-frame")
     if (!(frame instanceof HTMLElement)) throw new TypeError("application frame is missing")
     return { documentScrollTop: document.documentElement.scrollTop, frameScrollTop: frame.scrollTop, frameClientHeight: frame.clientHeight, frameScrollHeight: frame.scrollHeight }
   })).toEqual({ documentScrollTop: 0, frameScrollTop: 0, frameClientHeight: 900, frameScrollHeight: 900 })
+})
+
+test("Settings commit bar rests on the viewport edge when the form does not scroll", async ({ page }) => {
+  // Given: a viewport tall enough to hold the whole form, so nothing scrolls.
+  await page.setViewportSize({ width: 1440, height: 1200 })
+  await installApi(page)
+  await signIn(page)
+  await page.getByRole("link", { name: "Settings" }).click()
+  await expect(page.getByRole("heading", { name: "Paths" })).toBeVisible()
+
+  // Then: sticky has no scroll to act on, so the bar must already sit on the bottom edge
+  // rather than stranded above empty background where the form happens to end.
+  expect(await page.evaluate(() => {
+    const main = document.querySelector(".shell-main")
+    const bar = document.querySelector(".settings-save-bar")
+    if (!(main instanceof HTMLElement) || !(bar instanceof HTMLElement)) throw new TypeError("Settings commit bar is missing")
+    return {
+      scrolls: main.scrollHeight > main.clientHeight,
+      gapBelowBar: Math.round(main.getBoundingClientRect().bottom - bar.getBoundingClientRect().bottom),
+    }
+  })).toEqual({ scrolls: false, gapBelowBar: 0 })
 })
 
 test("wrong password, malformed response, network failure, and expiry remain recoverable", async ({ page }) => {

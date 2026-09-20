@@ -44,10 +44,10 @@ export const workerTemplate: Worker = {
 export const settingsTemplate: SettingsResponse = {
   version: 7,
   paths: {
-    workspace: "/srv/videnoa/workspace",
     data_root: "/var/lib/videnoa",
-    config_file: "/var/lib/videnoa/controller.toml",
+    cache_root: "/mnt/media/.videnoa-cache",
   },
+  restart_required: false,
   server: { host: "127.0.0.1", port: 4173 },
   secure_cookie: true,
   session_absolute_seconds: 86_400,
@@ -224,6 +224,9 @@ export async function installOperationalApi(page: Page): Promise<OperationalApi>
     settings = {
       ...settings,
       version: settings.version + 1,
+      paths: request.paths,
+      restart_required: request.paths.data_root !== settingsTemplate.paths.data_root
+        || request.paths.cache_root !== settingsTemplate.paths.cache_root,
       server: request.server,
       secure_cookie: request.auth.secure_cookie,
       session_absolute_seconds: request.auth.session_absolute_seconds,

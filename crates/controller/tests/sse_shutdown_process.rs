@@ -28,7 +28,7 @@ struct ProcessFixture {
 
 impl ProcessFixture {
     fn new() -> TestResult<Self> {
-        let directory = TempDir::new_in(std::env::current_dir()?)?;
+        let directory = TempDir::new()?;
         let data_root = directory.path().join("data");
         fs::create_dir(&data_root)?;
         let password = uuid::Uuid::new_v4().to_string();

@@ -1,0 +1,378 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&family=Manrope:wght@400;500;600;700&display=swap">
+  <style>
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;font-family:'Manrope','Avenir Next','Segoe UI',sans-serif;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+.app{
+  --background:oklch(0.98 0.005 260);
+  --foreground:oklch(0.15 0.02 260);
+  --card:oklch(1 0 0);
+  --popover:oklch(1 0 0);
+  --primary:oklch(0.55 0.22 292);
+  --primary-foreground:oklch(0.98 0.005 260);
+  --secondary:oklch(0.93 0.01 260);
+  --muted:oklch(0.93 0.01 260);
+  --muted-foreground:oklch(0.45 0.015 260);
+  --accent:oklch(0.93 0.01 260);
+  --destructive:oklch(0.50 0.20 25);
+  --border:oklch(0.88 0.01 260);
+  --input:oklch(0.88 0.01 260);
+  --ring:oklch(0.55 0.22 292);
+  --sidebar:oklch(0.96 0.008 260);
+  --red-400:oklch(70.4% 0.191 22.216);
+  --red-500:oklch(63.7% 0.237 25.331);
+  --orange-400:oklch(75% 0.183 55.934);
+  --orange-500:oklch(70.5% 0.213 47.604);
+  --yellow-300:oklch(90.5% 0.182 98.111);
+  --yellow-400:oklch(85.2% 0.199 91.936);
+  --yellow-500:oklch(79.5% 0.184 86.047);
+  --green-400:oklch(79.2% 0.209 151.711);
+  --green-500:oklch(72.3% 0.219 149.579);
+  --emerald-400:oklch(76.5% 0.177 163.223);
+  --emerald-500:oklch(69.6% 0.17 162.48);
+  --cyan-400:oklch(78.9% 0.154 211.53);
+  --cyan-500:oklch(71.5% 0.143 215.221);
+  --blue-400:oklch(70.7% 0.165 254.624);
+  --blue-500:oklch(62.3% 0.214 259.815);
+  --purple-400:oklch(71.4% 0.203 305.504);
+  --purple-500:oklch(62.7% 0.265 303.9);
+  --gray-400:oklch(70.7% 0.022 261.325);
+  --gray-500:oklch(55.1% 0.027 264.364);
+  --perf-cpu:hsl(262 83% 58%);
+  --perf-gpu:hsl(200 88% 46%);
+  --perf-ram:hsl(155 63% 43%);
+  --perf-vram:hsl(24 90% 52%);
+  --perf-free:hsl(220 14% 62%);
+  width:1440px;height:900px;display:flex;flex-direction:column;overflow:hidden;
+  background:var(--background);color:var(--foreground);font-size:14px;
+  font-family:'Manrope','Avenir Next','Segoe UI',sans-serif;
+  line-height:1.5;
+}
+/* Tailwind pairs a line-height with each text size; inline font-size alone does not. */
+.app [style*="font-size:12px"]{line-height:16px}
+.app [style*="font-size:14px"]{line-height:20px}
+.app [style*="font-size:16px"]{line-height:24px}
+.app [style*="font-size:20px"]{line-height:28px}
+.app[data-theme="dark"]{
+  color-scheme:dark;
+  --background:oklch(0.13 0.028 260);
+  --foreground:oklch(0.97 0.005 260);
+  --card:oklch(0.16 0.028 260);
+  --popover:oklch(0.16 0.028 260);
+  --primary:oklch(0.58 0.22 292);
+  --primary-foreground:oklch(0.97 0.005 260);
+  --secondary:oklch(0.24 0.02 260);
+  --muted:oklch(0.24 0.02 260);
+  --muted-foreground:oklch(0.7 0.015 260);
+  --accent:oklch(0.24 0.02 260);
+  --destructive:oklch(0.45 0.18 25);
+  --border:oklch(0.28 0.02 260);
+  --input:oklch(0.28 0.02 260);
+  --ring:oklch(0.58 0.22 292);
+  --sidebar:oklch(0.11 0.028 260);
+  --perf-cpu:hsl(262 90% 70%);
+  --perf-gpu:hsl(199 92% 62%);
+  --perf-ram:hsl(156 68% 58%);
+  --perf-vram:hsl(31 95% 64%);
+  --perf-free:hsl(220 16% 74%);
+}
+.mono{font-family:'Geist Mono','SFMono-Regular',Consolas,'Noto Sans Mono CJK SC',monospace}
+a{color:var(--primary);text-decoration:none}
+a:hover{color:var(--primary);opacity:.85}
+button{font:inherit;color:inherit;border:0;background:none;padding:0;cursor:pointer}
+input,select,textarea{font:inherit;color:inherit}
+.nav-item{transition:background-color .15s,color .15s}
+.nav-item:hover{background:var(--accent)}
+.ghost-btn{transition:background-color .15s,color .15s;border-radius:6px}
+.ghost-btn:hover{background:var(--accent)}
+.ctl{appearance:none;-webkit-appearance:none;border-radius:6px;border:1px solid color-mix(in oklab,var(--border) 50%,transparent);background:color-mix(in oklab,var(--background) 50%,transparent);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)}
+.ctl:focus{outline:none;box-shadow:0 0 0 1px var(--ring)}
+.scroll{overflow-y:auto;scrollbar-width:thin}
+@keyframes tw-pulse{0%,100%{opacity:1}50%{opacity:.5}}
+
+  </style>
+</helmet>
+
+<div class="app" data-theme="{{theme}}">
+  <header style="display:flex;align-items:center;height:48px;padding:0 16px;border-bottom:1px solid var(--border);flex-shrink:0;background:var(--background)">
+    <div style="display:flex;align-items:center;gap:10px;margin-right:24px">
+      <div title="Server connected: workflow running" style="height:24px;width:24px;border-radius:8px;border:1px solid color-mix(in oklab,var(--yellow-400) 50%,transparent);display:flex;align-items:center;justify-content:center;flex-shrink:0;background:color-mix(in oklab,var(--yellow-500) 20%,transparent)">
+        <div style="height:8px;width:8px;border-radius:50%;background:var(--yellow-300);box-shadow:0 0 10px rgba(253,224,71,.65);animation:tw-pulse 2s cubic-bezier(.4,0,.6,1) infinite"></div>
+      </div>
+      <a href="https://github.com/ControlNet/videnoa" class="mono" style="font-size:14px;font-weight:600;color:var(--foreground);white-space:nowrap">Videnoa</a>
+      <span class="mono" style="font-size:12px;color:var(--muted-foreground);white-space:nowrap">v0.1.3</span>
+    </div>
+
+    <nav style="display:flex;align-items:center;gap:4px">
+      <span class="nav-item" style="display:flex;align-items:center;gap:8px;border-radius:6px;padding:6px 12px;font-size:14px;font-weight:500;color:var(--muted-foreground)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><rect width="8" height="8" x="3" y="3" rx="2"/><path d="M7 11v4a2 2 0 0 0 2 2h4"/><rect width="8" height="8" x="13" y="13" rx="2"/></svg>
+        <span>Editor</span>
+      </span>
+      <span class="nav-item" style="display:flex;align-items:center;gap:8px;border-radius:6px;padding:6px 12px;font-size:14px;font-weight:500;color:var(--muted-foreground)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></svg>
+        <span>Jobs</span>
+      </span>
+      <span class="nav-item" style="display:flex;align-items:center;gap:8px;border-radius:6px;padding:6px 12px;font-size:14px;font-weight:500;color:var(--muted-foreground)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z"/><path d="M12 22V12"/><polyline points="3.29 7 12 12 20.71 7"/><path d="m7.5 4.27 9 5.15"/></svg>
+        <span>Models</span>
+      </span>
+      <span class="nav-item" style="display:flex;align-items:center;gap:8px;border-radius:6px;padding:6px 12px;font-size:14px;font-weight:500;background:color-mix(in oklab,var(--primary) 15%,transparent);color:var(--primary)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></svg>
+        <span>Performance</span>
+      </span>
+      <span class="nav-item" style="display:flex;align-items:center;gap:8px;border-radius:6px;padding:6px 12px;font-size:14px;font-weight:500;color:var(--muted-foreground)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;flex-shrink:0"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></svg>
+        <span>Settings</span>
+      </span>
+    </nav>
+
+    <div style="margin-left:auto;display:flex;align-items:center;gap:4px">
+      <button class="ghost-btn" aria-label="Select language" title="Current language: English" style="height:32px;width:32px;display:flex;align-items:center;justify-content:center">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
+      </button>
+      <button class="ghost-btn" onClick="{{cycleTheme}}" title="{{themeTitle}}" aria-label="{{themeTitle}}" style="height:32px;width:32px;display:flex;align-items:center;justify-content:center">
+        <sc-if value="{{isSystem}}" hint-placeholder-val="{{true}}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg>
+        </sc-if>
+        <sc-if value="{{isLight}}" hint-placeholder-val="{{false}}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
+        </sc-if>
+        <sc-if value="{{isDark}}" hint-placeholder-val="{{false}}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/></svg>
+        </sc-if>
+      </button>
+    </div>
+  </header>
+  <main style="flex:1;min-height:0;overflow:auto">
+    <div style="padding:24px;margin-top:-314px">
+      <h2 style="font-size:18px;line-height:28px;font-weight:600;letter-spacing:-.025em;margin:0 0 24px">Performance</h2>
+
+      <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px;margin-bottom:24px">
+        <div style="border-radius:12px;border:1px solid color-mix(in oklab,var(--border) 60%,transparent);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+          <div style="padding:24px 24px 8px;display:flex;flex-direction:column;gap:8px">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+              <div style="font-size:14px;font-weight:500;line-height:1;letter-spacing:-.025em">CPU</div>
+              <span style="font-size:10px;font-weight:600;letter-spacing:.08em;color:var(--muted-foreground)">LIVE</span>
+            </div>
+            <div style="font-size:12px;color:var(--muted-foreground)">telemetry available</div>
+          </div>
+          <div style="padding:0 24px 24px;display:flex;flex-direction:column;gap:4px">
+            <p class="mono" style="font-size:20px;font-weight:600;letter-spacing:-.025em;margin:0">34.2%</p>
+            <p style="font-size:12px;color:var(--muted-foreground);margin:0">CPU utilization</p>
+          </div>
+        </div>
+        <div style="border-radius:12px;border:1px solid color-mix(in oklab,var(--border) 60%,transparent);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+          <div style="padding:24px 24px 8px;display:flex;flex-direction:column;gap:8px">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+              <div style="font-size:14px;font-weight:500;line-height:1;letter-spacing:-.025em">RAM</div>
+              <span style="font-size:10px;font-weight:600;letter-spacing:.08em;color:var(--muted-foreground)">LIVE</span>
+            </div>
+            <div style="font-size:12px;color:var(--muted-foreground)">telemetry available</div>
+          </div>
+          <div style="padding:0 24px 24px;display:flex;flex-direction:column;gap:4px">
+            <p class="mono" style="font-size:20px;font-weight:600;letter-spacing:-.025em;margin:0">18.6 GiB / 62.7 GiB</p>
+            <p style="font-size:12px;color:var(--muted-foreground);margin:0">Usage 29.7%</p>
+          </div>
+        </div>
+        <div style="border-radius:12px;border:1px solid color-mix(in oklab,var(--border) 60%,transparent);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+          <div style="padding:24px 24px 8px;display:flex;flex-direction:column;gap:8px">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+              <div style="font-size:14px;font-weight:500;line-height:1;letter-spacing:-.025em">GPU</div>
+              <span style="font-size:10px;font-weight:600;letter-spacing:.08em;color:var(--muted-foreground)">LIVE</span>
+            </div>
+            <div style="font-size:12px;color:var(--muted-foreground)">telemetry available</div>
+          </div>
+          <div style="padding:0 24px 24px;display:flex;flex-direction:column;gap:4px">
+            <p class="mono" style="font-size:20px;font-weight:600;letter-spacing:-.025em;margin:0">91.4%</p>
+            <p style="font-size:12px;color:var(--muted-foreground);margin:0">GPU utilization</p>
+          </div>
+        </div>
+        <div style="border-radius:12px;border:1px solid color-mix(in oklab,var(--border) 60%,transparent);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+          <div style="padding:24px 24px 8px;display:flex;flex-direction:column;gap:8px">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+              <div style="font-size:14px;font-weight:500;line-height:1;letter-spacing:-.025em">VRAM</div>
+              <span style="font-size:10px;font-weight:600;letter-spacing:.08em;color:var(--muted-foreground)">LIVE</span>
+            </div>
+            <div style="font-size:12px;color:var(--muted-foreground)">telemetry available</div>
+          </div>
+          <div style="padding:0 24px 24px;display:flex;flex-direction:column;gap:4px">
+            <p class="mono" style="font-size:20px;font-weight:600;letter-spacing:-.025em;margin:0">9.8 GiB / 23.6 GiB</p>
+            <p style="font-size:12px;color:var(--muted-foreground);margin:0">Usage 41.5%</p>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin-bottom:24px">
+        <div style="border-radius:12px;border:1px solid color-mix(in oklab,var(--border) 60%,transparent);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+          <div style="padding:24px 24px 8px;display:flex;flex-direction:column;gap:8px">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+              <div style="font-size:14px;font-weight:500;line-height:1;letter-spacing:-.025em">RAM composition</div>
+              <span style="font-size:10px;font-weight:600;letter-spacing:.08em;color:var(--muted-foreground)">LIVE</span>
+            </div>
+            <div style="font-size:12px;color:var(--muted-foreground)">telemetry available</div>
+          </div>
+          <div style="padding:0 24px 24px;display:flex;flex-direction:column;gap:16px">
+            <svg viewBox="0 0 640 240" style="width:100%;height:240px" role="img" aria-label="RAM process versus others versus free or idle composition">
+            <circle cx="320" cy="120" r="72" fill="none" stroke="var(--perf-cpu)" stroke-width="32" stroke-dasharray="42.3 410.1" transform="rotate(-90.00 320 120)"/>
+            <circle cx="320" cy="120" r="72" fill="none" stroke="var(--perf-ram)" stroke-width="32" stroke-dasharray="87.1 365.3" transform="rotate(-54.36 320 120)"/>
+            <circle cx="320" cy="120" r="72" fill="none" stroke="var(--perf-free)" stroke-width="32" stroke-dasharray="315.5 136.9" transform="rotate(16.92 320 120)"/>
+            </svg>
+            <ul style="list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px">
+            <li style="display:flex;align-items:center;justify-content:space-between;gap:16px;font-size:12px">
+              <span style="display:flex;align-items:center;gap:8px;color:var(--muted-foreground)">
+                <span style="width:8px;height:8px;border-radius:50%;background:var(--perf-cpu)"></span>
+                <span>process</span>
+              </span>
+              <span style="font-weight:500">6.2 GiB (9.9%)</span>
+            </li>
+            <li style="display:flex;align-items:center;justify-content:space-between;gap:16px;font-size:12px">
+              <span style="display:flex;align-items:center;gap:8px;color:var(--muted-foreground)">
+                <span style="width:8px;height:8px;border-radius:50%;background:var(--perf-ram)"></span>
+                <span>others</span>
+              </span>
+              <span style="font-weight:500">12.4 GiB (19.8%)</span>
+            </li>
+            <li style="display:flex;align-items:center;justify-content:space-between;gap:16px;font-size:12px">
+              <span style="display:flex;align-items:center;gap:8px;color:var(--muted-foreground)">
+                <span style="width:8px;height:8px;border-radius:50%;background:var(--perf-free)"></span>
+                <span>free / idle</span>
+              </span>
+              <span style="font-weight:500">44.1 GiB (70.3%)</span>
+            </li>
+            </ul>
+            <p style="font-size:12px;color:var(--muted-foreground);margin:0">Used 18.6 GiB of 62.7 GiB</p>
+          </div>
+        </div>
+        <div style="border-radius:12px;border:1px solid color-mix(in oklab,var(--border) 60%,transparent);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)">
+          <div style="padding:24px 24px 8px;display:flex;flex-direction:column;gap:8px">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+              <div style="font-size:14px;font-weight:500;line-height:1;letter-spacing:-.025em">VRAM composition</div>
+              <span style="font-size:10px;font-weight:600;letter-spacing:.08em;color:var(--muted-foreground)">LIVE</span>
+            </div>
+            <div style="font-size:12px;color:var(--muted-foreground)">telemetry available</div>
+          </div>
+          <div style="padding:0 24px 24px;display:flex;flex-direction:column;gap:16px">
+            <svg viewBox="0 0 640 240" style="width:100%;height:240px" role="img" aria-label="VRAM process versus others versus free or idle composition">
+            <circle cx="320" cy="120" r="72" fill="none" stroke="var(--perf-cpu)" stroke-width="32" stroke-dasharray="168.0 284.4" transform="rotate(-90.00 320 120)"/>
+            <circle cx="320" cy="120" r="72" fill="none" stroke="var(--perf-ram)" stroke-width="32" stroke-dasharray="14.7 437.7" transform="rotate(45.72 320 120)"/>
+            <circle cx="320" cy="120" r="72" fill="none" stroke="var(--perf-free)" stroke-width="32" stroke-dasharray="262.1 190.3" transform="rotate(59.40 320 120)"/>
+            </svg>
+            <ul style="list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px">
+            <li style="display:flex;align-items:center;justify-content:space-between;gap:16px;font-size:12px">
+              <span style="display:flex;align-items:center;gap:8px;color:var(--muted-foreground)">
+                <span style="width:8px;height:8px;border-radius:50%;background:var(--perf-cpu)"></span>
+                <span>process</span>
+              </span>
+              <span style="font-weight:500">8.9 GiB (37.7%)</span>
+            </li>
+            <li style="display:flex;align-items:center;justify-content:space-between;gap:16px;font-size:12px">
+              <span style="display:flex;align-items:center;gap:8px;color:var(--muted-foreground)">
+                <span style="width:8px;height:8px;border-radius:50%;background:var(--perf-ram)"></span>
+                <span>others</span>
+              </span>
+              <span style="font-weight:500">0.9 GiB (3.8%)</span>
+            </li>
+            <li style="display:flex;align-items:center;justify-content:space-between;gap:16px;font-size:12px">
+              <span style="display:flex;align-items:center;gap:8px;color:var(--muted-foreground)">
+                <span style="width:8px;height:8px;border-radius:50%;background:var(--perf-free)"></span>
+                <span>free / idle</span>
+              </span>
+              <span style="font-weight:500">13.8 GiB (58.5%)</span>
+            </li>
+            </ul>
+            <p style="font-size:12px;color:var(--muted-foreground);margin:0">Used 9.8 GiB of 23.6 GiB</p>
+          </div>
+        </div>
+      </div>
+
+      <div style="border-radius:12px;border:1px solid color-mix(in oklab,var(--border) 60%,transparent);background:var(--card);box-shadow:0 1px 2px 0 rgb(0 0 0 / .05);margin-bottom:24px">
+        <div style="padding:24px 24px 8px;display:flex;flex-direction:column;gap:8px">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+            <div style="font-size:14px;font-weight:500;line-height:1;letter-spacing:-.025em">Utilization trends</div>
+            <span style="font-size:10px;font-weight:600;letter-spacing:.08em;color:var(--muted-foreground)">LIVE</span>
+          </div>
+          <div style="font-size:12px;color:var(--muted-foreground)">telemetry enabled</div>
+        </div>
+        <div style="padding:0 24px 24px">
+          <svg viewBox="0 0 1344 288" style="width:100%;height:288px" role="img" aria-label="CPU, GPU, RAM, and VRAM utilization timeline trends">
+          <line x1="44" x2="1332" y1="258.0" y2="258.0" stroke="var(--border)" stroke-dasharray="4 4"/>
+          <line x1="44" x2="1332" y1="195.5" y2="195.5" stroke="var(--border)" stroke-dasharray="4 4"/>
+          <line x1="44" x2="1332" y1="133.0" y2="133.0" stroke="var(--border)" stroke-dasharray="4 4"/>
+          <line x1="44" x2="1332" y1="70.5" y2="70.5" stroke="var(--border)" stroke-dasharray="4 4"/>
+          <line x1="44" x2="1332" y1="8.0" y2="8.0" stroke="var(--border)" stroke-dasharray="4 4"/>
+          <text x="36" y="262.0" text-anchor="end" font-size="12" fill="var(--muted-foreground)">0%</text>
+          <text x="36" y="199.5" text-anchor="end" font-size="12" fill="var(--muted-foreground)">25%</text>
+          <text x="36" y="137.0" text-anchor="end" font-size="12" fill="var(--muted-foreground)">50%</text>
+          <text x="36" y="74.5" text-anchor="end" font-size="12" fill="var(--muted-foreground)">75%</text>
+          <text x="36" y="12.0" text-anchor="end" font-size="12" fill="var(--muted-foreground)">100%</text>
+          <text x="44.0" y="278" text-anchor="middle" font-size="12" fill="var(--muted-foreground)">+0s</text>
+          <text x="187.1" y="278" text-anchor="middle" font-size="12" fill="var(--muted-foreground)">+30s</text>
+          <text x="330.2" y="278" text-anchor="middle" font-size="12" fill="var(--muted-foreground)">+60s</text>
+          <text x="473.3" y="278" text-anchor="middle" font-size="12" fill="var(--muted-foreground)">+90s</text>
+          <text x="616.4" y="278" text-anchor="middle" font-size="12" fill="var(--muted-foreground)">+120s</text>
+          <text x="759.6" y="278" text-anchor="middle" font-size="12" fill="var(--muted-foreground)">+150s</text>
+          <text x="902.7" y="278" text-anchor="middle" font-size="12" fill="var(--muted-foreground)">+180s</text>
+          <text x="1045.8" y="278" text-anchor="middle" font-size="12" fill="var(--muted-foreground)">+210s</text>
+          <text x="1188.9" y="278" text-anchor="middle" font-size="12" fill="var(--muted-foreground)">+240s</text>
+          <text x="1332.0" y="278" text-anchor="end" font-size="12" fill="var(--muted-foreground)">+270s</text>
+          <path d="M44.0,187.0 C67.9,185.6 139.4,181.6 187.1,178.8 C234.8,175.9 282.5,170.9 330.2,170.0 C377.9,169.1 425.6,173.9 473.3,173.3 C521.0,172.6 568.7,166.1 616.4,166.0 C664.1,165.9 711.9,171.0 759.6,172.8 C807.3,174.5 855.0,177.1 902.7,176.5 C950.4,175.9 998.1,170.2 1045.8,169.3 C1093.5,168.3 1141.2,170.2 1188.9,170.8 C1236.6,171.3 1308.1,172.2 1332.0,172.5" fill="none" stroke="var(--perf-cpu)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M44.0,102.8 C67.9,96.0 139.4,73.2 187.1,62.0 C234.8,50.8 282.5,41.5 330.2,35.8 C377.9,30.0 425.6,28.0 473.3,27.3 C521.0,26.5 568.7,31.8 616.4,31.3 C664.1,30.7 711.9,24.7 759.6,24.3 C807.3,23.8 855.0,26.8 902.7,28.5 C950.4,30.2 998.1,34.8 1045.8,34.5 C1093.5,34.2 1141.2,27.3 1188.9,26.5 C1236.6,25.7 1308.1,29.0 1332.0,29.5" fill="none" stroke="var(--perf-gpu)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M44.0,197.8 C67.9,196.6 139.4,192.8 187.1,191.0 C234.8,189.3 282.5,188.2 330.2,187.3 C377.9,186.3 425.6,185.7 473.3,185.3 C521.0,184.8 568.7,184.7 616.4,184.5 C664.1,184.3 711.9,184.0 759.6,184.0 C807.3,184.0 855.0,184.3 902.7,184.3 C950.4,184.2 998.1,183.8 1045.8,183.8 C1093.5,183.7 1141.2,184.0 1188.9,184.0 C1236.6,184.0 1308.1,183.8 1332.0,183.8" fill="none" stroke="var(--perf-ram)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M44.0,212.5 C67.9,206.1 139.4,183.0 187.1,174.0 C234.8,165.0 282.5,161.6 330.2,158.5 C377.9,155.4 425.6,156.1 473.3,155.5 C521.0,154.9 568.7,154.9 616.4,154.8 C664.1,154.6 711.9,154.6 759.6,154.5 C807.3,154.4 855.0,154.3 902.7,154.3 C950.4,154.3 998.1,154.5 1045.8,154.5 C1093.5,154.5 1141.2,154.3 1188.9,154.3 C1236.6,154.2 1308.1,154.3 1332.0,154.3" fill="none" stroke="var(--perf-vram)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+      </div>
+
+    </div>
+  </main>
+</div>
+</x-dc>
+
+<script data-dc-script data-props='{"theme":{"editor":"enum","options":["system","light","dark"],"default":"dark","section":"Theme"},"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { mode: null };
+  }
+
+  currentMode() {
+    return this.state.mode ?? this.props.theme ?? 'dark';
+  }
+
+  resolvedTheme() {
+    const mode = this.currentMode();
+    if (mode !== 'system') return mode;
+    try {
+      return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    } catch (err) {
+      return 'dark';
+    }
+  }
+
+  renderVals() {
+    const cycle = ['system', 'light', 'dark'];
+    const labels = { system: 'System', light: 'Light', dark: 'Dark' };
+    const mode = this.currentMode();
+    const next = cycle[(cycle.indexOf(mode) + 1) % cycle.length];
+
+    return {
+      theme: this.resolvedTheme(),
+      isSystem: mode === 'system',
+      isLight: mode === 'light',
+      isDark: mode === 'dark',
+      themeTitle: labels[mode] + ' — click for ' + labels[next],
+      cycleTheme: () => this.setState({ mode: next })
+    };
+  }
+}
+</script>
+</body>
+</html>

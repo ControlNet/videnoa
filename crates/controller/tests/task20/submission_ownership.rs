@@ -79,7 +79,7 @@ async fn normal_attempt_submits_exactly_once() -> TestResult {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn timed_out_submission_waits_for_restart_before_replay() -> TestResult {
+async fn timed_out_submission_retries_in_same_generation_after_backoff() -> TestResult {
     // Given: one durable attempt stopped immediately before its first remote submission.
     let gate = CheckpointGate::new(TransferCheckpointPoint::BeforeRemoteSubmit);
     let observer: Arc<dyn TransferCheckpointObserver> = gate.clone();
@@ -105,7 +105,7 @@ async fn timed_out_submission_waits_for_restart_before_replay() -> TestResult {
         .reconcile_task_id(task.id, chrono::Utc::now())
         .await?;
 
-    // Then: this process must not issue another request for the owned attempt.
+    // Then: retries expose a durable deadline and do not run before it.
     let durable_task = fixture
         .store
         .task(task.id)
@@ -125,15 +125,30 @@ async fn timed_out_submission_waits_for_restart_before_replay() -> TestResult {
     assert_eq!(worker.counters().await.get(Route::Run), 1);
     assert_eq!(worker.job_count().await, 1);
 
-    // When: a new Controller generation reconciles uncertain acceptance.
-    let restarted = fixture.reconciler()?;
-    restarted
-        .reconcile_task_id(task.id, chrono::Utc::now())
-        .await?;
-    complete_mock_job(&worker, &task, b"enhanced-video").await?;
-    fixture.restart().await?;
+    assert_eq!(durable_attempt.attempt.retry.retry_count, 1);
+    assert_eq!(durable_task.retry, durable_attempt.attempt.retry);
+    let retry_at = durable_attempt
+        .attempt
+        .retry
+        .next_retry_at
+        .expect("retry deadline");
 
-    // Then: restart replays the same key and converges the original attempt.
+    // When: the same generation reaches the durable retry deadline.
+    reconciler.reconcile_task_id(task.id, retry_at).await?;
+    complete_mock_job(&worker, &task, b"enhanced-video").await?;
+    // Then: replay has already recovered the original attempt before runtime restart.
+    assert_eq!(
+        fixture.store.task(task.id).await?.expect("task").status,
+        TaskStatus::Processing
+    );
+    let recovered = fixture
+        .store
+        .current_attempt(task.id)
+        .await?
+        .expect("attempt");
+    assert_eq!(recovered.attempt.retry.retry_count, 0);
+    assert!(recovered.attempt.retry.next_retry_at.is_none());
+    fixture.restart().await?;
     assert_restarted_pipeline(&fixture, &worker, &task, b"enhanced-video").await?;
     let keys = worker
         .journal()
@@ -157,8 +172,7 @@ async fn timed_out_submission_waits_for_restart_before_replay() -> TestResult {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn same_generation_cancellation_defers_owned_submission_without_duplicate_request(
-) -> TestResult {
+async fn same_generation_cancellation_retries_uncertain_submission_after_backoff() -> TestResult {
     // Given: one submission accepted remotely after its Controller generation lost the response.
     let gate = CheckpointGate::new(TransferCheckpointPoint::BeforeRemoteSubmit);
     let observer: Arc<dyn TransferCheckpointObserver> = gate.clone();
@@ -221,5 +235,57 @@ async fn same_generation_cancellation_defers_owned_submission_without_duplicate_
     assert_eq!(counters.get(Route::Run), 1);
     assert_eq!(counters.get(Route::JobCancel), 0);
     assert_eq!(worker.job_count().await, 1);
+    let retry_at = fixture
+        .store
+        .current_attempt(task.id)
+        .await?
+        .expect("attempt")
+        .attempt
+        .retry
+        .next_retry_at
+        .expect("retry deadline");
+    reconciler.reconcile_task_id(task.id, retry_at).await?;
+    assert_eq!(
+        fixture.store.task(task.id).await?.expect("task").status,
+        TaskStatus::Cancelled
+    );
+    assert_eq!(worker.counters().await.get(Route::Run), 2);
+    assert_eq!(worker.counters().await.get(Route::JobCancel), 1);
     Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn orchestration_recovers_lost_submission_response_without_restart() -> TestResult {
+    // The isolated mock accepts exactly one job and drops its first response.
+    let worker = MockVidenoa::start_persistent().await?;
+    worker.set_fault(Fault::AcceptThenDropRunResponse).await;
+    let fixture = ControllerFixture::start().await?;
+    fixture
+        .register_worker(&worker, "automatic-submission-retry")
+        .await?;
+    let task = fixture
+        .create_task("automatic-submission-retry", b"input-video")
+        .await?;
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        loop {
+            if fixture.store.task(task.id).await?.expect("task").status == TaskStatus::Processing {
+                return Ok::<_, Box<dyn std::error::Error + Send + Sync>>(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await??;
+    assert_eq!(worker.counters().await.get(Route::Run), 2);
+    assert_eq!(worker.job_count().await, 1);
+    assert_eq!(
+        fixture
+            .store
+            .task(task.id)
+            .await?
+            .expect("task")
+            .attempt_count,
+        1
+    );
+    complete_mock_job(&worker, &task, b"enhanced-video").await?;
+    assert_restarted_pipeline(&fixture, &worker, &task, b"enhanced-video").await
 }

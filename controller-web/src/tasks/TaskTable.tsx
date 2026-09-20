@@ -145,6 +145,8 @@ function LoadingRows({ columns }: { readonly columns: number }) {
 
 function OptionalCell({ column, task }: { readonly column: OptionalColumn; readonly task: Task }) {
   switch (column) {
+    case "priority":
+      return <td className="numeric-cell">{task.priority}</td>
     case "source":
       return <td>{task.source === "api" ? "API" : "Manual"}</td>
     case "input_path":

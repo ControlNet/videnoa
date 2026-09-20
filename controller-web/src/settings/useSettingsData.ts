@@ -2,8 +2,6 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react"
 
 import { type ApiClient, ApiClientError } from "../api/client"
 import {
-  type Readiness,
-  readinessSchema,
   type SettingsResponse,
   type SettingsUpdateRequest,
   settingsResponseSchema,
@@ -13,7 +11,6 @@ import { appInvalidationStore } from "../events/store"
 
 export type SettingsData = {
   readonly settings: SettingsResponse | null
-  readonly readiness: Readiness | null
   readonly loading: boolean
   readonly error: string | null
   readonly actionError: ApiClientError | null
@@ -33,7 +30,6 @@ export function useSettingsData(apiClient: ApiClient): SettingsData {
   const update = useSyncExternalStore(appSchedulerUpdateStore.subscribe, appSchedulerUpdateStore.snapshot)
   const appliedUpdateGeneration = useRef(appSchedulerUpdateStore.snapshot().generation)
   const [settings, setSettings] = useState<SettingsResponse | null>(null)
-  const [readiness, setReadiness] = useState<Readiness | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<ApiClientError | null>(null)
@@ -50,21 +46,16 @@ export function useSettingsData(apiClient: ApiClient): SettingsData {
         setError(null)
       }
     })
-    void Promise.all([
-      apiClient.request("api/settings", { schema: settingsResponseSchema, signal: controller.signal }),
-      apiClient.request("api/readiness", { schema: readinessSchema, signal: controller.signal }),
-    ]).then(
-      ([nextSettings, nextReadiness]) => {
+    void apiClient.request("api/settings", { schema: settingsResponseSchema, signal: controller.signal }).then(
+      (nextSettings) => {
         if (controller.signal.aborted) return
         setSettings(nextSettings)
-        setReadiness(nextReadiness)
         setLoading(false)
       },
       (reason: unknown) => {
         if (controller.signal.aborted) return
         if (!(reason instanceof ApiClientError)) throw reason
         // Keep any mounted draft available while the authoritative refresh is retried.
-        setReadiness(null)
         setError(reason.code === "network_failure" ? "Controller could not be reached." : "Controller could not load settings.")
         setLoading(false)
       },
@@ -114,7 +105,6 @@ export function useSettingsData(apiClient: ApiClient): SettingsData {
 
   return {
     settings,
-    readiness,
     loading,
     error,
     actionError,

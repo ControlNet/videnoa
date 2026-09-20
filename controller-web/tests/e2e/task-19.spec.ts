@@ -3,6 +3,7 @@ import { mkdir } from "node:fs/promises"
 import AxeBuilder from "@axe-core/playwright"
 import { expect, type Page, test } from "@playwright/test"
 
+import { taskViewStorageKey } from "../../src/tasks/query"
 import { installOperationalApi } from "./operations-fixtures"
 import { fulfillJson, installAuthenticatedSession, statuses, task } from "./tasks-fixtures"
 
@@ -167,7 +168,7 @@ test("expires to a clean login surface without browser-stored credentials", asyn
     indexedDatabases: await indexedDB.databases(),
     local: Object.keys(localStorage),
     session: Object.keys(sessionStorage),
-  }))).toEqual({ cacheKeys: [], indexedDatabases: [], local: [], session: [] })
+  }))).toEqual({ cacheKeys: [], indexedDatabases: [], local: [taskViewStorageKey], session: [] })
   expect((await context.cookies()).map((cookie) => cookie.name)).not.toContain("videnoa_session")
   await page.screenshot({ path: `${failureEvidenceDir}/session-expired-narrow.png`, animations: "disabled", fullPage: false, scale: "css" })
 })

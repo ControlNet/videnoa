@@ -1,6 +1,6 @@
 import { Layers, Plus } from "lucide-react"
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { useSearchParams } from "react-router"
+import { useCallback, useEffect, useRef, useState } from "react"
+import { useLocation, useNavigate } from "react-router"
 
 import type { ApiClient } from "../api/client"
 import { Button } from "../ui/Button"
@@ -10,7 +10,7 @@ import "./task-detail.css"
 import "./tasks.css"
 import { BatchTaskDialog } from "./BatchTaskDialog"
 import { ManualTaskDialog } from "./ManualTaskDialog"
-import { canonicalLastOffset, parseTaskQuery, serializeTaskQuery, type TaskQuery } from "./query"
+import { canonicalLastOffset, loadTaskQuery, parseTaskQuery, persistTaskQuery, type TaskQuery } from "./query"
 import { TaskCounters } from "./TaskCounters"
 import { TaskDetailPane } from "./TaskDetailPane"
 import { TaskTable } from "./TaskTable"
@@ -22,8 +22,13 @@ type TasksPageProps = {
 }
 
 export function TasksPage({ apiClient }: TasksPageProps) {
-  const [parameters, setParameters] = useSearchParams()
-  const query = useMemo(() => parseTaskQuery(parameters), [parameters])
+  const location = useLocation()
+  const navigate = useNavigate()
+  const [query, setQuery] = useState(() => (
+    location.search === ""
+      ? loadTaskQuery(window.localStorage)
+      : parseTaskQuery(new URLSearchParams(location.search))
+  ))
   const [search, setSearch] = useState(query.search)
   const [addTaskOpen, setAddTaskOpen] = useState(false)
   const [batchOpen, setBatchOpen] = useState(false)
@@ -34,16 +39,23 @@ export function TasksPage({ apiClient }: TasksPageProps) {
   const workerNames = useWorkerNames(apiClient)
 
   useEffect(() => {
+    if (location.search === "") return
+    void navigate({ pathname: location.pathname, hash: location.hash }, { replace: true })
+  }, [location.hash, location.pathname, location.search, navigate])
+
+  useEffect(() => {
+    persistTaskQuery(window.localStorage, query)
+  }, [query])
+
+  useEffect(() => {
     const timer = window.setTimeout(() => setSearch(query.search), 0)
     return () => window.clearTimeout(timer)
   }, [query.search])
   const updateQuery = useCallback(
     (patch: Partial<TaskQuery>): void => {
-      setParameters(serializeTaskQuery({ ...query, ...patch }), {
-        replace: true,
-      })
+      setQuery((current) => ({ ...current, ...patch }))
     },
-    [query, setParameters],
+    [],
   )
 
   useEffect(() => {
@@ -56,7 +68,9 @@ export function TasksPage({ apiClient }: TasksPageProps) {
     if (data.page === null || data.page.items.length > 0 || query.offset === 0) return
     if (data.page.offset !== query.offset || data.page.limit !== query.limit) return
     const offset = canonicalLastOffset(data.page.total, query.limit)
-    if (offset < query.offset) updateQuery({ offset })
+    if (offset >= query.offset) return
+    const timer = window.setTimeout(() => updateQuery({ offset }), 0)
+    return () => window.clearTimeout(timer)
   }, [data.page, query.limit, query.offset, updateQuery])
 
   const page = data.page

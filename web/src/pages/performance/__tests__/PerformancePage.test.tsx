@@ -120,12 +120,16 @@ describe("PerformancePage overview cards", () => {
 			expect(getPerformanceExport).toHaveBeenCalledTimes(1);
 		});
 
+		// Every tile leads with a percentage so the four are comparable; the byte
+		// pair moves to the detail line beneath it.
 		expect(screen.getByTestId("performance-value-cpu")).toHaveTextContent("31.3%");
-		expect(screen.getByTestId("performance-value-ram")).toHaveTextContent(
+		expect(screen.getByTestId("performance-value-ram")).toHaveTextContent("50.0%");
+		expect(screen.getByTestId("performance-detail-ram")).toHaveTextContent(
 			"8.0 GiB / 16.0 GiB",
 		);
 		expect(screen.getByTestId("performance-value-gpu")).toHaveTextContent("55.5%");
-		expect(screen.getByTestId("performance-value-vram")).toHaveTextContent(
+		expect(screen.getByTestId("performance-value-vram")).toHaveTextContent("37.5%");
+		expect(screen.getByTestId("performance-detail-vram")).toHaveTextContent(
 			"3.0 GiB / 8.0 GiB",
 		);
 		expect(
@@ -143,15 +147,19 @@ describe("PerformancePage overview cards", () => {
 		expect(
 			screen.getByTestId("performance-composition-slice-vram-process"),
 		).toHaveTextContent("1.0 GiB (12.5%)");
+		// A RAM bar is drawn in the RAM hue, not in the CPU's purple.
 		expect(
 			screen.getByTestId("performance-composition-marker-ram-process"),
-		).toHaveStyle({ backgroundColor: "hsl(var(--performance-color-process))" });
+		).toHaveStyle({ backgroundColor: "hsl(var(--performance-color-ram))" });
 		expect(
 			screen.getByTestId("performance-composition-marker-ram-others"),
-		).toHaveStyle({ backgroundColor: "hsl(var(--performance-color-others))" });
+		).toHaveStyle({ backgroundColor: "hsl(var(--performance-color-ram-soft))" });
 		expect(
 			screen.getByTestId("performance-composition-marker-ram-freeIdle"),
 		).toHaveStyle({ backgroundColor: "hsl(var(--performance-color-free-idle))" });
+		expect(
+			screen.getByTestId("performance-composition-marker-vram-process"),
+		).toHaveStyle({ backgroundColor: "hsl(var(--performance-color-vram))" });
 		expect(screen.getByTestId("performance-utilization-trend-chart")).toBeInTheDocument();
 	});
 

@@ -27,11 +27,11 @@ export function validateReleaseWorkflow(workflow) {
 			"scripts/package_dist_archive.sh create",
 			"scripts/package_dist_archive.sh verify",
 			"$HOME/.cargo/registry",
-			"actions/upload-artifact@v4",
+			"actions/upload-artifact@v6",
 		],
 		"package-win64": [
 			`videnoa-win64-${expression("needs.version-gate.outputs.version")}.7z`,
-			"actions/upload-artifact@v4",
+			"actions/upload-artifact@v6",
 		],
 		"dockerhub-publish": [
 			`controlnet/videnoa:${expression("needs.version-gate.outputs.version")}`,
@@ -53,7 +53,7 @@ export function validateReleaseWorkflow(workflow) {
 	requireText(linux, "package-controller-linux", [
 		"scripts/package_controller.sh",
 		`videnoa-controller-v${expression("needs.version-gate.outputs.version")}-linux-x86_64.tar.gz`,
-		"actions/upload-artifact@v4",
+		"actions/upload-artifact@v6",
 	]);
 	const windows = requireJob(jobs, "package-controller-windows");
 	requireNeeds(windows, "package-controller-windows", [
@@ -63,7 +63,7 @@ export function validateReleaseWorkflow(workflow) {
 	requireText(windows, "package-controller-windows", [
 		"scripts/package_controller.ps1",
 		`videnoa-controller-v${expression("needs.version-gate.outputs.version")}-windows-x86_64.zip`,
-		"actions/upload-artifact@v4",
+		"actions/upload-artifact@v6",
 	]);
 	const controllerDocker = requireJob(jobs, "controller-dockerhub-publish");
 	requireNeeds(controllerDocker, "controller-dockerhub-publish", [

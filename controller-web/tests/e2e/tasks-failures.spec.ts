@@ -29,12 +29,12 @@ test("suppresses prior rows when a changed query fails", async ({ page }) => {
   await page.goto("/tasks")
   await expect(page.getByRole("table").locator("tbody tr")).toHaveCount(1)
 
-  // When: the URL-bound search changes to the failing request generation.
+  // When: the session-only search changes to the failing request generation.
   await page.getByLabel("Search task paths").fill("new-query")
-  await expect(page).toHaveURL(/search=new-query/)
+  await expect(page).toHaveURL(/\/tasks$/)
   await expect(page.getByRole("alert")).toContainText("Controller could not load task history.")
 
-  // Then: no prior-query row remains under the current URL.
+  // Then: no prior-query row remains under the current in-memory query.
   await expect(page.getByText("episode-00001.mkv")).toHaveCount(0)
   await expect(page.getByRole("table")).toHaveCount(0)
   await appendEvidence("changed-query failure: prior page rows suppressed; recoverable alert visible under search=new-query")

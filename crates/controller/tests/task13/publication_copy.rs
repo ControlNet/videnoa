@@ -335,7 +335,7 @@ async fn changed_parent_failure_cleans_original_empty_output_and_preserves_repla
     let failed = fixture.task(id).await?;
     assert_eq!(
         failed.failure.as_ref().unwrap().message,
-        "copy.sync_destination_parent: output_parent_changed"
+        "copy.validate_destination: output_parent_changed"
     );
     assert!(!old_parent.join(destination.file_name().unwrap()).exists());
     assert_eq!(std::fs::metadata(&destination)?.len(), 0);
@@ -361,5 +361,48 @@ async fn changed_parent_failure_cleans_original_empty_output_and_preserves_repla
     );
     assert_eq!(std::fs::read(&destination)?, bytes);
     assert_eq!(server.counters().await.get(Route::Run), runs);
+    Ok(())
+}
+
+#[tokio::test]
+async fn changed_parent_after_copy_starts_cannot_publish_a_matching_replacement() -> TestResult {
+    use videnoa_controller::config::PathConfig;
+    use videnoa_controller::paths::PathCapabilities;
+    // Synthetic replacement with identical bytes proves identity checks are retained.
+    let server = MockVidenoa::start().await?;
+    let bytes = b"synthetic matching replacement output".repeat(1024);
+    let (mut fixture, task) = crossed(&server, &bytes).await?;
+    fixture.paths = PathCapabilities::open(&PathConfig {
+        input_roots: vec![fixture.input_root.clone()],
+        output_roots: vec![fixture.output_root.parent().unwrap().to_path_buf()],
+        data_root: fixture.directory.path().join("data"),
+        temp_root: fixture.temp_root.clone(),
+    })?;
+    let destination = output_path(&fixture, &task).await?;
+    let preserved = tempfile::TempDir::new_in("/dev/shm")?;
+    let old_parent = preserved.path().join("original-parent");
+    let gate = CheckpointGate::new(TransferCheckpointPoint::PublicationCopyStarted);
+    let executor = fixture.executor()?.with_checkpoint_observer(gate.clone());
+    let id = task.task_id;
+    let now = fixture.now;
+    let pending =
+        tokio::spawn(async move { executor.publish(id, now, zero_jitter().unwrap()).await });
+    gate.wait().await?;
+    std::fs::rename(&fixture.output_root, &old_parent)?;
+    std::fs::create_dir(&fixture.output_root)?;
+    std::fs::write(&destination, &bytes)?;
+    gate.release();
+    assert_eq!(pending.await??, PublicationOutcome::Failed);
+    let failed = fixture.task(id).await?;
+    assert_eq!(
+        failed.failure.as_ref().unwrap().message,
+        "copy.final_identity_or_content_mismatch: evidence_conflict"
+    );
+    assert_eq!(std::fs::read(&destination)?, bytes);
+    assert_eq!(
+        std::fs::read(old_parent.join(destination.file_name().unwrap()))?,
+        bytes
+    );
+    assert_eq!(std::fs::read(verified_path(&fixture.temp_root, id))?, bytes);
     Ok(())
 }

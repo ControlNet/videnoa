@@ -1,15 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { CartesianGrid, Line, LineChart, Pie, PieChart, XAxis, YAxis } from "recharts";
+import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
 import { getPerformanceExport, getPerformanceOverview } from "@/api/client";
 import { PageContainer } from "@/components/layout/PageContainer";
-import {
-	Card,
-	CardContent,
-	CardDescription,
-	CardHeader,
-	CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardTitle } from "@/components/ui/card";
 import {
 	type ChartConfig,
 	ChartContainer,
@@ -62,23 +56,6 @@ const VRAM_PROCESS_USED_BYTES_KEYS = [
 	"app_vram_used_bytes",
 	"pid_vram_used_bytes",
 ] as const;
-
-function buildCompositionChartConfig(t: TranslateFn): ChartConfig {
-	return {
-		process: {
-			label: t("performance.composition.slice.process"),
-			color: "hsl(var(--performance-color-process))",
-		},
-		others: {
-			label: t("performance.composition.slice.others"),
-			color: "hsl(var(--performance-color-others))",
-		},
-		freeIdle: {
-			label: t("performance.composition.slice.freeIdle"),
-			color: "hsl(var(--performance-color-free-idle))",
-		},
-	};
-}
 
 function buildUtilizationTrendChartConfig(t: TranslateFn): ChartConfig {
 	return {
@@ -359,14 +336,14 @@ function buildCompositionCard(options: {
 			label: t("performance.composition.slice.process"),
 			bytes: normalizedProcessUsedBytes,
 			percent: (normalizedProcessUsedBytes / totalBytes) * 100,
-			fill: "hsl(var(--performance-color-process))",
+			fill: `hsl(var(--performance-color-${id}))`,
 		},
 		{
 			key: "others",
 			label: t("performance.composition.slice.others"),
 			bytes: othersUsedBytes,
 			percent: (othersUsedBytes / totalBytes) * 100,
-			fill: "hsl(var(--performance-color-others))",
+			fill: `hsl(var(--performance-color-${id}-soft))`,
 		},
 		{
 			key: "freeIdle",
@@ -621,6 +598,79 @@ function overviewCardClassName(status: PerformanceStatus, enabled: boolean): str
 	return "border-border/60 bg-card";
 }
 
+type MetricId = "cpu" | "gpu" | "ram" | "vram";
+
+const METRIC_BY_TREND_KEY: Record<TrendMetricKey, MetricId> = {
+	cpuPercent: "cpu",
+	gpuPercent: "gpu",
+	ramPercent: "ram",
+	vramPercent: "vram",
+};
+
+const SPARKLINE_SAMPLES = 60;
+
+/*
+ * A tile that says 91.4% and nothing else cannot say whether that is a spike or
+ * a plateau. The sparkline is normalised to its own range -- it carries shape,
+ * the number carries level, and the chart below carries the comparison.
+ */
+function Sparkline({ values, metric }: { values: number[]; metric: MetricId }) {
+	if (values.length < 2) {
+		return <div className="h-8" aria-hidden="true" />;
+	}
+
+	const width = 100;
+	const height = 32;
+	const padding = 3;
+	const lowest = Math.min(...values);
+	const highest = Math.max(...values);
+	const span = highest - lowest || 1;
+	const points = values.map((value, index) => {
+		const x = (index * width) / (values.length - 1);
+		const y = height - padding - ((value - lowest) / span) * (height - padding * 2);
+		return `${x.toFixed(2)},${y.toFixed(2)}`;
+	});
+	const line = `M${points.join(" L")}`;
+	const color = `hsl(var(--performance-color-${metric}))`;
+
+	return (
+		<svg
+			viewBox={`0 0 ${String(width)} ${String(height)}`}
+			preserveAspectRatio="none"
+			className="h-8 w-full"
+			aria-hidden="true"
+		>
+			<title>{metric}</title>
+			<path
+				d={`${line} L${String(width)},${String(height)} L0,${String(height)} Z`}
+				fill={color}
+				opacity={0.16}
+			/>
+			<path
+				d={line}
+				fill="none"
+				stroke={color}
+				strokeWidth={1.75}
+				strokeLinecap="round"
+				strokeLinejoin="round"
+				vectorEffect="non-scaling-stroke"
+			/>
+		</svg>
+	);
+}
+
+function statusPillClassName(status: PerformanceStatus, enabled: boolean): string {
+	if (!enabled || status === "disabled") {
+		return "border-border/60 bg-muted/40 text-muted-foreground";
+	}
+
+	if (status === "partial" || status === "degraded") {
+		return "border-yellow-500/35 bg-yellow-500/10 text-yellow-600 dark:text-yellow-400";
+	}
+
+	return "border-green-500/35 bg-green-500/10 text-green-600 dark:text-green-400";
+}
+
 export function PerformancePage() {
 	const { t } = useTranslation("common");
 	const [overview, setOverview] = useState<PerformanceOverviewResponse | null>(null);
@@ -629,7 +679,6 @@ export function PerformancePage() {
 	const [fetchError, setFetchError] = useState<string | null>(null);
 	const [exportFetchError, setExportFetchError] = useState<string | null>(null);
 
-	const compositionChartConfig = useMemo(() => buildCompositionChartConfig(t), [t]);
 	const utilizationTrendChartConfig = useMemo(() => buildUtilizationTrendChartConfig(t), [t]);
 
 	const cpuLabel = t("performance.metric.cpu");
@@ -717,18 +766,8 @@ export function PerformancePage() {
 				detail: isOff
 					? t("performance.detail.telemetryOff", { label: cpuLabel })
 					: cpuPercent !== null
-						? t("performance.detail.utilization", { label: cpuLabel })
+						? t("performance.detail.utilization")
 						: unavailableDetail(cpuLabel, status, enabled, t),
-			},
-			{
-				id: "ram",
-				title: ramLabel,
-				primary: isOff ? offValue : formatBytesPair(ramUsedBytes, ramTotalBytes, t),
-				detail: isOff
-					? t("performance.detail.telemetryOff", { label: ramLabel })
-					: ramUsagePercent !== null
-						? t("performance.detail.usage", { value: formatPercent(ramUsagePercent) })
-						: unavailableDetail(ramLabel, status, enabled, t),
 			},
 			{
 				id: "gpu",
@@ -737,19 +776,27 @@ export function PerformancePage() {
 				detail: isOff
 					? t("performance.detail.telemetryOff", { label: gpuLabel })
 					: gpuPercent !== null
-						? t("performance.detail.utilization", { label: gpuLabel })
+						? t("performance.detail.utilization")
 						: unavailableDetail(gpuLabel, status, enabled, t),
+			},
+			{
+				id: "ram",
+				title: ramLabel,
+				primary: isOff ? offValue : formatPercent(ramUsagePercent),
+				detail: isOff
+					? t("performance.detail.telemetryOff", { label: ramLabel })
+					: ramUsagePercent !== null
+						? formatBytesPair(ramUsedBytes, ramTotalBytes, t)
+						: unavailableDetail(ramLabel, status, enabled, t),
 			},
 			{
 				id: "vram",
 				title: vramLabel,
-				primary: isOff ? offValue : formatBytesPair(vramUsedBytes, vramTotalBytes, t),
+				primary: isOff ? offValue : formatPercent(vramUsagePercent),
 				detail: isOff
 					? t("performance.detail.telemetryOff", { label: vramLabel })
 					: vramUsagePercent !== null
-						? t("performance.detail.usage", {
-								value: formatPercent(vramUsagePercent),
-							})
+						? formatBytesPair(vramUsedBytes, vramTotalBytes, t)
 						: unavailableDetail(vramLabel, status, enabled, t),
 			},
 		];
@@ -828,271 +875,306 @@ export function PerformancePage() {
 		};
 	}, [performanceExport, trendEnabled, trendStatus]);
 
+	const sparklineValues = useMemo<Record<MetricId, number[]>>(() => {
+		const recent = utilizationTrend.trendPoints.slice(-SPARKLINE_SAMPLES);
+		const pick = (key: TrendMetricKey): number[] =>
+			recent
+				.map((point) => point[key])
+				.filter((value): value is number => value !== null);
+
+		return {
+			cpu: pick("cpuPercent"),
+			gpu: pick("gpuPercent"),
+			ram: pick("ramPercent"),
+			vram: pick("vramPercent"),
+		};
+	}, [utilizationTrend]);
+
 	return (
-		<PageContainer title={t("header.nav.performance")}>
-			<div className="mb-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+		<PageContainer>
+			{/* Status is a property of the page, not of each of its seven cards. */}
+			<div className="mb-5 flex flex-wrap items-center gap-x-3 gap-y-2">
+				<h2 className="text-lg font-semibold tracking-tight">
+					{t("header.nav.performance")}
+				</h2>
+				<span
+					data-testid="performance-status"
+					className={`inline-flex h-[22px] items-center gap-1.5 rounded-md border px-2 text-[10px] font-semibold uppercase tracking-[0.08em] ${statusPillClassName(status, enabled)}`}
+				>
+					<span className="size-1.5 rounded-full bg-current" />
+					{statusBadge(status, enabled, t)}
+				</span>
+				<span className="text-[13px] text-muted-foreground">{summaryMessage}</span>
+			</div>
+
+			<div className="mb-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
 				{cards.map((card) => (
 					<Card
 						key={card.id}
 						data-testid={`performance-card-${card.id}`}
 						className={overviewCardClassName(status, enabled)}
 					>
-						<CardHeader className="space-y-2 pb-2">
+						<CardContent className="flex flex-col gap-2.5 p-4">
 							<div className="flex items-center justify-between gap-3">
-								<CardTitle className="text-sm font-medium">{card.title}</CardTitle>
-								<span className="text-[10px] font-semibold tracking-[0.08em] text-muted-foreground">
-									{statusBadge(status, enabled, t)}
-								</span>
-							</div>
-							<CardDescription className="text-xs">
-								{summaryMessage}
-							</CardDescription>
-						</CardHeader>
-						<CardContent className="space-y-1">
-							<p
-								data-testid={`performance-value-${card.id}`}
-								className="font-mono text-xl font-semibold tracking-tight"
-							>
-								{card.primary}
-							</p>
-							<p
-								data-testid={`performance-detail-${card.id}`}
-								className="text-xs text-muted-foreground"
-							>
-								{card.detail}
-							</p>
-						</CardContent>
-					</Card>
-				))}
-			</div>
-
-			<div className="mb-6 grid gap-4 xl:grid-cols-2">
-				{compositionCards.map((compositionCard) => (
-					<Card
-						key={compositionCard.id}
-						data-testid={`performance-composition-${compositionCard.id}`}
-						className={overviewCardClassName(status, enabled)}
-					>
-						<CardHeader className="space-y-2 pb-2">
-							<div className="flex items-center justify-between gap-3">
-								<CardTitle className="text-sm font-medium">
-									{t("performance.composition.title", { label: compositionCard.title })}
+								<CardTitle className="text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+									{card.title}
 								</CardTitle>
-								<span className="text-[10px] font-semibold tracking-[0.08em] text-muted-foreground">
-									{statusBadge(status, enabled, t)}
-								</span>
+								<span
+									className="size-1.5 rounded-full"
+									style={{ backgroundColor: `hsl(var(--performance-color-${card.id}))` }}
+								/>
 							</div>
-							<CardDescription className="text-xs">{summaryMessage}</CardDescription>
-						</CardHeader>
-						<CardContent className="space-y-4">
-							{compositionCard.slices ? (
-								<>
-									<ChartContainer
-										data-testid={`performance-composition-chart-${compositionCard.id}`}
-										ariaLabel={t("performance.composition.chartAria", {
-											label: compositionCard.title,
-										})}
-										config={compositionChartConfig}
-										className="h-60"
-									>
-										<PieChart>
-											<ChartTooltip
-												content={
-													<ChartTooltipContent
-														valueFormatter={(value) =>
-															typeof value === "number"
-																? formatBytes(value)
-																: String(value ?? "")
-														}
-													/>
-												}
-											/>
-											<Pie
-												data={compositionCard.slices}
-												dataKey="bytes"
-												nameKey="label"
-												innerRadius={56}
-												outerRadius={88}
-												paddingAngle={2}
-												isAnimationActive={false}
-											/>
-										</PieChart>
-									</ChartContainer>
-									<ul
-										data-testid={`performance-composition-list-${compositionCard.id}`}
-										className="space-y-1"
-									>
-										{compositionCard.slices.map((slice) => (
-										<li
-											key={slice.key}
-											data-testid={`performance-composition-slice-${compositionCard.id}-${slice.key}`}
-											className="flex items-center justify-between gap-4 text-xs"
-										>
-											<span className="flex items-center gap-2 text-muted-foreground">
-												<span
-													data-testid={`performance-composition-marker-${compositionCard.id}-${slice.key}`}
-													className="size-2 rounded-full"
-													style={{ backgroundColor: slice.fill }}
-												/>
-												<span>{slice.label}</span>
-											</span>
-											<span className="font-medium">
-												{formatBytes(slice.bytes)} ({formatPercent(slice.percent)})
-											</span>
-										</li>
-										))}
-									</ul>
-									<p className="text-xs text-muted-foreground">{compositionCard.detail}</p>
-								</>
-							) : (
+							<div>
 								<p
-									data-testid={`performance-composition-unavailable-${compositionCard.id}`}
-									className="text-sm text-muted-foreground"
+									data-testid={`performance-value-${card.id}`}
+									className="font-mono text-[30px] font-semibold leading-9 tracking-tight"
 								>
-									{compositionCard.detail}
+									{card.primary}
 								</p>
-							)}
+								<p
+									data-testid={`performance-detail-${card.id}`}
+									className="mt-0.5 text-xs text-muted-foreground"
+								>
+									{card.detail}
+								</p>
+							</div>
+							<Sparkline
+								metric={card.id}
+								values={sparklineValues[card.id]}
+							/>
 						</CardContent>
 					</Card>
 				))}
 			</div>
 
-			<Card
-				data-testid="performance-utilization-trends"
-				className={`mb-6 ${overviewCardClassName(trendStatus, trendEnabled)}`}
-			>
-				<CardHeader className="space-y-2 pb-2">
-					<div className="flex items-center justify-between gap-3">
-						<CardTitle className="text-sm font-medium">
-							{t("performance.trend.title")}
-						</CardTitle>
-						<span className="text-[10px] font-semibold tracking-[0.08em] text-muted-foreground">
-							{statusBadge(trendStatus, trendEnabled, t)}
-						</span>
-					</div>
-					<CardDescription className="text-xs">{trendSummaryMessage}</CardDescription>
-				</CardHeader>
-				<CardContent className="space-y-4">
-					{utilizationTrend.unavailableReason === null ? (
-						<ChartContainer
-							data-testid="performance-utilization-trend-chart"
-							ariaLabel={t("performance.trend.chartAria")}
-							config={utilizationTrendChartConfig}
-							className="h-72"
-						>
-							<LineChart
-								data={utilizationTrend.trendPoints}
-								margin={{ top: 8, right: 12, left: 4, bottom: 0 }}
-							>
-								<CartesianGrid vertical={false} strokeDasharray="4 4" />
-								<XAxis
-									axisLine={false}
-									dataKey="timestampLabel"
-									tickLine={false}
-								/>
-								<YAxis
-									axisLine={false}
-									tickLine={false}
-									width={40}
-									domain={[0, 100]}
-									tickFormatter={(value) => `${value}%`}
-								/>
-								<ChartTooltip
-									content={
-										<ChartTooltipContent
-											valueFormatter={(value) =>
-												typeof value === "number"
-													? `${value.toFixed(1)}%`
-													: String(value ?? "")
-											}
-										/>
-									}
-								/>
-								{utilizationTrend.renderableMetricKeys.map((metricKey) => (
-									<Line
-										key={metricKey}
-										dataKey={metricKey}
-										type="monotone"
-										stroke={`var(--color-${metricKey})`}
-										strokeWidth={2}
-										dot={false}
-										isAnimationActive={false}
-									/>
-								))}
-							</LineChart>
-						</ChartContainer>
-					) : (
-						<>
-							<p
-								data-testid="performance-utilization-trend-unavailable"
-								className="text-sm text-muted-foreground"
-							>
-								{trendUnavailableDetail(
-									trendStatus,
-									trendEnabled,
-									utilizationTrend.unavailableReason,
-									t,
-								)}
-							</p>
+			{/* Two stacked bars instead of two 500px donuts: same three numbers
+			    each, and RAM and VRAM finally sit where they can be compared. */}
+			<Card className={`mb-4 ${overviewCardClassName(status, enabled)}`}>
+				<CardContent className="p-4">
+					<CardTitle className="text-sm font-semibold">
+						{t("performance.composition.sectionTitle")}
+					</CardTitle>
+					<div className="mt-4 flex flex-col gap-5">
+						{compositionCards.map((compositionCard) => (
 							<div
-								data-testid="performance-utilization-timeline-fallback"
-								className="overflow-x-auto rounded-md border border-border/60"
+								key={compositionCard.id}
+								data-testid={`performance-composition-${compositionCard.id}`}
 							>
-								<table className="w-full min-w-[560px] table-fixed border-collapse text-xs">
-									<thead>
-										<tr className="border-b border-border/60 text-left text-muted-foreground">
-											<th className="px-3 py-2 font-medium">
-												{t("performance.trend.timeline.header")}
-											</th>
-											<th className="px-3 py-2 font-medium">
-												{t("performance.metric.cpuPercent")}
-											</th>
-											<th className="px-3 py-2 font-medium">
-												{t("performance.metric.gpuPercent")}
-											</th>
-											<th className="px-3 py-2 font-medium">
-												{t("performance.metric.ramPercent")}
-											</th>
-											<th className="px-3 py-2 font-medium">
-												{t("performance.metric.vramPercent")}
-											</th>
-										</tr>
-									</thead>
-									<tbody>
-										{utilizationTrend.timelineRows.length > 0 ? (
-											utilizationTrend.timelineRows.map((row) => (
-												<tr
-													key={row.rowId}
-													data-testid={`performance-utilization-timeline-row-${row.rowId}`}
-													className="border-b border-border/40 last:border-b-0"
+								<div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+									<span className="text-[13px] font-semibold">
+										{compositionCard.title}
+									</span>
+									{compositionCard.slices === null ? null : (
+										<span className="font-mono text-xs text-muted-foreground">
+											{compositionCard.detail}
+										</span>
+									)}
+								</div>
+								{compositionCard.slices === null ? (
+									<p
+										data-testid={`performance-composition-unavailable-${compositionCard.id}`}
+										className="mt-1 text-[13px] text-muted-foreground"
+									>
+										{compositionCard.detail}
+									</p>
+								) : (
+									<>
+										<div className="mt-2 flex h-3 gap-0.5 overflow-hidden rounded-full">
+											{compositionCard.slices.map((slice) => (
+												<span
+													key={slice.key}
+													data-testid={`performance-composition-segment-${compositionCard.id}-${slice.key}`}
+													style={{
+														width: `${String(slice.percent)}%`,
+														backgroundColor: slice.fill,
+													}}
+												/>
+											))}
+										</div>
+										<ul
+											data-testid={`performance-composition-list-${compositionCard.id}`}
+											className="mt-2.5 flex flex-wrap gap-x-6 gap-y-1"
+										>
+											{compositionCard.slices.map((slice) => (
+												<li
+													key={slice.key}
+													data-testid={`performance-composition-slice-${compositionCard.id}-${slice.key}`}
+													className="flex items-center gap-2 text-[11px]"
 												>
-													<td className="px-3 py-2 font-mono text-muted-foreground">
-														{row.timestampLabel}
-													</td>
-													<td className="px-3 py-2 font-mono">{row.cpuPercent}</td>
-													<td className="px-3 py-2 font-mono">{row.gpuPercent}</td>
-													<td className="px-3 py-2 font-mono">{row.ramPercent}</td>
-													<td className="px-3 py-2 font-mono">{row.vramPercent}</td>
-												</tr>
-											))
-										) : (
-											<tr>
-												<td
-													colSpan={5}
-													className="px-3 py-4 text-sm text-muted-foreground"
-												>
-													{t("performance.trend.timeline.empty")}
-												</td>
-											</tr>
-										)}
-									</tbody>
-								</table>
+													<span
+														data-testid={`performance-composition-marker-${compositionCard.id}-${slice.key}`}
+														className="size-2 rounded-[3px]"
+														style={{ backgroundColor: slice.fill }}
+													/>
+													<span className="text-muted-foreground">{slice.label}</span>
+													<span className="font-medium">
+														{formatBytes(slice.bytes)} ({formatPercent(slice.percent)})
+													</span>
+												</li>
+											))}
+										</ul>
+									</>
+								)}
 							</div>
-						</>
-					)}
+						))}
+					</div>
 				</CardContent>
 			</Card>
 
+			<Card
+				data-testid="performance-utilization-trends"
+				className={overviewCardClassName(trendStatus, trendEnabled)}
+			>
+				<CardContent className="p-4">
+					<div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+						<CardTitle className="text-sm font-semibold">
+							{t("performance.trend.title")}
+						</CardTitle>
+						{utilizationTrend.unavailableReason === null ? (
+							/* Four unlabelled lines were the least readable thing on the page. */
+							<ul className="flex flex-wrap items-center gap-x-4 gap-y-1">
+								{utilizationTrend.renderableMetricKeys.map((metricKey) => (
+									<li
+										key={metricKey}
+										className="flex items-center gap-1.5 text-[11px] text-muted-foreground"
+									>
+										<span
+											className="h-0.5 w-3.5 rounded-full"
+											style={{
+												backgroundColor: `hsl(var(--performance-color-${METRIC_BY_TREND_KEY[metricKey]}))`,
+											}}
+										/>
+										{t(`performance.metric.${METRIC_BY_TREND_KEY[metricKey]}`)}
+									</li>
+								))}
+							</ul>
+						) : (
+							<span className="text-xs text-muted-foreground">
+								{trendSummaryMessage}
+							</span>
+						)}
+					</div>
+					<div className="mt-3">
+						{utilizationTrend.unavailableReason === null ? (
+							<ChartContainer
+								data-testid="performance-utilization-trend-chart"
+								ariaLabel={t("performance.trend.chartAria")}
+								config={utilizationTrendChartConfig}
+								className="h-72"
+							>
+								<LineChart
+									data={utilizationTrend.trendPoints}
+									margin={{ top: 10, right: 12, left: 4, bottom: 0 }}
+								>
+									<CartesianGrid vertical={false} strokeDasharray="3 5" />
+									<XAxis
+										axisLine={false}
+										dataKey="timestampLabel"
+										tickLine={false}
+									/>
+									<YAxis
+										axisLine={false}
+										tickLine={false}
+										width={40}
+										domain={[0, 100]}
+										tickFormatter={(value) => `${value}%`}
+									/>
+									<ChartTooltip
+										content={
+											<ChartTooltipContent
+												valueFormatter={(value) =>
+													typeof value === "number"
+														? `${value.toFixed(1)}%`
+														: String(value ?? "")
+												}
+											/>
+										}
+									/>
+									{utilizationTrend.renderableMetricKeys.map((metricKey) => (
+										<Line
+											key={metricKey}
+											dataKey={metricKey}
+											type="monotone"
+											stroke={`var(--color-${metricKey})`}
+											strokeWidth={2}
+											dot={false}
+											isAnimationActive={false}
+										/>
+									))}
+								</LineChart>
+							</ChartContainer>
+						) : (
+							<>
+								<p
+									data-testid="performance-utilization-trend-unavailable"
+									className="text-sm text-muted-foreground"
+								>
+									{trendUnavailableDetail(
+										trendStatus,
+										trendEnabled,
+										utilizationTrend.unavailableReason,
+										t,
+									)}
+								</p>
+								<div
+									data-testid="performance-utilization-timeline-fallback"
+									className="mt-3 overflow-x-auto rounded-md border border-border/60"
+								>
+									<table className="w-full min-w-[560px] table-fixed border-collapse text-xs">
+										<thead>
+											<tr className="border-b border-border/60 text-left text-muted-foreground">
+												<th className="px-3 py-2 font-medium">
+													{t("performance.trend.timeline.header")}
+												</th>
+												<th className="px-3 py-2 font-medium">
+													{t("performance.metric.cpuPercent")}
+												</th>
+												<th className="px-3 py-2 font-medium">
+													{t("performance.metric.gpuPercent")}
+												</th>
+												<th className="px-3 py-2 font-medium">
+													{t("performance.metric.ramPercent")}
+												</th>
+												<th className="px-3 py-2 font-medium">
+													{t("performance.metric.vramPercent")}
+												</th>
+											</tr>
+										</thead>
+										<tbody>
+											{utilizationTrend.timelineRows.length > 0 ? (
+												utilizationTrend.timelineRows.map((row) => (
+													<tr
+														key={row.rowId}
+														data-testid={`performance-utilization-timeline-row-${row.rowId}`}
+														className="border-b border-border/40 last:border-b-0"
+													>
+														<td className="px-3 py-2 font-mono text-muted-foreground">
+															{row.timestampLabel}
+														</td>
+														<td className="px-3 py-2 font-mono">{row.cpuPercent}</td>
+														<td className="px-3 py-2 font-mono">{row.gpuPercent}</td>
+														<td className="px-3 py-2 font-mono">{row.ramPercent}</td>
+														<td className="px-3 py-2 font-mono">{row.vramPercent}</td>
+													</tr>
+												))
+											) : (
+												<tr>
+													<td
+														colSpan={5}
+														className="px-3 py-4 text-sm text-muted-foreground"
+													>
+														{t("performance.trend.timeline.empty")}
+													</td>
+												</tr>
+											)}
+										</tbody>
+									</table>
+								</div>
+							</>
+						)}
+					</div>
+				</CardContent>
+			</Card>
 		</PageContainer>
 	);
 }
