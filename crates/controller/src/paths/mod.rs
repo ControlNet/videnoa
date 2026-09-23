@@ -36,7 +36,7 @@ pub enum PathError {
     OutsideRoots { path: PathBuf },
     #[error("path contains a symbolic-link component: {path}")]
     SymlinkComponent { path: PathBuf },
-    #[error("configured root changed after capabilities were opened: {path}")]
+    #[error("task workspace changed after it was opened: {path}")]
     RootChanged { path: PathBuf },
     #[error("input is not a regular file: {path}")]
     InputNotRegular { path: PathBuf },
@@ -116,10 +116,10 @@ impl InputSnapshot {
 }
 
 impl PathCapabilities {
-    /// Opens and retains descriptor-backed input and output roots.
+    /// Validates configured roots before opening path capabilities.
     ///
     /// # Errors
-    /// Returns a typed path error when a root is missing, replaced, or symbolic.
+    /// Returns a typed path error when a root is missing, inaccessible, or symbolic.
     pub fn open(config: &PathConfig) -> Result<Self, PathError> {
         Self::open_with_additional_private_roots(config, std::iter::empty::<&Path>())
     }
@@ -127,7 +127,7 @@ impl PathCapabilities {
     /// Opens path capabilities while reserving additional Controller-owned roots.
     ///
     /// # Errors
-    /// Returns a typed path error when any configured root is missing, replaced, or symbolic.
+    /// Returns a typed path error when any configured root is missing, inaccessible, or symbolic.
     pub fn open_with_additional_private_roots<'a>(
         config: &PathConfig,
         additional_private_roots: impl IntoIterator<Item = &'a Path>,
@@ -158,7 +158,7 @@ impl PathCapabilities {
     }
 
     /// # Errors
-    /// Returns a path error when a retained root capability is no longer current.
+    /// Returns a path error when a configured root is inaccessible or symbolic.
     pub fn check_ready(&self) -> Result<(), PathError> {
         self.inputs
             .iter()

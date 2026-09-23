@@ -92,7 +92,7 @@ impl RootedOutput {
     }
 
     /// Resolves the visible final path without requiring intermediate inode stability.
-    /// Root identity and no-follow traversal remain enforced.
+    /// The current root path and no-follow traversal remain enforced.
     pub(crate) fn open_copy_final(&self) -> Result<PublicationArtifact, PathError> {
         self.root.ensure_current()?;
         let mut parent = self.parent.clone();

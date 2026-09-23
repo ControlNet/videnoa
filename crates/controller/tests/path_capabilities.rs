@@ -13,6 +13,7 @@ struct Fixture {
     _directory: TempDir,
     input: PathBuf,
     output: PathBuf,
+    temp: PathBuf,
     outside: PathBuf,
     capabilities: PathCapabilities,
 }
@@ -32,12 +33,13 @@ impl Fixture {
             input_roots: vec![input.clone()],
             output_roots: vec![output.clone()],
             data_root: data,
-            temp_root: temp,
+            temp_root: temp.clone(),
         })?;
         Ok(Self {
             _directory: directory,
             input,
             output,
+            temp,
             outside,
             capabilities,
         })
@@ -72,7 +74,7 @@ fn relative_roots_resolve_from_the_process_directory() -> TestResult {
     })?;
     let rooted = capabilities.open_input(input_path)?;
 
-    // Then: the task path is confined below the same descriptor-backed root.
+    // Then: the task path is confined below the configured root.
     assert_eq!(rooted.snapshot().length, 13);
     Ok(())
 }
@@ -126,13 +128,13 @@ fn media_root_with_a_symlinked_ancestor_is_resolved() -> TestResult {
         temp_root: actual,
     });
 
-    // Then: media roots accept links and retain the resolved directory capability.
+    // Then: media roots accept links and retain the resolved directory path.
     result?.check_ready()?;
     Ok(())
 }
 
 #[test]
-fn replacing_a_configured_root_invalidates_accepted_paths() -> TestResult {
+fn replacing_a_configured_root_uses_the_current_directory() -> TestResult {
     // Given: accepted input and output paths backed by the original configured roots.
     let fixture = Fixture::new()?;
     let input_path = fixture.input.join("episode.mkv");
@@ -147,25 +149,59 @@ fn replacing_a_configured_root_invalidates_accepted_paths() -> TestResult {
     fs::rename(&fixture.output, fixture.outside.join("old-output"))?;
     fs::create_dir(&fixture.input)?;
     fs::create_dir(&fixture.output)?;
+    fs::write(&input_path, b"current-input")?;
 
-    // Then: queued work rejects both stale capabilities before reading or publishing.
+    // Then: new work uses the visible directories, while snapshots from the old
+    // directories cannot be mistaken for the replacement files.
+    fixture.capabilities.check_ready()?;
     assert!(matches!(
         input.reopen_checked(),
-        Err(PathError::RootChanged { .. })
+        Err(PathError::InputChanged { .. })
     ));
     assert!(matches!(
         input.revalidate_metadata(),
-        Err(PathError::RootChanged { .. })
+        Err(PathError::InputChanged { .. })
     ));
     assert!(matches!(
         input.into_verified_file(),
-        Err(PathError::RootChanged { .. })
+        Err(PathError::InputChanged { .. })
     ));
     assert!(matches!(
         output.create_new(),
-        Err(PathError::RootChanged { .. })
+        Err(PathError::OutputParentChanged { .. })
     ));
     assert!(!fixture.output.join("episode.mp4").exists());
+    let current = fixture.capabilities.open_input(&input_path)?;
+    let mut bytes = Vec::new();
+    current.into_verified_file()?.read_to_end(&mut bytes)?;
+    assert_eq!(bytes, b"current-input");
+    fixture
+        .capabilities
+        .open_output(fixture.output.join("episode.mp4"))?
+        .create_new()?;
+    assert!(fixture.output.join("episode.mp4").exists());
+    assert!(!fixture.outside.join("old-output/episode.mp4").exists());
+    Ok(())
+}
+
+#[test]
+fn replacing_the_cache_root_keeps_media_input_available() -> TestResult {
+    let fixture = Fixture::new()?;
+    let input_path = fixture.input.join("episode.mkv");
+    fs::write(&input_path, b"current-input")?;
+    let old_cache = fixture.outside.join("old-cache");
+    fs::rename(&fixture.temp, &old_cache)?;
+    fs::create_dir(&fixture.temp)?;
+
+    fixture.capabilities.check_ready()?;
+    assert!(fixture.capabilities.open_input(&input_path).is_ok());
+    fs::write(fixture.temp.join("private.mkv"), b"private")?;
+    assert!(matches!(
+        fixture
+            .capabilities
+            .open_input(fixture.temp.join("private.mkv")),
+        Err(PathError::OutsideRoots { .. })
+    ));
     Ok(())
 }
 

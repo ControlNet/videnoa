@@ -104,3 +104,29 @@ separate from media input and final output paths. The bundled Add Batch UI calls
 usually belongs to another caller or automation. Inspect the sanitized request
 body and active DATA/CACHE ROOTs to distinguish these causes. Do not collect
 cookies, authorization headers, or credentials.
+
+In the reported Docker deployment, DATA ROOT was `/workspace/data`, CACHE ROOT
+was `/media/.videnoa`, and the input directory was under `/media/Bangumi`. An
+authenticated `/api/readiness` response had `migrations=true`,
+`authentication=true`, and `root_handles=false`. If the expanded input path is
+normal and outside private storage, the first-stage batch error implies a stale
+or inaccessible DATA ROOT, CACHE ROOT, or retained former DATA ROOT handle.
+`root_handles` checks those plus workspace input/output roots, but currently
+suppresses the failing path and cause. A workspace-only failure would make
+readiness false without explaining this specific first-stage batch error.
+The code compares each root's current device/inode with the descriptor captured
+at Controller startup; an unavailable, replaced, or remounted directory can fail.
+The specific root remains unconfirmed without container-side path/fd inspection.
+
+## Resolution: allow root directory replacement
+
+The user confirmed that Unraid can replace or remount directory objects while
+keeping the same configured paths, and explicitly required removal of the root
+device/inode stability restriction. `Root` now retains its configured path and
+reopens the current directory for each operation. `ensure_current` checks that
+the path is accessible and not a symbolic link; it no longer compares the current
+root's device/inode with a startup snapshot. `root_handles` readiness therefore
+means path availability, not root identity stability. The batch first-stage
+check no longer rejects a safe media pattern merely because CACHE ROOT was
+replaced. File-level snapshots and per-task workspace identity checks remain in
+place so a different file is not silently treated as an already accepted task.
