@@ -83,3 +83,24 @@ The reported NAS directory was confirmed to be a symlink. The user's subsequent
 request removes blanket rejection of media links. See
 [Controller media symlink support](controller-media-symlinks-2026-09-07.md): media
 aliases now resolve to real targets, while private storage isolation remains.
+
+## Follow-up: `input_pattern` rejected before scanning
+
+A later `/api/tasks/batch` log reported field `input_pattern` with message
+`Input pattern is unsafe or points into private Controller storage.` The current
+`PathCapabilities::match_inputs` emits this exact message only when its first
+`media_spelling` call fails, before glob compilation or directory scanning. That
+call rejects a pattern under the active DATA ROOT, CACHE ROOT, or a retained former
+DATA ROOT; an absolute path with `..` or a malformed path; a relative path that
+cannot be resolved against exactly one input root; or a changed/unavailable private
+root handle. It does not establish which cause occurred without the submitted
+pattern and active path settings.
+
+The common configuration trap is setting CACHE ROOT to the media mount itself:
+the entire CACHE ROOT subtree becomes private, so a batch pattern within it is
+rejected. Keep CACHE ROOT in a dedicated child directory on the output volume,
+separate from media input and final output paths. The bundled Add Batch UI calls
+`/api/tasks/batch-preview` and then `/api/tasks`; a direct `/api/tasks/batch` log
+usually belongs to another caller or automation. Inspect the sanitized request
+body and active DATA/CACHE ROOTs to distinguish these causes. Do not collect
+cookies, authorization headers, or credentials.
