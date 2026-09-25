@@ -75,12 +75,29 @@ impl TransferExecutor {
                 self.move_publication(output, source, task, attempt, expected, now)
                     .await
             }
+            #[cfg(target_os = "linux")]
+            Err(error @ PathError::Io { .. }) if is_rename_einval(&error) => {
+                // Some filesystems reject RENAME_NOREPLACE with EINVAL after the rename attempt.
+                OperationError::new("rename.noreplace", error).log(
+                    task.id,
+                    Some(attempt.attempt.id),
+                    task.status,
+                );
+                self.move_publication(output, source, task, attempt, expected, now)
+                    .await
+            }
             Err(error @ PathError::Io { .. }) => {
                 failed(OperationError::new("rename.noreplace", error)).await
             }
             Err(error) => ambiguous(OperationError::new("rename.noreplace", error)).await,
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn is_rename_einval(error: &PathError) -> bool {
+    matches!(error, PathError::Io { source, .. }
+        if source.raw_os_error() == Some(rustix::io::Errno::INVAL.raw_os_error()))
 }
 
 fn require_parent_sync(result: Result<(), PathError>) -> Result<(), TransferError> {
@@ -95,6 +112,30 @@ mod tests {
     use crate::paths::PathError;
 
     use super::{require_parent_sync, TransferError};
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn copy_fallback_requires_renameat2_einval() {
+        use super::is_rename_einval;
+
+        let error = |source| PathError::Io {
+            path: PathBuf::from("output-parent"),
+            source,
+        };
+        assert!(is_rename_einval(&error(io::Error::from_raw_os_error(
+            rustix::io::Errno::INVAL.raw_os_error()
+        ))));
+        assert!(!is_rename_einval(&error(io::Error::from_raw_os_error(
+            rustix::io::Errno::EXIST.raw_os_error()
+        ))));
+        assert!(!is_rename_einval(&error(io::Error::from_raw_os_error(
+            rustix::io::Errno::ACCESS.raw_os_error()
+        ))));
+        assert!(!is_rename_einval(&error(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "synthetic input error",
+        ))));
+    }
 
     #[test]
     fn parent_sync_failure_is_propagated_for_publishing_recovery() {
