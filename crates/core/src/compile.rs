@@ -128,8 +128,25 @@ pub fn compile_graph_with_debug_hook(
     graph: &PipelineGraph,
     registry: &NodeRegistry,
     ctx: &dyn CompileContext,
+    node_debug_callback: Option<&mut NodeDebugEventCallback<'_>>,
+) -> Result<CompiledPipeline> {
+    compile_graph_with_execution_context(
+        graph,
+        registry,
+        ctx,
+        &ExecutionContext::default(),
+        node_debug_callback,
+    )
+}
+
+pub(crate) fn compile_graph_with_execution_context(
+    graph: &PipelineGraph,
+    registry: &NodeRegistry,
+    ctx: &dyn CompileContext,
+    exec_ctx: &ExecutionContext,
     mut node_debug_callback: Option<&mut NodeDebugEventCallback<'_>>,
 ) -> Result<CompiledPipeline> {
+    exec_ctx.check_cancelled()?;
     let execution_order = graph.execution_order()?;
 
     if !has_video_frames_ports(graph, registry, &execution_order)? {
@@ -169,10 +186,10 @@ pub fn compile_graph_with_debug_hook(
         source_idx.ok_or_else(|| anyhow!("no source node found in VideoFrames pipeline"))?;
     let sink_idx = sink_idx.ok_or_else(|| anyhow!("no sink node found in VideoFrames pipeline"))?;
 
-    let exec_ctx = ExecutionContext::default();
     let mut outputs_by_node: HashMap<String, HashMap<String, PortData>> = HashMap::new();
 
     for &node_idx in &execution_order {
+        exec_ctx.check_cancelled()?;
         let incoming_vf = count_video_frames_edges(graph, node_idx, Direction::Incoming);
         let outgoing_vf = count_video_frames_edges(graph, node_idx, Direction::Outgoing);
         if incoming_vf > 0 || outgoing_vf > 0 {
@@ -189,8 +206,9 @@ pub fn compile_graph_with_debug_hook(
             })?;
         let inputs = resolve_inputs(graph, registry, node_idx, &outputs_by_node)?;
         let node_outputs = node
-            .execute(&inputs, &exec_ctx)
+            .execute(&inputs, exec_ctx)
             .with_context(|| format!("execution failed for param node '{}'", instance.id))?;
+        exec_ctx.check_cancelled()?;
         emit_print_debug_event(
             &instance.id,
             &instance.node_type,
@@ -200,6 +218,7 @@ pub fn compile_graph_with_debug_hook(
         outputs_by_node.insert(instance.id.clone(), node_outputs);
     }
 
+    exec_ctx.check_cancelled()?;
     let source_instance = graph.node(source_idx);
     let mut source_node = registry
         .create(&source_instance.node_type, source_instance.params.clone())
@@ -211,8 +230,9 @@ pub fn compile_graph_with_debug_hook(
         })?;
     let source_inputs = resolve_inputs(graph, registry, source_idx, &outputs_by_node)?;
     let source_outputs = source_node
-        .execute(&source_inputs, &exec_ctx)
+        .execute(&source_inputs, exec_ctx)
         .with_context(|| format!("execution failed for source node '{}'", source_instance.id))?;
+    exec_ctx.check_cancelled()?;
     emit_print_debug_event(
         &source_instance.id,
         &source_instance.node_type,
@@ -225,6 +245,7 @@ pub fn compile_graph_with_debug_hook(
     let mut stages: Vec<PipelineStage> = Vec::new();
 
     for &node_idx in &processing_order {
+        exec_ctx.check_cancelled()?;
         let instance = graph.node(node_idx);
         let mut node = registry
             .create(&instance.node_type, instance.params.clone())
@@ -236,11 +257,12 @@ pub fn compile_graph_with_debug_hook(
             })?;
         let inputs = resolve_inputs(graph, registry, node_idx, &outputs_by_node)?;
         let outputs = if ctx.execute_processing_node(&instance.node_type) {
-            node.execute(&inputs, &exec_ctx)
+            node.execute(&inputs, exec_ctx)
                 .with_context(|| format!("execution failed for node '{}'", instance.id))?
         } else {
             HashMap::new()
         };
+        exec_ctx.check_cancelled()?;
         emit_print_debug_event(
             &instance.id,
             &instance.node_type,
@@ -254,6 +276,7 @@ pub fn compile_graph_with_debug_hook(
         stages.extend(node_stages);
     }
 
+    exec_ctx.check_cancelled()?;
     let sink_instance = graph.node(sink_idx);
     let mut sink_node = registry
         .create(&sink_instance.node_type, sink_instance.params.clone())
@@ -264,7 +287,7 @@ pub fn compile_graph_with_debug_hook(
             )
         })?;
     let sink_inputs = resolve_inputs(graph, registry, sink_idx, &outputs_by_node)?;
-    let sink_outputs = match sink_node.execute(&sink_inputs, &exec_ctx) {
+    let sink_outputs = match sink_node.execute(&sink_inputs, exec_ctx) {
         Ok(outputs) => {
             emit_print_debug_event(
                 &sink_instance.id,
@@ -298,6 +321,7 @@ pub fn compile_graph_with_debug_hook(
             fallback
         }
     };
+    exec_ctx.check_cancelled()?;
     let encoder = ctx.create_encoder(sink_node.as_mut(), &sink_inputs, &sink_outputs)?;
     outputs_by_node.insert(sink_instance.id.clone(), sink_outputs);
 
@@ -340,7 +364,7 @@ fn has_video_frames_ports(
 
 /// Validate that the VideoFrames sub-graph is strictly linear: every node has
 /// at most 1 incoming VF edge and at most 1 outgoing VF edge.
-fn validate_linear_topology(
+pub(crate) fn validate_linear_topology(
     graph: &PipelineGraph,
     _registry: &NodeRegistry,
     execution_order: &[NodeIndex],
@@ -389,7 +413,7 @@ fn count_video_frames_edges(
 
 /// Resolve input port data for a node by reading upstream outputs and applying
 /// default values. Mirrors the pattern in `SequentialExecutor::execute()`.
-fn resolve_inputs(
+pub(crate) fn resolve_inputs(
     graph: &PipelineGraph,
     registry: &NodeRegistry,
     node_idx: NodeIndex,

@@ -165,6 +165,16 @@ impl VideoCompileContext {
         }
     }
 
+    pub(crate) fn create_preview_superres(
+        &self,
+        inputs: &HashMap<String, PortData>,
+        width: u32,
+        height: u32,
+    ) -> Result<SuperResNode> {
+        let scale = read_positive_u32(inputs, "scale", 4)?;
+        self.create_superres_node(inputs, SuperResDimensions::new(width, height, scale))
+    }
+
     fn create_superres_node(
         &self,
         inputs: &HashMap<String, PortData>,

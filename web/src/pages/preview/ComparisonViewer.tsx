@@ -1,5 +1,5 @@
 import type * as React from "react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { extractFrames, processFrame } from "@/api/client";
 import { Badge } from "@/components/ui/badge";
@@ -408,17 +408,35 @@ export function ComparisonViewer() {
 	const viewerRef = useRef<HTMLDivElement>(null);
 	const isPanning = useRef(false);
 	const lastMouse = useRef({ x: 0, y: 0 });
+	const requestGeneration = useRef(0);
+
+	useLayoutEffect(() => {
+		let active = true;
+		const generation = requestGeneration.current;
+		queueMicrotask(() => {
+			if (!active || generation !== requestGeneration.current) return;
+			setLoading(false);
+			setProcessing(false);
+		});
+		return () => {
+			active = false;
+			requestGeneration.current += 1;
+		};
+	}, [isOpen]);
 
 	// ── Frame selection ────────────────────────────────────────────────────────
 
 	const selectFrame = useCallback(
 		(index: number) => {
-			if (index >= 0 && index < frames.length) {
+			if (index >= 0 && index < frames.length && index !== selectedFrame) {
+				requestGeneration.current += 1;
 				setSelectedFrame(index);
 				setProcessedUrl(null);
+				setProcessing(false);
+				setError(null);
 			}
 		},
-		[frames.length],
+		[frames.length, selectedFrame],
 	);
 
 	// ── Keyboard navigation ────────────────────────────────────────────────────
@@ -429,18 +447,10 @@ export function ComparisonViewer() {
 		function handleKeyDown(e: KeyboardEvent) {
 			if (e.key === "ArrowLeft") {
 				e.preventDefault();
-				setSelectedFrame((prev) => {
-					const next = Math.max(0, prev - 1);
-					if (next !== prev) setProcessedUrl(null);
-					return next;
-				});
+				selectFrame(selectedFrame - 1);
 			} else if (e.key === "ArrowRight") {
 				e.preventDefault();
-				setSelectedFrame((prev) => {
-					const next = Math.min(frames.length - 1, prev + 1);
-					if (next !== prev) setProcessedUrl(null);
-					return next;
-				});
+				selectFrame(selectedFrame + 1);
 			}
 		}
 
@@ -448,7 +458,7 @@ export function ComparisonViewer() {
 		return () => {
 			window.removeEventListener("keydown", handleKeyDown);
 		};
-	}, [isOpen, frames.length]);
+	}, [isOpen, selectFrame, selectedFrame]);
 
 	// ── Zoom via mouse wheel ───────────────────────────────────────────────────
 
@@ -500,7 +510,9 @@ export function ComparisonViewer() {
 
 	const handleExtract = useCallback(async () => {
 		if (!videoPath.trim()) return;
+		const request = ++requestGeneration.current;
 		setLoading(true);
+		setProcessing(false);
 		setError(null);
 		setFrames([]);
 		setPreviewId(null);
@@ -509,12 +521,14 @@ export function ComparisonViewer() {
 
 		try {
 			const result = await extractFrames(videoPath.trim(), 10);
+			if (request !== requestGeneration.current) return;
 			setPreviewId(result.preview_id);
 			setFrames(result.frames);
 		} catch (err) {
+			if (request !== requestGeneration.current) return;
 			setError(err instanceof Error ? err.message : t("errors.extractFrames"));
 		} finally {
-			setLoading(false);
+			if (request === requestGeneration.current) setLoading(false);
 		}
 	}, [t, videoPath]);
 
@@ -522,17 +536,21 @@ export function ComparisonViewer() {
 
 	const handleProcess = useCallback(async () => {
 		if (!previewId) return;
+		const request = ++requestGeneration.current;
 		setProcessing(true);
+		setProcessedUrl(null);
 		setError(null);
 
 		try {
 			const workflow = useWorkflowStore.getState().exportWorkflow();
 			const result = await processFrame(previewId, selectedFrame, workflow);
+			if (request !== requestGeneration.current) return;
 			setProcessedUrl(result.processed_url);
 		} catch (err) {
+			if (request !== requestGeneration.current) return;
 			setError(err instanceof Error ? err.message : t("errors.processFrame"));
 		} finally {
-			setProcessing(false);
+			if (request === requestGeneration.current) setProcessing(false);
 		}
 	}, [previewId, selectedFrame, t]);
 

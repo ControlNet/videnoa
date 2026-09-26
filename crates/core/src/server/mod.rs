@@ -27,6 +27,7 @@ mod files;
 mod idempotency;
 pub mod iroh;
 mod persistence;
+mod preview;
 
 #[cfg(test)]
 #[path = "tests/files/mod.rs"]
@@ -549,7 +550,6 @@ pub struct ExtractFramesResponse {
 pub struct ProcessFrameRequest {
     pub preview_id: String,
     pub frame_index: u32,
-    #[allow(dead_code)]
     pub workflow: serde_json::Value,
 }
 
@@ -2386,9 +2386,14 @@ async fn process_frame(
         .get(&payload.preview_id)
         .ok_or_else(|| {
             AppError::NotFound(format!("preview session not found: {}", payload.preview_id))
-        })?;
+        })?
+        .clone();
 
-    let filename = format!("frame_{:04}.png", payload.frame_index + 1);
+    let frame_number = payload
+        .frame_index
+        .checked_add(1)
+        .ok_or_else(|| AppError::BadRequest("invalid preview frame index".to_owned()))?;
+    let filename = format!("frame_{frame_number:04}.png");
     let frame_path = session_dir.join(&filename);
     if !frame_path.exists() {
         return Err(AppError::NotFound(format!(
@@ -2397,7 +2402,33 @@ async fn process_frame(
         )));
     }
 
-    // TODO(task 4.3): actual frame processing through inference pipeline
+    let graph: PipelineGraph = serde_json::from_value(payload.workflow)
+        .map_err(|error| AppError::BadRequest(format!("invalid preview workflow: {error}")))?;
+    preview::validate(&graph, &state.inner.node_registry)
+        .map_err(|error| AppError::BadRequest(format!("invalid preview workflow: {error:#}")))?;
+    let filename = format!("processed-{}.png", Uuid::new_v4());
+    let output = session_dir.join(&filename);
+    let trt_cache = state.inner.config.read().await.paths.trt_cache_dir.clone();
+    let permit = state
+        .inner
+        .gpu_semaphore
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|error| AppError::Internal(error.to_string()))?;
+    let inner = state.inner.clone();
+    tokio::task::spawn_blocking(move || {
+        // The blocking work owns admission even if the HTTP caller disconnects.
+        let _permit = permit;
+        let result = preview::process(graph, &inner.node_registry, &frame_path, &output, trt_cache);
+        if result.is_err() {
+            let _ = std::fs::remove_file(&output);
+        }
+        result
+    })
+    .await
+    .map_err(|error| AppError::Internal(error.to_string()))?
+    .map_err(|error| AppError::Internal(format!("preview processing failed: {error:#}")))?;
     let processed_url = format!("/api/preview/frames/{}/{}", payload.preview_id, filename);
 
     Ok(Json(ProcessFrameResponse { processed_url }))
@@ -2452,7 +2483,7 @@ fn job_cancellation_watch(
     tokio::sync::watch::Receiver<bool>,
     tokio::task::JoinHandle<()>,
 ) {
-    let (tx, rx) = tokio::sync::watch::channel(false);
+    let (tx, rx) = tokio::sync::watch::channel(token.is_cancelled());
     let bridge = tokio::spawn(async move {
         tokio::select! {
             _ = token.cancelled() => {
@@ -2508,7 +2539,7 @@ async fn run_job(state: AppState, job_id: String) {
     }
 
     let result = {
-        let (mut workflow, mut job_params, cancel_token) = {
+        let (mut workflow, job_params, cancel_token) = {
             let Some(job) = state.inner.jobs.get(&job_id) else {
                 return;
             };
@@ -2527,127 +2558,80 @@ async fn run_job(state: AppState, job_id: String) {
 
         let job_id_for_closure = job_id.clone();
 
-        if workflow.has_video_frames_edges() {
-            if let Some(params) = job_params.as_ref() {
-                workflow.inject_workflow_input_params(params);
-            }
-            job_params = None;
+        if let Some(params) = job_params.as_ref() {
+            workflow.inject_workflow_input_params(params);
         }
+        // All workflows use declared input types and the same cancellation path.
+        // The streaming executor uses block_in_place internally as well.
+        tokio::task::block_in_place(move || {
+            let compile_ctx = VideoCompileContext::new(trt_cache_dir);
+            let fps_baseline = Mutex::new(None::<ProgressFpsBaseline>);
+            let ws_tx_for_progress = ws_tx.clone();
+            let ws_tx_for_debug = ws_tx.clone();
 
-        if let Some(params) = job_params {
-            tokio::task::block_in_place(move || {
-                let mut debug_throttle =
-                    NodeDebugEventThrottle::new(Duration::from_millis(PRINT_PREVIEW_THROTTLE_MS));
-                let ws_tx_for_debug = ws_tx.clone();
-                let mut node_debug_cb = move |event: NodeDebugValueEvent| {
-                    if !debug_throttle.should_emit(&event.node_id, Instant::now()) {
-                        return;
-                    }
-                    if let Some(tx) = &ws_tx_for_debug {
-                        let _ = tx.send(JobWsEvent::from(event));
-                    }
-                };
-
-                // Convert JSON params to PortData (infer type from JSON value)
-                let mut port_params = HashMap::new();
-                for (key, value) in &params {
-                    let port_data = if let Some(i) = value.as_i64() {
-                        crate::types::PortData::Int(i)
-                    } else if let Some(f) = value.as_f64() {
-                        crate::types::PortData::Float(f)
-                    } else if let Some(b) = value.as_bool() {
-                        crate::types::PortData::Bool(b)
-                    } else if let Some(s) = value.as_str() {
-                        crate::types::PortData::Str(s.to_string())
-                    } else {
-                        crate::types::PortData::Str(value.to_string())
-                    };
-                    port_params.insert(key.clone(), port_data);
-                }
-                let ctx = crate::node::ExecutionContext::default();
-                SequentialExecutor::execute_with_params_and_debug_hook(
-                    &workflow,
-                    &inner.node_registry,
-                    port_params,
-                    &ctx,
-                    Some(&mut node_debug_cb),
-                )
-            })
-        } else {
-            // No params: use execute_with_context with video compile support
-            // Use block_in_place (NOT spawn_blocking) because the executor internally
-            // calls block_in_place at executor.rs:67. Nesting block_in_place inside
-            // spawn_blocking panics; block_in_place inside block_in_place is a no-op.
-            tokio::task::block_in_place(move || {
-                let compile_ctx = VideoCompileContext::new(trt_cache_dir);
-                let fps_baseline = Mutex::new(None::<ProgressFpsBaseline>);
-                let ws_tx_for_progress = ws_tx.clone();
-                let ws_tx_for_debug = ws_tx.clone();
-
-                let inner_for_cb = Arc::clone(&inner);
-                let progress_cb: ProgressCallback =
-                    Box::new(move |current_frame, total_frames, _hint| {
-                        let now = Instant::now();
-                        let fps = {
-                            let mut baseline_guard = match fps_baseline.lock() {
-                                Ok(guard) => guard,
-                                Err(poisoned) => poisoned.into_inner(),
-                            };
-                            let (next_baseline, next_fps) = estimate_input_fps_from_second_frame(
-                                *baseline_guard,
-                                current_frame,
-                                now,
-                            );
-                            *baseline_guard = next_baseline;
-                            next_fps as f64
+            let inner_for_cb = Arc::clone(&inner);
+            let progress_cb: ProgressCallback =
+                Box::new(move |current_frame, total_frames, _hint| {
+                    let now = Instant::now();
+                    let fps = {
+                        let mut baseline_guard = match fps_baseline.lock() {
+                            Ok(guard) => guard,
+                            Err(poisoned) => poisoned.into_inner(),
                         };
-                        let eta = total_frames.and_then(|total| {
-                            if fps > 0.0 && current_frame < total {
-                                Some((total - current_frame) as f64 / fps)
-                            } else {
-                                None
-                            }
-                        });
-
-                        let update = ProgressUpdate {
+                        let (next_baseline, next_fps) = estimate_input_fps_from_second_frame(
+                            *baseline_guard,
                             current_frame,
-                            total_frames,
-                            fps: fps as f32,
-                            eta_seconds: eta,
-                        };
-
-                        if let Some(mut job) = inner_for_cb.jobs.get_mut(&job_id_for_closure) {
-                            job.progress = Some(update.clone());
-                        }
-
-                        if let Some(tx) = &ws_tx_for_progress {
-                            let _ = tx.send(JobWsEvent::from(update));
+                            now,
+                        );
+                        *baseline_guard = next_baseline;
+                        next_fps as f64
+                    };
+                    let eta = total_frames.and_then(|total| {
+                        if fps > 0.0 && current_frame < total {
+                            Some((total - current_frame) as f64 / fps)
+                        } else {
+                            None
                         }
                     });
 
-                let mut debug_throttle =
-                    NodeDebugEventThrottle::new(Duration::from_millis(PRINT_PREVIEW_THROTTLE_MS));
-                let mut node_debug_cb = move |event: NodeDebugValueEvent| {
-                    if !debug_throttle.should_emit(&event.node_id, Instant::now()) {
-                        return;
-                    }
-                    if let Some(tx) = &ws_tx_for_debug {
-                        let _ = tx.send(JobWsEvent::from(event));
-                    }
-                };
+                    let update = ProgressUpdate {
+                        current_frame,
+                        total_frames,
+                        fps: fps as f32,
+                        eta_seconds: eta,
+                    };
 
-                let (cancel_watch_rx, _cancel_bridge) = job_cancellation_watch(cancel_token);
+                    if let Some(mut job) = inner_for_cb.jobs.get_mut(&job_id_for_closure) {
+                        job.progress = Some(update.clone());
+                    }
 
-                SequentialExecutor::execute_with_context_and_debug_hook(
-                    &workflow,
-                    &inner.node_registry,
-                    Some(&compile_ctx),
-                    Some(progress_cb),
-                    Some(cancel_watch_rx),
-                    Some(&mut node_debug_cb),
-                )
-            })
-        }
+                    if let Some(tx) = &ws_tx_for_progress {
+                        let _ = tx.send(JobWsEvent::from(update));
+                    }
+                });
+
+            let mut debug_throttle =
+                NodeDebugEventThrottle::new(Duration::from_millis(PRINT_PREVIEW_THROTTLE_MS));
+            let mut node_debug_cb = move |event: NodeDebugValueEvent| {
+                if !debug_throttle.should_emit(&event.node_id, Instant::now()) {
+                    return;
+                }
+                if let Some(tx) = &ws_tx_for_debug {
+                    let _ = tx.send(JobWsEvent::from(event));
+                }
+            };
+
+            let (cancel_watch_rx, _cancel_bridge) = job_cancellation_watch(cancel_token);
+
+            SequentialExecutor::execute_with_context_and_debug_hook(
+                &workflow,
+                &inner.node_registry,
+                Some(&compile_ctx),
+                Some(progress_cb),
+                Some(cancel_watch_rx),
+                Some(&mut node_debug_cb),
+            )
+        })
     };
 
     match result {
@@ -2927,6 +2911,15 @@ mod tests {
             .expect("completed or failed jobs must not retain a cancellation bridge")
             .expect("bridge must not panic");
         assert!(!token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn job_cancellation_bridge_starts_cancelled_before_it_is_scheduled() {
+        let token = CancellationToken::new();
+        token.cancel();
+        let (rx, bridge) = job_cancellation_watch(token);
+        assert!(*rx.borrow());
+        bridge.await.expect("bridge must not panic");
     }
 
     #[tokio::test]

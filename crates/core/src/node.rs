@@ -19,9 +19,17 @@ pub struct ExecutionContext {
     pub current_frame: u64,
     pub executing_workflows: HashSet<PathBuf>,
     pub nesting_depth: u32,
+    pub cancellation: Option<tokio::sync::watch::Receiver<bool>>,
 }
 
 impl ExecutionContext {
+    pub fn check_cancelled(&self) -> Result<()> {
+        if self.cancellation.as_ref().is_some_and(|rx| *rx.borrow()) {
+            anyhow::bail!("workflow execution cancelled");
+        }
+        Ok(())
+    }
+
     pub fn progress(&self) -> Option<f32> {
         let total = self.total_frames?;
         if total == 0 {

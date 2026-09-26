@@ -3,6 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExter
 import { type ApiClient, ApiClientError } from "../api/client"
 import { type TaskDetail, taskDetailSchema } from "../api/taskSchemas"
 import { appTaskUpdateStore } from "../events/taskUpdates"
+import { appInvalidationStore } from "../events/store"
 
 /** The Controller's default and maximum attempt page, from `PageLimit`. */
 const attemptPageSize = 100
@@ -48,6 +49,8 @@ function withRetainedAttempts(value: TaskDetail, retained: TaskDetail | null): T
 }
 
 export function useTaskDetail(apiClient: ApiClient, taskId: string): TaskDetailData {
+  const invalidation = useSyncExternalStore(appInvalidationStore.subscribe, appInvalidationStore.snapshot)
+  const appliedInvalidation = useRef(invalidation.generation)
   const update = useSyncExternalStore(appTaskUpdateStore.subscribe, appTaskUpdateStore.snapshot)
   const appliedGeneration = useRef(appTaskUpdateStore.snapshot().generation)
   const [detail, setDetail] = useState<TaskDetail | null>(null)
@@ -188,6 +191,12 @@ export function useTaskDetail(apiClient: ApiClient, taskId: string): TaskDetailD
       abortHistoryRequest()
     }
   }, [abortHistoryRequest, apiClient, generation, taskId])
+
+  useEffect(() => {
+    if (invalidation.generation <= appliedInvalidation.current) return
+    appliedInvalidation.current = invalidation.generation
+    queueMicrotask(reload)
+  }, [invalidation.generation, reload])
 
   useEffect(() => {
     if (update.generation <= appliedGeneration.current) return
