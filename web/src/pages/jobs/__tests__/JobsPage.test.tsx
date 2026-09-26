@@ -39,6 +39,7 @@ beforeEach(async () => {
 	vi.clearAllMocks();
 	useJobStore.setState({
 		jobs: [],
+		refreshError: null,
 		activeJobId: null,
 		activeProgress: null,
 		runtimePreviewsByNodeId: {},
@@ -336,4 +337,10 @@ describe("JobsPage history actions", () => {
 
 		expect(screen.getByText("No params")).toBeInTheDocument();
 	});
+});
+
+it("shows refresh failure separately from accepted job status", () => {
+	useJobStore.setState({ jobs: [makeJob()], refreshError: "synthetic list failure" });
+	render(<JobsPage />);
+	expect(screen.getByRole("status")).toHaveTextContent("Accepted jobs remain submitted");
 });

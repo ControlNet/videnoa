@@ -64,6 +64,27 @@ impl JobsPersistence {
         self.with_connection(|conn| self.upsert_row(conn, &row))
     }
 
+    /// A late executor snapshot must not resurrect a deleted history row.
+    pub(crate) fn update_job(&self, job: &Job) -> Result<()> {
+        let row = Self::row_from_job(job)?;
+        self.with_connection(|conn| {
+            conn.execute(
+                "UPDATE jobs SET status = ?2, started_at = ?3, completed_at = ?4,
+                 progress_json = ?5, error = ?6, updated_at = ?7 WHERE id = ?1",
+                params![
+                    row.id,
+                    status_to_str(row.status),
+                    row.started_at.map(|ts| ts.to_rfc3339()),
+                    row.completed_at.map(|ts| ts.to_rfc3339()),
+                    row.progress_json,
+                    row.error,
+                    Utc::now().to_rfc3339()
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
     pub(crate) fn load_jobs_for_startup(&self) -> Result<Vec<Job>> {
         self.with_connection(|conn| {
             let mut stmt = conn.prepare(

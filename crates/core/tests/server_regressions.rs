@@ -238,12 +238,23 @@ async fn extracted_preview(app: &Router, dir: &TempDir) -> Option<Value> {
     Some(extracted)
 }
 
-fn remove_preview(extracted: &Value) {
-    std::fs::remove_dir_all(std::env::temp_dir().join(format!(
-        "videnoa-preview-{}",
-        extracted["preview_id"].as_str().unwrap()
-    )))
-    .unwrap();
+async fn remove_preview(app: &Router, extracted: &Value) {
+    let (status, _) = request(
+        app,
+        "DELETE",
+        &format!("/api/preview/{}", extracted["preview_id"].as_str().unwrap()),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = request(
+        app,
+        "GET",
+        extracted["frames"][0]["url"].as_str().unwrap(),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -305,7 +316,7 @@ async fn preview_runs_resize_and_keeps_original_unchanged() {
         original
     );
     assert!(!std::path::Path::new("must-not-be-written.mkv").exists());
-    remove_preview(&extracted);
+    remove_preview(&app, &extracted).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -334,7 +345,7 @@ async fn preview_rejects_invalid_temporal_and_external_side_effect_workflows() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    remove_preview(&extracted);
+    remove_preview(&app, &extracted).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -381,5 +392,58 @@ async fn preview_superresolution_cuda_produces_upscaled_png() {
     assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
     assert_eq!(u32::from_be_bytes(bytes[16..20].try_into().unwrap()), 128);
     assert_eq!(u32::from_be_bytes(bytes[20..24].try_into().unwrap()), 128);
-    remove_preview(&extracted);
+    remove_preview(&app, &extracted).await;
+}
+
+#[tokio::test]
+async fn preview_rejects_encoded_absolute_and_parent_paths() {
+    let dir = TempDir::new().unwrap();
+    let app = app(&dir);
+    let Some(extracted) = extracted_preview(&app, &dir).await else {
+        return;
+    };
+    let outside = dir.path().join("outside.txt");
+    std::fs::write(&outside, "synthetic outside-session fixture").unwrap();
+    let absolute = outside.to_str().unwrap().replace('/', "%2F");
+    for filename in [
+        absolute.as_str(),
+        "%2E%2E%2Foutside.txt",
+        "..%5Coutside.txt",
+    ] {
+        let (status, _) = request(
+            &app,
+            "GET",
+            &format!(
+                "/api/preview/frames/{}/{filename}",
+                extracted["preview_id"].as_str().unwrap()
+            ),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+    remove_preview(&app, &extracted).await;
+}
+
+#[tokio::test]
+async fn failed_extraction_removes_its_partial_session() {
+    let dir = TempDir::new().unwrap();
+    let app = app(&dir);
+    let invalid = dir.path().join("invalid-video.mkv");
+    std::fs::write(&invalid, "deliberately invalid media fixture").unwrap();
+    let (status, _) = request(
+        &app,
+        "POST",
+        "/api/preview/extract",
+        json!({"video_path":invalid,"count":1}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(std::fs::read_dir(dir.path().join("data/preview-cache"))
+        .unwrap()
+        .all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("session-")));
 }

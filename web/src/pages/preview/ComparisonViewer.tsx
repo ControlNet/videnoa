@@ -1,7 +1,7 @@
 import type * as React from "react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { extractFrames, processFrame } from "@/api/client";
+import { deletePreview, extractFrames, processFrame } from "@/api/client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -409,6 +409,12 @@ export function ComparisonViewer() {
 	const isPanning = useRef(false);
 	const lastMouse = useRef({ x: 0, y: 0 });
 	const requestGeneration = useRef(0);
+	const sessionRef = useRef<string | null>(null);
+	const releaseSession = useCallback(() => {
+		const id = sessionRef.current;
+		sessionRef.current = null;
+		if (id) void deletePreview(id).catch(() => undefined); // Server TTL covers lost releases.
+	}, []);
 
 	useLayoutEffect(() => {
 		let active = true;
@@ -417,12 +423,16 @@ export function ComparisonViewer() {
 			if (!active || generation !== requestGeneration.current) return;
 			setLoading(false);
 			setProcessing(false);
+			setFrames([]);
+			setPreviewId(null);
+			setProcessedUrl(null);
 		});
 		return () => {
 			active = false;
 			requestGeneration.current += 1;
+			releaseSession();
 		};
-	}, [isOpen]);
+	}, [isOpen, releaseSession]);
 
 	// ── Frame selection ────────────────────────────────────────────────────────
 
@@ -511,6 +521,7 @@ export function ComparisonViewer() {
 	const handleExtract = useCallback(async () => {
 		if (!videoPath.trim()) return;
 		const request = ++requestGeneration.current;
+		releaseSession();
 		setLoading(true);
 		setProcessing(false);
 		setError(null);
@@ -521,7 +532,11 @@ export function ComparisonViewer() {
 
 		try {
 			const result = await extractFrames(videoPath.trim(), 10);
-			if (request !== requestGeneration.current) return;
+			if (request !== requestGeneration.current) {
+				void deletePreview(result.preview_id).catch(() => undefined);
+				return;
+			}
+			sessionRef.current = result.preview_id;
 			setPreviewId(result.preview_id);
 			setFrames(result.frames);
 		} catch (err) {
@@ -530,7 +545,7 @@ export function ComparisonViewer() {
 		} finally {
 			if (request === requestGeneration.current) setLoading(false);
 		}
-	}, [t, videoPath]);
+	}, [t, videoPath, releaseSession]);
 
 	// ── Process frame ──────────────────────────────────────────────────────────
 
@@ -599,6 +614,12 @@ export function ComparisonViewer() {
 						placeholder={t("inputs.videoPathPlaceholder")}
 						value={videoPath}
 						onChange={(e) => {
+							requestGeneration.current += 1;
+							releaseSession();
+							setFrames([]);
+							setPreviewId(null);
+							setProcessedUrl(null);
+							setProcessing(false);
 							setVideoPath(e.target.value);
 						}}
 						onKeyDown={(e) => {

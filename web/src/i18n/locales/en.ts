@@ -126,6 +126,7 @@ export const enResources: NamespaceResources = {
 		notAvailable: "—",
 	},
 	jobs: {
+		"jobs.page.errors.refresh": "The job list could not be refreshed. Accepted jobs remain submitted. Retrying automatically.",
 		"jobs.page.title": "Jobs",
 		"jobs.page.summary.total_one": "{{count}} job total",
 		"jobs.page.summary.total_other": "{{count}} jobs total",

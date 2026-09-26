@@ -5,6 +5,8 @@ rust-version.workspace = true
 edition = "2021"
 
 [dependencies]
+cap-std.workspace = true
+tempfile = "3"
 videnoa-transport.workspace = true
 argon2 = { workspace = true }
 rand_core = { workspace = true }
@@ -45,9 +47,6 @@ libc = "0.2"
 
 [build-dependencies]
 prost-build = "0.14"
-
-[dev-dependencies]
-tempfile = "3"
 
 [[test]]
 name = "allocator_policy"

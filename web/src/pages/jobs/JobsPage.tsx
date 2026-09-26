@@ -474,6 +474,7 @@ export function JobsPage() {
 	const { t } = useTranslation("jobs");
 	const {
 		jobs,
+		refreshError,
 		fetchJobs,
 		activeJobId,
 		subscribeToJob,
@@ -483,8 +484,8 @@ export function JobsPage() {
 	const [runDialogOpen, setRunDialogOpen] = useState(false);
 
 	useEffect(() => {
-		void fetchJobs();
-		const id = setInterval(() => void fetchJobs(), 2_000);
+		void fetchJobs().catch(() => undefined);
+		const id = setInterval(() => void fetchJobs().catch(() => undefined), 2_000);
 		return () => clearInterval(id);
 	}, [fetchJobs]);
 
@@ -534,6 +535,11 @@ export function JobsPage() {
 
 	return (
 		<PageContainer title={t("jobs.page.title")}>
+			{refreshError && (
+				<p role="status" className="mb-4 text-sm text-amber-500">
+					{t("jobs.page.errors.refresh")}
+				</p>
+			)}
 			<div className="flex items-center justify-between -mt-4 mb-6">
 				<p className="text-muted-foreground text-sm">
 					{hasJobs
@@ -619,7 +625,7 @@ export function JobsPage() {
 				open={runDialogOpen}
 				onOpenChange={setRunDialogOpen}
 				onSubmitted={() => {
-					void fetchJobs();
+					void fetchJobs().catch(() => undefined);
 				}}
 			/>
 		</PageContainer>

@@ -28,6 +28,7 @@ mod idempotency;
 pub mod iroh;
 mod persistence;
 mod preview;
+mod preview_cache;
 
 #[cfg(test)]
 #[path = "tests/files/mod.rs"]
@@ -93,7 +94,7 @@ struct AppStateInner {
     config_path: PathBuf,
     data_dir: PathBuf,
     workspace_root: PathBuf,
-    preview_sessions: DashMap<String, PathBuf>,
+    preview_cache: std::result::Result<Arc<preview_cache::PreviewCache>, String>,
     performance_series: Mutex<VecDeque<RuntimePerformanceSeriesSample>>,
 }
 
@@ -172,6 +173,8 @@ impl AppState {
             }
         }
 
+        let preview_cache =
+            preview_cache::PreviewCache::open(&data_dir).map_err(|e| format!("{e:#}"));
         Self {
             inner: Arc::new(AppStateInner {
                 auth,
@@ -188,7 +191,7 @@ impl AppState {
                 config_path,
                 data_dir,
                 workspace_root,
-                preview_sessions: DashMap::new(),
+                preview_cache,
                 performance_series: Mutex::new(VecDeque::new()),
             }),
         }
@@ -199,6 +202,20 @@ impl AppState {
             persistence.upsert_job(job)?;
         }
         Ok(())
+    }
+
+    fn persist_job_transition(&self, job: &Job) -> Result<()> {
+        if let Some(persistence) = &self.inner.jobs_persistence {
+            persistence.update_job(job)?;
+        }
+        Ok(())
+    }
+
+    fn preview_cache(&self) -> Result<&Arc<preview_cache::PreviewCache>, AppError> {
+        self.inner
+            .preview_cache
+            .as_ref()
+            .map_err(|e| AppError::Internal(e.clone()))
     }
 
     /// Resolve workflows_dir relative to process current working directory.
@@ -653,6 +670,7 @@ pub fn api_router(state: AppState) -> Router {
         .route("/api/fs/browse", get(browse_fs))
         .route("/api/preview/extract", post(extract_frames))
         .route("/api/preview/process", post(process_frame))
+        .route("/api/preview/{preview_id}", delete(delete_preview))
         .route(
             "/api/preview/frames/{preview_id}/{filename}",
             get(serve_preview_frame),
@@ -1708,47 +1726,30 @@ async fn delete_job_history(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, AppError> {
-    let (job_id, job) = state
-        .inner
-        .jobs
-        .remove(&id)
-        .ok_or_else(|| AppError::NotFound(format!("job not found: {id}")))?;
-
+    let entry = match state.inner.jobs.entry(id.clone()) {
+        dashmap::mapref::entry::Entry::Occupied(entry) => entry,
+        dashmap::mapref::entry::Entry::Vacant(_) => {
+            return Err(AppError::NotFound(format!("job not found: {id}")));
+        }
+    };
+    // Hold the runtime entry until durable deletion succeeds. Failed deletion
+    // must never cancel a job whose queued/running state remains visible.
+    if let Some(persistence) = &state.inner.jobs_persistence {
+        let rows = persistence
+            .delete_job(&id)
+            .map_err(|e| AppError::Internal(format!("failed to delete job history row: {e:#}")))?;
+        if rows != 1 {
+            return Err(AppError::Internal(format!(
+                "expected exactly one persisted row deleted for job {id}, deleted {rows}"
+            )));
+        }
+    }
+    let job = entry.remove();
     if matches!(job.status, JobStatus::Queued | JobStatus::Running) {
         job.cancel_token.cancel();
     }
-
-    let removed_sender = state.inner.progress_senders.remove(&job_id);
-
-    if let Some(persistence) = &state.inner.jobs_persistence {
-        let persisted_deleted_rows = persistence
-            .delete_job(&job_id)
-            .map_err(|e| AppError::Internal(format!("failed to delete job history row: {e:#}")));
-
-        let persisted_deleted_rows = match persisted_deleted_rows {
-            Ok(rows) if rows == 1 => rows,
-            Ok(rows) => {
-                state.inner.jobs.insert(job_id.clone(), job.clone());
-                if let Some((sender_id, sender)) = removed_sender {
-                    state.inner.progress_senders.insert(sender_id, sender);
-                }
-                return Err(AppError::Internal(format!(
-                    "expected exactly one persisted row deleted for job {job_id}, deleted {rows}"
-                )));
-            }
-            Err(err) => {
-                state.inner.jobs.insert(job_id.clone(), job.clone());
-                if let Some((sender_id, sender)) = removed_sender {
-                    state.inner.progress_senders.insert(sender_id, sender);
-                }
-                return Err(err);
-            }
-        };
-
-        debug_assert_eq!(persisted_deleted_rows, 1);
-    }
-
-    info!(job_id = %job_id, "Job history row deleted");
+    state.inner.progress_senders.remove(&id);
+    info!(job_id = %id, "Job history row deleted");
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2275,36 +2276,46 @@ async fn extract_frames(
         )));
     }
 
+    let cache = state.preview_cache()?;
+    let _permit = cache.extractions.clone().try_acquire_owned().map_err(|_| {
+        AppError::TooManyRequests("preview extraction is busy; retry shortly".into())
+    })?;
+    let session = cache.create()?;
     let preview_id = Uuid::new_v4().to_string();
-    let temp_dir = std::env::temp_dir().join(format!("videnoa-preview-{preview_id}"));
-    std::fs::create_dir_all(&temp_dir)
-        .map_err(|e| AppError::Internal(format!("failed to create temp dir: {e}")))?;
+    let deadline = tokio::time::Instant::now() + preview_cache::EXTRACTION_TIMEOUT;
+    let mut probe = crate::runtime::command_for("ffprobe");
+    probe.args([
+        "-v",
+        "error",
+        "-count_frames",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=nb_read_frames",
+        "-of",
+        "csv=p=0",
+        &payload.video_path,
+    ]);
+    let probe = preview_cache::run_command(
+        probe,
+        &session,
+        deadline.saturating_duration_since(tokio::time::Instant::now()),
+    )
+    .await?;
 
-    let probe = crate::runtime::command_for("ffprobe")
-        .args([
-            "-v",
-            "error",
-            "-count_frames",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=nb_read_frames",
-            "-of",
-            "csv=p=0",
-            &payload.video_path,
-        ])
-        .output()
-        .map_err(|e| AppError::Internal(format!("ffprobe failed: {e}")))?;
-
-    let total_frames: u64 = String::from_utf8_lossy(&probe.stdout)
+    let total_frames: u64 = String::from_utf8_lossy(&probe)
         .trim()
         .parse()
         .unwrap_or(1000);
     let interval = (total_frames / payload.count as u64).max(1);
 
-    let output_pattern = temp_dir.join("frame_%04d.png");
-    let status = crate::runtime::command_for("ffmpeg")
+    let output_pattern = session.path().join("frame_%04d.png");
+    let mut command = crate::runtime::command_for("ffmpeg");
+    command
         .args([
+            "-nostdin",
+            "-v",
+            "error",
             "-i",
             &payload.video_path,
             "-vf",
@@ -2313,22 +2324,19 @@ async fn extract_frames(
             &payload.count.to_string(),
             "-vsync",
             PREVIEW_VSYNC_MODE,
-            output_pattern
-                .to_str()
-                .ok_or_else(|| AppError::Internal("invalid path encoding".to_string()))?,
         ])
-        .output()
-        .map_err(|e| AppError::Internal(format!("ffmpeg failed: {e}")))?;
-
-    if !status.status.success() {
-        let stderr = String::from_utf8_lossy(&status.stderr);
-        return Err(AppError::Internal(format!("ffmpeg error: {stderr}")));
-    }
+        .arg(output_pattern);
+    preview_cache::run_command(
+        command,
+        &session,
+        deadline.saturating_duration_since(tokio::time::Instant::now()),
+    )
+    .await?;
 
     let mut frames = Vec::new();
     for i in 1..=payload.count {
         let filename = format!("frame_{i:04}.png");
-        let frame_path = temp_dir.join(&filename);
+        let frame_path = session.path().join(&filename);
         if frame_path.exists() {
             frames.push(FrameInfo {
                 index: i - 1,
@@ -2341,10 +2349,7 @@ async fn extract_frames(
         return Err(AppError::Internal("ffmpeg produced no frames".to_string()));
     }
 
-    state
-        .inner
-        .preview_sessions
-        .insert(preview_id.clone(), temp_dir);
+    cache.insert(preview_id.clone(), session);
 
     info!(preview_id = %preview_id, frame_count = frames.len(), "Extracted preview frames");
 
@@ -2358,43 +2363,38 @@ async fn serve_preview_frame(
     State(state): State<AppState>,
     Path((preview_id, filename)): Path<(String, String)>,
 ) -> Result<Response, AppError> {
-    let session_dir = state
-        .inner
-        .preview_sessions
-        .get(&preview_id)
-        .ok_or_else(|| AppError::NotFound(format!("preview session not found: {preview_id}")))?;
-
-    let file_path = session_dir.join(&filename);
-    if !file_path.exists() {
-        return Err(AppError::NotFound(format!("frame not found: {filename}")));
+    if !preview_cache::valid_filename(&filename) {
+        return Err(AppError::BadRequest("invalid preview filename".into()));
     }
-
-    let bytes = tokio::fs::read(&file_path)
+    let session = state.preview_cache()?.get(&preview_id)?;
+    let bytes = tokio::task::spawn_blocking(move || session.read(&filename))
         .await
-        .map_err(|e| AppError::Internal(format!("failed to read frame: {e}")))?;
+        .map_err(|e| AppError::Internal(e.to_string()))?
+        .map_err(|_| AppError::NotFound("preview frame not found".into()))?;
 
     Ok((StatusCode::OK, [("content-type", "image/png")], bytes).into_response())
+}
+
+async fn delete_preview(
+    State(state): State<AppState>,
+    Path(preview_id): Path<String>,
+) -> Result<StatusCode, AppError> {
+    state.preview_cache()?.release(&preview_id);
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn process_frame(
     State(state): State<AppState>,
     Json(payload): Json<ProcessFrameRequest>,
 ) -> Result<Json<ProcessFrameResponse>, AppError> {
-    let session_dir = state
-        .inner
-        .preview_sessions
-        .get(&payload.preview_id)
-        .ok_or_else(|| {
-            AppError::NotFound(format!("preview session not found: {}", payload.preview_id))
-        })?
-        .clone();
+    let session = state.preview_cache()?.get(&payload.preview_id)?;
 
     let frame_number = payload
         .frame_index
         .checked_add(1)
         .ok_or_else(|| AppError::BadRequest("invalid preview frame index".to_owned()))?;
     let filename = format!("frame_{frame_number:04}.png");
-    let frame_path = session_dir.join(&filename);
+    let frame_path = session.path().join(&filename);
     if !frame_path.exists() {
         return Err(AppError::NotFound(format!(
             "frame not found: index {}",
@@ -2407,7 +2407,8 @@ async fn process_frame(
     preview::validate(&graph, &state.inner.node_registry)
         .map_err(|error| AppError::BadRequest(format!("invalid preview workflow: {error:#}")))?;
     let filename = format!("processed-{}.png", Uuid::new_v4());
-    let output = session_dir.join(&filename);
+    let output = session.path().join(&filename);
+    let result_slot = session.reserve_result()?;
     let trt_cache = state.inner.config.read().await.paths.trt_cache_dir.clone();
     let permit = state
         .inner
@@ -2420,10 +2421,14 @@ async fn process_frame(
     tokio::task::spawn_blocking(move || {
         // The blocking work owns admission even if the HTTP caller disconnects.
         let _permit = permit;
-        let result = preview::process(graph, &inner.node_registry, &frame_path, &output, trt_cache);
+        let result = preview::process(graph, &inner.node_registry, &frame_path, &output, trt_cache)
+            .and_then(|()| session.check_size());
         if result.is_err() {
             let _ = std::fs::remove_file(&output);
+        } else {
+            result_slot.forget();
         }
+        session.touch();
         result
     })
     .await
@@ -2533,7 +2538,7 @@ async fn run_job(state: AppState, job_id: String) {
     };
 
     if let Some(snapshot) = running_snapshot {
-        if let Err(err) = state.persist_job_snapshot(&snapshot) {
+        if let Err(err) = state.persist_job_transition(&snapshot) {
             error!(job_id = %job_id, error = ?err, "Failed to persist running transition");
         }
     }
@@ -2647,7 +2652,7 @@ async fn run_job(state: AppState, job_id: String) {
             }
 
             if let Some(snapshot) = completed_snapshot {
-                if let Err(err) = state.persist_job_snapshot(&snapshot) {
+                if let Err(err) = state.persist_job_transition(&snapshot) {
                     error!(job_id = %job_id, error = ?err, "Failed to persist completed transition");
                 }
             }
@@ -2666,7 +2671,7 @@ async fn run_job(state: AppState, job_id: String) {
             }
 
             if let Some(snapshot) = failed_snapshot {
-                if let Err(persist_err) = state.persist_job_snapshot(&snapshot) {
+                if let Err(persist_err) = state.persist_job_transition(&snapshot) {
                     error!(
                         job_id = %job_id,
                         error = ?persist_err,
@@ -2688,6 +2693,7 @@ pub enum AppError {
     Forbidden(String),
     NotFound(String),
     Internal(String),
+    TooManyRequests(String),
     InvalidIdempotencyKey,
     IdempotencyConflict,
 }
@@ -2698,6 +2704,7 @@ impl IntoResponse for AppError {
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg, None),
             AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg, None),
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg, None),
+            AppError::TooManyRequests(msg) => (StatusCode::TOO_MANY_REQUESTS, msg, None),
             AppError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg, None),
             AppError::InvalidIdempotencyKey => (
                 StatusCode::BAD_REQUEST,
@@ -4225,6 +4232,85 @@ mod tests {
 
         let resp = send_request(&mut app, req).await;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn failed_history_deletion_preserves_live_job_and_channel() {
+        let state = test_state();
+        let mut job = build_test_job("delete-failure".into(), JobStatus::Queued, None);
+        job.workflow =
+            serde_json::from_value(serde_json::json!({"nodes":[],"connections":[]})).unwrap();
+        let cancel = job.cancel_token.clone();
+        insert_test_job(&state, job);
+        let gate = state.inner.gpu_semaphore.acquire().await.unwrap();
+        let execution = tokio::spawn(run_job(state.clone(), "delete-failure".into()));
+        let (sender, _) = broadcast::channel(8);
+        state
+            .inner
+            .progress_senders
+            .insert("delete-failure".into(), sender);
+        let persistence = state.inner.jobs_persistence.as_ref().unwrap();
+        let conn = Connection::open(persistence.db_path()).unwrap();
+        // Deliberate database fault injection: deletion must have no runtime side effects.
+        conn.execute_batch("CREATE TRIGGER reject_delete BEFORE DELETE ON jobs BEGIN SELECT RAISE(ABORT, 'injected failure'); END;").unwrap();
+        assert!(
+            delete_job_history(State(state.clone()), Path("delete-failure".into()))
+                .await
+                .is_err()
+        );
+        assert!(!cancel.is_cancelled());
+        assert_eq!(
+            state.inner.jobs.get("delete-failure").unwrap().status,
+            JobStatus::Queued
+        );
+        assert!(state.inner.progress_senders.contains_key("delete-failure"));
+        conn.execute_batch("DROP TRIGGER reject_delete;").unwrap();
+        drop(gate);
+        tokio::time::timeout(Duration::from_secs(5), execution)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            state.inner.jobs.get("delete-failure").unwrap().status,
+            JobStatus::Completed
+        );
+        assert_eq!(
+            delete_job_history(State(state.clone()), Path("delete-failure".into()))
+                .await
+                .unwrap(),
+            StatusCode::NO_CONTENT
+        );
+        assert!(!cancel.is_cancelled());
+        let late_snapshot = build_test_job("delete-failure".into(), JobStatus::Completed, None);
+        state.persist_job_transition(&late_snapshot).unwrap();
+        assert_eq!(
+            persisted_job_status(&state.inner.data_dir, "delete-failure"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn preview_extraction_admission_rejects_excess_requests() {
+        let state = test_state();
+        let cache = state.preview_cache().unwrap();
+        let first = cache.extractions.clone().acquire_owned().await.unwrap();
+        let second = cache.extractions.clone().acquire_owned().await.unwrap();
+        let video_path = state.inner.data_dir.join("synthetic-video.mkv");
+        std::fs::write(&video_path, b"admission fixture, never decoded").unwrap();
+        let response = extract_frames(
+            State(state.clone()),
+            Json(ExtractFramesRequest {
+                video_path: video_path.to_string_lossy().into_owned(),
+                count: 1,
+            }),
+        )
+        .await
+        .err()
+        .unwrap()
+        .into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        drop((first, second));
+        assert_eq!(cache.extractions.available_permits(), 2);
     }
 
     #[tokio::test]

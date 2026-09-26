@@ -497,11 +497,10 @@ impl VideoDecoder {
                     if total_read == 0 {
                         return Ok(None);
                     }
-                    warn!(
-                        "partial frame at EOF ({total_read}/{} bytes), discarding",
+                    bail!(
+                        "partial frame at EOF ({total_read}/{} bytes)",
                         self.frame_size
                     );
-                    return Ok(None);
                 }
                 Ok(n) => {
                     total_read += n;
@@ -543,7 +542,7 @@ impl Iterator for VideoDecoder {
             Ok(Some(frame)) => Some(Ok(frame)),
             Ok(None) => {
                 self.done = true;
-                None
+                self.finish().err().map(Err)
             }
             Err(e) => {
                 self.done = true;
@@ -567,6 +566,65 @@ impl Drop for VideoDecoder {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[cfg(unix)]
+    fn fault_injected_decoder(script: &str) -> VideoDecoder {
+        // Synthetic subprocess output exercises the raw-frame protocol without a codec.
+        let child = std::process::Command::new("sh")
+            .args(["-c", script])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        VideoDecoder {
+            child,
+            width: 1,
+            height: 1,
+            bit_depth: 8,
+            frame_size: 3,
+            _stderr_thread: None,
+            buf: vec![0; 3],
+            done: false,
+            hwaccel: None,
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn decoder_reports_failure_after_complete_frames() {
+        let mut decoder = fault_injected_decoder("printf abc; exit 7");
+        assert!(decoder.next().unwrap().is_ok());
+        assert!(decoder
+            .next()
+            .unwrap()
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("status"));
+        assert!(decoder.next().is_none());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn decoder_rejects_partial_frame_even_on_successful_exit() {
+        let mut decoder = fault_injected_decoder("printf ab");
+        assert!(decoder
+            .next()
+            .unwrap()
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("partial frame"));
+        assert!(decoder.next().is_none());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn decoder_accepts_clean_eof() {
+        let mut decoder = fault_injected_decoder("printf abc");
+        assert!(decoder.next().unwrap().is_ok());
+        assert!(decoder.next().is_none());
+        assert!(decoder.next().is_none());
+    }
 
     const SAMPLE_FFPROBE_JSON: &str = r#"{
         "streams": [

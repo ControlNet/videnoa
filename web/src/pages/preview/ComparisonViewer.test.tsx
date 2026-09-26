@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
-import { extractFrames, processFrame } from "@/api/client";
+import { deletePreview, extractFrames, processFrame } from "@/api/client";
 import { useUIStore } from "@/stores/ui-store";
 import { ComparisonViewer } from "./ComparisonViewer";
 
@@ -8,6 +8,7 @@ import { ComparisonViewer } from "./ComparisonViewer";
 vi.mock("@/api/client", () => ({
 	extractFrames: vi.fn(),
 	processFrame: vi.fn(),
+	deletePreview: vi.fn(),
 }));
 
 function deferred<T>() {
@@ -18,6 +19,7 @@ function deferred<T>() {
 
 beforeEach(() => {
 	vi.resetAllMocks();
+	vi.mocked(deletePreview).mockResolvedValue(undefined);
 	useUIStore.setState({ activeModal: "preview" });
 	vi.mocked(extractFrames).mockResolvedValue({
 		preview_id: "test-preview",
@@ -73,6 +75,25 @@ it("ignores a pending result after closing and reopening the preview", async () 
 	act(() => useUIStore.setState({ activeModal: null }));
 	await act(async () => pending.resolve({ processed_url: "/test/stale.png" }));
 	act(() => useUIStore.setState({ activeModal: "preview" }));
-	await waitFor(() => expect(screen.getByRole("button", { name: "Process Frame" })).toBeEnabled());
+	await waitFor(() => expect(screen.queryByRole("button", { name: "Process Frame" })).not.toBeInTheDocument());
+	expect(deletePreview).toHaveBeenCalledWith("test-preview");
 	expect(screen.queryByAltText("After")).not.toBeInTheDocument();
+});
+
+it("releases the old session when the video path changes", async () => {
+	await openFrames();
+	fireEvent.change(screen.getByPlaceholderText("Enter video file path..."), { target: { value: "/test/another.mkv" } });
+	expect(deletePreview).toHaveBeenCalledWith("test-preview");
+	expect(screen.queryByAltText("Before")).not.toBeInTheDocument();
+});
+
+it("releases a late extraction result after unmount", async () => {
+	const pending = deferred<Awaited<ReturnType<typeof extractFrames>>>();
+	vi.mocked(extractFrames).mockReturnValueOnce(pending.promise);
+	const view = render(<ComparisonViewer />);
+	fireEvent.change(screen.getByPlaceholderText("Enter video file path..."), { target: { value: "/test/video.mkv" } });
+	fireEvent.click(screen.getByRole("button", { name: "Extract Frames" }));
+	view.unmount();
+	await act(async () => pending.resolve({ preview_id: "late-preview", frames: [] }));
+	expect(deletePreview).toHaveBeenCalledWith("late-preview");
 });
