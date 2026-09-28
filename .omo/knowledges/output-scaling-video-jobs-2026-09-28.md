@@ -98,18 +98,18 @@ Tests:
 Remaining minor bias: the fp16 postprocess truncates (`as u8` without +0.5),
 about −0.5 levels on average. It is left as is.
 
-## Pre-existing issues seen during verification (not fixed)
+## Pre-existing issues seen during verification (fixed 2026-09-28)
 
-- `videnoa run` sometimes aborts after "Workflow completed successfully" with
-  glibc `corrupted double-linked list` (exit 134). The output file is already
-  complete. It reproduced on unmodified `d8ef723` in 7 of 12 runs, with both
-  the fp32 and the fp16 model, so it is a teardown or heap bug at process
-  exit, probably ORT/CUDA EP destruction order. Scripts that check the exit
-  code will see a failure.
+- The intermittent exit abort after CUDA jobs was caused by ort releasing the
+  ONNX Runtime environment after C++ static destructors. See
+  `ort-cuda-exit-abort-2026-09-28.md`.
 - `server::preview_cache::tests::admission_drop_and_restart_cleanup_are_bounded`
-  is flaky when run together with the subprocess tests in the same module
-  (about 8 of 10 runs from the repo root). It passes alone or with
-  `--test-threads=1`. The lock is freed about 1 ms later and no process holds
-  the fd by the time it is checked. So a concurrently spawned child briefly
-  inherits the lock's open file description before exec. This is a test race
-  only.
+  was flaky.
+  - Cause: a child process spawned by a concurrent test inherits the
+    `cache.lock` open file description until it calls exec. The flock can
+    therefore look held for under 1 ms after `drop(cache)`.
+  - Measured: failed 17 of 20 runs with the two subprocess tests and 0 of 20
+    without them.
+  - Fix: the test re-opens the cache with a bounded retry of 2 s. Production
+    opens the cache once per process, so it is not affected.
+  - After the fix: 0 of 30 runs failed.

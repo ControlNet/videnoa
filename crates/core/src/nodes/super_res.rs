@@ -2536,6 +2536,75 @@ mod tests {
         sums.map(|sum| sum / pixels)
     }
 
+    const EXIT_CHILD_ENV: &str = "VIDENOA_CUDA_EXIT_CHILD";
+
+    /// Child half of `process_exits_cleanly_after_cuda_inference`; a no-op
+    /// unless spawned by it.
+    #[test]
+    #[ignore] // Requires the bundled SR models in models/ and a CUDA GPU.
+    fn cuda_inference_then_exit_child() {
+        if std::env::var_os(EXIT_CHILD_ENV).is_none() {
+            return;
+        }
+        let ctx = ExecutionContext::default();
+        let node = load_renamed_model(
+            "the_database_AnimeJaNaiV3L1_sharp_HD_x2_fp16_op17.onnx",
+            2,
+            0,
+        );
+        let mut micro = node
+            .into_micro_stages()
+            .expect("FP16 untiled model should split into micro-stages");
+        let tensors: Vec<_> = (0..2)
+            .map(|_| {
+                let frame = Frame::CpuRgb {
+                    data: vec![100u8; 640 * 360 * 3],
+                    width: 640,
+                    height: 360,
+                    bit_depth: 8,
+                };
+                micro.preprocess.process_frame(frame, &ctx).unwrap()
+            })
+            .collect();
+        let mut inference = micro.inference;
+        let output = std::thread::spawn(move || {
+            let ctx = ExecutionContext::default();
+            let mut last = None;
+            for tensor in tensors {
+                last = Some(inference.process_frame(tensor, &ctx).unwrap());
+            }
+            last.unwrap()
+        })
+        .join()
+        .unwrap();
+        micro.postprocess.process_frame(output, &ctx).unwrap();
+    }
+
+    /// Releasing the ONNX Runtime environment during process exit used to
+    /// corrupt the heap after CUDA inference; the abort was intermittent.
+    #[test]
+    #[ignore] // Requires the bundled SR models in models/ and a CUDA GPU.
+    fn process_exits_cleanly_after_cuda_inference() {
+        for run in 0..10 {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "nodes::super_res::tests::cuda_inference_then_exit_child",
+                    "--exact",
+                    "--ignored",
+                ])
+                .env(EXIT_CHILD_ENV, "1")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains("1 passed"),
+                "run {run}: {}\n{stdout}\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
     #[test]
     #[ignore] // Requires the bundled SR models in models/ and a CUDA GPU.
     fn upscaling_preserves_mean_brightness() {
