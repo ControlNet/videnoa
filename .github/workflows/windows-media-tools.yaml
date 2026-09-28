@@ -7,7 +7,7 @@ on:
     branches: [dev, master]
     paths:
       - .github/workflows/windows-media-tools.yaml
-      - scripts/windows_media_tools.ps1
+      - scripts/media_tools.ps1
   workflow_dispatch:
 
 permissions:
@@ -23,7 +23,7 @@ jobs:
 
       - name: Build and verify media tools
         shell: pwsh
-        run: ./scripts/windows_media_tools.ps1 -Build -OutputDir "$env:RUNNER_TEMP/media-tools"
+        run: ./scripts/media_tools.ps1 -Build -OutputDir "$env:RUNNER_TEMP/media-tools"
 
       - name: Upload candidate bundle
         uses: actions/upload-artifact@v6

@@ -1,16 +1,17 @@
 #!/usr/bin/env pwsh
 #Requires -Version 7
 <#
-Build or verify the Windows media tools bundle (release asset misc/bin_win64.zip).
+Build or verify the bundled media tools (FFmpeg, FFprobe, mkvpropedit).
 
-  -Build   Download the pinned BtbN GPL FFmpeg build and verify its SHA-256.
-           Take mkvpropedit.exe from the current misc/bin_win64.zip. Assemble
+  -Build   Windows only. Assemble release asset misc/bin_win64.zip: download
+           the pinned BtbN GPL FFmpeg build and verify its SHA-256. Take
+           mkvpropedit.exe from the current misc/bin_win64.zip. Assemble
            bin/ with licenses, provenance and SHA256SUMS, write bin_win64.zip
            into -OutputDir, then run -Verify on the staged bin/ directory.
-  -Verify  Check an extracted bin/ directory (-BinDir). The encoders and
-           filters must be present, and the video pipeline's rawvideo ->
-           format/setparams/zscale -> encode path, statistics tagging and
-           frame counts must work for libx264 and libx265.
+  -Verify  Check a bin/ directory (-BinDir) on Windows or Linux. The
+           encoders and filters must be present, and the video pipeline's
+           rawvideo -> format/setparams/zscale -> encode path, statistics
+           tagging and frame counts must work for libx264 and libx265.
 #>
 [CmdletBinding()]
 param(
@@ -43,8 +44,8 @@ $EncodeCases = @(
     @{ Codec = 'libx265'; PixelFormat = 'yuv420p' }
 )
 
-function Write-Log([string]$Message) { Write-Output "[windows_media_tools] $Message" }
-function Fail([string]$Message) { throw "[windows_media_tools][error] $Message" }
+function Write-Log([string]$Message) { Write-Output "[media_tools] $Message" }
+function Fail([string]$Message) { throw "[media_tools][error] $Message" }
 
 function Invoke-Native {
     param([string]$FilePath, [string[]]$Arguments)
@@ -72,9 +73,10 @@ function Invoke-Download([string]$Uri, [string]$OutFile) {
 }
 
 function Test-MediaTools([string]$Dir) {
-    $ffmpeg = Join-Path $Dir 'ffmpeg.exe'
-    $ffprobe = Join-Path $Dir 'ffprobe.exe'
-    $mkvpropedit = Join-Path $Dir 'mkvpropedit.exe'
+    $suffix = if ($IsWindows) { '.exe' } else { '' }
+    $ffmpeg = Join-Path $Dir "ffmpeg$suffix"
+    $ffprobe = Join-Path $Dir "ffprobe$suffix"
+    $mkvpropedit = Join-Path $Dir "mkvpropedit$suffix"
     foreach ($tool in @($ffmpeg, $ffprobe, $mkvpropedit)) {
         if (-not (Test-Path -LiteralPath $tool -PathType Leaf)) { Fail "missing $tool" }
     }
@@ -132,6 +134,7 @@ function Test-MediaTools([string]$Dir) {
 }
 
 function New-MediaToolsBundle {
+    if (-not $IsWindows) { Fail '-Build assembles the Windows bundle and must run on Windows' }
     if (-not $OutputDir) { Fail '-OutputDir is required with -Build' }
     $work = if ($WorkDir) { $WorkDir } else { Join-Path ([IO.Path]::GetTempPath()) "videnoa-media-build-$([guid]::NewGuid().ToString('N'))" }
     New-Item -ItemType Directory -Force -Path $work, $OutputDir | Out-Null

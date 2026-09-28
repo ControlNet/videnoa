@@ -14,7 +14,8 @@ gitignored `.omo/tmp-issue.md`. Analysis was done on `dev` at 48a6335
   `output-scaling-video-jobs-2026-09-28.md`).
 - #4 was fixed on `dev` in 0ff5da1 (see below), verified by the Windows CI
   runner only.
-- #6 is still open.
+- #6: `misc/bin_win64.zip` was replaced with a verified GPL bundle on
+  2026-09-28 (see below). Existing release archives still contain the old one.
 - 2026-09-28: posted a status comment on #5 (issuecomment-5863542114). It
   covers the output-scaling fix (d8ef723), the RealESRGAN brightness fix
   (25dc102) and the CUDA exit-abort fix (35fb337), and asks the reporter to
@@ -41,7 +42,7 @@ gitignored `.omo/tmp-issue.md`. Analysis was done on `dev` at 48a6335
   covers the browse fix. It could not be compiled locally: cross-checking for
   `x86_64-pc-windows-msvc` fails in the blake3/libsqlite3 C builds.
 
-## Windows CI masks Rust test failures (found 2026-09-28, not fixed yet)
+## Windows CI masks Rust test failures (found 2026-09-28, fixed in c0907cd / 3aba87b)
 
 - The `rust-tests` step in `unittest.yaml` runs three `cargo test` lines. On
   `windows-latest` the default shell is pwsh, which only reports the last
@@ -58,9 +59,59 @@ gitignored `.omo/tmp-issue.md`. Analysis was done on `dev` at 48a6335
   - `test_performance_routes_use_enabled_envelopes_when_profiling_is_enabled`.
     RAM metrics read `/proc/meminfo` only, so the Windows performance panel
     has no RAM data. This one is not fixed.
-- Fix direction: set `shell: bash` (bash `-eo pipefail`) on that step, or run
-  each cargo command in its own step. Implement Windows RAM metrics, for
-  example with `GlobalMemoryStatusEx` and process memory counters.
+- Fixed in c0907cd: the step uses `shell: bash`, and the workflow contract
+  requires it. The RAM assertions only run on Linux; the maintainer chose not
+  to support Windows RAM metrics for now.
+- The first unmasked run (36380174043) still failed the files stat and upload
+  tests. On runners the temp dir is on `C:` and the checkout on `D:`, so no
+  relative path exists. Fixed in 3aba87b: `relative_to_or_absolute` in
+  `server/files.rs` returns the plain absolute path when the first path
+  component (the drive prefix) differs.
+
+## #6 candidate bundle (2026-09-28, commit 2c0b17c, not published)
+
+- `scripts/media_tools.ps1 -Build -OutputDir <dir>` assembles
+  `bin_win64.zip`. It uses BtbN `autobuild-2026-09-26-13-03` /
+  `ffmpeg-n8.1.3-win64-gpl-8.1.zip`, with SHA-256
+  `d20ef03f0f4161453b9f46a72471eb5370f56b6410fe8bca14a4b0220c6c924a`, pinned
+  in the script. mkvpropedit.exe v97.0 is copied from the current asset. The
+  zip adds FFMPEG-LICENSE.txt, README-windows-tools.txt and SHA256SUMS under
+  the `bin/` root that `package_dist.ps1` expects.
+- `-Verify -BinDir <dir>` checks four things:
+  - the build flags `--enable-gpl`, `libx264`, `libx265` and `libzimg`;
+  - the encoders libx264, libx265, hevc_nvenc and h264_nvenc;
+  - the filters;
+  - real encodes. Raw rgb24 frames go through VideoOutput's
+    `format/setparams/zscale/setsar` chain for x264 and x265 at 8 and 10 bit.
+    Each output then runs `mkvpropedit --add-track-statistics-tags`, and
+    ffprobe must count 30 frames and a NUMBER_OF_FRAMES tag of 30.
+  - NVENC is only listed, not exercised, because runners have no GPU.
+- The script was renamed from `windows_media_tools.ps1`. `-Verify` also runs
+  on Linux (no `.exe` suffix) and passes against `misc/bin_linux64.zip`
+  (n8.1.2, mkvpropedit 101.0). Both package smoke jobs run it on the
+  assembled `videnoa/bin`, and the unittest contract requires that step after
+  "Build package bundle". Local run: portable pwsh from the PowerShell GitHub
+  release, unpacked into the scratchpad.
+- `.github/workflows/windows-media-tools.yaml` runs on dev/master pushes that
+  touch the script or workflow, and on workflow_dispatch. It uploads the
+  artifact `bin_win64-candidate` and keeps it for 14 days.
+- Run 36380931379 passed on the first try. The candidate zip is
+  137106145 bytes with SHA-256
+  `f972bd46f396ef3872c99fa7b23867b402c1938b8abd5264080d82825a0fd4e1`. Both the
+  staged `bin/` and the zip re-extracted from it were verified.
+- **Published 2026-09-28 05:28 UTC** with maintainer approval. The
+  maintainer ran `gh release upload misc <candidate> --clobber` themselves,
+  because auto mode blocks asset overwrites. The file was then re-downloaded
+  from the public URL and matched the candidate by SHA-256 and `cmp`.
+  Application release archives were not rebuilt.
+- Backup of the old asset: `~/.local/share/videnoa/release-asset-backups/2026-09-28/bin_win64.zip`.
+  It is 128467312 bytes with SHA-256
+  `fdc08e43dc7aaabf6eed1c1fe5c9b107e13ba37d6e1e2f5c421600d7223a34a6`, and it
+  is the BtbN LGPL build `N-122942-gc7b5f1537d-20260222`. To roll back, run
+  `gh release upload misc <backup> --clobber`.
+- Remaining work:
+  - add an encoder pre-check at job validation;
+  - a release: v0.1.5 archives still bundle the old LGPL ffmpeg.
 
 ## Confirmed from code / artifacts
 

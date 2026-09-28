@@ -206,6 +206,11 @@ for (const target of ["D:/actions/package-target", "/tmp/package-target", "${{ r
 	delete cargoStep.shell;
 	expectContractFailure("Windows pwsh hides earlier cargo failures", () => validateUnitWorkflow(workflow), /rust-tests.*shell: bash/);
 }
+for (const name of ["package-linux64-smoke", "package-win64-smoke"]) {
+	const workflow = structuredClone(loadWorkflow(unitPath));
+	workflow.jobs[name].steps = workflow.jobs[name].steps.filter((step) => !step.run?.includes("scripts/media_tools.ps1"));
+	expectContractFailure(`${name} skips the media tools check`, () => validateUnitWorkflow(workflow), new RegExp(`${name}.*media tools`));
+}
 
 console.log(
 	"[workflow-contracts] all positive and negative workflow contracts passed",

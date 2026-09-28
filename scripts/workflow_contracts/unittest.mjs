@@ -68,6 +68,10 @@ export function validateUnitWorkflow(workflow) {
 		const build = jobs[name].steps.find((step) => step.name === "Build package bundle");
 		requireValue(build?.env?.CARGO_TARGET_DIR === `${expression("github.workspace")}/${target}`, `${name}: cache and Cargo target directories differ`);
 		requireValue(Boolean(cache.with["prefix-key"]), `${name}: corrected cache requires a new prefix`);
+		// The bundled FFmpeg must provide every encoder the UI offers (#6).
+		const buildIndex = jobs[name].steps.indexOf(build);
+		const verifyIndex = jobs[name].steps.findIndex((step) => step.run?.includes("scripts/media_tools.ps1 -Verify"));
+		requireValue(verifyIndex > buildIndex, `${name}: must verify the bundled media tools after building the bundle`);
 	}
 	requireText(jobs["web-build-check"], "web-build-check", ["actions/upload-artifact@v6", "worker-web-windows", "if-no-files-found"]);
 	requireText(jobs["package-win64-smoke"], "package-win64-smoke", ["actions/download-artifact@v7", "worker-web-windows", "-FrontendDist"]);
