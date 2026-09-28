@@ -3,8 +3,9 @@
 ## Published result
 
 - Release: https://github.com/ControlNet/videnoa/releases/tag/v0.1.6
-  (published 2026-09-28T12:26:05Z; the body is `generate_release_notes`, the
-  curated notes are in `release-v0.1.6-2026-09-28.md`).
+  (published 2026-09-28T12:26:05Z). The auto-generated body was replaced with
+  the curated notes in `release-v0.1.6-body.md`, following v0.1.5's layout:
+  What's new, Fixes and reliability, Downloads and Docker, Upgrade.
 - Successful Release Workflow:
   https://github.com/ControlNet/videnoa/actions/runs/36412872782 (all jobs
   including Verify Release Outcome).
@@ -61,5 +62,11 @@ packaging job's `media_tools.ps1 -Verify` step also passed.
 - The test fix was validated on its own branch before being merged into
   `master`.
 - Published `master` was merged back into `dev` after release verification.
-- Issues #4, #5 and #6 had status comments before the release. Closing them
-  and replacing the auto-generated release body wait for the maintainer.
+- Issues: #4 and #5 were closed automatically by `Fixes #N` when
+  `release/0.1.6` was merged into master (10:03 UTC). That was before the
+  first publication attempt failed. #6's commits only referenced `(#6)`, so it
+  stayed open and was closed by hand after the release. All three received a
+  "released in v0.1.6" comment.
+- Lesson: `Fixes #N` closes an issue at the merge into master, not at
+  publication. Use a closing keyword on every issue-fix commit, or close the
+  issues after the release is verified.
