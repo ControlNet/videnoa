@@ -13,6 +13,14 @@ gitignored `.omo/tmp-issue.md`. Analysis was done on `dev` at 48a6335
 - 2026-09-28: items 1-3 below fixed on `dev` (see
   `output-scaling-video-jobs-2026-09-28.md`); #4 and #6 deferred until a
   Windows environment is available.
+- 2026-09-28: posted a status comment on #5 (issuecomment-5863542114). It
+  covers the output-scaling fix (d8ef723), the RealESRGAN brightness fix
+  (25dc102) and the CUDA exit-abort fix (35fb337), and asks the reporter to
+  confirm on TensorRT.
+- The fixes are on `dev` only. The maintainer chose not to merge to `master`
+  yet, so #5 stays open until that merge ("Fixes #5").
+- A push to `master` runs `release.yaml`, which skips publishing while tag
+  `v0.1.5` exists. A new release therefore needs a version bump.
 
 ## Confirmed from code / artifacts
 
