@@ -5568,7 +5568,8 @@ mod tests {
             .unwrap();
         let entries: Vec<FsEntry> = serde_json::from_slice(&body).unwrap();
 
-        assert_eq!(entries.len(), 1, "{verbatim}: {entries:?}");
+        let names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
+        assert_eq!(entries.len(), 1, "{verbatim}: {names:?}");
         assert_eq!(entries[0].name, "clip.mkv");
         assert!(!entries[0].path.starts_with(r"\\?\"), "{}", entries[0].path);
         assert!(
@@ -6163,8 +6164,11 @@ mod tests {
             .unwrap();
         let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(payload["metrics"].is_object());
-        assert!(payload["metrics"].get("ram_used_bytes").is_some());
-        assert!(payload["metrics"].get("ram_total_bytes").is_some());
+        // RAM metrics are read from /proc and are only reported on Linux.
+        if cfg!(target_os = "linux") {
+            assert!(payload["metrics"].get("ram_used_bytes").is_some());
+            assert!(payload["metrics"].get("ram_total_bytes").is_some());
+        }
 
         let req = Request::builder()
             .uri("/api/performance/export")

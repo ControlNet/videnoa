@@ -11,8 +11,10 @@ gitignored `.omo/tmp-issue.md`. Analysis was done on `dev` at 48a6335
   #5 (Rescale rejected by VideoCompileContext), #6 (Windows bundle lacks
   libx264/libx265).
 - 2026-09-28: items 1-3 below fixed on `dev` (see
-  `output-scaling-video-jobs-2026-09-28.md`); #4 and #6 deferred until a
-  Windows environment is available.
+  `output-scaling-video-jobs-2026-09-28.md`).
+- #4 was fixed on `dev` in 0ff5da1 (see below), verified by the Windows CI
+  runner only.
+- #6 is still open.
 - 2026-09-28: posted a status comment on #5 (issuecomment-5863542114). It
   covers the output-scaling fix (d8ef723), the RealESRGAN brightness fix
   (25dc102) and the CUDA exit-abort fix (35fb337), and asks the reporter to
@@ -21,6 +23,44 @@ gitignored `.omo/tmp-issue.md`. Analysis was done on `dev` at 48a6335
   yet, so #5 stays open until that merge ("Fixes #5").
 - A push to `master` runs `release.yaml`, which skips publishing while tag
   `v0.1.5` exists. A new release therefore needs a version bump.
+
+## #4 fix (2026-09-28, commit 0ff5da1)
+
+- `browse_fs` now uses `dunce::canonicalize` for the browsed directory and
+  its entries, so it returns plain `G:\...` paths. `dunce` keeps `\\?\` only
+  when it is required.
+- `repair_verbatim_separators` rewrites `/` to `\` after a `\\?\` prefix.
+  This repairs values that older UIs saved.
+- `server/files.rs::workflow_response_path` runs `dunce::simplified` on both
+  sides before `pathdiff`. Without that, the Windows file API returned
+  absolute paths.
+- The web client adds `components/shared/path-input-utils.ts`
+  (`splitPathInput`, `withTrailingSeparator`). It splits on the last `/` or
+  `\`, and appends the separator the path already uses.
+- The Windows-only test `test_browse_fs_accepts_verbatim_input_and_returns_plain_paths`
+  covers the browse fix. It could not be compiled locally: cross-checking for
+  `x86_64-pc-windows-msvc` fails in the blake3/libsqlite3 C builds.
+
+## Windows CI masks Rust test failures (found 2026-09-28, not fixed yet)
+
+- The `rust-tests` step in `unittest.yaml` runs three `cargo test` lines. On
+  `windows-latest` the default shell is pwsh, which only reports the last
+  command's exit code. So core failures show as a green job.
+- Because cargo stops after the failing lib tests, core's integration tests
+  never ran on Windows.
+- Failures at 35fb337:
+  - the files stat and upload tests (non-relative response path; fixed by
+    0ff5da1);
+  - files outside-workspace (the test used `strip_prefix("/")`);
+  - `test_browse_fs_tilde`;
+  - `test_fs_list_traversal_blocked` (200: `/etc` is missing, so the check
+    was never reached; not a traversal hole);
+  - `test_performance_routes_use_enabled_envelopes_when_profiling_is_enabled`.
+    RAM metrics read `/proc/meminfo` only, so the Windows performance panel
+    has no RAM data. This one is not fixed.
+- Fix direction: set `shell: bash` (bash `-eo pipefail`) on that step, or run
+  each cargo command in its own step. Implement Windows RAM metrics, for
+  example with `GlobalMemoryStatusEx` and process memory counters.
 
 ## Confirmed from code / artifacts
 

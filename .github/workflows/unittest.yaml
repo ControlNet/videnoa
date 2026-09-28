@@ -61,6 +61,8 @@ jobs:
         shell: pwsh
         run: protoc --version
       - name: Run Cargo tests
+        # Windows defaults to pwsh, which only fails on the last command.
+        shell: bash
         run: |
           cargo test --locked -p videnoa-transport
           cargo test -p videnoa-core --lib --tests

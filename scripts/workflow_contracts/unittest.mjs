@@ -48,6 +48,10 @@ export function validateUnitWorkflow(workflow) {
 	};
 	for (const [name, contracts] of Object.entries(legacy))
 		requireText(requireJob(jobs, name), name, contracts);
+	// Windows runs multi-line steps in pwsh, which reports only the last
+	// command's exit code; bash -eo pipefail stops at the first failing crate.
+	const cargoStep = jobs["rust-tests"].steps.find((step) => step.run?.includes("cargo test -p videnoa-core"));
+	requireValue(cargoStep?.shell === "bash", "rust-tests: the Cargo test step must use shell: bash");
 	for (const name of [
 		"package-linux64-smoke",
 		"package-win64-smoke",

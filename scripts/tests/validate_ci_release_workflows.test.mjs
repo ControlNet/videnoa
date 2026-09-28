@@ -199,6 +199,14 @@ for (const target of ["D:/actions/package-target", "/tmp/package-target", "${{ r
 	expectContractFailure("missing verified frontend artifact", () => validateUnitWorkflow(workflow), /upload-artifact/);
 }
 
+{
+	const workflow = structuredClone(loadWorkflow(unitPath));
+	const cargoStep = workflow.jobs["rust-tests"].steps.find((step) => step.run?.includes("cargo test -p videnoa-core"));
+	assert.ok(cargoStep, "rust-tests: missing Cargo test step");
+	delete cargoStep.shell;
+	expectContractFailure("Windows pwsh hides earlier cargo failures", () => validateUnitWorkflow(workflow), /rust-tests.*shell: bash/);
+}
+
 console.log(
 	"[workflow-contracts] all positive and negative workflow contracts passed",
 );
