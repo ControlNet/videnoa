@@ -20,6 +20,11 @@ gitignored `.omo/tmp-issue.md`. Analysis was done on `dev` at 48a6335
   covers the output-scaling fix (d8ef723), the RealESRGAN brightness fix
   (25dc102) and the CUDA exit-abort fix (35fb337), and asks the reporter to
   confirm on TensorRT.
+- 2026-09-28: posted status comments. #4: issuecomment-5867257826 (fix and
+  CI-only verification). #6: issuecomment-5867258292 (asset replacement, smoke
+  checks, pre-check, and a PowerShell workaround that swaps the v0.1.5 `bin`
+  folder). #5: issuecomment-5867258694 (the TensorRT re-run of the exact
+  graph). All three stay open until v0.1.6 ships.
 - The fixes are on `dev` only. The maintainer chose not to merge to `master`
   yet, so #5 stays open until that merge ("Fixes #5").
 - A push to `master` runs `release.yaml`, which skips publishing while tag
