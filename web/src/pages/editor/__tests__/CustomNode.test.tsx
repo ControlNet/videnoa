@@ -1,11 +1,11 @@
-import { act, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import type React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { useJobStore } from '@/stores/job-store';
 import { useNodeDefinitions } from '@/stores/node-definitions-store';
 import { useWorkflowStore } from '@/stores/workflow-store';
-import { CustomNode, defaultPixelFormat } from '../CustomNode';
+import { CustomNode, defaultPixelFormat, modelSelectionParams } from '../CustomNode';
 
 vi.mock('@xyflow/react', () => ({
   Handle: ({ id, type }: { id: string; type: string }) => (
@@ -103,6 +103,8 @@ const VIDEO_OUTPUT_DESCRIPTOR = {
     { name: 'nvenc_preset', port_type: 'Str', direction: 'param', required: false, default_value: 'p4', ui_hint: null, enum_options: ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7'], dynamic_type_param: null },
     { name: 'x265_preset', port_type: 'Str', direction: 'param', required: false, default_value: 'medium', ui_hint: null, enum_options: ['ultrafast', 'fast', 'medium', 'slow', 'veryslow'], dynamic_type_param: null },
     { name: 'pixel_format', port_type: 'Str', direction: 'param', required: false, default_value: 'yuv420p10le', ui_hint: null, enum_options: ['yuv420p10le', 'p010le', 'yuv420p'], dynamic_type_param: null },
+    { name: 'width', port_type: 'Int', direction: 'param', required: false, default_value: null, ui_hint: null, enum_options: null, dynamic_type_param: null },
+    { name: 'height', port_type: 'Int', direction: 'param', required: false, default_value: null, ui_hint: null, enum_options: null, dynamic_type_param: null },
   ],
   outputs: [],
 };
@@ -261,10 +263,65 @@ describe('CustomNode VideoOutput encoder controls', () => {
     expect(screen.queryByText('x265_preset')).not.toBeInTheDocument();
   });
 
+  it('clears an optional output dimension when its input is emptied', async () => {
+    useWorkflowStore.setState({
+      nodes: [{
+        id: 'video-output-size',
+        type: 'pipeline',
+        position: { x: 0, y: 0 },
+        data: { nodeType: 'VideoOutput', params: { width: 3840, height: 2160 } },
+      }],
+    });
+    await renderNode('VideoOutput', 'video-output-size', { width: 3840, height: 2160 });
+
+    fireEvent.change(screen.getByDisplayValue('3840'), { target: { value: '' } });
+
+    const params = useWorkflowStore.getState().nodes[0].data.params;
+    expect('width' in params).toBe(false);
+    expect(params.height).toBe(2160);
+  });
+
   it('maps codecs to compatible default pixel formats', () => {
     expect(defaultPixelFormat('libx265')).toBe('yuv420p10le');
     expect(defaultPixelFormat('libx264')).toBe('yuv420p');
     expect(defaultPixelFormat('hevc_nvenc')).toBe('p010le');
     expect(defaultPixelFormat('h264_nvenc')).toBe('yuv420p');
+  });
+});
+
+describe('modelSelectionParams', () => {
+  const model = (scale: number | null) => ({
+    name: 'RealESRGAN_x4plus_anime_6B',
+    model_type: 'SuperResolution' as const,
+    filename: 'RealESRGAN_x4plus_anime_6B.onnx',
+    url: null,
+    sha256: null,
+    scale,
+    input_names: [],
+    output_names: [],
+    normalization_range: [0, 1] as [number, number],
+    pad_align: 4,
+    description: '',
+    is_fp16: false,
+    input_format: 'standard',
+  });
+
+  it('sets the SuperResolution scale to the selected model scale', () => {
+    expect(modelSelectionParams('SuperResolution', 'models/a.onnx', model(4))).toEqual({
+      model_path: 'models/a.onnx',
+      scale: 4,
+    });
+  });
+
+  it('keeps the scale when the model scale is unknown or the node is not SuperResolution', () => {
+    expect(modelSelectionParams('SuperResolution', 'models/a.onnx', model(null))).toEqual({
+      model_path: 'models/a.onnx',
+    });
+    expect(modelSelectionParams('SuperResolution', 'models/custom.onnx', undefined)).toEqual({
+      model_path: 'models/custom.onnx',
+    });
+    expect(modelSelectionParams('FrameInterpolation', 'models/rife.onnx', model(4))).toEqual({
+      model_path: 'models/rife.onnx',
+    });
   });
 });

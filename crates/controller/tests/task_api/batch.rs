@@ -27,6 +27,23 @@ async fn preview(fixture: &Fixture, options: &Value) -> TestResult<Value> {
 }
 
 #[tokio::test]
+async fn batch_preview_uses_recreated_cache_root() -> TestResult {
+    let fixture = fixture().await?;
+    let workspace = fixture
+        .input
+        .parent()
+        .and_then(std::path::Path::parent)
+        .ok_or("missing fixture workspace")?;
+    let cache = workspace.join("temp");
+    fs::rename(&cache, workspace.join("old-temp"))?;
+    fs::create_dir(&cache)?;
+
+    let result = preview(&fixture, &options("input/*.MKV")).await?;
+    assert_eq!(result["items"].as_array().ok_or("missing items")?.len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
 async fn batch_preview_matches_recursive_external_files_and_creates_exact_preview() -> TestResult {
     let fixture = fixture().await?;
     let media = tempfile::tempdir()?;

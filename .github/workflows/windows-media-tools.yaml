@@ -1,0 +1,36 @@
+name: Windows media tools
+
+# Builds a candidate misc/bin_win64.zip and verifies the encoders Videnoa
+# uses. Publishing the candidate to the misc release is a manual step.
+on:
+  push:
+    branches: [dev, master]
+    paths:
+      - .github/workflows/windows-media-tools.yaml
+      - scripts/media_tools.ps1
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and verify bin_win64.zip
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build and verify media tools
+        shell: pwsh
+        run: ./scripts/media_tools.ps1 -Build -OutputDir "$env:RUNNER_TEMP/media-tools"
+
+      - name: Upload candidate bundle
+        uses: actions/upload-artifact@v6
+        with:
+          name: bin_win64-candidate
+          path: |
+            ${{ runner.temp }}/media-tools/bin_win64.zip
+            ${{ runner.temp }}/media-tools/bin_win64.zip.sha256
+          if-no-files-found: error
+          retention-days: 14

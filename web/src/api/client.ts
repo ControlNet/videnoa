@@ -474,6 +474,10 @@ export function extractFrames(
   );
 }
 
+export function deletePreview(previewId: string): Promise<void> {
+  return request<void>(`/api/preview/${encodeURIComponent(previewId)}`, { method: 'DELETE' });
+}
+
 export function processFrame(
   previewId: string,
   frameIndex: number,

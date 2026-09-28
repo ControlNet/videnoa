@@ -1,7 +1,7 @@
 //! SuperResolution node: upscaling via `ort::Session` + CUDA/TensorRT EP.
 //!
-//! Supports both FP32 models (e.g. Real-ESRGAN, value range 0–255)
-//! and FP16 models (e.g. AnimeJaNai, value range 0–1).
+//! Supports both FP32 models (e.g. Real-ESRGAN) and FP16 models (e.g. AnimeJaNai);
+//! both take and return RGB in the 0–1 range.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -18,6 +18,7 @@ use ort::{
 };
 use tracing::debug;
 
+use crate::model_registry::builtin_model_scale;
 use crate::node::{ExecutionContext, FrameProcessor, Node, PortDefinition};
 use crate::types::{Frame, PortData, PortType};
 
@@ -418,6 +419,12 @@ impl FrameProcessor for SuperResInference {
             let outputs = session.run_binding(&binding)?;
             ensure_inference_output_memory(&outputs[self.output_name.as_str()], &output_memory)?;
             let output_view = outputs[self.output_name.as_str()].try_extract_array::<f16>()?;
+            check_output_scale(
+                padded.shape()[2],
+                padded.shape()[3],
+                output_view.shape(),
+                self.scale,
+            )?;
 
             if self.direct_rgb.load(Ordering::Relaxed) {
                 let shape = output_view.shape();
@@ -641,6 +648,16 @@ impl Node for SuperResNode {
 
         if let Some(PortData::Int(s)) = inputs.get("scale") {
             self.scale = *s as u32;
+        }
+        if let Some(native_scale) = builtin_model_scale(&model_path) {
+            if native_scale != self.scale {
+                bail!(
+                    "model {} is a {native_scale}x model but scale={}; {}",
+                    model_path.display(),
+                    self.scale,
+                    scale_fix_hint(native_scale)
+                );
+            }
         }
 
         if let Some(PortData::Int(t)) = inputs.get("tile_size") {
@@ -902,9 +919,7 @@ impl FrameProcessor for SuperResNode {
                         })
                     }
                 } else {
-                    // FP32 models (Real-ESRGAN) expect [0,255] range
-                    let rescaled: Vec<f32> = data.iter().map(|&v| v * 255.0).collect();
-                    let arr = Array4::from_shape_vec((1, 3, h, w), rescaled)
+                    let arr = Array4::from_shape_vec((1, 3, h, w), data)
                         .context("SuperResNode: failed to reshape NchwF32 input")?;
                     let padded = pad_nchw(&arr, h, w);
 
@@ -938,7 +953,7 @@ impl FrameProcessor for SuperResNode {
     }
 }
 
-/// Convert interleaved HWC CPU RGB bytes → NCHW `[1,3,H,W]` float32 (0–255 range).
+/// Convert interleaved HWC CPU RGB bytes → NCHW `[1,3,H,W]` float32 (0–1 range).
 ///
 /// Returns `(padded_array, original_h, original_w)`. The array is reflection-padded
 /// so H and W are multiples of [`PAD_ALIGN`].
@@ -985,14 +1000,14 @@ fn cpu_rgb_to_nchw_into(
                     data.len()
                 );
             }
-            // Real-ESRGAN expects 0-255 range, NOT 0-1
             for y in 0..h {
                 for x in 0..w {
                     let src_idx = (y * w + x) * 3;
                     let pixel_idx = y * w + x;
-                    slice[pixel_idx] = data[src_idx] as f32; // R channel: offset 0
-                    slice[hw + pixel_idx] = data[src_idx + 1] as f32; // G channel: offset H*W
-                    slice[2 * hw + pixel_idx] = data[src_idx + 2] as f32; // B channel: offset 2*H*W
+                    // R, G, B planes start at offsets 0, H*W and 2*H*W.
+                    slice[pixel_idx] = data[src_idx] as f32 / 255.0;
+                    slice[hw + pixel_idx] = data[src_idx + 1] as f32 / 255.0;
+                    slice[2 * hw + pixel_idx] = data[src_idx + 2] as f32 / 255.0;
                 }
             }
         }
@@ -1005,7 +1020,7 @@ fn cpu_rgb_to_nchw_into(
                     data.len()
                 );
             }
-            // u16 LE pairs → f32, scaled from 0-65535 to 0-255
+            // u16 LE pairs → f32, scaled from 0-65535 to 0-1
             for y in 0..h {
                 for x in 0..w {
                     let src_idx = (y * w + x) * 3;
@@ -1015,7 +1030,7 @@ fn cpu_rgb_to_nchw_into(
                         u16::from_le_bytes([data[(src_idx + 1) * 2], data[(src_idx + 1) * 2 + 1]]);
                     let b =
                         u16::from_le_bytes([data[(src_idx + 2) * 2], data[(src_idx + 2) * 2 + 1]]);
-                    let scale = 255.0 / 65535.0;
+                    let scale = 1.0 / 65535.0;
                     slice[pixel_idx] = r as f32 * scale;
                     slice[hw + pixel_idx] = g as f32 * scale;
                     slice[2 * hw + pixel_idx] = b as f32 * scale;
@@ -1051,9 +1066,9 @@ fn cpu_rgb_to_nchw_into(
                             as u32,
                         source_max,
                     );
-                    slice[pixel_idx] = r as f32;
-                    slice[hw + pixel_idx] = g as f32;
-                    slice[2 * hw + pixel_idx] = b as f32;
+                    slice[pixel_idx] = r as f32 / 255.0;
+                    slice[hw + pixel_idx] = g as f32 / 255.0;
+                    slice[2 * hw + pixel_idx] = b as f32 / 255.0;
                 }
             }
         }
@@ -1293,7 +1308,7 @@ fn cpu_rgb_to_f16_nchw_into(
     Ok((padded, h, w))
 }
 
-/// Convert NCHW `[1,3,H,W]` float32 → interleaved RGB u8, clamping to 0–255.
+/// Convert NCHW `[1,3,H,W]` float32 (0–1 range) → interleaved RGB u8 with ×255, rounding and clamp.
 fn nchw_to_cpu_rgb(arr: &Array4<f32>, out_h: usize, out_w: usize) -> Result<Vec<u8>> {
     let owned_contig;
     let slice = if let Some(s) = arr.as_slice() {
@@ -1306,9 +1321,9 @@ fn nchw_to_cpu_rgb(arr: &Array4<f32>, out_h: usize, out_w: usize) -> Result<Vec<
 
     let mut rgb = vec![0u8; hw * 3];
     for i in 0..hw {
-        let r = slice[i].clamp(0.0, 255.0) as u8;
-        let g = slice[hw + i].clamp(0.0, 255.0) as u8;
-        let b = slice[2 * hw + i].clamp(0.0, 255.0) as u8;
+        let r = (slice[i] * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
+        let g = (slice[hw + i] * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
+        let b = (slice[2 * hw + i] * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
         rgb[i * 3] = r;
         rgb[i * 3 + 1] = g;
         rgb[i * 3 + 2] = b;
@@ -1376,6 +1391,7 @@ fn run_single_inference(
 
     let padded_h = input.shape()[2];
     let padded_w = input.shape()[3];
+    check_output_scale(padded_h, padded_w, output_owned.shape(), shape.scale)?;
     let pad_h = padded_h - shape.height;
     let pad_w = padded_w - shape.width;
 
@@ -1391,6 +1407,45 @@ fn run_single_inference(
     } else {
         Ok(output_owned.into_dimensionality::<ndarray::Ix4>()?)
     }
+}
+
+fn scale_fix_hint(native_scale: impl std::fmt::Display) -> String {
+    format!(
+        "set scale={native_scale} and use Resize/Rescale or VideoOutput width/height to reach \
+         the target size"
+    )
+}
+
+/// Verify a model output against the configured `scale` before it is cropped
+/// or stitched, so a mismatch fails instead of corrupting or indexing out of bounds.
+fn check_output_scale(
+    input_h: usize,
+    input_w: usize,
+    output_shape: &[usize],
+    scale: usize,
+) -> Result<()> {
+    anyhow::ensure!(
+        output_shape.len() == 4 && output_shape[0] == 1 && output_shape[1] == 3,
+        "SuperResolution: expected model output shape [1, 3, H, W], got {output_shape:?}"
+    );
+    let (output_h, output_w) = (output_shape[2], output_shape[3]);
+    if output_h == input_h * scale && output_w == input_w * scale {
+        return Ok(());
+    }
+    if output_h % input_h == 0
+        && output_w % input_w == 0
+        && output_h / input_h == output_w / input_w
+    {
+        let native_scale = output_h / input_h;
+        bail!(
+            "SuperResolution model is a {native_scale}x model but scale={scale}; {}",
+            scale_fix_hint(native_scale)
+        );
+    }
+    bail!(
+        "SuperResolution model output {output_w}x{output_h} does not match scale={scale} for \
+         input {input_w}x{input_h}"
+    )
 }
 
 fn run_with_iobinding(
@@ -1483,6 +1538,7 @@ fn run_tiled_inference(
                     .into_dimensionality::<ndarray::Ix4>()?
             };
 
+            let (tile_in_h, tile_in_w) = (tile_input.shape()[2], tile_input.shape()[3]);
             let tile_output_owned = {
                 let mut session = session_arc.lock().unwrap();
                 if use_iobinding {
@@ -1500,6 +1556,7 @@ fn run_tiled_inference(
                     output_view.to_owned()
                 }
             };
+            check_output_scale(tile_in_h, tile_in_w, tile_output_owned.shape(), shape.scale)?;
 
             let out_y0 = y * shape.scale;
             let out_x0 = x * shape.scale;
@@ -1549,6 +1606,7 @@ fn run_single_f16_inference(
 
     let padded_h = input.shape()[2];
     let padded_w = input.shape()[3];
+    check_output_scale(padded_h, padded_w, output_owned.shape(), scale)?;
     let pad_h = padded_h - orig_h;
     let pad_w = padded_w - orig_w;
 
@@ -1625,6 +1683,12 @@ fn run_tiled_f16_inference(
                     bindings.output,
                 )?
             };
+            check_output_scale(
+                tile_input.shape()[2],
+                tile_input.shape()[3],
+                tile_output_owned.shape(),
+                shape.scale,
+            )?;
 
             let out_y0 = y * shape.scale;
             let out_x0 = x * shape.scale;
@@ -1669,11 +1733,12 @@ mod tests {
         assert_eq!(h, 2);
         assert_eq!(w, 2);
         assert_eq!(arr.shape(), &[1, 3, 4, 4]);
-        assert_eq!(arr[[0, 0, 0, 0]], 255.0);
+        assert_eq!(arr[[0, 0, 0, 0]], 1.0);
         assert_eq!(arr[[0, 1, 0, 0]], 0.0);
         assert_eq!(arr[[0, 2, 0, 0]], 0.0);
         assert_eq!(arr[[0, 0, 0, 1]], 0.0);
-        assert_eq!(arr[[0, 1, 0, 1]], 255.0);
+        assert_eq!(arr[[0, 1, 0, 1]], 1.0);
+        assert!((arr[[0, 0, 1, 1]] - 128.0 / 255.0).abs() < 1e-6);
     }
 
     #[test]
@@ -1694,7 +1759,7 @@ mod tests {
         let (arr, h, w) = cpu_rgb_to_nchw(&data, 2, 2, 16).unwrap();
         assert_eq!(h, 2);
         assert_eq!(w, 2);
-        assert!((arr[[0, 0, 0, 0]] - 255.0).abs() < 0.01);
+        assert!((arr[[0, 0, 0, 0]] - 1.0).abs() < 1e-6);
     }
 
     #[test]
@@ -1710,9 +1775,9 @@ mod tests {
         assert_eq!(h, 2);
         assert_eq!(w, 2);
 
-        assert!((arr[[0, 0, 0, 0]] - 0.0).abs() < 0.01);
-        assert!((arr[[0, 1, 0, 0]] - 128.0).abs() < 0.01);
-        assert!((arr[[0, 2, 0, 0]] - 255.0).abs() < 0.01);
+        assert!((arr[[0, 0, 0, 0]] - 0.0).abs() < 1e-6);
+        assert!((arr[[0, 1, 0, 0]] - 128.0 / 255.0).abs() < 1e-6);
+        assert!((arr[[0, 2, 0, 0]] - 1.0).abs() < 1e-6);
     }
 
     #[test]
@@ -1728,9 +1793,9 @@ mod tests {
         assert_eq!(h, 2);
         assert_eq!(w, 2);
 
-        assert!((arr[[0, 0, 0, 0]] - 0.0).abs() < 0.01);
-        assert!((arr[[0, 1, 0, 0]] - 128.0).abs() < 0.01);
-        assert!((arr[[0, 2, 0, 0]] - 255.0).abs() < 0.01);
+        assert!((arr[[0, 0, 0, 0]] - 0.0).abs() < 1e-6);
+        assert!((arr[[0, 1, 0, 0]] - 128.0 / 255.0).abs() < 1e-6);
+        assert!((arr[[0, 2, 0, 0]] - 1.0).abs() < 1e-6);
     }
 
     #[test]
@@ -1755,9 +1820,9 @@ mod tests {
     #[test]
     fn test_nchw_to_cpu_rgb_basic() {
         let mut arr = Array4::<f32>::zeros((1, 3, 2, 2));
-        arr[[0, 0, 0, 0]] = 255.0;
-        arr[[0, 1, 0, 1]] = 128.0;
-        arr[[0, 2, 1, 0]] = 64.0;
+        arr[[0, 0, 0, 0]] = 1.0;
+        arr[[0, 1, 0, 1]] = 128.0 / 255.0;
+        arr[[0, 2, 1, 0]] = 64.0 / 255.0;
 
         let rgb = nchw_to_cpu_rgb(&arr, 2, 2).unwrap();
         assert_eq!(rgb.len(), 12);
@@ -1775,14 +1840,25 @@ mod tests {
     #[test]
     fn test_nchw_to_cpu_rgb_clamping() {
         let mut arr = Array4::<f32>::zeros((1, 3, 1, 1));
-        arr[[0, 0, 0, 0]] = 300.0;
-        arr[[0, 1, 0, 0]] = -10.0;
-        arr[[0, 2, 0, 0]] = 128.5;
+        arr[[0, 0, 0, 0]] = 1.2;
+        arr[[0, 1, 0, 0]] = -0.04;
+        arr[[0, 2, 0, 0]] = 0.5;
 
         let rgb = nchw_to_cpu_rgb(&arr, 1, 1).unwrap();
         assert_eq!(rgb[0], 255);
         assert_eq!(rgb[1], 0);
         assert_eq!(rgb[2], 128);
+    }
+
+    /// FP32 models take and return 0–1 values, so an identity model must
+    /// reproduce every 8-bit level exactly (a 0–255 input halved brightness).
+    #[test]
+    fn fp32_pre_and_post_processing_round_trip_every_level() {
+        let data: Vec<u8> = (0..=255u8).flat_map(|v| [v, v, v]).collect();
+        let (arr, h, w) = cpu_rgb_to_nchw(&data, 16, 16, 8).unwrap();
+        assert!(arr.iter().all(|v| (0.0..=1.0).contains(v)));
+        let arr = arr.slice(ndarray::s![.., .., ..h, ..w]).to_owned();
+        assert_eq!(nchw_to_cpu_rgb(&arr, h, w).unwrap(), data);
     }
 
     #[test]
@@ -2301,6 +2377,281 @@ mod tests {
                 diff <= 1,
                 "Pixel {i}: original={orig}, roundtripped={roundtripped}, diff={diff} (max allowed: 1)"
             );
+        }
+    }
+
+    #[test]
+    fn output_scale_check_accepts_matching_model_output() {
+        check_output_scale(64, 48, &[1, 3, 256, 192], 4).expect("4x output should match");
+    }
+
+    #[test]
+    fn output_scale_check_reports_native_model_scale() {
+        let error = check_output_scale(64, 48, &[1, 3, 256, 192], 3).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("4x"), "{message}");
+        assert!(message.contains("scale=3"), "{message}");
+        assert!(message.contains("scale=4"), "{message}");
+    }
+
+    #[test]
+    fn output_scale_check_rejects_scale_above_native() {
+        // A larger configured scale would index past the model output.
+        let error = check_output_scale(64, 64, &[1, 3, 128, 128], 4).unwrap_err();
+        assert!(error.to_string().contains("2x"), "{error}");
+    }
+
+    #[test]
+    fn output_scale_check_rejects_non_integer_ratio() {
+        let error = check_output_scale(64, 64, &[1, 3, 100, 100], 2).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("100x100"), "{message}");
+        assert!(message.contains("64x64"), "{message}");
+    }
+
+    #[test]
+    fn output_scale_check_rejects_unexpected_rank() {
+        let error = check_output_scale(8, 8, &[3, 32, 32], 4).unwrap_err();
+        assert!(error.to_string().contains("[1, 3, H, W]"), "{error}");
+    }
+
+    #[test]
+    fn execute_rejects_scale_that_differs_from_builtin_model_before_loading() {
+        let mut node = SuperResNode::new();
+        let inputs = HashMap::from([
+            (
+                "model_path".to_string(),
+                PortData::Path(PathBuf::from(
+                    "/nonexistent/RealESRGAN_x4plus_anime_6B.onnx",
+                )),
+            ),
+            ("scale".to_string(), PortData::Int(3)),
+        ]);
+
+        let error = node
+            .execute(&inputs, &ExecutionContext::default())
+            .err()
+            .expect("scale 3 must be rejected for a 4x model");
+
+        let message = error.to_string();
+        assert!(message.contains("4x model"), "{message}");
+        assert!(message.contains("scale=3"), "{message}");
+    }
+
+    fn test_frame() -> Frame {
+        Frame::CpuRgb {
+            data: vec![128u8; 96 * 80 * 3],
+            width: 96,
+            height: 80,
+            bit_depth: 8,
+        }
+    }
+
+    fn load_renamed_model(model_file: &str, scale: i64, tile_size: i64) -> SuperResNode {
+        let dir = tempfile::tempdir().unwrap();
+        // Renamed so the built-in scale lookup cannot catch the mismatch early.
+        let model = dir.path().join("renamed_sr_model.onnx");
+        std::fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../models")
+                .join(model_file),
+            &model,
+        )
+        .expect("copy SR model");
+        let mut node = SuperResNode::new();
+        let inputs = HashMap::from([
+            ("model_path".to_string(), PortData::Path(model)),
+            ("scale".to_string(), PortData::Int(scale)),
+            ("tile_size".to_string(), PortData::Int(tile_size)),
+        ]);
+        node.execute(&inputs, &ExecutionContext::default())
+            .expect("model should load");
+        node
+    }
+
+    #[test]
+    #[ignore] // Requires the bundled SR models in models/ and a CUDA GPU.
+    fn mismatched_scale_on_unknown_model_fails_on_first_frame() {
+        let ctx = ExecutionContext::default();
+        // (model, configured scale, native scale): below native used to corrupt
+        // output silently, above native used to panic on out-of-bounds slicing.
+        for (model_file, scale, native) in [
+            ("RealESRGAN_x4plus_anime_6B.onnx", 3, "4x"),
+            (
+                "the_database_AnimeJaNaiV3L1_sharp_HD_x2_fp16_op17.onnx",
+                4,
+                "2x",
+            ),
+        ] {
+            for tile_size in [0, 64] {
+                let mut node = load_renamed_model(model_file, scale, tile_size);
+                let error = node
+                    .process_frame(test_frame(), &ctx)
+                    .err()
+                    .expect("mismatched scale must fail");
+                assert!(
+                    error.to_string().contains(native),
+                    "{model_file} tile {tile_size}: {error}"
+                );
+            }
+        }
+
+        // The FP16 micro-stage inference used by video jobs checks the same way.
+        let node = load_renamed_model(
+            "the_database_AnimeJaNaiV3L1_sharp_HD_x2_fp16_op17.onnx",
+            4,
+            0,
+        );
+        let mut micro = node
+            .into_micro_stages()
+            .expect("FP16 untiled model should split into micro-stages");
+        let tensor = micro.preprocess.process_frame(test_frame(), &ctx).unwrap();
+        let error = micro
+            .inference
+            .process_frame(tensor, &ctx)
+            .err()
+            .expect("mismatched scale must fail in micro-stage inference");
+        assert!(error.to_string().contains("2x"), "{error}");
+    }
+    fn gradient_frame() -> Vec<u8> {
+        let (w, h) = (96usize, 80usize);
+        (0..h)
+            .flat_map(|y| {
+                (0..w).flat_map(move |x| {
+                    let v = (x * 255 / (w - 1)) as u8;
+                    [v, ((y * 255) / (h - 1)) as u8, v / 2 + 64]
+                })
+            })
+            .collect()
+    }
+
+    fn channel_means(rgb: &[u8]) -> [f64; 3] {
+        let pixels = (rgb.len() / 3) as f64;
+        let mut sums = [0f64; 3];
+        for px in rgb.as_chunks::<3>().0 {
+            for c in 0..3 {
+                sums[c] += px[c] as f64;
+            }
+        }
+        sums.map(|sum| sum / pixels)
+    }
+
+    const EXIT_CHILD_ENV: &str = "VIDENOA_CUDA_EXIT_CHILD";
+
+    /// Child half of `process_exits_cleanly_after_cuda_inference`; a no-op
+    /// unless spawned by it.
+    #[test]
+    #[ignore] // Requires the bundled SR models in models/ and a CUDA GPU.
+    fn cuda_inference_then_exit_child() {
+        if std::env::var_os(EXIT_CHILD_ENV).is_none() {
+            return;
+        }
+        let ctx = ExecutionContext::default();
+        let node = load_renamed_model(
+            "the_database_AnimeJaNaiV3L1_sharp_HD_x2_fp16_op17.onnx",
+            2,
+            0,
+        );
+        let mut micro = node
+            .into_micro_stages()
+            .expect("FP16 untiled model should split into micro-stages");
+        let tensors: Vec<_> = (0..2)
+            .map(|_| {
+                let frame = Frame::CpuRgb {
+                    data: vec![100u8; 640 * 360 * 3],
+                    width: 640,
+                    height: 360,
+                    bit_depth: 8,
+                };
+                micro.preprocess.process_frame(frame, &ctx).unwrap()
+            })
+            .collect();
+        let mut inference = micro.inference;
+        let output = std::thread::spawn(move || {
+            let ctx = ExecutionContext::default();
+            let mut last = None;
+            for tensor in tensors {
+                last = Some(inference.process_frame(tensor, &ctx).unwrap());
+            }
+            last.unwrap()
+        })
+        .join()
+        .unwrap();
+        micro.postprocess.process_frame(output, &ctx).unwrap();
+    }
+
+    /// Releasing the ONNX Runtime environment during process exit used to
+    /// corrupt the heap after CUDA inference; the abort was intermittent.
+    #[test]
+    #[ignore] // Requires the bundled SR models in models/ and a CUDA GPU.
+    fn process_exits_cleanly_after_cuda_inference() {
+        for run in 0..10 {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "nodes::super_res::tests::cuda_inference_then_exit_child",
+                    "--exact",
+                    "--ignored",
+                ])
+                .env(EXIT_CHILD_ENV, "1")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains("1 passed"),
+                "run {run}: {}\n{stdout}\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    #[test]
+    #[ignore] // Requires the bundled SR models in models/ and a CUDA GPU.
+    fn upscaling_preserves_mean_brightness() {
+        let ctx = ExecutionContext::default();
+        let source = gradient_frame();
+        let expected = channel_means(&source);
+        let nchw_f32: Vec<f32> = {
+            let (arr, h, w) = cpu_rgb_to_nchw(&source, 96, 80, 8).unwrap();
+            arr.slice(ndarray::s![.., .., ..h, ..w])
+                .iter()
+                .copied()
+                .collect()
+        };
+
+        for (model_file, scale) in [
+            ("RealESRGAN_x4plus_anime_6B.onnx", 4),
+            ("the_database_AnimeJaNaiV3L1_sharp_HD_x2_fp16_op17.onnx", 2),
+        ] {
+            for tile_size in [0, 64] {
+                let mut node = load_renamed_model(model_file, scale, tile_size);
+                let inputs = [
+                    Frame::CpuRgb {
+                        data: source.clone(),
+                        width: 96,
+                        height: 80,
+                        bit_depth: 8,
+                    },
+                    Frame::NchwF32 {
+                        data: nchw_f32.clone(),
+                        width: 96,
+                        height: 80,
+                    },
+                ];
+                for input in inputs {
+                    let Frame::CpuRgb { data, .. } = node.process_frame(input, &ctx).unwrap()
+                    else {
+                        panic!("{model_file}: expected CpuRgb output");
+                    };
+                    let actual = channel_means(&data);
+                    for c in 0..3 {
+                        assert!(
+                            (actual[c] - expected[c]).abs() < 4.0,
+                            "{model_file} tile {tile_size}: mean {actual:?}, source {expected:?}"
+                        );
+                    }
+                }
+            }
         }
     }
 }

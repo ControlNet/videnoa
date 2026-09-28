@@ -73,13 +73,21 @@ async fn test_files_cannot_access_outside_workspace() {
     let outside = temp.path().join("outside.bin");
     std::fs::write(&outside, b"outside-secret").expect("write outside fixture");
     let app = test_app(temp.path());
+    // Encode every separator and drive colon so the absolute path reaches the
+    // handler as one segment (`/tmp/...` on Unix, `C:\...` on Windows).
     let encoded_absolute = format!(
-        "/api/files/%2F{}",
+        "/api/files/{}",
         outside
-            .strip_prefix("/")
-            .expect("absolute temp path")
             .to_string_lossy()
-            .replace('/', "%2F")
+            .bytes()
+            .map(|b| {
+                if b.is_ascii_alphanumeric() {
+                    char::from(b).to_string()
+                } else {
+                    format!("%{b:02X}")
+                }
+            })
+            .collect::<String>()
     );
 
     let response = send(&app, Method::GET, &encoded_absolute, Body::empty()).await;

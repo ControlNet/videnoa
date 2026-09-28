@@ -64,9 +64,19 @@ fn workspace_path(data_dir: &StdPath, relative: &str) -> PathBuf {
 
 fn assert_workflow_path(response_path: &str, expected_path: &StdPath) {
     let response_path = StdPath::new(response_path);
+    let current_dir = std::env::current_dir().expect("read process current directory");
+    // A workspace on another Windows drive (temp dir on C:, checkout on D:)
+    // has no relative form.
+    if expected_path.components().next() != current_dir.components().next() {
+        assert!(response_path.is_absolute());
+        assert_eq!(
+            dunce::canonicalize(response_path).expect("resolve workflow response path"),
+            dunce::canonicalize(expected_path).expect("resolve expected workspace path")
+        );
+        return;
+    }
     assert!(response_path.is_relative());
 
-    let current_dir = std::env::current_dir().expect("read process current directory");
     if !expected_path.starts_with(&current_dir) {
         assert!(response_path
             .components()

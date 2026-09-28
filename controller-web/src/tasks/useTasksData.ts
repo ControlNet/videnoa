@@ -31,9 +31,11 @@ export function useTasksData(apiClient: ApiClient, query: TaskQuery): TasksData 
   const pagePath = taskPagePath(query)
   const [loadedPage, setLoadedPage] = useState<LoadedTaskPage | null>(null)
   const [counts, setCounts] = useState<TaskStatusCounts | null>(null)
+  const [countsError, setCountsError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [retryGeneration, setRetryGeneration] = useState(0)
+  const [countsRetryGeneration, setCountsRetryGeneration] = useState(0)
   const appliedUpdateGeneration = useRef(appTaskUpdateStore.snapshot().generation)
 
   useEffect(() => {
@@ -59,14 +61,10 @@ export function useTasksData(apiClient: ApiClient, query: TaskQuery): TasksData 
         setError(null)
       }
     })
-    void Promise.all([
-      apiClient.request(pagePath, { schema: taskListSchema, signal: controller.signal }),
-      apiClient.request("api/status-counts", { schema: taskStatusCountsSchema, signal: controller.signal }),
-    ]).then(
-      ([nextPage, nextCounts]) => {
+    void apiClient.request(pagePath, { schema: taskListSchema, signal: controller.signal }).then(
+      (nextPage) => {
         if (controller.signal.aborted) return
         setLoadedPage({ path: pagePath, page: nextPage })
-        setCounts(nextCounts)
         setLoading(false)
       },
       (reason: unknown) => {
@@ -76,11 +74,55 @@ export function useTasksData(apiClient: ApiClient, query: TaskQuery): TasksData 
           setLoading(false)
           return
         }
-        throw reason
+        setError("Controller could not load task history.")
+        setLoading(false)
       },
     )
     return () => controller.abort()
   }, [apiClient, invalidation.generation, pagePath, retryGeneration])
+
+  // Global counters are independent of page membership. Keep one read in flight
+  // and coalesce events into a trailing refresh, even during continuous progress.
+  useEffect(() => {
+    void invalidation.generation
+    void countsRetryGeneration
+    const controller = new AbortController()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let loadingCounts = false
+    let dirty = false
+
+    function schedule() {
+      if (loadingCounts || timer !== undefined || controller.signal.aborted) return
+      timer = setTimeout(() => {
+        timer = undefined
+        dirty = false
+        void load()
+      }, 1000)
+    }
+
+    async function load() {
+      loadingCounts = true
+      try {
+        const nextCounts = await apiClient.request("api/status-counts", { schema: taskStatusCountsSchema, signal: controller.signal })
+        if (controller.signal.aborted) return
+        setCounts(nextCounts)
+        setCountsError(null)
+      } catch (reason) {
+        if (controller.signal.aborted) return
+        setCountsError(reason instanceof ApiClientError ? messageFor(reason) : "Controller could not load task counts.")
+      } finally {
+        loadingCounts = false
+        if (dirty) schedule()
+      }
+    }
+
+    const unsubscribe = appTaskUpdateStore.subscribe(() => {
+      dirty = true
+      schedule()
+    })
+    void load()
+    return () => { controller.abort(); unsubscribe(); clearTimeout(timer) }
+  }, [apiClient, invalidation.generation, countsRetryGeneration])
 
   const page = loadedPage?.path === pagePath ? loadedPage.page : null
 
@@ -121,9 +163,12 @@ export function useTasksData(apiClient: ApiClient, query: TaskQuery): TasksData 
   return {
     page,
     counts,
-    error,
+    error: error ?? countsError,
     loading,
-    retry: () => setRetryGeneration((generation) => generation + 1),
+    retry: () => {
+      setRetryGeneration((generation) => generation + 1)
+      setCountsRetryGeneration((generation) => generation + 1)
+    },
   }
 }
 

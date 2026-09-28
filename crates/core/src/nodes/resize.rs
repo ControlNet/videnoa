@@ -1,4 +1,4 @@
-//! Resize node: pure-Rust bilinear/nearest-neighbor frame resizing.
+//! Resize node: pure-Rust Lanczos/bilinear/nearest-neighbor frame resizing.
 
 use std::collections::HashMap;
 
@@ -10,6 +10,7 @@ use crate::types::{Frame, PortData, PortType};
 /// Supported resize algorithms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResizeAlgorithm {
+    Lanczos,
     Bilinear,
     Nearest,
 }
@@ -17,8 +18,18 @@ pub enum ResizeAlgorithm {
 impl ResizeAlgorithm {
     pub fn from_str_lossy(s: &str) -> Self {
         match s.to_lowercase().as_str() {
+            "lanczos" => Self::Lanczos,
             "nearest" | "neighbor" | "nn" => Self::Nearest,
             _ => Self::Bilinear,
+        }
+    }
+
+    /// FFmpeg swscale flag name for this algorithm.
+    pub fn ffmpeg_flag(self) -> &'static str {
+        match self {
+            Self::Lanczos => "lanczos",
+            Self::Bilinear => "bilinear",
+            Self::Nearest => "neighbor",
         }
     }
 }
@@ -34,7 +45,7 @@ impl ResizeNode {
         Self {
             out_width: 0,
             out_height: 0,
-            algorithm: ResizeAlgorithm::Bilinear,
+            algorithm: ResizeAlgorithm::Lanczos,
         }
     }
 }
@@ -68,7 +79,7 @@ impl Node for ResizeNode {
                 name: "algorithm".to_string(),
                 port_type: PortType::Str,
                 required: false,
-                default_value: Some(serde_json::json!("bilinear")),
+                default_value: Some(serde_json::json!("lanczos")),
             },
         ]
     }
@@ -137,22 +148,14 @@ impl FrameProcessor for ResizeNode {
                     );
                 }
 
-                let out_data = match self.algorithm {
-                    ResizeAlgorithm::Bilinear => resize_bilinear(
-                        data,
-                        in_w as usize,
-                        in_h as usize,
-                        self.out_width as usize,
-                        self.out_height as usize,
-                    ),
-                    ResizeAlgorithm::Nearest => resize_nearest(
-                        data,
-                        in_w as usize,
-                        in_h as usize,
-                        self.out_width as usize,
-                        self.out_height as usize,
-                    ),
-                };
+                let out_data = resize_rgb24(
+                    self.algorithm,
+                    data,
+                    in_w as usize,
+                    in_h as usize,
+                    self.out_width as usize,
+                    self.out_height as usize,
+                );
 
                 Ok(Frame::CpuRgb {
                     data: out_data,
@@ -163,6 +166,22 @@ impl FrameProcessor for ResizeNode {
             }
             _ => bail!("ResizeNode only supports Frame::CpuRgb input"),
         }
+    }
+}
+
+/// Resize 8-bit RGB24 data with the given algorithm.
+pub(crate) fn resize_rgb24(
+    algorithm: ResizeAlgorithm,
+    src: &[u8],
+    src_w: usize,
+    src_h: usize,
+    dst_w: usize,
+    dst_h: usize,
+) -> Vec<u8> {
+    match algorithm {
+        ResizeAlgorithm::Lanczos => resize_lanczos(src, src_w, src_h, dst_w, dst_h),
+        ResizeAlgorithm::Bilinear => resize_bilinear(src, src_w, src_h, dst_w, dst_h),
+        ResizeAlgorithm::Nearest => resize_nearest(src, src_w, src_h, dst_w, dst_h),
     }
 }
 
@@ -231,6 +250,95 @@ pub(crate) fn resize_bilinear(
                 let val = top * (1.0 - fy) + bot * fy;
 
                 dst[di + c] = val.round().clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+
+    dst
+}
+
+const LANCZOS_LOBES: f64 = 3.0;
+
+fn lanczos_kernel(x: f64) -> f64 {
+    if x == 0.0 {
+        return 1.0;
+    }
+    if x.abs() >= LANCZOS_LOBES {
+        return 0.0;
+    }
+    let px = std::f64::consts::PI * x;
+    LANCZOS_LOBES * px.sin() * (px / LANCZOS_LOBES).sin() / (px * px)
+}
+
+/// Normalized Lanczos-3 taps `(source index, weight)` for each destination sample.
+/// The kernel is widened when downscaling so it also acts as a low-pass filter.
+fn lanczos_taps(src_len: usize, dst_len: usize) -> Vec<Vec<(usize, f64)>> {
+    let ratio = src_len as f64 / dst_len as f64;
+    let support = ratio.max(1.0);
+    let radius = LANCZOS_LOBES * support;
+    let last = src_len as isize - 1;
+
+    (0..dst_len)
+        .map(|dst| {
+            let center = (dst as f64 + 0.5) * ratio - 0.5;
+            let first = (center - radius).floor() as isize;
+            let end = (center + radius).ceil() as isize;
+            let mut taps: Vec<(usize, f64)> = Vec::new();
+            for src in first..=end {
+                let weight = lanczos_kernel((src as f64 - center) / support);
+                if weight == 0.0 {
+                    continue;
+                }
+                let index = src.clamp(0, last) as usize;
+                match taps.iter_mut().find(|(existing, _)| *existing == index) {
+                    Some((_, accumulated)) => *accumulated += weight,
+                    None => taps.push((index, weight)),
+                }
+            }
+            let sum: f64 = taps.iter().map(|(_, weight)| weight).sum();
+            for (_, weight) in &mut taps {
+                *weight /= sum;
+            }
+            taps
+        })
+        .collect()
+}
+
+/// Separable Lanczos-3 resize for 8-bit RGB24 data.
+pub(crate) fn resize_lanczos(
+    src: &[u8],
+    src_w: usize,
+    src_h: usize,
+    dst_w: usize,
+    dst_h: usize,
+) -> Vec<u8> {
+    let x_taps = lanczos_taps(src_w, dst_w);
+    let y_taps = lanczos_taps(src_h, dst_h);
+
+    // Horizontal pass: src_h rows of dst_w pixels, kept in f64 to avoid double rounding.
+    let mut horizontal = vec![0.0f64; src_h * dst_w * 3];
+    for y in 0..src_h {
+        let src_row = &src[y * src_w * 3..(y + 1) * src_w * 3];
+        let dst_row = &mut horizontal[y * dst_w * 3..(y + 1) * dst_w * 3];
+        for (x, taps) in x_taps.iter().enumerate() {
+            for c in 0..3 {
+                dst_row[x * 3 + c] = taps
+                    .iter()
+                    .map(|&(sx, weight)| src_row[sx * 3 + c] as f64 * weight)
+                    .sum();
+            }
+        }
+    }
+
+    let mut dst = vec![0u8; dst_w * dst_h * 3];
+    for (y, taps) in y_taps.iter().enumerate() {
+        for x in 0..dst_w {
+            for c in 0..3 {
+                let value: f64 = taps
+                    .iter()
+                    .map(|&(sy, weight)| horizontal[(sy * dst_w + x) * 3 + c] * weight)
+                    .sum();
+                dst[(y * dst_w + x) * 3 + c] = value.round().clamp(0.0, 255.0) as u8;
             }
         }
     }
@@ -478,7 +586,11 @@ mod tests {
         );
         assert_eq!(
             ResizeAlgorithm::from_str_lossy("lanczos"),
-            ResizeAlgorithm::Bilinear
+            ResizeAlgorithm::Lanczos
+        );
+        assert_eq!(
+            ResizeAlgorithm::from_str_lossy("Lanczos"),
+            ResizeAlgorithm::Lanczos
         );
         assert_eq!(
             ResizeAlgorithm::from_str_lossy("bicubic"),
@@ -499,5 +611,78 @@ mod tests {
 
         assert_eq!(&result[0..3], &[0, 0, 0]);
         assert_eq!(&result[(4 * 3 - 3)..(4 * 3)], &[255, 255, 255]);
+    }
+
+    #[test]
+    fn test_resize_defaults_to_lanczos() {
+        let node = ResizeNode::new();
+        let algorithm = node
+            .input_ports()
+            .into_iter()
+            .find(|port| port.name == "algorithm")
+            .expect("Resize should expose algorithm");
+        assert_eq!(algorithm.default_value, Some(serde_json::json!("lanczos")));
+    }
+
+    #[test]
+    fn test_resize_algorithm_ffmpeg_flags() {
+        assert_eq!(ResizeAlgorithm::Lanczos.ffmpeg_flag(), "lanczos");
+        assert_eq!(ResizeAlgorithm::Bilinear.ffmpeg_flag(), "bilinear");
+        assert_eq!(ResizeAlgorithm::Nearest.ffmpeg_flag(), "neighbor");
+    }
+
+    #[test]
+    fn test_resize_lanczos_solid_color() {
+        let mut node = ResizeNode::new();
+        let ctx = ExecutionContext::default();
+        let mut inputs = HashMap::new();
+        inputs.insert("width".to_string(), PortData::Int(3));
+        inputs.insert("height".to_string(), PortData::Int(5));
+        inputs.insert(
+            "algorithm".to_string(),
+            PortData::Str("lanczos".to_string()),
+        );
+        node.execute(&inputs, &ctx).unwrap();
+
+        let result = node
+            .process_frame(make_solid_frame(8, 8, 10, 128, 250), &ctx)
+            .unwrap();
+        match result {
+            Frame::CpuRgb {
+                data,
+                width,
+                height,
+                bit_depth,
+            } => {
+                assert_eq!((width, height, bit_depth), (3, 5, 8));
+                for pixel in data.as_chunks::<3>().0 {
+                    assert_eq!(pixel, &[10, 128, 250]);
+                }
+            }
+            _ => panic!("Expected CpuRgb frame"),
+        }
+    }
+
+    #[test]
+    fn test_resize_lanczos_identity_preserves_pixels() {
+        let src: Vec<u8> = (0..5 * 4 * 3).map(|i| (i * 37 % 256) as u8).collect();
+        let result = resize_lanczos(&src, 5, 4, 5, 4);
+        assert_eq!(result, src);
+    }
+
+    #[test]
+    fn test_resize_lanczos_downscale_stays_within_source_range() {
+        // A hard edge must not overshoot past the representable range.
+        let mut src = vec![0u8; 16 * 2 * 3];
+        for y in 0..2 {
+            for x in 8..16 {
+                let i = (y * 16 + x) * 3;
+                src[i..i + 3].copy_from_slice(&[255, 255, 255]);
+            }
+        }
+        let result = resize_lanczos(&src, 16, 2, 12, 2);
+        assert_eq!(result.len(), 12 * 2 * 3);
+        assert_eq!(&result[0..3], &[0, 0, 0]);
+        assert_eq!(&result[result.len() - 3..], &[255, 255, 255]);
     }
 }

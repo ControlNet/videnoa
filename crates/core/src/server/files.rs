@@ -1,5 +1,5 @@
 use std::io::ErrorKind;
-use std::path::Path as StdPath;
+use std::path::{Path as StdPath, PathBuf};
 
 use axum::body::Body;
 use axum::extract::{Path, Request, State};
@@ -195,19 +195,26 @@ fn io_error(action: &str, path: &std::path::Path, error: std::io::Error) -> AppE
     }
 }
 
+/// Paths are made relative to `base` when they share its root. A path on
+/// another Windows drive has no relative form, so it stays absolute.
+fn relative_to_or_absolute(path: &StdPath, base: &StdPath) -> PathBuf {
+    if path.components().next() != base.components().next() {
+        return path.to_path_buf();
+    }
+    pathdiff::diff_paths(path, base).unwrap_or_else(|| path.to_path_buf())
+}
+
 fn workflow_response_path(path: &StdPath) -> Result<String, AppError> {
     let current_dir = std::env::current_dir().map_err(|error| {
         AppError::Internal(format!(
             "failed to read process current directory for file metadata: {error}"
         ))
     })?;
-    let relative = pathdiff::diff_paths(path, &current_dir).ok_or_else(|| {
-        AppError::Internal(format!(
-            "failed to make {} relative to process current directory {}",
-            path.display(),
-            current_dir.display()
-        ))
-    })?;
+    // Canonical paths carry the Windows `\\?\` prefix while the current directory
+    // does not; mismatched prefixes would make the diff absolute.
+    let (plain_path, plain_current_dir) =
+        (dunce::simplified(path), dunce::simplified(&current_dir));
+    let relative = relative_to_or_absolute(plain_path, plain_current_dir);
 
     relative.to_str().map(str::to_owned).ok_or_else(|| {
         AppError::Internal(format!(
@@ -215,4 +222,33 @@ fn workflow_response_path(path: &StdPath) -> Result<String, AppError> {
             relative.display()
         ))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::relative_to_or_absolute;
+    use std::path::Path as StdPath;
+
+    #[test]
+    fn same_root_paths_become_relative() {
+        let root = StdPath::new(if cfg!(windows) { r"C:\" } else { "/" });
+        let base = root.join("work").join("app");
+        let path = root.join("data").join("clip.mkv");
+
+        assert_eq!(
+            relative_to_or_absolute(&path, &base),
+            StdPath::new("..").join("..").join("data").join("clip.mkv")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn paths_on_another_drive_stay_absolute() {
+        let path = StdPath::new(r"C:\Users\runner\Temp\workspace\clip.mkv");
+
+        assert_eq!(
+            relative_to_or_absolute(path, StdPath::new(r"D:\a\videnoa")),
+            path
+        );
+    }
 }

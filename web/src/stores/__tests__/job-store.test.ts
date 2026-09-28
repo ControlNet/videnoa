@@ -32,6 +32,7 @@ beforeEach(() => {
 	vi.stubGlobal("fetch", vi.fn());
 	useJobStore.setState({
 		jobs: [],
+		refreshError: null,
 		activeJobId: null,
 		activeProgress: null,
 		runtimePreviewsByNodeId: {},
@@ -177,7 +178,7 @@ describe("submitJob", () => {
 
 		await useJobStore.getState().submitJob({ nodes: [], connections: [] });
 
-		expect(useJobStore.getState().jobs).toHaveLength(2);
+		await vi.waitFor(() => expect(useJobStore.getState().jobs).toHaveLength(2));
 	});
 });
 
@@ -261,7 +262,7 @@ describe("cancelJob", () => {
 		expect(url).toBe("/api/jobs/j1");
 		expect(init).toMatchObject({ method: "DELETE" });
 
-		expect(useJobStore.getState().jobs).toHaveLength(1);
+		await vi.waitFor(() => expect(useJobStore.getState().jobs).toHaveLength(1));
 		expect(useJobStore.getState().jobs[0].status).toBe("cancelled");
 	});
 });
@@ -470,4 +471,76 @@ describe("unsubscribeFromJob", () => {
 		useJobStore.setState({ activeJobId: null, wsCleanup: null });
 		expect(() => useJobStore.getState().unsubscribeFromJob()).not.toThrow();
 	});
+});
+
+// Synthetic HTTP failures distinguish accepted mutations from failed list reads.
+describe("accepted job mutations", () => {
+	it.each(["submit", "run", "rerun"])("preserves the %s receipt when refresh fails", async (action) => {
+		vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ id: "accepted", status: "queued", created_at: "2026-09-26T00:00:00Z" }, 201));
+		vi.mocked(fetch).mockRejectedValueOnce(new TypeError("list unavailable"));
+		const store = useJobStore.getState();
+		const receipt = action === "submit" ? store.submitJob({ nodes: [], connections: [] })
+			: action === "run" ? store.runByName("workflow") : store.rerunJob("original");
+		await expect(receipt).resolves.toBe("accepted");
+		expect(useJobStore.getState().jobs.some((job) => job.id === "accepted")).toBe(true);
+		await vi.waitFor(() => expect(useJobStore.getState().refreshError).toBe("list unavailable"));
+		expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+		vi.mocked(fetch).mockResolvedValueOnce(jsonResponse([makeJobResponse({ id: "accepted" })]));
+		await store.fetchJobs();
+		expect(useJobStore.getState().refreshError).toBeNull();
+	});
+
+	it("still rejects a failed submission without refreshing", async () => {
+		vi.mocked(fetch).mockRejectedValueOnce(new TypeError("submit unavailable"));
+		await expect(useJobStore.getState().submitJob({ nodes: [], connections: [] })).rejects.toThrow("submit unavailable");
+		expect(fetch).toHaveBeenCalledTimes(1);
+	});
+
+	it("keeps a successful deletion when refreshing fails", async () => {
+		useJobStore.setState({ jobs: [makeJobResponse()] });
+		vi.mocked(fetch).mockResolvedValueOnce(new Response(null, { status: 204 }));
+		vi.mocked(fetch).mockRejectedValueOnce(new TypeError("list unavailable"));
+		await expect(useJobStore.getState().deleteJobHistory("j1")).resolves.toBeUndefined();
+		expect(useJobStore.getState().jobs).toEqual([]);
+		await vi.waitFor(() => expect(useJobStore.getState().refreshError).toBe("list unavailable"));
+	});
+});
+
+it("returns a confirmed receipt before a slow refresh completes", async () => {
+	let finishRefresh!: (response: Response) => void;
+	vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ id: "accepted", status: "queued", created_at: "2026-09-26T00:00:00Z" }, 201));
+	vi.mocked(fetch).mockReturnValueOnce(new Promise((resolve) => { finishRefresh = resolve; }));
+	const id = await useJobStore.getState().submitJob({ nodes: [], connections: [] });
+	expect(id).toBe("accepted");
+	expect(useJobStore.getState().jobs[0]?.id).toBe("accepted");
+	finishRefresh(jsonResponse([makeJobResponse({ id: "accepted", status: "running" })]));
+	await vi.waitFor(() => expect(useJobStore.getState().jobs[0]?.status).toBe("running"));
+});
+
+it("does not let an older list response erase an accepted job", async () => {
+	let finishOld!: (response: Response) => void;
+	vi.mocked(fetch).mockReturnValueOnce(new Promise((resolve) => { finishOld = resolve; }));
+	const oldRead = useJobStore.getState().fetchJobs();
+	vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ id: "accepted", status: "queued", created_at: "2026-09-26T00:00:00Z" }, 201));
+	vi.mocked(fetch).mockResolvedValueOnce(jsonResponse([makeJobResponse({ id: "accepted" })]));
+	await useJobStore.getState().submitJob({ nodes: [], connections: [] });
+	await vi.waitFor(() => expect(useJobStore.getState().jobs[0]?.status).toBe("completed"));
+	finishOld(jsonResponse([]));
+	await oldRead;
+	expect(useJobStore.getState().jobs[0]?.id).toBe("accepted");
+});
+
+it("applies slow polling responses while a newer poll is still pending", async () => {
+	let finishFirst!: (response: Response) => void;
+	let finishSecond!: (response: Response) => void;
+	vi.mocked(fetch).mockReturnValueOnce(new Promise((resolve) => { finishFirst = resolve; }));
+	vi.mocked(fetch).mockReturnValueOnce(new Promise((resolve) => { finishSecond = resolve; }));
+	const first = useJobStore.getState().fetchJobs();
+	const second = useJobStore.getState().fetchJobs();
+	finishFirst(jsonResponse([makeJobResponse({ status: "running" })]));
+	await first;
+	expect(useJobStore.getState().jobs[0]?.status).toBe("running");
+	finishSecond(jsonResponse([makeJobResponse({ status: "completed" })]));
+	await second;
+	expect(useJobStore.getState().jobs[0]?.status).toBe("completed");
 });

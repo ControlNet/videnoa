@@ -34,7 +34,7 @@ pub struct ModelEntry {
     pub scale: Option<u32>,
     pub input_names: Vec<String>,
     pub output_names: Vec<String>,
-    /// Value range the model expects/produces: `(0.0, 255.0)` for ESRGAN, `(0.0, 1.0)` for CUGAN/RIFE.
+    /// Value range the model expects/produces; `(0.0, 1.0)` for all built-in models.
     pub normalization_range: (f32, f32),
     /// Spatial dimensions must be multiples of this (4 for ESRGAN, 32 for RIFE).
     pub pad_align: u32,
@@ -57,7 +57,7 @@ fn builtin_catalog() -> Vec<ModelEntry> {
             scale: Some(4),
             input_names: vec!["image.1".into()],
             output_names: vec!["image".into()],
-            normalization_range: (0.0, 255.0),
+            normalization_range: (0.0, 1.0),
             pad_align: 4,
             description: "RealESRGAN x4 anime-optimized model (6-block variant, 17.9 MB)".into(),
             is_fp16: false,
@@ -94,6 +94,15 @@ fn builtin_catalog() -> Vec<ModelEntry> {
             input_format: "concatenated".into(),
         },
     ]
+}
+
+/// Native upscale factor of a built-in super-resolution model, matched by file name.
+pub fn builtin_model_scale(model_path: &Path) -> Option<u32> {
+    let file_name = model_path.file_name()?.to_str()?;
+    builtin_catalog()
+        .into_iter()
+        .find(|entry| entry.filename == file_name)
+        .and_then(|entry| entry.scale)
 }
 
 pub struct ModelRegistry {
@@ -327,6 +336,7 @@ fn sha256_file(path: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use std::fs;
 
     #[test]
@@ -369,7 +379,7 @@ mod tests {
         let esrgan = reg.get("RealESRGAN_x4plus_anime_6B").unwrap();
         assert_eq!(esrgan.scale, Some(4));
         assert_eq!(esrgan.pad_align, 4);
-        assert_eq!(esrgan.normalization_range, (0.0, 255.0));
+        assert_eq!(esrgan.normalization_range, (0.0, 1.0));
         assert_eq!(esrgan.input_names, vec!["image.1"]);
         assert_eq!(esrgan.output_names, vec!["image"]);
         assert!(!esrgan.is_fp16);
@@ -529,7 +539,7 @@ mod tests {
 
         let entry = reg2.get("RealESRGAN_x4plus_anime_6B").unwrap();
         assert_eq!(entry.scale, Some(4));
-        assert_eq!(entry.normalization_range, (0.0, 255.0));
+        assert_eq!(entry.normalization_range, (0.0, 1.0));
     }
 
     #[test]
@@ -594,7 +604,7 @@ mod tests {
         let reg = ModelRegistry::with_builtin_models(test_models_dir());
 
         let esrgan = reg.get("RealESRGAN_x4plus_anime_6B").unwrap();
-        assert_eq!(esrgan.normalization_range, (0.0, 255.0));
+        assert_eq!(esrgan.normalization_range, (0.0, 1.0));
         assert!(!esrgan.is_fp16);
 
         let animejanai = reg.get("AnimeJaNai_V3_L1_Sharp_HD_x2_FP16").unwrap();
@@ -672,5 +682,27 @@ mod tests {
 
     fn cleanup(dir: &Path) {
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn builtin_scale_is_resolved_from_the_model_file_name() {
+        assert_eq!(
+            builtin_model_scale(Path::new("models/RealESRGAN_x4plus_anime_6B.onnx")),
+            Some(4)
+        );
+        assert_eq!(
+            builtin_model_scale(Path::new(
+                "/opt/videnoa/models/the_database_AnimeJaNaiV3L1_sharp_HD_x2_fp16_op17.onnx"
+            )),
+            Some(2)
+        );
+        assert_eq!(
+            builtin_model_scale(Path::new("models/custom_x4.onnx")),
+            None
+        );
+        assert_eq!(
+            builtin_model_scale(Path::new("models/rife_v4.26.onnx")),
+            None
+        );
     }
 }

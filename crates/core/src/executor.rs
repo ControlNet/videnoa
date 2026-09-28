@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use anyhow::{anyhow, bail, Context, Result};
 
-use crate::compile::{compile_graph_with_debug_hook, CompileContext};
+use crate::compile::{compile_graph_with_execution_context, CompileContext};
 use crate::debug_event::{build_print_debug_value_event, NodeDebugEventCallback};
 use crate::graph::PipelineGraph;
 use crate::node::ExecutionContext;
@@ -58,18 +58,28 @@ impl SequentialExecutor {
         cancel_rx: Option<tokio::sync::watch::Receiver<bool>>,
         mut node_debug_callback: Option<&mut NodeDebugEventCallback<'_>>,
     ) -> Result<HashMap<String, HashMap<String, PortData>>> {
+        let ctx = ExecutionContext {
+            cancellation: cancel_rx.clone(),
+            ..Default::default()
+        };
+        ctx.check_cancelled()?;
         graph.validate(registry)?;
 
         let execution_order = graph.execution_order()?;
         if pipeline_uses_video_frames(graph, registry, &execution_order)? {
-            let ctx = compile_ctx.ok_or_else(|| {
+            let compile_ctx = compile_ctx.ok_or_else(|| {
                 anyhow!(
                     "VideoFrames pipeline requires a CompileContext — \
                      use execute_with_context() instead of execute()"
                 )
             })?;
-            let compiled =
-                compile_graph_with_debug_hook(graph, registry, ctx, node_debug_callback)?;
+            let compiled = compile_graph_with_execution_context(
+                graph,
+                registry,
+                compile_ctx,
+                &ctx,
+                node_debug_callback,
+            )?;
 
             let executor = StreamingExecutor::new(DEFAULT_BUFFER_SIZE);
             // A closed, false watch means no external cancellation. The watcher
@@ -101,9 +111,8 @@ impl SequentialExecutor {
         }
 
         let mut outputs_by_node: HashMap<String, HashMap<String, PortData>> = HashMap::new();
-        let ctx = ExecutionContext::default();
-
         for node_idx in execution_order {
+            ctx.check_cancelled()?;
             let instance = graph.node(node_idx);
             let mut node = registry
                 .create(&instance.node_type, instance.params.clone())
@@ -166,6 +175,7 @@ impl SequentialExecutor {
             let node_outputs = node
                 .execute(&inputs, &ctx)
                 .with_context(|| format!("execution failed for node '{}'", instance.id))?;
+            ctx.check_cancelled()?;
 
             emit_print_debug_event(
                 &instance.id,
@@ -196,6 +206,7 @@ impl SequentialExecutor {
         outer_ctx: &ExecutionContext,
         mut node_debug_callback: Option<&mut NodeDebugEventCallback<'_>>,
     ) -> Result<HashMap<String, HashMap<String, PortData>>> {
+        outer_ctx.check_cancelled()?;
         graph.validate(registry)?;
 
         let execution_order = graph.execution_order()?;
@@ -204,10 +215,12 @@ impl SequentialExecutor {
         let ctx = ExecutionContext {
             executing_workflows: outer_ctx.executing_workflows.clone(),
             nesting_depth: outer_ctx.nesting_depth,
+            cancellation: outer_ctx.cancellation.clone(),
             ..Default::default()
         };
 
         for node_idx in execution_order {
+            ctx.check_cancelled()?;
             let instance = graph.node(node_idx);
             let mut node = registry
                 .create(&instance.node_type, instance.params.clone())
@@ -276,6 +289,7 @@ impl SequentialExecutor {
             let node_outputs = node
                 .execute(&inputs, &ctx)
                 .with_context(|| format!("execution failed for node '{}'", instance.id))?;
+            ctx.check_cancelled()?;
 
             emit_print_debug_event(
                 &instance.id,

@@ -1,6 +1,7 @@
-import { renderHook, waitFor } from "@testing-library/react"
+import { act, renderHook, waitFor } from "@testing-library/react"
 import { describe, expect, it } from "vitest"
 
+import { appTaskUpdateStore } from "../events/taskUpdates"
 import { createApiClient } from "../api/client"
 import { parseTaskQuery } from "./query"
 import { useTasksData } from "./useTasksData"
@@ -75,3 +76,57 @@ describe("task data requests", () => {
     expect(result.current.page).toBeNull()
   })
 })
+
+// Synthetic events model a transition that is outside the active page filter.
+it("refreshes global counts for off-filter events and coalesces a burst", async () => {
+  let total = 1;
+  let countReads = 0;
+  let pageReads = 0;
+  const fetcher: typeof fetch = async (input, init) => {
+    if (new URL(new Request(input, init).url).pathname === "/api/status-counts") {
+      countReads += 1;
+      return Response.json({ ...emptyCounts, total });
+    }
+    pageReads += 1;
+    return Response.json({ items: [initialTask], total: 1, limit: 50, offset: 0 });
+  };
+  const apiClient = createApiClient({ fetcher, onUnauthorized: () => undefined });
+  const query = parseTaskQuery(new URLSearchParams("status=processing"));
+  const { result, unmount } = renderHook(() => useTasksData(apiClient, query));
+  await waitFor(() => expect(result.current.counts?.total).toBe(1));
+  total = 2;
+  act(() => {
+    for (let version = 2; version < 102; version++) {
+      appTaskUpdateStore.publish({ ...initialTask, id: "550e8400-e29b-41d4-a716-446655440099", version, status: "queued" });
+    }
+  });
+  await waitFor(() => expect(result.current.counts?.total).toBe(2), { timeout: 2500 });
+  expect(countReads).toBe(2);
+  expect(pageReads).toBe(1);
+  unmount();
+});
+
+it("finishes a slow counts read before refreshing events received in flight", async () => {
+  let finish!: (response: Response) => void;
+  let reads = 0;
+  const fetcher: typeof fetch = async (input, init) => {
+    if (new URL(new Request(input, init).url).pathname === "/api/status-counts") {
+      reads += 1;
+      if (reads === 1) return new Promise((resolve) => { finish = resolve; });
+      return Response.json({ ...emptyCounts, total: 2 });
+    }
+    return Response.json({ items: [], total: 0, limit: 50, offset: 0 });
+  };
+  const apiClient = createApiClient({ fetcher, onUnauthorized: () => undefined });
+  const query = parseTaskQuery(new URLSearchParams("status=processing"));
+  const { result, unmount } = renderHook(() => useTasksData(apiClient, query));
+  await waitFor(() => expect(reads).toBe(1));
+  act(() => appTaskUpdateStore.publish({ ...initialTask, status: "queued" }));
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1100)); });
+  expect(reads).toBe(1);
+  await act(async () => finish(Response.json({ ...emptyCounts, total: 1 })));
+  await waitFor(() => expect(result.current.counts?.total).toBe(1));
+  await waitFor(() => expect(result.current.counts?.total).toBe(2), { timeout: 2500 });
+  expect(reads).toBe(2);
+  unmount();
+});

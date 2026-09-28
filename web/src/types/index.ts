@@ -134,7 +134,7 @@ export interface Job {
 
 export interface CreateJobResponse {
   id: string;
-  status: string;
+  status: JobStatus;
   created_at: string;
 }
 

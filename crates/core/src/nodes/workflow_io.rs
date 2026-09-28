@@ -292,6 +292,7 @@ impl Node for WorkflowNode {
         let mut inner_ctx = ExecutionContext {
             executing_workflows: ctx.executing_workflows.clone(),
             nesting_depth: ctx.nesting_depth + 1,
+            cancellation: ctx.cancellation.clone(),
             ..ExecutionContext::default()
         };
         inner_ctx.executing_workflows.insert(path);

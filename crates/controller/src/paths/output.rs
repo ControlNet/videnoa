@@ -5,7 +5,7 @@ use std::io;
 use super::{identity, io_error, PathError, RootedOutput};
 
 impl RootedOutput {
-    /// Revalidates root identity, no-follow parents, and final-leaf absence without creating it.
+    /// Revalidates the current root path, no-follow parents, and final-leaf absence without creating it.
     ///
     /// # Errors
     /// Returns a typed path error when the accepted output boundary drifted.

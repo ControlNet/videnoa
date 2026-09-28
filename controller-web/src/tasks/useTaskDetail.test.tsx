@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest"
 import { createApiClient } from "../api/client"
 import type { Task, TaskAttempt, TaskDetail } from "../api/taskSchemas"
 import { appTaskUpdateStore } from "../events/taskUpdates"
+import { appInvalidationStore } from "../events/store"
 import { useTaskDetail } from "./useTaskDetail"
 
 type PendingRequest = {
@@ -80,6 +81,23 @@ describe("task detail history ownership", () => {
 })
 
 describe("task detail refresh window", () => {
+  it.each(["initial", "reconnect", "lag"] as const)("refreshes detail on %s without clearing visible history", async (reason) => {
+    const { apiClient, requests } = controlledApiClient()
+    const original = task(taskAId, "/media/task-a.mkv", 1)
+    const completed = { ...original, version: 2, status: "completed" as const }
+    const history = [attempt(original, 1)]
+    const { result } = renderHook(() => useTaskDetail(apiClient, taskAId))
+    await respondTo(requests, taskAId, 0, detail(original, history, 1))
+    await waitFor(() => expect(result.current.detail?.task.version).toBe(1))
+
+    act(() => appInvalidationStore.invalidate(reason))
+    await waitFor(() => expect(requestsFor(requests, taskAId, 0)).toHaveLength(2))
+    expect(result.current.loading).toBe(false)
+    expect(result.current.detail?.attempts).toHaveLength(1)
+    findRequest(requests, taskAId, 0).respond(detail(completed, history, 1))
+    await waitFor(() => expect(result.current.detail?.task.status).toBe("completed"))
+  })
+
   it("keeps attempts beyond the page maximum when a refresh cannot re-read them", async () => {
     // Given: a task with more persisted history than one page can carry, expanded
     // to 600 attempts through five explicit next-page actions.

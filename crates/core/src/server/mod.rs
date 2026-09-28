@@ -27,6 +27,8 @@ mod files;
 mod idempotency;
 pub mod iroh;
 mod persistence;
+mod preview;
+mod preview_cache;
 
 #[cfg(test)]
 #[path = "tests/files/mod.rs"]
@@ -44,7 +46,8 @@ use crate::graph::PipelineGraph;
 use crate::jellyfin::{ItemQuery, JellyfinClient};
 use crate::model_inspect::{self, ModelInspection};
 use crate::model_registry::{ModelEntry, ModelRegistry};
-use crate::nodes::compile_context::VideoCompileContext;
+use crate::nodes::compile_context::{validate_video_workflow, VideoCompileContext};
+use crate::nodes::encoder_availability::validate_workflow_encoders;
 use crate::registry::{register_all_nodes, NodeRegistry};
 use crate::streaming_executor::ProgressCallback;
 use idempotency::{IdempotencyKey, RequestFingerprint};
@@ -92,7 +95,7 @@ struct AppStateInner {
     config_path: PathBuf,
     data_dir: PathBuf,
     workspace_root: PathBuf,
-    preview_sessions: DashMap<String, PathBuf>,
+    preview_cache: std::result::Result<Arc<preview_cache::PreviewCache>, String>,
     performance_series: Mutex<VecDeque<RuntimePerformanceSeriesSample>>,
 }
 
@@ -171,6 +174,8 @@ impl AppState {
             }
         }
 
+        let preview_cache =
+            preview_cache::PreviewCache::open(&data_dir).map_err(|e| format!("{e:#}"));
         Self {
             inner: Arc::new(AppStateInner {
                 auth,
@@ -187,7 +192,7 @@ impl AppState {
                 config_path,
                 data_dir,
                 workspace_root,
-                preview_sessions: DashMap::new(),
+                preview_cache,
                 performance_series: Mutex::new(VecDeque::new()),
             }),
         }
@@ -198,6 +203,20 @@ impl AppState {
             persistence.upsert_job(job)?;
         }
         Ok(())
+    }
+
+    fn persist_job_transition(&self, job: &Job) -> Result<()> {
+        if let Some(persistence) = &self.inner.jobs_persistence {
+            persistence.update_job(job)?;
+        }
+        Ok(())
+    }
+
+    fn preview_cache(&self) -> Result<&Arc<preview_cache::PreviewCache>, AppError> {
+        self.inner
+            .preview_cache
+            .as_ref()
+            .map_err(|e| AppError::Internal(e.clone()))
     }
 
     /// Resolve workflows_dir relative to process current working directory.
@@ -549,7 +568,6 @@ pub struct ExtractFramesResponse {
 pub struct ProcessFrameRequest {
     pub preview_id: String,
     pub frame_index: u32,
-    #[allow(dead_code)]
     pub workflow: serde_json::Value,
 }
 
@@ -653,6 +671,7 @@ pub fn api_router(state: AppState) -> Router {
         .route("/api/fs/browse", get(browse_fs))
         .route("/api/preview/extract", post(extract_frames))
         .route("/api/preview/process", post(process_frame))
+        .route("/api/preview/{preview_id}", delete(delete_preview))
         .route(
             "/api/preview/frames/{preview_id}/{filename}",
             get(serve_preview_frame),
@@ -1393,6 +1412,8 @@ fn parse_and_validate_workflow(
 
     workflow
         .validate(&state.inner.node_registry)
+        .and_then(|()| validate_video_workflow(&workflow))
+        .and_then(|()| validate_workflow_encoders(&workflow))
         .map_err(|e| AppError::BadRequest(format!("workflow validation failed: {e:#}")))?;
 
     Ok(workflow)
@@ -1708,47 +1729,30 @@ async fn delete_job_history(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, AppError> {
-    let (job_id, job) = state
-        .inner
-        .jobs
-        .remove(&id)
-        .ok_or_else(|| AppError::NotFound(format!("job not found: {id}")))?;
-
+    let entry = match state.inner.jobs.entry(id.clone()) {
+        dashmap::mapref::entry::Entry::Occupied(entry) => entry,
+        dashmap::mapref::entry::Entry::Vacant(_) => {
+            return Err(AppError::NotFound(format!("job not found: {id}")));
+        }
+    };
+    // Hold the runtime entry until durable deletion succeeds. Failed deletion
+    // must never cancel a job whose queued/running state remains visible.
+    if let Some(persistence) = &state.inner.jobs_persistence {
+        let rows = persistence
+            .delete_job(&id)
+            .map_err(|e| AppError::Internal(format!("failed to delete job history row: {e:#}")))?;
+        if rows != 1 {
+            return Err(AppError::Internal(format!(
+                "expected exactly one persisted row deleted for job {id}, deleted {rows}"
+            )));
+        }
+    }
+    let job = entry.remove();
     if matches!(job.status, JobStatus::Queued | JobStatus::Running) {
         job.cancel_token.cancel();
     }
-
-    let removed_sender = state.inner.progress_senders.remove(&job_id);
-
-    if let Some(persistence) = &state.inner.jobs_persistence {
-        let persisted_deleted_rows = persistence
-            .delete_job(&job_id)
-            .map_err(|e| AppError::Internal(format!("failed to delete job history row: {e:#}")));
-
-        let persisted_deleted_rows = match persisted_deleted_rows {
-            Ok(rows) if rows == 1 => rows,
-            Ok(rows) => {
-                state.inner.jobs.insert(job_id.clone(), job.clone());
-                if let Some((sender_id, sender)) = removed_sender {
-                    state.inner.progress_senders.insert(sender_id, sender);
-                }
-                return Err(AppError::Internal(format!(
-                    "expected exactly one persisted row deleted for job {job_id}, deleted {rows}"
-                )));
-            }
-            Err(err) => {
-                state.inner.jobs.insert(job_id.clone(), job.clone());
-                if let Some((sender_id, sender)) = removed_sender {
-                    state.inner.progress_senders.insert(sender_id, sender);
-                }
-                return Err(err);
-            }
-        };
-
-        debug_assert_eq!(persisted_deleted_rows, 1);
-    }
-
-    info!(job_id = %job_id, "Job history row deleted");
+    state.inner.progress_senders.remove(&id);
+    info!(job_id = %id, "Job history row deleted");
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2176,6 +2180,16 @@ async fn list_fs(
     Ok(Json(entries))
 }
 
+/// Windows treats `/` literally after a `\\?\` prefix. Older UI versions
+/// appended `/` to such paths, so switch them to `\` before browsing.
+fn repair_verbatim_separators(raw: &str) -> std::borrow::Cow<'_, str> {
+    if raw.starts_with(r"\\?\") {
+        std::borrow::Cow::Owned(raw.replace('/', "\\"))
+    } else {
+        std::borrow::Cow::Borrowed(raw)
+    }
+}
+
 async fn browse_fs(
     axum::extract::Query(params): axum::extract::Query<FsBrowseQuery>,
 ) -> Result<Json<Vec<FsEntry>>, AppError> {
@@ -2196,12 +2210,14 @@ async fn browse_fs(
         raw_path.to_string()
     };
 
-    let browse_dir = PathBuf::from(resolved_path);
+    let browse_dir = PathBuf::from(repair_verbatim_separators(&resolved_path).as_ref());
     if !browse_dir.exists() || !browse_dir.is_dir() {
         return Ok(Json(vec![]));
     }
 
-    let canonical_browse = browse_dir.canonicalize().map_err(|e| {
+    // `dunce` drops the Windows `\\?\` prefix when the plain form is equivalent;
+    // the UI appends `/` to returned paths, which Windows ignores after that prefix.
+    let canonical_browse = dunce::canonicalize(&browse_dir).map_err(|e| {
         AppError::Internal(format!(
             "failed to canonicalize browse dir {}: {e}",
             browse_dir.display()
@@ -2233,7 +2249,7 @@ async fn browse_fs(
             continue;
         }
 
-        let canonical_entry = match entry.path().canonicalize() {
+        let canonical_entry = match dunce::canonicalize(entry.path()) {
             Ok(path) => path,
             Err(_) => continue,
         };
@@ -2275,36 +2291,46 @@ async fn extract_frames(
         )));
     }
 
+    let cache = state.preview_cache()?;
+    let _permit = cache.extractions.clone().try_acquire_owned().map_err(|_| {
+        AppError::TooManyRequests("preview extraction is busy; retry shortly".into())
+    })?;
+    let session = cache.create()?;
     let preview_id = Uuid::new_v4().to_string();
-    let temp_dir = std::env::temp_dir().join(format!("videnoa-preview-{preview_id}"));
-    std::fs::create_dir_all(&temp_dir)
-        .map_err(|e| AppError::Internal(format!("failed to create temp dir: {e}")))?;
+    let deadline = tokio::time::Instant::now() + preview_cache::EXTRACTION_TIMEOUT;
+    let mut probe = crate::runtime::command_for("ffprobe");
+    probe.args([
+        "-v",
+        "error",
+        "-count_frames",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=nb_read_frames",
+        "-of",
+        "csv=p=0",
+        &payload.video_path,
+    ]);
+    let probe = preview_cache::run_command(
+        probe,
+        &session,
+        deadline.saturating_duration_since(tokio::time::Instant::now()),
+    )
+    .await?;
 
-    let probe = crate::runtime::command_for("ffprobe")
-        .args([
-            "-v",
-            "error",
-            "-count_frames",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=nb_read_frames",
-            "-of",
-            "csv=p=0",
-            &payload.video_path,
-        ])
-        .output()
-        .map_err(|e| AppError::Internal(format!("ffprobe failed: {e}")))?;
-
-    let total_frames: u64 = String::from_utf8_lossy(&probe.stdout)
+    let total_frames: u64 = String::from_utf8_lossy(&probe)
         .trim()
         .parse()
         .unwrap_or(1000);
     let interval = (total_frames / payload.count as u64).max(1);
 
-    let output_pattern = temp_dir.join("frame_%04d.png");
-    let status = crate::runtime::command_for("ffmpeg")
+    let output_pattern = session.path().join("frame_%04d.png");
+    let mut command = crate::runtime::command_for("ffmpeg");
+    command
         .args([
+            "-nostdin",
+            "-v",
+            "error",
             "-i",
             &payload.video_path,
             "-vf",
@@ -2313,22 +2339,19 @@ async fn extract_frames(
             &payload.count.to_string(),
             "-vsync",
             PREVIEW_VSYNC_MODE,
-            output_pattern
-                .to_str()
-                .ok_or_else(|| AppError::Internal("invalid path encoding".to_string()))?,
         ])
-        .output()
-        .map_err(|e| AppError::Internal(format!("ffmpeg failed: {e}")))?;
-
-    if !status.status.success() {
-        let stderr = String::from_utf8_lossy(&status.stderr);
-        return Err(AppError::Internal(format!("ffmpeg error: {stderr}")));
-    }
+        .arg(output_pattern);
+    preview_cache::run_command(
+        command,
+        &session,
+        deadline.saturating_duration_since(tokio::time::Instant::now()),
+    )
+    .await?;
 
     let mut frames = Vec::new();
     for i in 1..=payload.count {
         let filename = format!("frame_{i:04}.png");
-        let frame_path = temp_dir.join(&filename);
+        let frame_path = session.path().join(&filename);
         if frame_path.exists() {
             frames.push(FrameInfo {
                 index: i - 1,
@@ -2341,10 +2364,7 @@ async fn extract_frames(
         return Err(AppError::Internal("ffmpeg produced no frames".to_string()));
     }
 
-    state
-        .inner
-        .preview_sessions
-        .insert(preview_id.clone(), temp_dir);
+    cache.insert(preview_id.clone(), session);
 
     info!(preview_id = %preview_id, frame_count = frames.len(), "Extracted preview frames");
 
@@ -2358,38 +2378,38 @@ async fn serve_preview_frame(
     State(state): State<AppState>,
     Path((preview_id, filename)): Path<(String, String)>,
 ) -> Result<Response, AppError> {
-    let session_dir = state
-        .inner
-        .preview_sessions
-        .get(&preview_id)
-        .ok_or_else(|| AppError::NotFound(format!("preview session not found: {preview_id}")))?;
-
-    let file_path = session_dir.join(&filename);
-    if !file_path.exists() {
-        return Err(AppError::NotFound(format!("frame not found: {filename}")));
+    if !preview_cache::valid_filename(&filename) {
+        return Err(AppError::BadRequest("invalid preview filename".into()));
     }
-
-    let bytes = tokio::fs::read(&file_path)
+    let session = state.preview_cache()?.get(&preview_id)?;
+    let bytes = tokio::task::spawn_blocking(move || session.read(&filename))
         .await
-        .map_err(|e| AppError::Internal(format!("failed to read frame: {e}")))?;
+        .map_err(|e| AppError::Internal(e.to_string()))?
+        .map_err(|_| AppError::NotFound("preview frame not found".into()))?;
 
     Ok((StatusCode::OK, [("content-type", "image/png")], bytes).into_response())
+}
+
+async fn delete_preview(
+    State(state): State<AppState>,
+    Path(preview_id): Path<String>,
+) -> Result<StatusCode, AppError> {
+    state.preview_cache()?.release(&preview_id);
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn process_frame(
     State(state): State<AppState>,
     Json(payload): Json<ProcessFrameRequest>,
 ) -> Result<Json<ProcessFrameResponse>, AppError> {
-    let session_dir = state
-        .inner
-        .preview_sessions
-        .get(&payload.preview_id)
-        .ok_or_else(|| {
-            AppError::NotFound(format!("preview session not found: {}", payload.preview_id))
-        })?;
+    let session = state.preview_cache()?.get(&payload.preview_id)?;
 
-    let filename = format!("frame_{:04}.png", payload.frame_index + 1);
-    let frame_path = session_dir.join(&filename);
+    let frame_number = payload
+        .frame_index
+        .checked_add(1)
+        .ok_or_else(|| AppError::BadRequest("invalid preview frame index".to_owned()))?;
+    let filename = format!("frame_{frame_number:04}.png");
+    let frame_path = session.path().join(&filename);
     if !frame_path.exists() {
         return Err(AppError::NotFound(format!(
             "frame not found: index {}",
@@ -2397,7 +2417,38 @@ async fn process_frame(
         )));
     }
 
-    // TODO(task 4.3): actual frame processing through inference pipeline
+    let graph: PipelineGraph = serde_json::from_value(payload.workflow)
+        .map_err(|error| AppError::BadRequest(format!("invalid preview workflow: {error}")))?;
+    preview::validate(&graph, &state.inner.node_registry)
+        .map_err(|error| AppError::BadRequest(format!("invalid preview workflow: {error:#}")))?;
+    let filename = format!("processed-{}.png", Uuid::new_v4());
+    let output = session.path().join(&filename);
+    let result_slot = session.reserve_result()?;
+    let trt_cache = state.inner.config.read().await.paths.trt_cache_dir.clone();
+    let permit = state
+        .inner
+        .gpu_semaphore
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|error| AppError::Internal(error.to_string()))?;
+    let inner = state.inner.clone();
+    tokio::task::spawn_blocking(move || {
+        // The blocking work owns admission even if the HTTP caller disconnects.
+        let _permit = permit;
+        let result = preview::process(graph, &inner.node_registry, &frame_path, &output, trt_cache)
+            .and_then(|()| session.check_size());
+        if result.is_err() {
+            let _ = std::fs::remove_file(&output);
+        } else {
+            result_slot.forget();
+        }
+        session.touch();
+        result
+    })
+    .await
+    .map_err(|error| AppError::Internal(error.to_string()))?
+    .map_err(|error| AppError::Internal(format!("preview processing failed: {error:#}")))?;
     let processed_url = format!("/api/preview/frames/{}/{}", payload.preview_id, filename);
 
     Ok(Json(ProcessFrameResponse { processed_url }))
@@ -2452,7 +2503,7 @@ fn job_cancellation_watch(
     tokio::sync::watch::Receiver<bool>,
     tokio::task::JoinHandle<()>,
 ) {
-    let (tx, rx) = tokio::sync::watch::channel(false);
+    let (tx, rx) = tokio::sync::watch::channel(token.is_cancelled());
     let bridge = tokio::spawn(async move {
         tokio::select! {
             _ = token.cancelled() => {
@@ -2502,13 +2553,13 @@ async fn run_job(state: AppState, job_id: String) {
     };
 
     if let Some(snapshot) = running_snapshot {
-        if let Err(err) = state.persist_job_snapshot(&snapshot) {
+        if let Err(err) = state.persist_job_transition(&snapshot) {
             error!(job_id = %job_id, error = ?err, "Failed to persist running transition");
         }
     }
 
     let result = {
-        let (mut workflow, mut job_params, cancel_token) = {
+        let (mut workflow, job_params, cancel_token) = {
             let Some(job) = state.inner.jobs.get(&job_id) else {
                 return;
             };
@@ -2527,127 +2578,80 @@ async fn run_job(state: AppState, job_id: String) {
 
         let job_id_for_closure = job_id.clone();
 
-        if workflow.has_video_frames_edges() {
-            if let Some(params) = job_params.as_ref() {
-                workflow.inject_workflow_input_params(params);
-            }
-            job_params = None;
+        if let Some(params) = job_params.as_ref() {
+            workflow.inject_workflow_input_params(params);
         }
+        // All workflows use declared input types and the same cancellation path.
+        // The streaming executor uses block_in_place internally as well.
+        tokio::task::block_in_place(move || {
+            let compile_ctx = VideoCompileContext::new(trt_cache_dir);
+            let fps_baseline = Mutex::new(None::<ProgressFpsBaseline>);
+            let ws_tx_for_progress = ws_tx.clone();
+            let ws_tx_for_debug = ws_tx.clone();
 
-        if let Some(params) = job_params {
-            tokio::task::block_in_place(move || {
-                let mut debug_throttle =
-                    NodeDebugEventThrottle::new(Duration::from_millis(PRINT_PREVIEW_THROTTLE_MS));
-                let ws_tx_for_debug = ws_tx.clone();
-                let mut node_debug_cb = move |event: NodeDebugValueEvent| {
-                    if !debug_throttle.should_emit(&event.node_id, Instant::now()) {
-                        return;
-                    }
-                    if let Some(tx) = &ws_tx_for_debug {
-                        let _ = tx.send(JobWsEvent::from(event));
-                    }
-                };
-
-                // Convert JSON params to PortData (infer type from JSON value)
-                let mut port_params = HashMap::new();
-                for (key, value) in &params {
-                    let port_data = if let Some(i) = value.as_i64() {
-                        crate::types::PortData::Int(i)
-                    } else if let Some(f) = value.as_f64() {
-                        crate::types::PortData::Float(f)
-                    } else if let Some(b) = value.as_bool() {
-                        crate::types::PortData::Bool(b)
-                    } else if let Some(s) = value.as_str() {
-                        crate::types::PortData::Str(s.to_string())
-                    } else {
-                        crate::types::PortData::Str(value.to_string())
-                    };
-                    port_params.insert(key.clone(), port_data);
-                }
-                let ctx = crate::node::ExecutionContext::default();
-                SequentialExecutor::execute_with_params_and_debug_hook(
-                    &workflow,
-                    &inner.node_registry,
-                    port_params,
-                    &ctx,
-                    Some(&mut node_debug_cb),
-                )
-            })
-        } else {
-            // No params: use execute_with_context with video compile support
-            // Use block_in_place (NOT spawn_blocking) because the executor internally
-            // calls block_in_place at executor.rs:67. Nesting block_in_place inside
-            // spawn_blocking panics; block_in_place inside block_in_place is a no-op.
-            tokio::task::block_in_place(move || {
-                let compile_ctx = VideoCompileContext::new(trt_cache_dir);
-                let fps_baseline = Mutex::new(None::<ProgressFpsBaseline>);
-                let ws_tx_for_progress = ws_tx.clone();
-                let ws_tx_for_debug = ws_tx.clone();
-
-                let inner_for_cb = Arc::clone(&inner);
-                let progress_cb: ProgressCallback =
-                    Box::new(move |current_frame, total_frames, _hint| {
-                        let now = Instant::now();
-                        let fps = {
-                            let mut baseline_guard = match fps_baseline.lock() {
-                                Ok(guard) => guard,
-                                Err(poisoned) => poisoned.into_inner(),
-                            };
-                            let (next_baseline, next_fps) = estimate_input_fps_from_second_frame(
-                                *baseline_guard,
-                                current_frame,
-                                now,
-                            );
-                            *baseline_guard = next_baseline;
-                            next_fps as f64
+            let inner_for_cb = Arc::clone(&inner);
+            let progress_cb: ProgressCallback =
+                Box::new(move |current_frame, total_frames, _hint| {
+                    let now = Instant::now();
+                    let fps = {
+                        let mut baseline_guard = match fps_baseline.lock() {
+                            Ok(guard) => guard,
+                            Err(poisoned) => poisoned.into_inner(),
                         };
-                        let eta = total_frames.and_then(|total| {
-                            if fps > 0.0 && current_frame < total {
-                                Some((total - current_frame) as f64 / fps)
-                            } else {
-                                None
-                            }
-                        });
-
-                        let update = ProgressUpdate {
+                        let (next_baseline, next_fps) = estimate_input_fps_from_second_frame(
+                            *baseline_guard,
                             current_frame,
-                            total_frames,
-                            fps: fps as f32,
-                            eta_seconds: eta,
-                        };
-
-                        if let Some(mut job) = inner_for_cb.jobs.get_mut(&job_id_for_closure) {
-                            job.progress = Some(update.clone());
-                        }
-
-                        if let Some(tx) = &ws_tx_for_progress {
-                            let _ = tx.send(JobWsEvent::from(update));
+                            now,
+                        );
+                        *baseline_guard = next_baseline;
+                        next_fps as f64
+                    };
+                    let eta = total_frames.and_then(|total| {
+                        if fps > 0.0 && current_frame < total {
+                            Some((total - current_frame) as f64 / fps)
+                        } else {
+                            None
                         }
                     });
 
-                let mut debug_throttle =
-                    NodeDebugEventThrottle::new(Duration::from_millis(PRINT_PREVIEW_THROTTLE_MS));
-                let mut node_debug_cb = move |event: NodeDebugValueEvent| {
-                    if !debug_throttle.should_emit(&event.node_id, Instant::now()) {
-                        return;
-                    }
-                    if let Some(tx) = &ws_tx_for_debug {
-                        let _ = tx.send(JobWsEvent::from(event));
-                    }
-                };
+                    let update = ProgressUpdate {
+                        current_frame,
+                        total_frames,
+                        fps: fps as f32,
+                        eta_seconds: eta,
+                    };
 
-                let (cancel_watch_rx, _cancel_bridge) = job_cancellation_watch(cancel_token);
+                    if let Some(mut job) = inner_for_cb.jobs.get_mut(&job_id_for_closure) {
+                        job.progress = Some(update.clone());
+                    }
 
-                SequentialExecutor::execute_with_context_and_debug_hook(
-                    &workflow,
-                    &inner.node_registry,
-                    Some(&compile_ctx),
-                    Some(progress_cb),
-                    Some(cancel_watch_rx),
-                    Some(&mut node_debug_cb),
-                )
-            })
-        }
+                    if let Some(tx) = &ws_tx_for_progress {
+                        let _ = tx.send(JobWsEvent::from(update));
+                    }
+                });
+
+            let mut debug_throttle =
+                NodeDebugEventThrottle::new(Duration::from_millis(PRINT_PREVIEW_THROTTLE_MS));
+            let mut node_debug_cb = move |event: NodeDebugValueEvent| {
+                if !debug_throttle.should_emit(&event.node_id, Instant::now()) {
+                    return;
+                }
+                if let Some(tx) = &ws_tx_for_debug {
+                    let _ = tx.send(JobWsEvent::from(event));
+                }
+            };
+
+            let (cancel_watch_rx, _cancel_bridge) = job_cancellation_watch(cancel_token);
+
+            SequentialExecutor::execute_with_context_and_debug_hook(
+                &workflow,
+                &inner.node_registry,
+                Some(&compile_ctx),
+                Some(progress_cb),
+                Some(cancel_watch_rx),
+                Some(&mut node_debug_cb),
+            )
+        })
     };
 
     match result {
@@ -2663,7 +2667,7 @@ async fn run_job(state: AppState, job_id: String) {
             }
 
             if let Some(snapshot) = completed_snapshot {
-                if let Err(err) = state.persist_job_snapshot(&snapshot) {
+                if let Err(err) = state.persist_job_transition(&snapshot) {
                     error!(job_id = %job_id, error = ?err, "Failed to persist completed transition");
                 }
             }
@@ -2682,7 +2686,7 @@ async fn run_job(state: AppState, job_id: String) {
             }
 
             if let Some(snapshot) = failed_snapshot {
-                if let Err(persist_err) = state.persist_job_snapshot(&snapshot) {
+                if let Err(persist_err) = state.persist_job_transition(&snapshot) {
                     error!(
                         job_id = %job_id,
                         error = ?persist_err,
@@ -2704,6 +2708,7 @@ pub enum AppError {
     Forbidden(String),
     NotFound(String),
     Internal(String),
+    TooManyRequests(String),
     InvalidIdempotencyKey,
     IdempotencyConflict,
 }
@@ -2714,6 +2719,7 @@ impl IntoResponse for AppError {
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg, None),
             AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg, None),
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg, None),
+            AppError::TooManyRequests(msg) => (StatusCode::TOO_MANY_REQUESTS, msg, None),
             AppError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg, None),
             AppError::InvalidIdempotencyKey => (
                 StatusCode::BAD_REQUEST,
@@ -2927,6 +2933,15 @@ mod tests {
             .expect("completed or failed jobs must not retain a cancellation bridge")
             .expect("bridge must not panic");
         assert!(!token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn job_cancellation_bridge_starts_cancelled_before_it_is_scheduled() {
+        let token = CancellationToken::new();
+        token.cancel();
+        let (rx, bridge) = job_cancellation_watch(token);
+        assert!(*rx.borrow());
+        bridge.await.expect("bridge must not panic");
     }
 
     #[tokio::test]
@@ -4234,6 +4249,85 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn failed_history_deletion_preserves_live_job_and_channel() {
+        let state = test_state();
+        let mut job = build_test_job("delete-failure".into(), JobStatus::Queued, None);
+        job.workflow =
+            serde_json::from_value(serde_json::json!({"nodes":[],"connections":[]})).unwrap();
+        let cancel = job.cancel_token.clone();
+        insert_test_job(&state, job);
+        let gate = state.inner.gpu_semaphore.acquire().await.unwrap();
+        let execution = tokio::spawn(run_job(state.clone(), "delete-failure".into()));
+        let (sender, _) = broadcast::channel(8);
+        state
+            .inner
+            .progress_senders
+            .insert("delete-failure".into(), sender);
+        let persistence = state.inner.jobs_persistence.as_ref().unwrap();
+        let conn = Connection::open(persistence.db_path()).unwrap();
+        // Deliberate database fault injection: deletion must have no runtime side effects.
+        conn.execute_batch("CREATE TRIGGER reject_delete BEFORE DELETE ON jobs BEGIN SELECT RAISE(ABORT, 'injected failure'); END;").unwrap();
+        assert!(
+            delete_job_history(State(state.clone()), Path("delete-failure".into()))
+                .await
+                .is_err()
+        );
+        assert!(!cancel.is_cancelled());
+        assert_eq!(
+            state.inner.jobs.get("delete-failure").unwrap().status,
+            JobStatus::Queued
+        );
+        assert!(state.inner.progress_senders.contains_key("delete-failure"));
+        conn.execute_batch("DROP TRIGGER reject_delete;").unwrap();
+        drop(gate);
+        tokio::time::timeout(Duration::from_secs(5), execution)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            state.inner.jobs.get("delete-failure").unwrap().status,
+            JobStatus::Completed
+        );
+        assert_eq!(
+            delete_job_history(State(state.clone()), Path("delete-failure".into()))
+                .await
+                .unwrap(),
+            StatusCode::NO_CONTENT
+        );
+        assert!(!cancel.is_cancelled());
+        let late_snapshot = build_test_job("delete-failure".into(), JobStatus::Completed, None);
+        state.persist_job_transition(&late_snapshot).unwrap();
+        assert_eq!(
+            persisted_job_status(&state.inner.data_dir, "delete-failure"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn preview_extraction_admission_rejects_excess_requests() {
+        let state = test_state();
+        let cache = state.preview_cache().unwrap();
+        let first = cache.extractions.clone().acquire_owned().await.unwrap();
+        let second = cache.extractions.clone().acquire_owned().await.unwrap();
+        let video_path = state.inner.data_dir.join("synthetic-video.mkv");
+        std::fs::write(&video_path, b"admission fixture, never decoded").unwrap();
+        let response = extract_frames(
+            State(state.clone()),
+            Json(ExtractFramesRequest {
+                video_path: video_path.to_string_lossy().into_owned(),
+                count: 1,
+            }),
+        )
+        .await
+        .err()
+        .unwrap()
+        .into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        drop((first, second));
+        assert_eq!(cache.extractions.available_permits(), 2);
+    }
+
     #[tokio::test]
     async fn test_delete_job_history_removes_only_target_row_and_views() {
         let data_dir = test_data_dir();
@@ -5313,13 +5407,17 @@ mod tests {
     #[tokio::test]
     async fn test_fs_list_traversal_blocked() {
         let dir = std::env::temp_dir().join(format!("videnoa-fs-trav-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        // An existing sibling target, so the traversal check is reached on every
+        // platform instead of short-circuiting on a missing `/etc`.
+        std::fs::create_dir_all(dir.join("models")).unwrap();
+        std::fs::create_dir_all(dir.join("outside")).unwrap();
+        std::fs::write(dir.join("outside").join("secret.txt"), b"secret").unwrap();
 
-        let state = fs_test_state(dir.clone());
+        let state = fs_test_state(dir.join("models"));
         let mut app = app_router(state);
 
         let req = Request::builder()
-            .uri("/api/fs/list?base=models&prefix=../../../etc/passwd")
+            .uri("/api/fs/list?base=models&prefix=../outside/secret.txt")
             .body(Body::empty())
             .unwrap();
         let resp = send_request(&mut app, req).await;
@@ -5409,8 +5507,78 @@ mod tests {
         assert!(!entries.is_empty());
 
         if let Some(first) = entries.first() {
-            assert!(first.path.starts_with('/'));
+            assert!(StdPath::new(&first.path).is_absolute(), "{}", first.path);
+            assert!(!first.path.starts_with(r"\\?\"), "{}", first.path);
         }
+    }
+
+    #[test]
+    fn verbatim_browse_input_uses_backslash_separators() {
+        // Windows ignores `/` after a `\\?\` prefix, so a verbatim path saved
+        // by an older UI (`...\test data/`) must be repaired before browsing.
+        assert_eq!(
+            repair_verbatim_separators(r"\\?\G:\videnoa\test data/"),
+            r"\\?\G:\videnoa\test data\"
+        );
+        assert_eq!(
+            repair_verbatim_separators(r"\\?\UNC\server\share/dir/"),
+            r"\\?\UNC\server\share\dir\"
+        );
+        assert_eq!(
+            repair_verbatim_separators("G:/videnoa/test data/"),
+            "G:/videnoa/test data/"
+        );
+        assert_eq!(repair_verbatim_separators("/home/user/"), "/home/user/");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_browse_fs_accepts_verbatim_input_and_returns_plain_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("test data")).unwrap();
+        std::fs::write(dir.path().join("test data").join("clip.mkv"), b"x").unwrap();
+        // `canonicalize` yields the `\\?\` form on Windows; the old UI appended `/`.
+        let verbatim = format!(
+            "{}/",
+            dir.path()
+                .join("test data")
+                .canonicalize()
+                .unwrap()
+                .display()
+        );
+        assert!(verbatim.starts_with(r"\\?\"), "{verbatim}");
+        let query: String = verbatim
+            .bytes()
+            .map(|b| {
+                if b.is_ascii_alphanumeric() {
+                    char::from(b).to_string()
+                } else {
+                    format!("%{b:02X}")
+                }
+            })
+            .collect();
+
+        let mut app = test_router();
+        let req = Request::builder()
+            .uri(format!("/api/fs/browse?path={query}"))
+            .body(Body::empty())
+            .unwrap();
+        let resp = send_request(&mut app, req).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let entries: Vec<FsEntry> = serde_json::from_slice(&body).unwrap();
+
+        let names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
+        assert_eq!(entries.len(), 1, "{verbatim}: {names:?}");
+        assert_eq!(entries[0].name, "clip.mkv");
+        assert!(!entries[0].path.starts_with(r"\\?\"), "{}", entries[0].path);
+        assert!(
+            entries[0].path.ends_with(r"test data\clip.mkv"),
+            "{}",
+            entries[0].path
+        );
     }
 
     #[cfg(unix)]
@@ -5665,7 +5833,7 @@ mod tests {
                     {"id": "sr", "node_type": "SuperResolution", "params": {"model_path": temp_path_str("model.onnx"), "scale": 2, "tile_size": 0}},
                     {"id": "output", "node_type": "VideoOutput", "params": {
                         "output_path": temp_path_str("out.mp4"), "codec": "libx265", "crf": 18,
-                        "pixel_format": "yuv420p10le", "width": 1920, "height": 1080, "fps": "24"
+                        "pixel_format": "yuv420p10le", "width": 1920, "height": 1080
                     }}
                 ],
                 "connections": [
@@ -5998,8 +6166,11 @@ mod tests {
             .unwrap();
         let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(payload["metrics"].is_object());
-        assert!(payload["metrics"].get("ram_used_bytes").is_some());
-        assert!(payload["metrics"].get("ram_total_bytes").is_some());
+        // RAM metrics are read from /proc and are only reported on Linux.
+        if cfg!(target_os = "linux") {
+            assert!(payload["metrics"].get("ram_used_bytes").is_some());
+            assert!(payload["metrics"].get("ram_total_bytes").is_some());
+        }
 
         let req = Request::builder()
             .uri("/api/performance/export")

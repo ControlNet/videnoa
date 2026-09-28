@@ -94,7 +94,7 @@ async fn cookie_mutations_require_same_origin_csrf_proof() -> TestResult {
 }
 
 #[tokio::test]
-async fn readiness_fails_when_a_retained_root_is_replaced() -> TestResult {
+async fn readiness_fails_when_a_configured_root_is_unavailable() -> TestResult {
     let fixture = Fixture::new().await?;
     let moved = fixture.workspace.with_extension("replaced");
     fs::rename(&fixture.workspace, &moved)?;

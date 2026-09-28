@@ -1,6 +1,5 @@
 use std::io;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
 
 use cap_fs_ext::{
     ambient_authority, DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt,
@@ -13,8 +12,6 @@ use super::{Identity, PathError};
 #[derive(Clone)]
 pub(super) struct Root {
     ambient_path: PathBuf,
-    directory: Arc<Dir>,
-    identity: Identity,
 }
 
 impl Root {
@@ -48,34 +45,17 @@ impl Root {
                 .map_err(|source| io_error(path, source))?
                 .join(path)
         };
-        let directory = open_absolute_directory(&ambient_path)?;
-        let metadata = directory
-            .dir_metadata()
-            .map_err(|source| io_error(&ambient_path, source))?;
-        Ok(Self {
-            ambient_path,
-            directory: Arc::new(directory),
-            identity: identity(&metadata),
-        })
+        open_absolute_directory(&ambient_path)?;
+        Ok(Self { ambient_path })
     }
 
     pub(super) fn ensure_current(&self) -> Result<(), PathError> {
-        let changed = || PathError::RootChanged {
-            path: self.ambient_path.clone(),
-        };
-        let current = open_absolute_directory(&self.ambient_path).map_err(|_| changed())?;
-        let metadata = current.dir_metadata().map_err(|_| changed())?;
-        if identity(&metadata) != self.identity {
-            return Err(changed());
-        }
+        open_absolute_directory(&self.ambient_path)?;
         Ok(())
     }
 
     pub(super) fn open_directory(&self, relative: &Path) -> Result<Dir, PathError> {
-        let mut directory = self
-            .directory
-            .try_clone()
-            .map_err(|source| io_error(&self.ambient_path, source))?;
+        let mut directory = open_absolute_directory(&self.ambient_path)?;
         let mut traversed = self.ambient_path.clone();
         for component in relative.components() {
             let Component::Normal(name) = component else {
@@ -96,19 +76,14 @@ impl Root {
     }
 
     pub(super) fn clone_directory(&self) -> Result<Dir, PathError> {
-        self.directory
-            .try_clone()
-            .map_err(|source| io_error(&self.ambient_path, source))
+        open_absolute_directory(&self.ambient_path)
     }
 
     pub(super) fn open_nearest_directory(
         &self,
         relative: &Path,
     ) -> Result<(Dir, PathBuf, Vec<PathBuf>), PathError> {
-        let mut directory = self
-            .directory
-            .try_clone()
-            .map_err(|source| io_error(&self.ambient_path, source))?;
+        let mut directory = open_absolute_directory(&self.ambient_path)?;
         let mut existing = PathBuf::new();
         let mut missing = Vec::new();
         let mut traversed = self.ambient_path.clone();

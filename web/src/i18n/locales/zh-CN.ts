@@ -124,6 +124,7 @@ export const zhCNResources: NamespaceResources = {
 		notAvailable: "—",
 	},
 	jobs: {
+		"jobs.page.errors.refresh": "任务列表刷新失败。已提交成功的任务仍会执行，列表将自动重试刷新。",
 		"jobs.page.title": "任务",
 		"jobs.page.summary.total_one": "共 {{count}} 个任务",
 		"jobs.page.summary.total_other": "共 {{count}} 个任务",

@@ -16,7 +16,7 @@ impl RescaleNode {
     pub fn new() -> Self {
         Self {
             scale_factor: 0.0,
-            algorithm: ResizeAlgorithm::Bilinear,
+            algorithm: ResizeAlgorithm::Lanczos,
         }
     }
 }
@@ -44,7 +44,7 @@ impl Node for RescaleNode {
                 name: "algorithm".to_string(),
                 port_type: PortType::Str,
                 required: false,
-                default_value: Some(serde_json::json!("bilinear")),
+                default_value: Some(serde_json::json!("lanczos")),
             },
         ]
     }
@@ -102,30 +102,16 @@ impl FrameProcessor for RescaleNode {
                     );
                 }
 
-                let out_width = (in_w as f64 * self.scale_factor).round() as u32;
-                let out_height = (in_h as f64 * self.scale_factor).round() as u32;
-                if out_width == 0 || out_height == 0 {
-                    bail!(
-                        "scaled dimensions must be positive, got {out_width}x{out_height} from {in_w}x{in_h}"
-                    );
-                }
+                let (out_width, out_height) = rescaled_dimensions(in_w, in_h, self.scale_factor)?;
 
-                let out_data = match self.algorithm {
-                    ResizeAlgorithm::Bilinear => super::resize::resize_bilinear(
-                        data,
-                        in_w as usize,
-                        in_h as usize,
-                        out_width as usize,
-                        out_height as usize,
-                    ),
-                    ResizeAlgorithm::Nearest => super::resize::resize_nearest(
-                        data,
-                        in_w as usize,
-                        in_h as usize,
-                        out_width as usize,
-                        out_height as usize,
-                    ),
-                };
+                let out_data = super::resize::resize_rgb24(
+                    self.algorithm,
+                    data,
+                    in_w as usize,
+                    in_h as usize,
+                    out_width as usize,
+                    out_height as usize,
+                );
 
                 Ok(Frame::CpuRgb {
                     data: out_data,
@@ -137,6 +123,18 @@ impl FrameProcessor for RescaleNode {
             _ => bail!("RescaleNode only supports Frame::CpuRgb input"),
         }
     }
+}
+
+/// Output dimensions of a Rescale by `scale_factor`, rounded to the nearest pixel.
+pub(crate) fn rescaled_dimensions(in_w: u32, in_h: u32, scale_factor: f64) -> Result<(u32, u32)> {
+    let out_width = (in_w as f64 * scale_factor).round() as u32;
+    let out_height = (in_h as f64 * scale_factor).round() as u32;
+    if out_width == 0 || out_height == 0 {
+        bail!(
+            "scaled dimensions must be positive, got {out_width}x{out_height} from {in_w}x{in_h}"
+        );
+    }
+    Ok((out_width, out_height))
 }
 
 #[cfg(test)]
@@ -320,5 +318,26 @@ mod tests {
             }
             _ => panic!("Expected CpuRgb frame"),
         }
+    }
+
+    #[test]
+    fn test_rescaled_dimensions_rounds_like_process_frame() {
+        assert_eq!(rescaled_dimensions(5120, 2880, 0.75).unwrap(), (3840, 2160));
+        assert_eq!(rescaled_dimensions(5, 3, 0.5).unwrap(), (3, 2));
+    }
+
+    #[test]
+    fn test_rescaled_dimensions_rejects_empty_output() {
+        let err = rescaled_dimensions(4, 4, 0.01).unwrap_err();
+        assert!(err.to_string().contains("must be positive"), "{err}");
+    }
+
+    #[test]
+    fn test_rescale_defaults_to_lanczos() {
+        let node = RescaleNode::new();
+        assert_eq!(
+            node.input_ports()[1].default_value,
+            Some(serde_json::json!("lanczos"))
+        );
     }
 }

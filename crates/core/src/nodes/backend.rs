@@ -5,12 +5,13 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, RecvTimeoutError};
-use std::sync::Once;
+use std::sync::{Arc, Once, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use ort::{
+    environment::Environment,
     ep::{CUDAExecutionProvider, ExecutionProvider, TensorRTExecutionProvider},
     memory::{AllocationDevice, Allocator, AllocatorType, MemoryInfo, MemoryType},
     session::{builder::GraphOptimizationLevel, Session},
@@ -156,7 +157,25 @@ fn cache_stats(root: &Path) -> CacheStats {
 ///   - Registers CUDA EP only.
 ///
 /// In both cases, if CUDA EP is also unavailable, ORT falls back to CPU.
+/// Keep the ONNX Runtime environment alive until the process exits.
+///
+/// `ort` releases its global environment from the executable's `.fini_array`.
+/// glibc runs that only after the C++ static destructors that `libonnxruntime`
+/// and the CUDA provider registered with `__cxa_atexit`, so `ReleaseEnv` then
+/// works on destroyed state and corrupts the heap. The process intermittently
+/// aborts with "corrupted double-linked list" in libcuda's destructor after a
+/// successful CUDA job. A reference held by a static is never dropped, so the
+/// environment is never released and the OS reclaims it on exit.
+fn retain_ort_environment() -> Result<()> {
+    static RETAINED: OnceLock<Arc<Environment>> = OnceLock::new();
+    if RETAINED.get().is_none() {
+        let _ = RETAINED.set(ort::environment::current()?);
+    }
+    Ok(())
+}
+
 pub fn build_session(config: &SessionConfig<'_>) -> Result<Session> {
+    retain_ort_environment()?;
     let builder = Session::builder()?
         .with_optimization_level(GraphOptimizationLevel::Level3)
         .map_err(|error| -> ort::Error { error.into() })?;

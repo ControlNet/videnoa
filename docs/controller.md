@@ -204,6 +204,10 @@ Publication first attempts atomic no-replace rename. If it returns `EXDEV`
 move semantics: exclusively create the requested final file, copy and fsync its
 bytes, verify its size/SHA-256, then remove the private source. Absolute output
 paths on other filesystems are accepted at intake.
+On Linux, a rename that returns `EINVAL` also takes this copy fallback; this can
+happen when a filesystem does not support the no-replace rename flag. The rename
+is always attempted first, regardless of filesystem type. Other rename errors
+retain their existing failure handling.
 
 **During the copy fallback, the final filename is visible before copying finishes.**
 Jellyfin or another scanner may observe that incomplete file. Same-mount atomic

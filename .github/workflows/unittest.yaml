@@ -61,6 +61,8 @@ jobs:
         shell: pwsh
         run: protoc --version
       - name: Run Cargo tests
+        # Windows defaults to pwsh, which only fails on the last command.
+        shell: bash
         run: |
           cargo test --locked -p videnoa-transport
           cargo test -p videnoa-core --lib --tests
@@ -288,6 +290,9 @@ jobs:
           bash scripts/package_dist.sh --platform linux64 --release-tag misc --output-dir "$RUNNER_TEMP/dist-linux64" --source-dir "$GITHUB_WORKSPACE" --force
       - name: Verify Linux runtime compatibility
         run: bash scripts/check_linux_package_compat.sh "$RUNNER_TEMP/dist-linux64/videnoa"
+      - name: Verify bundled media tools
+        shell: pwsh
+        run: ./scripts/media_tools.ps1 -Verify -BinDir "$env:RUNNER_TEMP/dist-linux64/videnoa/bin"
       - name: Reclaim build cache for archive headroom
         run: |
           rm -rf "$HOME/.cargo/registry" "$HOME/.cargo/git" "$HOME/.npm"
@@ -354,6 +359,9 @@ jobs:
         shell: pwsh
         run: |
           pwsh -File scripts/package_dist.ps1 -Platform win64 -ReleaseTag misc -OutputDir "$env:RUNNER_TEMP\dist-win64" -SourceDir "$env:GITHUB_WORKSPACE" -FrontendDist "$env:GITHUB_WORKSPACE\web\dist" -Force
+      - name: Verify bundled media tools
+        shell: pwsh
+        run: ./scripts/media_tools.ps1 -Verify -BinDir "$env:RUNNER_TEMP\dist-win64\videnoa\bin"
       - name: Create split archive (2000MB volumes)
         shell: pwsh
         run: |
