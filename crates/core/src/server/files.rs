@@ -201,7 +201,11 @@ fn workflow_response_path(path: &StdPath) -> Result<String, AppError> {
             "failed to read process current directory for file metadata: {error}"
         ))
     })?;
-    let relative = pathdiff::diff_paths(path, &current_dir).ok_or_else(|| {
+    // Canonical paths carry the Windows `\\?\` prefix while the current directory
+    // does not; mismatched prefixes would make the diff absolute.
+    let (plain_path, plain_current_dir) =
+        (dunce::simplified(path), dunce::simplified(&current_dir));
+    let relative = pathdiff::diff_paths(plain_path, plain_current_dir).ok_or_else(|| {
         AppError::Internal(format!(
             "failed to make {} relative to process current directory {}",
             path.display(),

@@ -10,6 +10,7 @@ import {
 	PopoverContent,
 } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
+import { splitPathInput, withTrailingSeparator } from "./path-input-utils";
 
 interface PathAutocompleteProps {
 	value: string;
@@ -36,10 +37,7 @@ export function PathAutocomplete({
 
 			// Split input into directory part + filename prefix for partial matching.
 			// e.g. "/home/user/Do" → dir="/home/user/", namePrefix="do"
-			const lastSlash = input.lastIndexOf("/");
-			const dir = lastSlash >= 0 ? input.slice(0, lastSlash + 1) : input;
-			const namePrefix =
-				lastSlash >= 0 ? input.slice(lastSlash + 1).toLowerCase() : "";
+			const { dir, namePrefix } = splitPathInput(input);
 
 			setLoading(true);
 			browseDirectory(dir)
@@ -78,9 +76,7 @@ export function PathAutocomplete({
 	const handleSelect = useCallback(
 		(entry: FsEntry) => {
 			if (entry.is_dir) {
-				const dirPath = entry.path.endsWith("/")
-					? entry.path
-					: `${entry.path}/`;
+				const dirPath = withTrailingSeparator(entry.path);
 				onChange(dirPath);
 				fetchSuggestions(dirPath);
 			} else {

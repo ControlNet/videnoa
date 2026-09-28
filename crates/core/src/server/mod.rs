@@ -2178,6 +2178,16 @@ async fn list_fs(
     Ok(Json(entries))
 }
 
+/// Windows treats `/` literally after a `\\?\` prefix. Older UI versions
+/// appended `/` to such paths, so switch them to `\` before browsing.
+fn repair_verbatim_separators(raw: &str) -> std::borrow::Cow<'_, str> {
+    if raw.starts_with(r"\\?\") {
+        std::borrow::Cow::Owned(raw.replace('/', "\\"))
+    } else {
+        std::borrow::Cow::Borrowed(raw)
+    }
+}
+
 async fn browse_fs(
     axum::extract::Query(params): axum::extract::Query<FsBrowseQuery>,
 ) -> Result<Json<Vec<FsEntry>>, AppError> {
@@ -2198,12 +2208,14 @@ async fn browse_fs(
         raw_path.to_string()
     };
 
-    let browse_dir = PathBuf::from(resolved_path);
+    let browse_dir = PathBuf::from(repair_verbatim_separators(&resolved_path).as_ref());
     if !browse_dir.exists() || !browse_dir.is_dir() {
         return Ok(Json(vec![]));
     }
 
-    let canonical_browse = browse_dir.canonicalize().map_err(|e| {
+    // `dunce` drops the Windows `\\?\` prefix when the plain form is equivalent;
+    // the UI appends `/` to returned paths, which Windows ignores after that prefix.
+    let canonical_browse = dunce::canonicalize(&browse_dir).map_err(|e| {
         AppError::Internal(format!(
             "failed to canonicalize browse dir {}: {e}",
             browse_dir.display()
@@ -2235,7 +2247,7 @@ async fn browse_fs(
             continue;
         }
 
-        let canonical_entry = match entry.path().canonicalize() {
+        let canonical_entry = match dunce::canonicalize(entry.path()) {
             Ok(path) => path,
             Err(_) => continue,
         };
@@ -5393,13 +5405,17 @@ mod tests {
     #[tokio::test]
     async fn test_fs_list_traversal_blocked() {
         let dir = std::env::temp_dir().join(format!("videnoa-fs-trav-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        // An existing sibling target, so the traversal check is reached on every
+        // platform instead of short-circuiting on a missing `/etc`.
+        std::fs::create_dir_all(dir.join("models")).unwrap();
+        std::fs::create_dir_all(dir.join("outside")).unwrap();
+        std::fs::write(dir.join("outside").join("secret.txt"), b"secret").unwrap();
 
-        let state = fs_test_state(dir.clone());
+        let state = fs_test_state(dir.join("models"));
         let mut app = app_router(state);
 
         let req = Request::builder()
-            .uri("/api/fs/list?base=models&prefix=../../../etc/passwd")
+            .uri("/api/fs/list?base=models&prefix=../outside/secret.txt")
             .body(Body::empty())
             .unwrap();
         let resp = send_request(&mut app, req).await;
@@ -5489,8 +5505,77 @@ mod tests {
         assert!(!entries.is_empty());
 
         if let Some(first) = entries.first() {
-            assert!(first.path.starts_with('/'));
+            assert!(StdPath::new(&first.path).is_absolute(), "{}", first.path);
+            assert!(!first.path.starts_with(r"\\?\"), "{}", first.path);
         }
+    }
+
+    #[test]
+    fn verbatim_browse_input_uses_backslash_separators() {
+        // Windows ignores `/` after a `\\?\` prefix, so a verbatim path saved
+        // by an older UI (`...\test data/`) must be repaired before browsing.
+        assert_eq!(
+            repair_verbatim_separators(r"\\?\G:\videnoa\test data/"),
+            r"\\?\G:\videnoa\test data\"
+        );
+        assert_eq!(
+            repair_verbatim_separators(r"\\?\UNC\server\share/dir/"),
+            r"\\?\UNC\server\share\dir\"
+        );
+        assert_eq!(
+            repair_verbatim_separators("G:/videnoa/test data/"),
+            "G:/videnoa/test data/"
+        );
+        assert_eq!(repair_verbatim_separators("/home/user/"), "/home/user/");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_browse_fs_accepts_verbatim_input_and_returns_plain_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("test data")).unwrap();
+        std::fs::write(dir.path().join("test data").join("clip.mkv"), b"x").unwrap();
+        // `canonicalize` yields the `\\?\` form on Windows; the old UI appended `/`.
+        let verbatim = format!(
+            "{}/",
+            dir.path()
+                .join("test data")
+                .canonicalize()
+                .unwrap()
+                .display()
+        );
+        assert!(verbatim.starts_with(r"\\?\"), "{verbatim}");
+        let query: String = verbatim
+            .bytes()
+            .map(|b| {
+                if b.is_ascii_alphanumeric() {
+                    char::from(b).to_string()
+                } else {
+                    format!("%{b:02X}")
+                }
+            })
+            .collect();
+
+        let mut app = test_router();
+        let req = Request::builder()
+            .uri(format!("/api/fs/browse?path={query}"))
+            .body(Body::empty())
+            .unwrap();
+        let resp = send_request(&mut app, req).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let entries: Vec<FsEntry> = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(entries.len(), 1, "{verbatim}: {entries:?}");
+        assert_eq!(entries[0].name, "clip.mkv");
+        assert!(!entries[0].path.starts_with(r"\\?\"), "{}", entries[0].path);
+        assert!(
+            entries[0].path.ends_with(r"test data\clip.mkv"),
+            "{}",
+            entries[0].path
+        );
     }
 
     #[cfg(unix)]

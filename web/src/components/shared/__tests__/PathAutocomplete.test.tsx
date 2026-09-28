@@ -129,6 +129,54 @@ describe("PathAutocomplete", () => {
 		expect(onChange).toHaveBeenCalledWith("/home/Documents/");
 	});
 
+	it("appends a backslash when a Windows folder is selected", async () => {
+		const onChange = vi.fn();
+		vi.mocked(browseDirectory).mockResolvedValue([
+			{ name: "test data", is_dir: true, path: "G:\\videnoa\\test data" },
+		]);
+
+		render(<PathAutocomplete value={"G:\\videnoa\\"} onChange={onChange} />);
+		const input = screen.getByPlaceholderText("path/to/file");
+
+		await act(async () => {
+			fireEvent.focus(input);
+			await vi.advanceTimersByTimeAsync(300);
+		});
+		await waitFor(() => {
+			expect(screen.getByText("test data")).toBeInTheDocument();
+		});
+
+		onChange.mockClear();
+		fireEvent.click(screen.getByText("test data"));
+
+		expect(onChange).toHaveBeenCalledWith("G:\\videnoa\\test data\\");
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(300);
+		});
+		expect(browseDirectory).toHaveBeenLastCalledWith("G:\\videnoa\\test data\\");
+	});
+
+	it("filters Windows input by the name after the last backslash", async () => {
+		vi.mocked(browseDirectory).mockResolvedValue([
+			{ name: "test data", is_dir: true, path: "G:\\videnoa\\test data" },
+			{ name: "models", is_dir: true, path: "G:\\videnoa\\models" },
+		]);
+
+		render(<PathAutocomplete value={"G:\\videnoa\\Te"} onChange={vi.fn()} />);
+		const input = screen.getByPlaceholderText("path/to/file");
+
+		await act(async () => {
+			fireEvent.focus(input);
+			await vi.advanceTimersByTimeAsync(300);
+		});
+
+		await waitFor(() => {
+			expect(screen.getByText("test data")).toBeInTheDocument();
+		});
+		expect(browseDirectory).toHaveBeenCalledWith("G:\\videnoa\\");
+		expect(screen.queryByText("models")).not.toBeInTheDocument();
+	});
+
 	it("shows localized empty text in zh-CN", async () => {
 		await i18n.changeLanguage("zh-CN");
 		vi.mocked(browseDirectory)
