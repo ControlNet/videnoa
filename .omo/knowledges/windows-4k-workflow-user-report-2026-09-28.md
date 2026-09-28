@@ -109,9 +109,23 @@ gitignored `.omo/tmp-issue.md`. Analysis was done on `dev` at 48a6335
   `fdc08e43dc7aaabf6eed1c1fe5c9b107e13ba37d6e1e2f5c421600d7223a34a6`, and it
   is the BtbN LGPL build `N-122942-gc7b5f1537d-20260222`. To roll back, run
   `gh release upload misc <backup> --clobber`.
-- Remaining work:
-  - add an encoder pre-check at job validation;
-  - a release: v0.1.5 archives still bundle the old LGPL ffmpeg.
+- Encoder pre-check: `nodes/encoder_availability.rs::validate_workflow_encoders`.
+  - It runs after `validate_video_workflow` in the server's
+    `parse_and_validate_workflow` (HTTP 400) and in the CLI validate step.
+  - It collects the `codec` of each VideoOutput (default libx265) and
+    StreamOutput (default libx264). A `codec` fed by a connection is skipped,
+    since it is only known at run time.
+  - It compares them with `ffmpeg -hide_banner -encoders` from
+    `runtime::command_for("ffmpeg")`, probed once per process (`OnceLock`).
+  - When the probe fails or lists no encoders, the check is skipped so tests
+    and unusual builds are not blocked.
+  - The error names the node, the missing encoder and the offered encoders
+    this FFmpeg does have, and points to GPL builds.
+  - `tests/encoder_availability.rs` is its own process. It changes CWD to a
+    temp dir whose `bin/ffmpeg` lists only NVENC, expects 400 for the default
+    libx265 and 201 for hevc_nvenc. It fails when the server wiring is
+    removed.
+- Remaining: a release. The v0.1.5 archives still bundle the old LGPL ffmpeg.
 
 ## Confirmed from code / artifacts
 

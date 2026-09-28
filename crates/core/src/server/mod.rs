@@ -47,6 +47,7 @@ use crate::jellyfin::{ItemQuery, JellyfinClient};
 use crate::model_inspect::{self, ModelInspection};
 use crate::model_registry::{ModelEntry, ModelRegistry};
 use crate::nodes::compile_context::{validate_video_workflow, VideoCompileContext};
+use crate::nodes::encoder_availability::validate_workflow_encoders;
 use crate::registry::{register_all_nodes, NodeRegistry};
 use crate::streaming_executor::ProgressCallback;
 use idempotency::{IdempotencyKey, RequestFingerprint};
@@ -1412,6 +1413,7 @@ fn parse_and_validate_workflow(
     workflow
         .validate(&state.inner.node_registry)
         .and_then(|()| validate_video_workflow(&workflow))
+        .and_then(|()| validate_workflow_encoders(&workflow))
         .map_err(|e| AppError::BadRequest(format!("workflow validation failed: {e:#}")))?;
 
     Ok(workflow)
