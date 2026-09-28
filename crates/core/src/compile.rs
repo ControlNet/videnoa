@@ -362,6 +362,23 @@ fn has_video_frames_ports(
     Ok(graph.has_video_frames_edges())
 }
 
+/// Node types of the processing nodes between the VideoFrames source and sink,
+/// in execution order. Empty when the graph has no VideoFrames edges.
+pub fn video_processing_node_types(graph: &PipelineGraph) -> Result<Vec<String>> {
+    if !graph.has_video_frames_edges() {
+        return Ok(Vec::new());
+    }
+    Ok(graph
+        .execution_order()?
+        .into_iter()
+        .filter(|&node_idx| {
+            count_video_frames_edges(graph, node_idx, Direction::Incoming) > 0
+                && count_video_frames_edges(graph, node_idx, Direction::Outgoing) > 0
+        })
+        .map(|node_idx| graph.node(node_idx).node_type.clone())
+        .collect())
+}
+
 /// Validate that the VideoFrames sub-graph is strictly linear: every node has
 /// at most 1 incoming VF edge and at most 1 outgoing VF edge.
 pub(crate) fn validate_linear_topology(
@@ -1420,7 +1437,6 @@ mod tests {
                     ("pixel_format".to_string(), serde_json::json!("yuv444p")),
                     ("width".to_string(), serde_json::json!(1920)),
                     ("height".to_string(), serde_json::json!(1080)),
-                    ("fps".to_string(), serde_json::json!("24/1")),
                 ]),
             })
             .expect("sink node should be added");

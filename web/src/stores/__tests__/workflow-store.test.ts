@@ -73,9 +73,8 @@ const MOCK_DESCRIPTORS: NodeDescriptor[] = [
       { name: 'codec', port_type: 'Str', direction: 'param', required: false, default_value: 'libx265', ui_hint: null, enum_options: ['libx265', 'libx264'], dynamic_type_param: null },
       { name: 'crf', port_type: 'Int', direction: 'param', required: false, default_value: 18, ui_hint: null, enum_options: null, dynamic_type_param: null },
       { name: 'pixel_format', port_type: 'Str', direction: 'param', required: false, default_value: 'yuv420p10le', ui_hint: null, enum_options: ['yuv420p10le', 'yuv420p'], dynamic_type_param: null },
-      { name: 'width', port_type: 'Int', direction: 'param', required: true, default_value: null, ui_hint: null, enum_options: null, dynamic_type_param: null },
-      { name: 'height', port_type: 'Int', direction: 'param', required: true, default_value: null, ui_hint: null, enum_options: null, dynamic_type_param: null },
-      { name: 'fps', port_type: 'Str', direction: 'param', required: true, default_value: null, ui_hint: null, enum_options: null, dynamic_type_param: null },
+      { name: 'width', port_type: 'Int', direction: 'param', required: false, default_value: null, ui_hint: null, enum_options: null, dynamic_type_param: null },
+      { name: 'height', port_type: 'Int', direction: 'param', required: false, default_value: null, ui_hint: null, enum_options: null, dynamic_type_param: null },
     ],
     outputs: [
       { name: 'output_path', port_type: 'Path', direction: 'param', required: true, default_value: null, ui_hint: null, enum_options: null, dynamic_type_param: null },
@@ -305,6 +304,21 @@ describe('exportWorkflow', () => {
     expect(workflow.nodes[1].params.interface_outputs).toEqual([
       { name: 'result', port_type: 'Path' },
     ]);
+  });
+});
+
+describe('updateNodeParams param removal', () => {
+  it('removes params set to undefined so they fall back to their defaults', () => {
+    useWorkflowStore.setState({
+      nodes: [makeNode('video-output', 'VideoOutput', { width: 3840, height: 2160, crf: 16 })],
+      edges: [],
+    });
+
+    useWorkflowStore.getState().updateNodeParams('video-output', { width: undefined });
+
+    const node = useWorkflowStore.getState().nodes.find((n) => n.id === 'video-output');
+    expect(node?.data.params).toEqual({ height: 2160, crf: 16 });
+    expect('width' in (node?.data.params ?? {})).toBe(false);
   });
 });
 

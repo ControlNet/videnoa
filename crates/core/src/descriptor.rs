@@ -66,6 +66,14 @@ fn param_required(name: &str, port_type: &str) -> PortDescriptor {
     }
 }
 
+/// Helper to build an optional param port descriptor without a default value.
+fn param_optional(name: &str, port_type: &str) -> PortDescriptor {
+    PortDescriptor {
+        required: false,
+        ..param_required(name, port_type)
+    }
+}
+
 /// Helper to build an optional param port descriptor with a default value.
 fn param_opt(name: &str, port_type: &str, default: serde_json::Value) -> PortDescriptor {
     PortDescriptor {
@@ -77,6 +85,18 @@ fn param_opt(name: &str, port_type: &str, default: serde_json::Value) -> PortDes
         ui_hint: None,
         enum_options: None,
         dynamic_type_param: None,
+    }
+}
+
+fn resize_algorithm_param() -> PortDescriptor {
+    PortDescriptor {
+        enum_options: Some(
+            ["lanczos", "bilinear", "nearest"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        ),
+        ..param_opt("algorithm", "Str", serde_json::json!("lanczos"))
     }
 }
 
@@ -221,9 +241,8 @@ pub fn all_node_descriptors() -> Vec<NodeDescriptor> {
                     ]),
                     ..param_opt("pixel_format", "Str", serde_json::json!("yuv420p10le"))
                 },
-                param_required("width", "Int"),
-                param_required("height", "Int"),
-                param_required("fps", "Str"),
+                param_optional("width", "Int"),
+                param_optional("height", "Int"),
             ],
             outputs: vec![
                 // param: from VideoOutputNode::output_ports()
@@ -248,10 +267,7 @@ pub fn all_node_descriptors() -> Vec<NodeDescriptor> {
                 // param: from ResizeNode::input_ports()
                 param_required("width", "Int"),
                 param_required("height", "Int"),
-                PortDescriptor {
-                    enum_options: Some(vec!["bilinear".to_string(), "nearest".to_string()]),
-                    ..param_opt("algorithm", "Str", serde_json::json!("bilinear"))
-                },
+                resize_algorithm_param(),
             ],
             outputs: vec![stream("frames", "VideoFrames")],
         },
@@ -264,10 +280,7 @@ pub fn all_node_descriptors() -> Vec<NodeDescriptor> {
             inputs: vec![
                 stream("frames", "VideoFrames"),
                 param_required("scale_factor", "Float"),
-                PortDescriptor {
-                    enum_options: Some(vec!["bilinear".to_string(), "nearest".to_string()]),
-                    ..param_opt("algorithm", "Str", serde_json::json!("bilinear"))
-                },
+                resize_algorithm_param(),
             ],
             outputs: vec![stream("frames", "VideoFrames")],
         },
@@ -798,6 +811,54 @@ mod tests {
         assert!(input_names.contains(&"cq_value"));
         assert!(input_names.contains(&"nvenc_preset"));
         assert!(input_names.contains(&"x265_preset"));
+    }
+
+    #[test]
+    fn test_video_output_descriptor_dimensions_are_optional_and_fps_is_gone() {
+        let descs = all_node_descriptors();
+        let output = descs
+            .iter()
+            .find(|descriptor| descriptor.node_type == "VideoOutput")
+            .expect("VideoOutput descriptor should exist");
+
+        for name in ["width", "height"] {
+            let port = output
+                .inputs
+                .iter()
+                .find(|port| port.name == name)
+                .unwrap_or_else(|| panic!("VideoOutput should expose {name}"));
+            assert!(!port.required, "{name} should be optional");
+            assert_eq!(port.default_value, None);
+        }
+        assert!(output.inputs.iter().all(|port| port.name != "fps"));
+    }
+
+    #[test]
+    fn test_output_resize_descriptors_default_to_lanczos() {
+        let descs = all_node_descriptors();
+        for node_type in ["Resize", "Rescale"] {
+            let algorithm = descs
+                .iter()
+                .find(|descriptor| descriptor.node_type == node_type)
+                .and_then(|descriptor| {
+                    descriptor
+                        .inputs
+                        .iter()
+                        .find(|port| port.name == "algorithm")
+                })
+                .unwrap_or_else(|| panic!("{node_type} should expose algorithm"));
+            assert_eq!(algorithm.default_value, Some(serde_json::json!("lanczos")));
+            assert_eq!(
+                algorithm.enum_options.as_deref(),
+                Some(
+                    &[
+                        "lanczos".to_string(),
+                        "bilinear".to_string(),
+                        "nearest".to_string()
+                    ][..]
+                )
+            );
+        }
     }
 
     #[test]

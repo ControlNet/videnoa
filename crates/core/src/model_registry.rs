@@ -96,6 +96,15 @@ fn builtin_catalog() -> Vec<ModelEntry> {
     ]
 }
 
+/// Native upscale factor of a built-in super-resolution model, matched by file name.
+pub fn builtin_model_scale(model_path: &Path) -> Option<u32> {
+    let file_name = model_path.file_name()?.to_str()?;
+    builtin_catalog()
+        .into_iter()
+        .find(|entry| entry.filename == file_name)
+        .and_then(|entry| entry.scale)
+}
+
 pub struct ModelRegistry {
     models_dir: PathBuf,
     entries: Vec<ModelEntry>,
@@ -327,6 +336,7 @@ fn sha256_file(path: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use std::fs;
 
     #[test]
@@ -672,5 +682,27 @@ mod tests {
 
     fn cleanup(dir: &Path) {
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn builtin_scale_is_resolved_from_the_model_file_name() {
+        assert_eq!(
+            builtin_model_scale(Path::new("models/RealESRGAN_x4plus_anime_6B.onnx")),
+            Some(4)
+        );
+        assert_eq!(
+            builtin_model_scale(Path::new(
+                "/opt/videnoa/models/the_database_AnimeJaNaiV3L1_sharp_HD_x2_fp16_op17.onnx"
+            )),
+            Some(2)
+        );
+        assert_eq!(
+            builtin_model_scale(Path::new("models/custom_x4.onnx")),
+            None
+        );
+        assert_eq!(
+            builtin_model_scale(Path::new("models/rife_v4.26.onnx")),
+            None
+        );
     }
 }

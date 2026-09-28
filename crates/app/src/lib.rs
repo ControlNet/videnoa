@@ -16,7 +16,7 @@ use videnoa_core::logging::{
     self, FileSinkPlan, LoggingInitOptions, PanicHookInstallPlan, RuntimeLogMode,
     DEFAULT_LOG_FILTER,
 };
-use videnoa_core::nodes::compile_context::VideoCompileContext;
+use videnoa_core::nodes::compile_context::{validate_video_workflow, VideoCompileContext};
 use videnoa_core::registry::{register_all_nodes, NodeRegistry};
 use videnoa_core::server::{app_router_with_static, app_state_with_config};
 use videnoa_core::types::PortData;
@@ -639,6 +639,7 @@ async fn run_workflow(
     info!("Validating workflow...");
     graph
         .validate(&registry)
+        .and_then(|()| validate_video_workflow(&graph))
         .context("Workflow validation failed")?;
 
     if !all_params.is_empty() {

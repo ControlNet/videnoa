@@ -15,8 +15,17 @@ use anyhow::{bail, Context, Result};
 use tracing::{debug, info, warn};
 
 use crate::node::{ExecutionContext, Node, PortDefinition};
+use crate::nodes::resize::ResizeAlgorithm;
 use crate::streaming_executor::FrameSink;
 use crate::types::{Frame, PortData, PortType};
+
+/// One spatial resample applied by FFmpeg before pixel-format conversion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutputScale {
+    pub width: u32,
+    pub height: u32,
+    pub algorithm: ResizeAlgorithm,
+}
 
 #[derive(Debug, Clone)]
 pub struct EncoderConfig {
@@ -30,9 +39,9 @@ pub struct EncoderConfig {
     pub crf: i64,
     /// Output pixel format (e.g. "yuv420p10le").
     pub pixel_format: String,
-    /// Output video width.
+    /// Width of the raw frames written to the FFmpeg pipe.
     pub width: u32,
-    /// Output video height.
+    /// Height of the raw frames written to the FFmpeg pipe.
     pub height: u32,
     /// Frame rate as rational string (e.g. "24000/1001").
     pub fps: String,
@@ -44,9 +53,20 @@ pub struct EncoderConfig {
     pub nvenc_preset: Option<String>,
     /// Software encoder preset (e.g. "medium", "slow", "veryslow" for x265/x264).
     pub x265_preset: Option<String>,
+    /// Resamples applied in order to the piped frames before encoding.
+    pub output_scales: Vec<OutputScale>,
 }
 
 impl EncoderConfig {
+    /// Final encoded resolution after all output scales.
+    pub fn output_dimensions(&self) -> (u32, u32) {
+        self.output_scales
+            .last()
+            .map_or((self.width, self.height), |scale| {
+                (scale.width, scale.height)
+            })
+    }
+
     fn is_nvenc(&self) -> bool {
         self.codec == "hevc_nvenc" || self.codec == "h264_nvenc"
     }
@@ -142,8 +162,22 @@ impl EncoderConfig {
         // Fix: use swscale via `format=` to convert RGB→YUV first, then `setparams`
         // to label the BT.709 colorspace metadata, then `zscale` for limited-range
         // conversion with dithering.
+        // Scaling precedes `format=` so swscale resamples and converts to the
+        // output pixel format in one pass.
+        let scale_filters: String = self
+            .output_scales
+            .iter()
+            .map(|scale| {
+                format!(
+                    "scale={}:{}:flags={}+accurate_rnd+full_chroma_int,",
+                    scale.width,
+                    scale.height,
+                    scale.algorithm.ffmpeg_flag()
+                )
+            })
+            .collect();
         let vf_filter = format!(
-            "format={pf},setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709,\
+            "{scale_filters}format={pf},setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709,\
              zscale=range=limited:dither=error_diffusion,setsar=1",
             pf = self.pixel_format,
         );
@@ -251,6 +285,8 @@ pub struct VideoEncoder {
     stdin: Option<ChildStdin>,
     stderr_thread: Option<JoinHandle<()>>,
     frame_size: usize,
+    /// Pipe bit depth; RGB frames of another depth are converted before writing.
+    bit_depth: u8,
     output_path: PathBuf,
 }
 
@@ -295,9 +331,12 @@ impl VideoEncoder {
             }
         });
 
+        let (output_width, output_height) = config.output_dimensions();
         debug!(
             width = config.width,
             height = config.height,
+            output_width,
+            output_height,
             fps = %config.fps,
             codec = %config.codec,
             crf = config.crf,
@@ -310,6 +349,7 @@ impl VideoEncoder {
             stdin: Some(stdin),
             stderr_thread: Some(stderr_thread),
             frame_size,
+            bit_depth: config.bit_depth,
             output_path: config.output_path.clone(),
         })
     }
@@ -369,17 +409,55 @@ impl Drop for VideoEncoder {
     }
 }
 
+impl VideoEncoder {
+    fn write_rgb24(&mut self, rgb: &[u8]) -> Result<()> {
+        if self.bit_depth > 8 {
+            VideoEncoder::write_frame(self, &rgb24_to_rgb48le(rgb))
+        } else {
+            VideoEncoder::write_frame(self, rgb)
+        }
+    }
+}
+
+fn rgb48le_to_rgb24(data: &[u8]) -> Result<Vec<u8>> {
+    let (samples, remainder) = data.as_chunks::<2>();
+    anyhow::ensure!(
+        remainder.is_empty(),
+        "RGB48 frame has an odd byte length {}",
+        data.len()
+    );
+    Ok(samples
+        .iter()
+        .map(|sample| {
+            let value = u32::from(u16::from_le_bytes(*sample));
+            ((value * 255 + 32_767) / 65_535) as u8
+        })
+        .collect())
+}
+
+fn rgb24_to_rgb48le(data: &[u8]) -> Vec<u8> {
+    data.iter()
+        .flat_map(|&value| (u16::from(value) * 257).to_le_bytes())
+        .collect()
+}
+
 impl FrameSink for VideoEncoder {
     fn write_frame(&mut self, frame: &Frame) -> Result<()> {
         match frame {
-            Frame::CpuRgb { data, .. } => VideoEncoder::write_frame(self, data),
+            Frame::CpuRgb {
+                data, bit_depth, ..
+            } => match (*bit_depth > 8, self.bit_depth > 8) {
+                (true, false) => VideoEncoder::write_frame(self, &rgb48le_to_rgb24(data)?),
+                (false, true) => VideoEncoder::write_frame(self, &rgb24_to_rgb48le(data)),
+                _ => VideoEncoder::write_frame(self, data),
+            },
             Frame::NchwF16 {
                 data,
                 height,
                 width,
             } => {
                 let rgb = nchw_f16_to_rgb(data, *height as usize, *width as usize)?;
-                VideoEncoder::write_frame(self, &rgb)
+                self.write_rgb24(&rgb)
             }
             Frame::NchwF32 {
                 data,
@@ -387,7 +465,7 @@ impl FrameSink for VideoEncoder {
                 width,
             } => {
                 let rgb = nchw_f32_to_rgb(data, *height as usize, *width as usize)?;
-                VideoEncoder::write_frame(self, &rgb)
+                self.write_rgb24(&rgb)
             }
             _ => bail!("unsupported Frame variant for encoding"),
         }
@@ -533,22 +611,17 @@ impl Node for VideoOutputNode {
                 required: false,
                 default_value: Some(serde_json::json!("yuv420p10le")),
             },
+            // Optional final output size; applied as an FFmpeg scale before encoding.
             PortDefinition {
                 name: "width".to_string(),
                 port_type: PortType::Int,
-                required: true,
+                required: false,
                 default_value: None,
             },
             PortDefinition {
                 name: "height".to_string(),
                 port_type: PortType::Int,
-                required: true,
-                default_value: None,
-            },
-            PortDefinition {
-                name: "fps".to_string(),
-                port_type: PortType::Str,
-                required: true,
+                required: false,
                 default_value: None,
             },
         ]
@@ -578,30 +651,8 @@ impl Node for VideoOutputNode {
             _ => bail!("missing or invalid 'output_path' input (expected Path)"),
         };
 
-        let width = match inputs.get("width") {
-            Some(PortData::Int(w)) => {
-                if *w <= 0 {
-                    bail!("width must be positive, got {}", w);
-                }
-                *w as u32
-            }
-            _ => bail!("missing or invalid 'width' input (expected Int)"),
-        };
-
-        let height = match inputs.get("height") {
-            Some(PortData::Int(h)) => {
-                if *h <= 0 {
-                    bail!("height must be positive, got {}", h);
-                }
-                *h as u32
-            }
-            _ => bail!("missing or invalid 'height' input (expected Int)"),
-        };
-
-        let fps = match inputs.get("fps") {
-            Some(PortData::Str(s)) => s.clone(),
-            _ => bail!("missing or invalid 'fps' input (expected Str)"),
-        };
+        let width = optional_positive_dimension(inputs, "width")?;
+        let height = optional_positive_dimension(inputs, "height")?;
 
         let codec = match inputs.get("codec") {
             Some(PortData::Str(s)) => s.clone(),
@@ -628,9 +679,8 @@ impl Node for VideoOutputNode {
             codec = %codec,
             crf = crf,
             pix_fmt = %pixel_format,
-            width = width,
-            height = height,
-            fps = %fps,
+            width = ?width,
+            height = ?height,
             "video output config validated"
         );
 
@@ -640,80 +690,23 @@ impl Node for VideoOutputNode {
     }
 }
 
-pub fn encoder_config_from_inputs(
+/// Read an optional positive `width`/`height` input.
+pub(crate) fn optional_positive_dimension(
     inputs: &HashMap<String, PortData>,
-    bit_depth: u8,
-) -> Result<EncoderConfig> {
-    let source_path = match inputs.get("source_path") {
-        Some(PortData::Path(p)) => p.clone(),
-        _ => bail!("missing or invalid 'source_path' input"),
-    };
-
-    let output_path = match inputs.get("output_path") {
-        Some(PortData::Path(p)) => p.clone(),
-        _ => bail!("missing or invalid 'output_path' input"),
-    };
-
-    let width = match inputs.get("width") {
-        Some(PortData::Int(w)) => *w as u32,
-        _ => bail!("missing or invalid 'width' input"),
-    };
-
-    let height = match inputs.get("height") {
-        Some(PortData::Int(h)) => *h as u32,
-        _ => bail!("missing or invalid 'height' input"),
-    };
-
-    let fps = match inputs.get("fps") {
-        Some(PortData::Str(s)) => s.clone(),
-        _ => bail!("missing or invalid 'fps' input"),
-    };
-
-    let codec = match inputs.get("codec") {
-        Some(PortData::Str(s)) => s.clone(),
-        _ => "libx265".to_string(),
-    };
-
-    let crf = match inputs.get("crf") {
-        Some(PortData::Int(v)) => *v,
-        _ => 18,
-    };
-
-    let requested_pixel_format = match inputs.get("pixel_format") {
-        Some(PortData::Str(s)) => s.as_str(),
-        _ => default_pixel_format_for_codec(&codec),
-    };
-    let pixel_format = compatible_pixel_format(&codec, requested_pixel_format).to_string();
-
-    let cq_value = match inputs.get("cq_value") {
-        Some(PortData::Int(value)) => Some(*value),
-        _ => None,
-    };
-
-    let nvenc_preset = match inputs.get("nvenc_preset") {
-        Some(PortData::Str(value)) => Some(value.clone()),
-        _ => None,
-    };
-
-    let x265_preset = match inputs.get("x265_preset") {
-        Some(PortData::Str(value)) => Some(value.clone()),
-        _ => None,
-    };
-
-    Ok(EncoderConfig {
-        source_path,
-        output_path,
-        codec,
-        crf,
-        pixel_format,
-        width,
-        height,
-        fps,
-        bit_depth,
-        cq_value,
-        nvenc_preset,
-        x265_preset,
-    })
+    name: &str,
+) -> Result<Option<u32>> {
+    match inputs.get(name) {
+        Some(PortData::Int(value)) => {
+            if *value <= 0 {
+                bail!("{name} must be positive, got {value}");
+            }
+            u32::try_from(*value)
+                .map(Some)
+                .with_context(|| format!("{name} is too large: {value}"))
+        }
+        Some(_) => bail!("invalid '{name}' input (expected Int)"),
+        None => Ok(None),
+    }
 }
 
 pub(crate) fn default_pixel_format_for_codec(codec: &str) -> &'static str {
@@ -880,6 +873,7 @@ mod tests {
             cq_value: None,
             nvenc_preset: None,
             x265_preset: None,
+            output_scales: Vec::new(),
         }
     }
 
@@ -1033,6 +1027,71 @@ mod tests {
         assert!(args.contains(&"24000/1001".to_string()));
     }
 
+    fn output_scale(width: u32, height: u32, algorithm: ResizeAlgorithm) -> OutputScale {
+        OutputScale {
+            width,
+            height,
+            algorithm,
+        }
+    }
+
+    fn video_filter(config: &EncoderConfig) -> String {
+        let args = config.build_ffmpeg_args();
+        let vf_idx = args.iter().position(|a| a == "-vf").unwrap();
+        args[vf_idx + 1].clone()
+    }
+
+    #[test]
+    fn output_scales_resample_before_pixel_format_conversion() {
+        let mut config = default_config();
+        config.width = 5120;
+        config.height = 2880;
+        config.output_scales = vec![output_scale(3840, 2160, ResizeAlgorithm::Lanczos)];
+
+        let args = config.build_ffmpeg_args();
+        let size_idx = args.iter().position(|a| a == "-s").unwrap();
+        assert_eq!(
+            args[size_idx + 1],
+            "5120x2880",
+            "pipe input keeps the upstream size"
+        );
+
+        let vf = video_filter(&config);
+        assert!(
+            vf.starts_with(
+                "scale=3840:2160:flags=lanczos+accurate_rnd+full_chroma_int,format=yuv420p10le,"
+            ),
+            "vf: {vf}"
+        );
+        assert_eq!(config.output_dimensions(), (3840, 2160));
+    }
+
+    #[test]
+    fn output_scales_are_applied_in_order() {
+        let mut config = default_config();
+        config.output_scales = vec![
+            output_scale(1920, 1080, ResizeAlgorithm::Bilinear),
+            output_scale(1280, 720, ResizeAlgorithm::Nearest),
+        ];
+
+        let vf = video_filter(&config);
+        assert!(
+            vf.starts_with(
+                "scale=1920:1080:flags=bilinear+accurate_rnd+full_chroma_int,\
+                 scale=1280:720:flags=neighbor+accurate_rnd+full_chroma_int,format="
+            ),
+            "vf: {vf}"
+        );
+        assert_eq!(config.output_dimensions(), (1280, 720));
+    }
+
+    #[test]
+    fn video_filter_without_output_scales_starts_with_format() {
+        let config = default_config();
+        assert!(video_filter(&config).starts_with("format=yuv420p10le,"));
+        assert_eq!(config.output_dimensions(), (3840, 2160));
+    }
+
     #[test]
     fn matroska_output_preserves_source_default_track_flags() {
         // Given: an MKV output whose source can contain multiple default tracks.
@@ -1085,7 +1144,7 @@ mod tests {
         let node = VideoOutputNode::new();
         let ports = node.input_ports();
 
-        assert_eq!(ports.len(), 11);
+        assert_eq!(ports.len(), 10);
 
         let names: Vec<&str> = ports.iter().map(|p| p.name.as_str()).collect();
         assert!(names.contains(&"source_path"));
@@ -1098,7 +1157,7 @@ mod tests {
         assert!(names.contains(&"x265_preset"));
         assert!(names.contains(&"width"));
         assert!(names.contains(&"height"));
-        assert!(names.contains(&"fps"));
+        assert!(!names.contains(&"fps"));
 
         let required: Vec<&str> = ports
             .iter()
@@ -1107,9 +1166,8 @@ mod tests {
             .collect();
         assert!(required.contains(&"source_path"));
         assert!(required.contains(&"output_path"));
-        assert!(required.contains(&"width"));
-        assert!(required.contains(&"height"));
-        assert!(required.contains(&"fps"));
+        assert!(!required.contains(&"width"));
+        assert!(!required.contains(&"height"));
         assert!(!required.contains(&"codec"));
         assert!(!required.contains(&"crf"));
         assert!(!required.contains(&"pixel_format"));
@@ -1139,22 +1197,26 @@ mod tests {
     }
 
     #[test]
-    fn test_node_execute_missing_width() {
+    fn test_node_execute_accepts_missing_dimensions() {
+        let source = tempfile::NamedTempFile::with_suffix(".mkv").unwrap();
         let mut node = VideoOutputNode::new();
         let ctx = ExecutionContext::default();
         let mut inputs = HashMap::new();
         inputs.insert(
             "source_path".to_string(),
-            PortData::Path(test_source_path()),
+            PortData::Path(source.path().to_path_buf()),
         );
         inputs.insert(
             "output_path".to_string(),
             PortData::Path(test_output_path()),
         );
-        let result = node.execute(&inputs, &ctx);
-        assert!(result.is_err());
-        let msg = result.err().expect("should be Err").to_string();
-        assert!(msg.contains("width"), "error: {msg}");
+        let outputs = node
+            .execute(&inputs, &ctx)
+            .expect("width, height and fps are not required");
+        assert!(matches!(
+            outputs.get("output_path"),
+            Some(PortData::Path(path)) if *path == test_output_path()
+        ));
     }
 
     #[test]
@@ -1172,7 +1234,6 @@ mod tests {
         );
         inputs.insert("width".to_string(), PortData::Int(1920));
         inputs.insert("height".to_string(), PortData::Int(1080));
-        inputs.insert("fps".to_string(), PortData::Str("24000/1001".to_string()));
         let result = node.execute(&inputs, &ctx);
         assert!(result.is_err());
         let msg = result.err().expect("should be Err").to_string();
@@ -1194,70 +1255,10 @@ mod tests {
         );
         inputs.insert("width".to_string(), PortData::Int(-1));
         inputs.insert("height".to_string(), PortData::Int(1080));
-        inputs.insert("fps".to_string(), PortData::Str("24000/1001".to_string()));
         let result = node.execute(&inputs, &ctx);
         assert!(result.is_err());
         let msg = result.err().expect("should be Err").to_string();
         assert!(msg.contains("positive"), "error: {msg}");
-    }
-
-    #[test]
-    fn test_encoder_config_from_inputs_defaults() {
-        let mut inputs = HashMap::new();
-        inputs.insert(
-            "source_path".to_string(),
-            PortData::Path(test_source_path()),
-        );
-        inputs.insert(
-            "output_path".to_string(),
-            PortData::Path(test_output_path()),
-        );
-        inputs.insert("width".to_string(), PortData::Int(3840));
-        inputs.insert("height".to_string(), PortData::Int(2160));
-        inputs.insert("fps".to_string(), PortData::Str("24000/1001".to_string()));
-
-        let config = encoder_config_from_inputs(&inputs, 8).unwrap();
-        assert_eq!(config.codec, "libx265");
-        assert_eq!(config.crf, 18);
-        assert_eq!(config.pixel_format, "yuv420p10le");
-        assert_eq!(config.width, 3840);
-        assert_eq!(config.height, 2160);
-        assert_eq!(config.fps, "24000/1001");
-        assert_eq!(config.bit_depth, 8);
-    }
-
-    #[test]
-    fn test_encoder_config_from_inputs_custom() {
-        let mut inputs = HashMap::new();
-        inputs.insert(
-            "source_path".to_string(),
-            PortData::Path(test_source_path()),
-        );
-        inputs.insert(
-            "output_path".to_string(),
-            PortData::Path(test_output_path()),
-        );
-        inputs.insert("width".to_string(), PortData::Int(1920));
-        inputs.insert("height".to_string(), PortData::Int(1080));
-        inputs.insert("fps".to_string(), PortData::Str("30/1".to_string()));
-        inputs.insert("codec".to_string(), PortData::Str("libx264".to_string()));
-        inputs.insert("crf".to_string(), PortData::Int(22));
-        inputs.insert(
-            "pixel_format".to_string(),
-            PortData::Str("yuv420p".to_string()),
-        );
-        inputs.insert("cq_value".to_string(), PortData::Int(17));
-        inputs.insert("nvenc_preset".to_string(), PortData::Str("p6".to_string()));
-        inputs.insert("x265_preset".to_string(), PortData::Str("slow".to_string()));
-
-        let config = encoder_config_from_inputs(&inputs, 10).unwrap();
-        assert_eq!(config.codec, "libx264");
-        assert_eq!(config.crf, 22);
-        assert_eq!(config.pixel_format, "yuv420p");
-        assert_eq!(config.bit_depth, 10);
-        assert_eq!(config.cq_value, Some(17));
-        assert_eq!(config.nvenc_preset.as_deref(), Some("p6"));
-        assert_eq!(config.x265_preset.as_deref(), Some("slow"));
     }
 
     #[test]
@@ -1442,6 +1443,7 @@ mod tests {
             stdin: Some(stdin),
             stderr_thread: None,
             frame_size,
+            bit_depth: 8,
             output_path: null_path(),
         };
 
@@ -1454,6 +1456,68 @@ mod tests {
 
         FrameSink::write_frame(&mut encoder, &frame).expect("FrameSink write should accept CpuRgb");
         FrameSink::finish(&mut encoder).expect("mock encoder should finish successfully");
+    }
+
+    fn capture_sink_bytes(bit_depth: u8, frame: &Frame) -> Vec<u8> {
+        use std::io::Read;
+
+        let mut child = std::process::Command::new("cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("failed to spawn mock encoder process");
+        let stdin = child.stdin.take().expect("mock child stdin must be piped");
+        let mut stdout = child
+            .stdout
+            .take()
+            .expect("mock child stdout must be piped");
+        let mut encoder = VideoEncoder {
+            child,
+            stdin: Some(stdin),
+            stderr_thread: None,
+            frame_size: if bit_depth > 8 { 6 } else { 3 },
+            bit_depth,
+            output_path: null_path(),
+        };
+
+        FrameSink::write_frame(&mut encoder, frame).expect("FrameSink write should succeed");
+        FrameSink::finish(&mut encoder).expect("mock encoder should finish successfully");
+        let mut written = Vec::new();
+        stdout.read_to_end(&mut written).unwrap();
+        written
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn frame_sink_narrows_16bit_frames_for_8bit_pipe() {
+        let rgb48: Vec<u8> = [0u16, 0x8080, 0xFFFF]
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        let frame = Frame::CpuRgb {
+            data: rgb48,
+            width: 1,
+            height: 1,
+            bit_depth: 16,
+        };
+        assert_eq!(capture_sink_bytes(8, &frame), vec![0, 128, 255]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn frame_sink_widens_8bit_frames_for_16bit_pipe() {
+        let frame = Frame::CpuRgb {
+            data: vec![0, 128, 255],
+            width: 1,
+            height: 1,
+            bit_depth: 8,
+        };
+        let expected: Vec<u8> = [0u16, 0x8080, 0xFFFF]
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        assert_eq!(capture_sink_bytes(16, &frame), expected);
     }
 
     #[test]
@@ -1494,6 +1558,7 @@ mod tests {
             cq_value: None,
             nvenc_preset: None,
             x265_preset: None,
+            output_scales: Vec::new(),
         };
 
         let mut encoder = VideoEncoder::new(&config).unwrap();

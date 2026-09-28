@@ -43,9 +43,10 @@ interface WorkflowState {
   setEdges: (edges: Edge[]) => void;
   addNode: (node: Node<PipelineNodeData>) => void;
   removeNode: (nodeId: string) => void;
+  /** Merge params into a node; keys set to `undefined` are removed. */
   updateNodeParams: (
     nodeId: string,
-    params: Record<string, string | number | boolean>,
+    params: Record<string, string | number | boolean | undefined>,
   ) => void;
   addEdge: (edge: Edge) => void;
   removeEdge: (edgeId: string) => void;
@@ -61,6 +62,21 @@ interface WorkflowState {
   setCurrentFile: (file: { filename: string; name: string; description: string } | null) => void;
 
   exportWorkflow: () => Workflow;
+}
+
+function mergeParams(
+  current: Record<string, string | number | boolean>,
+  updates: Record<string, string | number | boolean | undefined>,
+): Record<string, string | number | boolean> {
+  const merged = { ...current };
+  for (const [key, value] of Object.entries(updates)) {
+    if (value === undefined) {
+      delete merged[key];
+    } else {
+      merged[key] = value;
+    }
+  }
+  return merged;
 }
 
 interface DynamicPortConfig {
@@ -445,7 +461,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
       edges: nextEdges,
       nodes: state.nodes.map((n) =>
         n.id === nodeId
-          ? { ...n, data: { ...n.data, params: { ...n.data.params, ...nextParams } } }
+          ? { ...n, data: { ...n.data, params: mergeParams(n.data.params, nextParams) } }
           : n,
       ),
     });

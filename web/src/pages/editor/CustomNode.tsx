@@ -184,6 +184,19 @@ function InlineHandle({
   );
 }
 
+/** Params to set when a model is picked; SuperResolution follows the model's native scale. */
+// eslint-disable-next-line react-refresh/only-export-components
+export function modelSelectionParams(
+  nodeType: NodeTypeName,
+  modelPath: string,
+  model: ModelEntry | undefined,
+): Record<string, string | number> {
+  if (nodeType === 'SuperResolution' && model?.scale != null) {
+    return { model_path: modelPath, scale: model.scale };
+  }
+  return { model_path: modelPath };
+}
+
 function ModelSelector({
   nodeType,
   value,
@@ -191,7 +204,7 @@ function ModelSelector({
 }: {
   nodeType: NodeTypeName;
   value: string;
-  onChange: (v: string) => void;
+  onChange: (path: string, model?: ModelEntry) => void;
 }) {
   const { models } = useModelCache();
 
@@ -218,7 +231,7 @@ function ModelSelector({
       value={selectedModel?.filename ?? '__custom__'}
       onValueChange={(v) => {
         if (v === '__custom__') return;
-        onChange(`models/${v}`);
+        onChange(`models/${v}`, filtered.find((m) => m.filename === v));
       }}
     >
       <SelectTrigger className="h-6 w-[150px] text-[10px] bg-background/50 border-border/50">
@@ -255,7 +268,7 @@ function ParamEditorControl({
   const { defaultBackend } = useModelCache();
 
   const handleChange = useCallback(
-    (newValue: string | number | boolean) => {
+    (newValue: string | number | boolean | undefined) => {
       if (nodeType === 'VideoOutput' && port.name === 'codec' && typeof newValue === 'string') {
         updateNodeParams(nodeId, {
           codec: newValue,
@@ -273,7 +286,9 @@ function ParamEditorControl({
       <ModelSelector
         nodeType={nodeType}
         value={String(value ?? '')}
-        onChange={handleChange}
+        onChange={(path, model) => {
+          updateNodeParams(nodeId, modelSelectionParams(nodeType, path, model));
+        }}
       />
     );
   }
@@ -320,6 +335,10 @@ function ParamEditorControl({
         value={String(value ?? port.default_value ?? '')}
         step={port.port_type === 'Float' ? '0.01' : '1'}
         onChange={(e) => {
+          if (e.target.value === '') {
+            handleChange(undefined);
+            return;
+          }
           const parsed = port.port_type === 'Float'
             ? parseFloat(e.target.value)
             : parseInt(e.target.value, 10);

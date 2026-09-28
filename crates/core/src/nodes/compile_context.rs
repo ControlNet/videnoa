@@ -8,6 +8,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, bail, Context, Result};
 
 use crate::compile::{CompileContext, DecoderResult};
+use crate::graph::PipelineGraph;
 use crate::node::{ExecutionContext, FrameProcessor, Node, PortDefinition};
 use crate::streaming_executor::{FrameInterpolator, FrameSink, PipelineStage};
 use crate::types::{Frame, PortData};
@@ -18,11 +19,68 @@ use crate::nodes::backend::{
 use crate::nodes::frame_interpolation::{
     FrameInterpolationNode, FrameInterpolationPostprocess, ModelFormat,
 };
+use crate::nodes::rescale::rescaled_dimensions;
+use crate::nodes::resize::ResizeAlgorithm;
 use crate::nodes::super_res::{SuperResNode, SuperResOutputMode, SuperResPostprocess};
 use crate::nodes::video_input::{extract_metadata, run_ffprobe, VideoDecoder};
 use crate::nodes::video_output::{
-    compatible_pixel_format, default_pixel_format_for_codec, EncoderConfig, VideoEncoder,
+    compatible_pixel_format, default_pixel_format_for_codec, optional_positive_dimension,
+    EncoderConfig, OutputScale, VideoEncoder,
 };
+
+/// Processing node types the video job pipeline can compile.
+const SUPPORTED_VIDEO_PROCESSING_NODES: [&str; 4] =
+    ["SuperResolution", "FrameInterpolation", "Resize", "Rescale"];
+
+fn is_output_scale_node(node_type: &str) -> bool {
+    matches!(node_type, "Resize" | "Rescale")
+}
+
+/// Check the processing nodes between VideoInput and VideoOutput, in order.
+///
+/// Resize/Rescale are compiled into the encoder's FFmpeg scale filter, so they
+/// can only appear after every frame-processing stage.
+pub fn validate_video_processing_chain(node_types: &[&str]) -> Result<()> {
+    let mut output_scale_node: Option<&str> = None;
+    for &node_type in node_types {
+        if !SUPPORTED_VIDEO_PROCESSING_NODES.contains(&node_type) {
+            bail!(
+                "processing node '{node_type}' is not supported in video jobs; \
+                 use SuperResolution, FrameInterpolation, Resize or Rescale"
+            );
+        }
+        if is_output_scale_node(node_type) {
+            output_scale_node = Some(node_type);
+        } else if let Some(scale_node) = output_scale_node {
+            bail!(
+                "'{node_type}' cannot follow '{scale_node}': Resize/Rescale must be the last \
+                 processing nodes before VideoOutput"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Reject video job graphs whose processing chain the pipeline cannot compile,
+/// before any job is queued.
+pub fn validate_video_workflow(graph: &PipelineGraph) -> Result<()> {
+    let node_types = crate::compile::video_processing_node_types(graph)?;
+    let node_types: Vec<&str> = node_types.iter().map(String::as_str).collect();
+    validate_video_processing_chain(&node_types)
+}
+
+/// Raw pipe bit depth for frames decoded from a source of `source_bit_depth`.
+fn pipe_bit_depth_for_source(source_bit_depth: u8) -> u8 {
+    if source_bit_depth > 8 {
+        16
+    } else {
+        8
+    }
+}
+
+fn is_420_pixel_format(pixel_format: &str) -> bool {
+    pixel_format.contains("420") || matches!(pixel_format, "p010le" | "nv12")
+}
 
 #[cfg(all(test, target_os = "linux", target_env = "gnu"))]
 #[path = "compile_context_memory_tests.rs"]
@@ -42,6 +100,10 @@ pub struct VideoCompileContext {
     previous_superres_fp16: Cell<bool>,
     previous_superres_tile_size: Cell<u32>,
     pending_fi_emit_tensor: RefCell<Option<Arc<AtomicBool>>>,
+    /// Trailing Resize/Rescale nodes, applied by the encoder after `output_width/height`.
+    output_scales: RefCell<Vec<OutputScale>>,
+    /// Bit depth of the frames reaching the encoder (8 or 16).
+    pipe_bit_depth: Cell<u8>,
     trt_cache_dir: PathBuf,
 }
 
@@ -130,6 +192,35 @@ impl VideoCompileContext {
             bail!("output resolution is not initialized");
         }
 
+        let mut output_scales = self.output_scales.borrow().clone();
+        match (
+            optional_positive_dimension(inputs, "width")?,
+            optional_positive_dimension(inputs, "height")?,
+        ) {
+            (Some(output_width), Some(output_height)) => {
+                if (output_width, output_height) != self.scaled_output_dimensions() {
+                    output_scales.push(OutputScale {
+                        width: output_width,
+                        height: output_height,
+                        algorithm: ResizeAlgorithm::Lanczos,
+                    });
+                }
+            }
+            (None, None) => {}
+            _ => bail!("VideoOutput: set both width and height, or neither"),
+        }
+        if let Some(scale) = output_scales.last() {
+            if is_420_pixel_format(&pixel_format) && (scale.width % 2 != 0 || scale.height % 2 != 0)
+            {
+                bail!(
+                    "output size {}x{} must have even width and height for pixel format {}",
+                    scale.width,
+                    scale.height,
+                    pixel_format
+                );
+            }
+        }
+
         Ok(EncoderConfig {
             source_path,
             output_path,
@@ -139,10 +230,11 @@ impl VideoCompileContext {
             width,
             height,
             fps: self.output_fps_string(),
-            bit_depth: 8,
+            bit_depth: self.pipe_bit_depth.get(),
             cq_value,
             nvenc_preset,
             x265_preset,
+            output_scales,
         })
     }
 
@@ -161,8 +253,53 @@ impl VideoCompileContext {
             previous_superres_fp16: Cell::new(false),
             previous_superres_tile_size: Cell::new(0),
             pending_fi_emit_tensor: RefCell::new(None),
+            output_scales: RefCell::new(Vec::new()),
+            pipe_bit_depth: Cell::new(8),
             trt_cache_dir,
         }
+    }
+
+    /// Resolution after the trailing Resize/Rescale nodes compiled so far.
+    fn scaled_output_dimensions(&self) -> (u32, u32) {
+        self.output_scales.borrow().last().map_or(
+            (self.output_width.get(), self.output_height.get()),
+            |scale| (scale.width, scale.height),
+        )
+    }
+
+    fn push_output_scale(&self, node_type: &str, inputs: &HashMap<String, PortData>) -> Result<()> {
+        let (current_width, current_height) = self.scaled_output_dimensions();
+        if current_width == 0 || current_height == 0 {
+            bail!("output resolution is not initialized");
+        }
+
+        let (width, height) = if node_type == "Resize" {
+            (
+                read_required_positive_u32(inputs, "width")?,
+                read_required_positive_u32(inputs, "height")?,
+            )
+        } else {
+            let scale_factor = match inputs.get("scale_factor") {
+                Some(PortData::Float(value)) if *value > 0.0 => *value,
+                Some(PortData::Float(value)) => {
+                    bail!("scale_factor must be positive, got {value}")
+                }
+                Some(_) => bail!("scale_factor must be a Float"),
+                None => bail!("scale_factor is required"),
+            };
+            rescaled_dimensions(current_width, current_height, scale_factor)?
+        };
+        let algorithm = match inputs.get("algorithm") {
+            Some(PortData::Str(value)) => ResizeAlgorithm::from_str_lossy(value),
+            _ => ResizeAlgorithm::Lanczos,
+        };
+
+        self.output_scales.borrow_mut().push(OutputScale {
+            width,
+            height,
+            algorithm,
+        });
+        Ok(())
     }
 
     pub(crate) fn create_preview_superres(
@@ -378,6 +515,7 @@ impl VideoCompileContext {
 
         self.output_width.set(dimensions.output_width);
         self.output_height.set(dimensions.output_height);
+        self.pipe_bit_depth.set(8);
 
         self.previous_node_type
             .replace(Some("SuperResolution".to_string()));
@@ -504,6 +642,7 @@ impl VideoCompileContext {
         self.pending_superres_direct_rgb.replace(None);
         self.previous_superres_fp16.set(false);
         self.previous_superres_tile_size.set(0);
+        self.pipe_bit_depth.set(8);
         self.previous_node_type
             .replace(Some("FrameInterpolation".to_string()));
         Ok(take_stages(&self.accumulated_stages))
@@ -563,6 +702,9 @@ impl CompileContext for VideoCompileContext {
         self.previous_superres_fp16.set(false);
         self.previous_superres_tile_size.set(0);
         self.pending_fi_emit_tensor.replace(None);
+        self.output_scales.borrow_mut().clear();
+        self.pipe_bit_depth
+            .set(pipe_bit_depth_for_source(video_info.bit_depth));
 
         Ok((Box::new(decoder), total_frames))
     }
@@ -614,6 +756,7 @@ impl CompileContext for VideoCompileContext {
         let node = self.create_superres_node(inputs, dimensions)?;
         self.output_width.set(dimensions.output_width);
         self.output_height.set(dimensions.output_height);
+        self.pipe_bit_depth.set(8);
 
         let fi_to_sr =
             should_enable_fi_to_sr_passthrough(self.previous_node_type.borrow().as_deref());
@@ -657,6 +800,7 @@ impl CompileContext for VideoCompileContext {
             self.total_output_frames
                 .set(Some(total.saturating_mul(multiplier as u64)));
         }
+        self.pipe_bit_depth.set(8);
 
         let sr_to_fi = should_enable_sr_to_fi_passthrough(
             self.previous_node_type.borrow().as_deref(),
@@ -706,6 +850,18 @@ impl CompileContext for VideoCompileContext {
         is_interpolator: bool,
     ) -> Result<Vec<PipelineStage>> {
         self.accumulated_stages.borrow_mut().clear();
+
+        let node_type = node.node_type();
+        if is_output_scale_node(node_type) {
+            self.push_output_scale(node_type, inputs)?;
+            return Ok(Vec::new());
+        }
+        if !self.output_scales.borrow().is_empty() {
+            bail!(
+                "'{node_type}' cannot follow Resize/Rescale: Resize/Rescale must be the last \
+                 processing nodes before VideoOutput"
+            );
+        }
 
         if is_interpolator {
             if self.is_interpolator_type(node.node_type()) {
@@ -919,6 +1075,19 @@ fn read_positive_u32(inputs: &HashMap<String, PortData>, key: &str, default: u32
     }
 }
 
+fn read_required_positive_u32(inputs: &HashMap<String, PortData>, key: &str) -> Result<u32> {
+    match inputs.get(key) {
+        Some(PortData::Int(value)) => {
+            if *value <= 0 {
+                bail!("{key} must be positive, got {value}");
+            }
+            u32::try_from(*value).with_context(|| format!("{key} is too large: {value}"))
+        }
+        Some(_) => bail!("{key} must be Int"),
+        None => bail!("{key} is required"),
+    }
+}
+
 fn should_use_superres_micro_stages(is_fp16_model: bool, tile_size: u32) -> bool {
     is_fp16_model && tile_size == 0
 }
@@ -1070,6 +1239,8 @@ fn aligned_dimension(value: u32, alignment: usize) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nodes::rescale::RescaleNode;
+    use crate::nodes::resize::{ResizeAlgorithm, ResizeNode};
 
     fn superres_stage_count(is_fp16_model: bool, tile_size: u32) -> usize {
         if should_use_superres_micro_stages(is_fp16_model, tile_size) {
@@ -1199,6 +1370,251 @@ mod tests {
 
         // Then: the NVENC-compatible 10-bit surface format is selected.
         assert_eq!(config.pixel_format, "p010le");
+    }
+
+    fn context_with_output(width: u32, height: u32) -> VideoCompileContext {
+        let context = VideoCompileContext::default();
+        context
+            .source_path
+            .replace(Some(PathBuf::from("input.mkv")));
+        context.output_width.set(width);
+        context.output_height.set(height);
+        context
+    }
+
+    fn output_path_outputs() -> HashMap<String, PortData> {
+        HashMap::from([(
+            "output_path".to_string(),
+            PortData::Path(PathBuf::from("output.mkv")),
+        )])
+    }
+
+    fn rescale_inputs(scale_factor: f64, algorithm: &str) -> HashMap<String, PortData> {
+        HashMap::from([
+            ("scale_factor".to_string(), PortData::Float(scale_factor)),
+            (
+                "algorithm".to_string(),
+                PortData::Str(algorithm.to_string()),
+            ),
+        ])
+    }
+
+    #[test]
+    fn trailing_rescale_becomes_an_encoder_scale() {
+        // Given: a 4x super-resolution output of a 720p source.
+        let context = context_with_output(5120, 2880);
+
+        // When: a trailing Rescale(0.75) is compiled.
+        let stages = context
+            .create_stages(
+                Box::new(RescaleNode::new()),
+                &rescale_inputs(0.75, "lanczos"),
+                false,
+            )
+            .expect("trailing Rescale should compile");
+        let config = context
+            .encoder_config(&HashMap::new(), &output_path_outputs())
+            .expect("encoder config should build");
+
+        // Then: no frame stage is added; FFmpeg scales the piped 5120x2880 frames to 4K.
+        assert!(stages.is_empty());
+        assert_eq!((config.width, config.height), (5120, 2880));
+        assert_eq!(config.output_dimensions(), (3840, 2160));
+        assert_eq!(
+            config.output_scales,
+            vec![OutputScale {
+                width: 3840,
+                height: 2160,
+                algorithm: ResizeAlgorithm::Lanczos,
+            }]
+        );
+    }
+
+    #[test]
+    fn chained_output_resizes_keep_their_order() {
+        let context = context_with_output(1920, 1080);
+        let resize_inputs = HashMap::from([
+            ("width".to_string(), PortData::Int(1280)),
+            ("height".to_string(), PortData::Int(720)),
+            (
+                "algorithm".to_string(),
+                PortData::Str("bilinear".to_string()),
+            ),
+        ]);
+
+        context
+            .create_stages(Box::new(ResizeNode::new()), &resize_inputs, false)
+            .expect("Resize should compile");
+        context
+            .create_stages(
+                Box::new(RescaleNode::new()),
+                &rescale_inputs(0.5, "nearest"),
+                false,
+            )
+            .expect("Rescale after Resize should compile");
+        let config = context
+            .encoder_config(&HashMap::new(), &output_path_outputs())
+            .unwrap();
+
+        assert_eq!(
+            config.output_scales,
+            vec![
+                OutputScale {
+                    width: 1280,
+                    height: 720,
+                    algorithm: ResizeAlgorithm::Bilinear,
+                },
+                OutputScale {
+                    width: 640,
+                    height: 360,
+                    algorithm: ResizeAlgorithm::Nearest,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn processing_after_output_resize_is_rejected_before_model_loading() {
+        let context = context_with_output(1280, 720);
+        context
+            .create_stages(
+                Box::new(RescaleNode::new()),
+                &rescale_inputs(0.5, "lanczos"),
+                false,
+            )
+            .unwrap();
+
+        let error = context
+            .create_stages(Box::new(SuperResNode::new()), &HashMap::new(), false)
+            .err()
+            .expect("SuperResolution after Rescale must be rejected");
+
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("Resize/Rescale must be the last processing nodes"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn video_output_dimensions_scale_the_encoded_output() {
+        let context = context_with_output(5120, 2880);
+        let inputs = HashMap::from([
+            ("width".to_string(), PortData::Int(3840)),
+            ("height".to_string(), PortData::Int(2160)),
+        ]);
+
+        let config = context
+            .encoder_config(&inputs, &output_path_outputs())
+            .unwrap();
+
+        assert_eq!((config.width, config.height), (5120, 2880));
+        assert_eq!(
+            config.output_scales,
+            vec![OutputScale {
+                width: 3840,
+                height: 2160,
+                algorithm: ResizeAlgorithm::Lanczos,
+            }]
+        );
+    }
+
+    #[test]
+    fn video_output_dimensions_matching_the_pipeline_add_no_scale() {
+        let context = context_with_output(1280, 720);
+        context
+            .create_stages(
+                Box::new(RescaleNode::new()),
+                &rescale_inputs(0.5, "bilinear"),
+                false,
+            )
+            .unwrap();
+        let inputs = HashMap::from([
+            ("width".to_string(), PortData::Int(640)),
+            ("height".to_string(), PortData::Int(360)),
+        ]);
+
+        let config = context
+            .encoder_config(&inputs, &output_path_outputs())
+            .unwrap();
+
+        assert_eq!(config.output_scales.len(), 1);
+        assert_eq!(config.output_dimensions(), (640, 360));
+    }
+
+    #[test]
+    fn video_output_requires_both_dimensions() {
+        let context = context_with_output(1920, 1080);
+        let inputs = HashMap::from([("width".to_string(), PortData::Int(1280))]);
+
+        let error = context
+            .encoder_config(&inputs, &output_path_outputs())
+            .unwrap_err();
+
+        assert!(
+            error.to_string().contains("set both width and height"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn odd_output_size_is_rejected_for_420_pixel_formats() {
+        let context = context_with_output(1920, 1080);
+        let inputs = HashMap::from([
+            ("width".to_string(), PortData::Int(1279)),
+            ("height".to_string(), PortData::Int(720)),
+        ]);
+
+        let error = context
+            .encoder_config(&inputs, &output_path_outputs())
+            .unwrap_err();
+
+        assert!(error.to_string().contains("even"), "{error}");
+    }
+
+    #[test]
+    fn encoder_pipe_uses_the_tracked_frame_bit_depth() {
+        let context = context_with_output(1920, 1080);
+        context.pipe_bit_depth.set(16);
+
+        let config = context
+            .encoder_config(&HashMap::new(), &output_path_outputs())
+            .unwrap();
+
+        assert_eq!(config.bit_depth, 16);
+        assert_eq!(pipe_bit_depth_for_source(10), 16);
+        assert_eq!(pipe_bit_depth_for_source(8), 8);
+    }
+
+    #[test]
+    fn video_processing_chain_accepts_trailing_output_resizes() {
+        for chain in [
+            vec![],
+            vec!["SuperResolution"],
+            vec!["SuperResolution", "Rescale"],
+            vec!["FrameInterpolation", "SuperResolution", "Resize", "Rescale"],
+            vec!["Resize"],
+        ] {
+            validate_video_processing_chain(&chain)
+                .unwrap_or_else(|error| panic!("{chain:?} should be accepted: {error}"));
+        }
+    }
+
+    #[test]
+    fn video_processing_chain_rejects_processing_after_output_resize() {
+        let error = validate_video_processing_chain(&["Rescale", "SuperResolution"]).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("'Rescale'"), "{message}");
+        assert!(message.contains("'SuperResolution'"), "{message}");
+    }
+
+    #[test]
+    fn video_processing_chain_rejects_nodes_without_a_video_stage() {
+        let error = validate_video_processing_chain(&["ColorSpace"]).unwrap_err();
+        assert!(
+            error.to_string().contains("'ColorSpace' is not supported"),
+            "{error}"
+        );
     }
 
     #[test]

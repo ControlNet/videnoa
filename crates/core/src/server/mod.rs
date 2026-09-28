@@ -46,7 +46,7 @@ use crate::graph::PipelineGraph;
 use crate::jellyfin::{ItemQuery, JellyfinClient};
 use crate::model_inspect::{self, ModelInspection};
 use crate::model_registry::{ModelEntry, ModelRegistry};
-use crate::nodes::compile_context::VideoCompileContext;
+use crate::nodes::compile_context::{validate_video_workflow, VideoCompileContext};
 use crate::registry::{register_all_nodes, NodeRegistry};
 use crate::streaming_executor::ProgressCallback;
 use idempotency::{IdempotencyKey, RequestFingerprint};
@@ -1411,6 +1411,7 @@ fn parse_and_validate_workflow(
 
     workflow
         .validate(&state.inner.node_registry)
+        .and_then(|()| validate_video_workflow(&workflow))
         .map_err(|e| AppError::BadRequest(format!("workflow validation failed: {e:#}")))?;
 
     Ok(workflow)
@@ -5744,7 +5745,7 @@ mod tests {
                     {"id": "sr", "node_type": "SuperResolution", "params": {"model_path": temp_path_str("model.onnx"), "scale": 2, "tile_size": 0}},
                     {"id": "output", "node_type": "VideoOutput", "params": {
                         "output_path": temp_path_str("out.mp4"), "codec": "libx265", "crf": 18,
-                        "pixel_format": "yuv420p10le", "width": 1920, "height": 1080, "fps": "24"
+                        "pixel_format": "yuv420p10le", "width": 1920, "height": 1080
                     }}
                 ],
                 "connections": [

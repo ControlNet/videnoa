@@ -18,6 +18,7 @@ use ort::{
 };
 use tracing::debug;
 
+use crate::model_registry::builtin_model_scale;
 use crate::node::{ExecutionContext, FrameProcessor, Node, PortDefinition};
 use crate::types::{Frame, PortData, PortType};
 
@@ -418,6 +419,12 @@ impl FrameProcessor for SuperResInference {
             let outputs = session.run_binding(&binding)?;
             ensure_inference_output_memory(&outputs[self.output_name.as_str()], &output_memory)?;
             let output_view = outputs[self.output_name.as_str()].try_extract_array::<f16>()?;
+            check_output_scale(
+                padded.shape()[2],
+                padded.shape()[3],
+                output_view.shape(),
+                self.scale,
+            )?;
 
             if self.direct_rgb.load(Ordering::Relaxed) {
                 let shape = output_view.shape();
@@ -641,6 +648,16 @@ impl Node for SuperResNode {
 
         if let Some(PortData::Int(s)) = inputs.get("scale") {
             self.scale = *s as u32;
+        }
+        if let Some(native_scale) = builtin_model_scale(&model_path) {
+            if native_scale != self.scale {
+                bail!(
+                    "model {} is a {native_scale}x model but scale={}; {}",
+                    model_path.display(),
+                    self.scale,
+                    scale_fix_hint(native_scale)
+                );
+            }
         }
 
         if let Some(PortData::Int(t)) = inputs.get("tile_size") {
@@ -1376,6 +1393,7 @@ fn run_single_inference(
 
     let padded_h = input.shape()[2];
     let padded_w = input.shape()[3];
+    check_output_scale(padded_h, padded_w, output_owned.shape(), shape.scale)?;
     let pad_h = padded_h - shape.height;
     let pad_w = padded_w - shape.width;
 
@@ -1391,6 +1409,45 @@ fn run_single_inference(
     } else {
         Ok(output_owned.into_dimensionality::<ndarray::Ix4>()?)
     }
+}
+
+fn scale_fix_hint(native_scale: impl std::fmt::Display) -> String {
+    format!(
+        "set scale={native_scale} and use Resize/Rescale or VideoOutput width/height to reach \
+         the target size"
+    )
+}
+
+/// Verify a model output against the configured `scale` before it is cropped
+/// or stitched, so a mismatch fails instead of corrupting or indexing out of bounds.
+fn check_output_scale(
+    input_h: usize,
+    input_w: usize,
+    output_shape: &[usize],
+    scale: usize,
+) -> Result<()> {
+    anyhow::ensure!(
+        output_shape.len() == 4 && output_shape[0] == 1 && output_shape[1] == 3,
+        "SuperResolution: expected model output shape [1, 3, H, W], got {output_shape:?}"
+    );
+    let (output_h, output_w) = (output_shape[2], output_shape[3]);
+    if output_h == input_h * scale && output_w == input_w * scale {
+        return Ok(());
+    }
+    if output_h % input_h == 0
+        && output_w % input_w == 0
+        && output_h / input_h == output_w / input_w
+    {
+        let native_scale = output_h / input_h;
+        bail!(
+            "SuperResolution model is a {native_scale}x model but scale={scale}; {}",
+            scale_fix_hint(native_scale)
+        );
+    }
+    bail!(
+        "SuperResolution model output {output_w}x{output_h} does not match scale={scale} for \
+         input {input_w}x{input_h}"
+    )
 }
 
 fn run_with_iobinding(
@@ -1483,6 +1540,7 @@ fn run_tiled_inference(
                     .into_dimensionality::<ndarray::Ix4>()?
             };
 
+            let (tile_in_h, tile_in_w) = (tile_input.shape()[2], tile_input.shape()[3]);
             let tile_output_owned = {
                 let mut session = session_arc.lock().unwrap();
                 if use_iobinding {
@@ -1500,6 +1558,7 @@ fn run_tiled_inference(
                     output_view.to_owned()
                 }
             };
+            check_output_scale(tile_in_h, tile_in_w, tile_output_owned.shape(), shape.scale)?;
 
             let out_y0 = y * shape.scale;
             let out_x0 = x * shape.scale;
@@ -1549,6 +1608,7 @@ fn run_single_f16_inference(
 
     let padded_h = input.shape()[2];
     let padded_w = input.shape()[3];
+    check_output_scale(padded_h, padded_w, output_owned.shape(), scale)?;
     let pad_h = padded_h - orig_h;
     let pad_w = padded_w - orig_w;
 
@@ -1625,6 +1685,12 @@ fn run_tiled_f16_inference(
                     bindings.output,
                 )?
             };
+            check_output_scale(
+                tile_input.shape()[2],
+                tile_input.shape()[3],
+                tile_output_owned.shape(),
+                shape.scale,
+            )?;
 
             let out_y0 = y * shape.scale;
             let out_x0 = x * shape.scale;
@@ -2302,5 +2368,135 @@ mod tests {
                 "Pixel {i}: original={orig}, roundtripped={roundtripped}, diff={diff} (max allowed: 1)"
             );
         }
+    }
+
+    #[test]
+    fn output_scale_check_accepts_matching_model_output() {
+        check_output_scale(64, 48, &[1, 3, 256, 192], 4).expect("4x output should match");
+    }
+
+    #[test]
+    fn output_scale_check_reports_native_model_scale() {
+        let error = check_output_scale(64, 48, &[1, 3, 256, 192], 3).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("4x"), "{message}");
+        assert!(message.contains("scale=3"), "{message}");
+        assert!(message.contains("scale=4"), "{message}");
+    }
+
+    #[test]
+    fn output_scale_check_rejects_scale_above_native() {
+        // A larger configured scale would index past the model output.
+        let error = check_output_scale(64, 64, &[1, 3, 128, 128], 4).unwrap_err();
+        assert!(error.to_string().contains("2x"), "{error}");
+    }
+
+    #[test]
+    fn output_scale_check_rejects_non_integer_ratio() {
+        let error = check_output_scale(64, 64, &[1, 3, 100, 100], 2).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("100x100"), "{message}");
+        assert!(message.contains("64x64"), "{message}");
+    }
+
+    #[test]
+    fn output_scale_check_rejects_unexpected_rank() {
+        let error = check_output_scale(8, 8, &[3, 32, 32], 4).unwrap_err();
+        assert!(error.to_string().contains("[1, 3, H, W]"), "{error}");
+    }
+
+    #[test]
+    fn execute_rejects_scale_that_differs_from_builtin_model_before_loading() {
+        let mut node = SuperResNode::new();
+        let inputs = HashMap::from([
+            (
+                "model_path".to_string(),
+                PortData::Path(PathBuf::from(
+                    "/nonexistent/RealESRGAN_x4plus_anime_6B.onnx",
+                )),
+            ),
+            ("scale".to_string(), PortData::Int(3)),
+        ]);
+
+        let error = node
+            .execute(&inputs, &ExecutionContext::default())
+            .err()
+            .expect("scale 3 must be rejected for a 4x model");
+
+        let message = error.to_string();
+        assert!(message.contains("4x model"), "{message}");
+        assert!(message.contains("scale=3"), "{message}");
+    }
+
+    fn test_frame() -> Frame {
+        Frame::CpuRgb {
+            data: vec![128u8; 96 * 80 * 3],
+            width: 96,
+            height: 80,
+            bit_depth: 8,
+        }
+    }
+
+    fn load_renamed_model(model_file: &str, scale: i64, tile_size: i64) -> SuperResNode {
+        let dir = tempfile::tempdir().unwrap();
+        // Renamed so the built-in scale lookup cannot catch the mismatch early.
+        let model = dir.path().join("renamed_sr_model.onnx");
+        std::fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../models")
+                .join(model_file),
+            &model,
+        )
+        .expect("copy SR model");
+        let mut node = SuperResNode::new();
+        let inputs = HashMap::from([
+            ("model_path".to_string(), PortData::Path(model)),
+            ("scale".to_string(), PortData::Int(scale)),
+            ("tile_size".to_string(), PortData::Int(tile_size)),
+        ]);
+        node.execute(&inputs, &ExecutionContext::default())
+            .expect("model should load");
+        node
+    }
+
+    #[test]
+    #[ignore] // Requires the bundled SR models in models/ and a CUDA GPU.
+    fn mismatched_scale_on_unknown_model_fails_on_first_frame() {
+        let ctx = ExecutionContext::default();
+        // (model, configured scale, native scale): below native used to corrupt
+        // output silently, above native used to panic on out-of-bounds slicing.
+        for (model_file, scale, native) in [
+            ("RealESRGAN_x4plus_anime_6B.onnx", 3, "4x"),
+            ("the_database_AnimeJaNaiV3L1_sharp_HD_x2_fp16_op17.onnx", 4, "2x"),
+        ] {
+            for tile_size in [0, 64] {
+                let mut node = load_renamed_model(model_file, scale, tile_size);
+                let error = node
+                    .process_frame(test_frame(), &ctx)
+                    .err()
+                    .expect("mismatched scale must fail");
+                assert!(
+                    error.to_string().contains(native),
+                    "{model_file} tile {tile_size}: {error}"
+                );
+            }
+        }
+
+        // The FP16 micro-stage inference used by video jobs checks the same way.
+        let node = load_renamed_model(
+            "the_database_AnimeJaNaiV3L1_sharp_HD_x2_fp16_op17.onnx",
+            4,
+            0,
+        );
+        let mut micro = node
+            .into_micro_stages()
+            .expect("FP16 untiled model should split into micro-stages");
+        let tensor = micro.preprocess.process_frame(test_frame(), &ctx).unwrap();
+        let error = micro
+            .inference
+            .process_frame(tensor, &ctx)
+            .err()
+            .expect("mismatched scale must fail in micro-stage inference");
+        assert!(error.to_string().contains("2x"), "{error}");
     }
 }
