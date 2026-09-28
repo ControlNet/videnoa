@@ -324,8 +324,24 @@ mod tests {
         let orphan = cache.root.path.join("session-crash-test");
         std::fs::create_dir(&orphan).unwrap();
         drop(cache);
-        let _reopened = PreviewCache::open(dir.path()).unwrap();
+        let _reopened = reopen_after_release(dir.path());
         assert!(!orphan.exists());
+    }
+
+    /// A child process spawned concurrently by another test inherits the lock's
+    /// open file description until it execs, so the released lock can look
+    /// held for a moment. A restarted server is a new process and never sees this.
+    fn reopen_after_release(data_dir: &Path) -> Arc<PreviewCache> {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match PreviewCache::open(data_dir) {
+                Ok(cache) => return cache,
+                Err(_) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("{error:#}"),
+            }
+        }
     }
 
     #[test]
