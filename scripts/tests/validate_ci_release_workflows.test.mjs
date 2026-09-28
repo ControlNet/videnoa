@@ -212,6 +212,19 @@ for (const name of ["package-linux64-smoke", "package-win64-smoke"]) {
 	expectContractFailure(`${name} skips the media tools check`, () => validateUnitWorkflow(workflow), new RegExp(`${name}.*media tools`));
 }
 
+for (const name of ["package-linux64", "package-win64"]) {
+	const workflow = structuredClone(loadWorkflow(releasePath));
+	workflow.jobs[name].steps = workflow.jobs[name].steps.filter((step) => !step.run?.includes("scripts/media_tools.ps1"));
+	expectContractFailure(`release ${name} skips the media tools check`, () => validateReleaseWorkflow(workflow), new RegExp(`${name}.*media tools`));
+}
+{
+	const workflow = structuredClone(loadWorkflow(releasePath));
+	const archive = workflow.jobs["package-win64"].steps.find((step) => step.run?.includes("7z a"));
+	assert.ok(archive, "package-win64: missing 7z archive step");
+	archive.run = archive.run.replaceAll("$LASTEXITCODE", "$null");
+	expectContractFailure("release Windows archive ignores 7z failures", () => validateReleaseWorkflow(workflow), /package-win64.*7z/);
+}
+
 console.log(
 	"[workflow-contracts] all positive and negative workflow contracts passed",
 );

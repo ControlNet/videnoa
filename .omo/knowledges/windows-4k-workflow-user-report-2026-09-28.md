@@ -188,3 +188,30 @@ gitignored `.omo/tmp-issue.md`. Analysis was done on `dev` at 48a6335
 - Validate SR `scale` against the model's first inference output shape.
 - Return non-verbatim paths from browse endpoints (`dunce::canonicalize`) and
   make PathAutocomplete separator-aware for Windows.
+
+## Pre-release verification (2026-09-28, dev a6ffa71 + release.yaml fix)
+
+- #5 with the issue's exact graph and the TensorRT backend on the A40, using
+  `target/release/videnoa run`. Input: 2 s, 1280x720 at 24000/1001, ffv1 plus
+  vorbis audio. Graph: WorkflowInput -> VideoInput -> SR (RealESRGAN x4plus
+  anime 6B, scale 4, tile 320, tensorrt) -> Rescale 0.75 bilinear ->
+  VideoOutput (libx265 slow, crf 16, yuv420p10le, 3840x2160).
+  - A cold engine build took about 4 min; 48 frames then ran at 1.8 fps.
+  - Exit 0, with no abort after "Workflow completed successfully".
+  - ffprobe: 3840x2160, HEVC Main 10, bt709 tv range, 24000/1001, 48 frames,
+    NUMBER_OF_FRAMES=48, audio kept.
+  - Mean luma after downscaling to 720p is 127.09 against the source's 125.69,
+    so there is no darkening. PSNR against the source is 35.74 dB, so there is
+    no tile misplacement.
+- #4 has no remaining `\\?\` leak on the server.
+  - `browse_fs` and the files API use `dunce`.
+  - `fs/list` returns `base/relative` display paths.
+  - `PathAutocomplete` is the only consumer of `/api/fs/browse`, and it uses
+    the separator-aware helpers.
+  - This was verified by Windows CI and vitest only, not by clicking through
+    a real Windows UI.
+- #6: the release package jobs now also run `media_tools.ps1 -Verify`, and the
+  Windows release `7z a` step checks `$LASTEXITCODE`; the release contract
+  requires both. The Docker image uses Ubuntu 22.04's apt ffmpeg 4.4, which is
+  GPL with x264, x265, zimg and nvenc. The same package passed `-Verify`
+  locally.

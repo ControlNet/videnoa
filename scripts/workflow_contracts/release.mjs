@@ -3,6 +3,7 @@ import {
 	requireJob,
 	requireNeeds,
 	requireText,
+	requireValue,
 	validateGraph,
 } from "./common.mjs";
 
@@ -45,6 +46,15 @@ export function validateReleaseWorkflow(workflow) {
 		requireNeeds(job, name, ["version-gate", "quality-gate"]);
 		requireText(job, name, contracts);
 	}
+	// Published archives must carry media tools with every encoder the UI offers (#6).
+	for (const name of ["package-linux64", "package-win64"]) {
+		const steps = jobs[name].steps;
+		const packageIndex = steps.findIndex((step) => /scripts\/package_dist\.(sh|ps1)/.test(step.run ?? ""));
+		const verifyIndex = steps.findIndex((step) => step.run?.includes("scripts/media_tools.ps1 -Verify"));
+		requireValue(packageIndex >= 0 && verifyIndex > packageIndex, `${name}: must verify the bundled media tools after packaging`);
+	}
+	const archive = jobs["package-win64"].steps.find((step) => step.run?.includes("7z a"));
+	requireValue(archive?.run.includes("$LASTEXITCODE"), "package-win64: the 7z archive step must check $LASTEXITCODE");
 	const linux = requireJob(jobs, "package-controller-linux");
 	requireNeeds(linux, "package-controller-linux", [
 		"version-gate",

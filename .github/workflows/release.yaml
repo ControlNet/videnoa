@@ -187,6 +187,10 @@ jobs:
       - name: Verify Linux runtime compatibility
         run: bash scripts/check_linux_package_compat.sh "$RUNNER_TEMP/dist-linux64/videnoa"
 
+      - name: Verify bundled media tools
+        shell: pwsh
+        run: ./scripts/media_tools.ps1 -Verify -BinDir "$env:RUNNER_TEMP/dist-linux64/videnoa/bin"
+
       - name: Reclaim build cache for archive headroom
         run: |
           rm -rf "$HOME/.cargo/registry" "$HOME/.cargo/git" "$HOME/.npm"
@@ -254,6 +258,10 @@ jobs:
         run: |
           pwsh -File scripts/package_dist.ps1 -Platform win64 -ReleaseTag misc -OutputDir "$env:RUNNER_TEMP\dist-win64" -SourceDir "$env:GITHUB_WORKSPACE" -Force
 
+      - name: Verify bundled media tools
+        shell: pwsh
+        run: ./scripts/media_tools.ps1 -Verify -BinDir "$env:RUNNER_TEMP\dist-win64\videnoa\bin"
+
       - name: Create split archive (2000MB volumes)
         shell: pwsh
         run: |
@@ -267,6 +275,9 @@ jobs:
           Push-Location $distRoot
           try {
             7z a -t7z -v2000m $archivePath 'videnoa'
+            if ($LASTEXITCODE -ne 0) {
+              throw 'Failed to create Windows release archive'
+            }
           }
           finally {
             Pop-Location
