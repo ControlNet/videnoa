@@ -34,7 +34,7 @@ pub struct ModelEntry {
     pub scale: Option<u32>,
     pub input_names: Vec<String>,
     pub output_names: Vec<String>,
-    /// Value range the model expects/produces: `(0.0, 255.0)` for ESRGAN, `(0.0, 1.0)` for CUGAN/RIFE.
+    /// Value range the model expects/produces; `(0.0, 1.0)` for all built-in models.
     pub normalization_range: (f32, f32),
     /// Spatial dimensions must be multiples of this (4 for ESRGAN, 32 for RIFE).
     pub pad_align: u32,
@@ -57,7 +57,7 @@ fn builtin_catalog() -> Vec<ModelEntry> {
             scale: Some(4),
             input_names: vec!["image.1".into()],
             output_names: vec!["image".into()],
-            normalization_range: (0.0, 255.0),
+            normalization_range: (0.0, 1.0),
             pad_align: 4,
             description: "RealESRGAN x4 anime-optimized model (6-block variant, 17.9 MB)".into(),
             is_fp16: false,
@@ -379,7 +379,7 @@ mod tests {
         let esrgan = reg.get("RealESRGAN_x4plus_anime_6B").unwrap();
         assert_eq!(esrgan.scale, Some(4));
         assert_eq!(esrgan.pad_align, 4);
-        assert_eq!(esrgan.normalization_range, (0.0, 255.0));
+        assert_eq!(esrgan.normalization_range, (0.0, 1.0));
         assert_eq!(esrgan.input_names, vec!["image.1"]);
         assert_eq!(esrgan.output_names, vec!["image"]);
         assert!(!esrgan.is_fp16);
@@ -539,7 +539,7 @@ mod tests {
 
         let entry = reg2.get("RealESRGAN_x4plus_anime_6B").unwrap();
         assert_eq!(entry.scale, Some(4));
-        assert_eq!(entry.normalization_range, (0.0, 255.0));
+        assert_eq!(entry.normalization_range, (0.0, 1.0));
     }
 
     #[test]
@@ -604,7 +604,7 @@ mod tests {
         let reg = ModelRegistry::with_builtin_models(test_models_dir());
 
         let esrgan = reg.get("RealESRGAN_x4plus_anime_6B").unwrap();
-        assert_eq!(esrgan.normalization_range, (0.0, 255.0));
+        assert_eq!(esrgan.normalization_range, (0.0, 1.0));
         assert!(!esrgan.is_fp16);
 
         let animejanai = reg.get("AnimeJaNai_V3_L1_Sharp_HD_x2_FP16").unwrap();

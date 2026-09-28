@@ -19,7 +19,7 @@ pub enum Frame {
         height: u32,
         width: u32,
     },
-    /// FP32 NCHW tensor on CPU — 3 channels, [0,255] range (Real-ESRGAN output).
+    /// FP32 NCHW tensor on CPU — 3 channels, [0,1] range.
     NchwF32 {
         data: Vec<f32>,
         height: u32,

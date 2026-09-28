@@ -299,7 +299,7 @@ describe('modelSelectionParams', () => {
     scale,
     input_names: [],
     output_names: [],
-    normalization_range: [0, 255] as [number, number],
+    normalization_range: [0, 1] as [number, number],
     pad_align: 4,
     description: '',
     is_fp16: false,
