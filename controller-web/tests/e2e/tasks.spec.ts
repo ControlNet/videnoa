@@ -21,11 +21,11 @@ test("keeps 20,000 task history bounded through filters, sorting, paging, and na
   // When: the operator applies coherent workflow/search state.
   await page.getByRole("group", { name: "Task filters" }).getByLabel("Workflow").fill("anime-2x")
   await expect.poll(() => journal.tasks.length).toBe(2)
-  await expect.poll(() => journal.counts.length).toBe(2)
+  expect(journal.counts).toHaveLength(1)
   await page.getByLabel("Search task paths").fill("episode-00101")
   await expect(page).toHaveURL(/\/tasks$/)
   await expect.poll(() => journal.tasks.length).toBe(3)
-  await expect.poll(() => journal.counts.length).toBe(3)
+  expect(journal.counts).toHaveLength(1)
 
   // Then: the visible row matches the active filters and desktop evidence.
   const filteredRows = page.getByRole("table").locator("tbody tr")
@@ -39,20 +39,21 @@ test("keeps 20,000 task history bounded through filters, sorting, paging, and na
   // When: the operator clears search, changes ordering, and requests the next bounded page.
   await page.getByLabel("Search task paths").fill("")
   await expect.poll(() => journal.tasks.length).toBe(4)
-  await expect.poll(() => journal.counts.length).toBe(4)
+  expect(journal.counts).toHaveLength(1)
   await page.getByLabel("Sort").selectOption("created_at")
   await expect.poll(() => journal.tasks.length).toBe(5)
-  await expect.poll(() => journal.counts.length).toBe(5)
+  expect(journal.counts).toHaveLength(1)
   await page.getByRole("button", { name: "Next" }).click()
   await expect.poll(() => journal.tasks.length).toBe(6)
-  await expect.poll(() => journal.counts.length).toBe(6)
+  expect(journal.counts).toHaveLength(1)
   expect(new URLSearchParams(journal.tasks.at(-1)).get("offset")).toBe("50")
   await expect(page).toHaveURL(/\/tasks$/)
   await expect(page.getByRole("table").locator("tbody tr")).toHaveCount(50)
 
-  // Then: task and count requests remain independently one-per-trigger and bounded.
+  // Then: each trigger reads one bounded page, while the global counts are read
+  // once for the view; they refresh on task events, not on page triggers.
   expect(journal.tasks).toHaveLength(6)
-  expect(journal.counts).toHaveLength(6)
+  expect(journal.counts).toHaveLength(1)
   for (const request of journal.tasks) {
     expect(Number(new URLSearchParams(request).get("limit"))).toBeLessThanOrEqual(100)
   }
@@ -246,6 +247,6 @@ test("corrects a deep empty page directly to the canonical last valid page", asy
   await expect(page).toHaveURL(/\/tasks$/)
   await expect(page.getByRole("table").locator("tbody tr")).toHaveCount(23)
   expect(journal.tasks.map((request) => Number(new URLSearchParams(request).get("offset")))).toEqual([10_000, 100])
-  expect(journal.counts).toHaveLength(2)
-  await appendEvidence("empty-page recovery: offset 10000 corrected once to canonical offset 100; task requests=2; count requests=2")
+  expect(journal.counts).toHaveLength(1)
+  await appendEvidence("empty-page recovery: offset 10000 corrected once to canonical offset 100; task requests=2; count requests=1")
 })
