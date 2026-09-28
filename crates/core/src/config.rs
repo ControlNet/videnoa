@@ -270,8 +270,14 @@ mod tests {
         assert_eq!(result, PathBuf::from("/custom"));
     }
 
+    /// Tests run in parallel and share the process environment.
+    static DATA_DIR_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn data_dir_uses_env_var_when_no_cli() {
+        let _env = DATA_DIR_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         env::set_var(ENV_DATA_DIR, "/env/path");
         let result = data_dir(None);
         env::remove_var(ENV_DATA_DIR);
@@ -280,30 +286,16 @@ mod tests {
 
     #[test]
     fn data_dir_defaults_to_data_dir() {
-        let old_videnoa = env::var(ENV_DATA_DIR).ok();
-        let old_xdg = env::var("XDG_CONFIG_HOME").ok();
-        let old_home = env::var("HOME").ok();
-
+        let _env = DATA_DIR_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let old_videnoa = env::var_os(ENV_DATA_DIR);
         env::remove_var(ENV_DATA_DIR);
-        env::set_var("XDG_CONFIG_HOME", "/xdg");
-        env::set_var("HOME", "/home/example");
 
         let result = data_dir(None);
 
         if let Some(val) = old_videnoa {
             env::set_var(ENV_DATA_DIR, val);
-        } else {
-            env::remove_var(ENV_DATA_DIR);
-        }
-        if let Some(val) = old_xdg {
-            env::set_var("XDG_CONFIG_HOME", val);
-        } else {
-            env::remove_var("XDG_CONFIG_HOME");
-        }
-        if let Some(val) = old_home {
-            env::set_var("HOME", val);
-        } else {
-            env::remove_var("HOME");
         }
 
         assert_eq!(result, PathBuf::from("data"));
