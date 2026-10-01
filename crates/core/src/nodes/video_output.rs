@@ -27,6 +27,12 @@ pub struct OutputScale {
     pub algorithm: ResizeAlgorithm,
 }
 
+/// swscale options converting RGB to BT.709 limited-range YUV.
+pub(crate) const BT709_LIMITED_OUTPUT: &str = "out_color_matrix=bt709:out_range=limited";
+/// `setparams` filter tagging frames as BT.709 limited range.
+pub(crate) const BT709_LIMITED_TAGS: &str =
+    "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=limited";
+
 #[derive(Debug, Clone)]
 pub struct EncoderConfig {
     /// Path to the original source file (for non-video stream muxing).
@@ -157,28 +163,36 @@ impl EncoderConfig {
 
         let size = format!("{}x{}", self.width, self.height);
 
-        // FFmpeg 4.4's zscale (libzimg) cannot convert directly from packed RGB
-        // (rgb24/rgb48le) to YUV — it fails with "no path between colorspaces".
-        // Fix: use swscale via `format=` to convert RGB→YUV first, then `setparams`
-        // to label the BT.709 colorspace metadata, then `zscale` for limited-range
-        // conversion with dithering.
-        // Scaling precedes `format=` so swscale resamples and converts to the
-        // output pixel format in one pass.
-        let scale_filters: String = self
+        // The final swscale pass resamples (if requested) and converts RGB to the
+        // output YUV format with the BT.709 matrix in limited range; `setparams`
+        // then tags the stream to match. swscale's default matrix is BT.601, so
+        // the matrix must be explicit. Earlier resizes stay in the RGB pipe format
+        // so that only the final pass converts.
+        let mut scale_filters: Vec<String> = self
             .output_scales
             .iter()
             .map(|scale| {
                 format!(
-                    "scale={}:{}:flags={}+accurate_rnd+full_chroma_int,",
+                    "scale={}:{}:flags={}+accurate_rnd+full_chroma_int",
                     scale.width,
                     scale.height,
                     scale.algorithm.ffmpeg_flag()
                 )
             })
             .collect();
+        if scale_filters.is_empty() {
+            scale_filters.push("scale=flags=bicubic".to_string());
+        }
+        let color_conversion = format!(
+            "{}:{BT709_LIMITED_OUTPUT}",
+            scale_filters.pop().expect("at least one scale filter")
+        );
+        let rgb_resizes: String = scale_filters
+            .iter()
+            .map(|filter| format!("{filter},format={input_pix_fmt},"))
+            .collect();
         let vf_filter = format!(
-            "{scale_filters}format={pf},setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709,\
-             zscale=range=limited:dither=error_diffusion,setsar=1",
+            "{rgb_resizes}{color_conversion},format={pf},{BT709_LIMITED_TAGS},setsar=1",
             pf = self.pixel_format,
         );
 
@@ -951,10 +965,17 @@ mod tests {
         let vf_idx = args.iter().position(|a| a == "-vf").unwrap();
         let vf = &args[vf_idx + 1];
         assert!(vf.contains("format=yuv420p10le"), "vf: {vf}");
-        assert!(vf.contains("setparams="), "vf: {vf}");
-        assert!(vf.contains("zscale"), "vf: {vf}");
-        assert!(vf.contains("bt709"), "vf: {vf}");
-        assert!(vf.contains("limited"), "vf: {vf}");
+        assert!(
+            vf.contains("out_color_matrix=bt709:out_range=limited"),
+            "vf: {vf}"
+        );
+        assert!(
+            vf.contains(
+                "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=limited"
+            ),
+            "vf: {vf}"
+        );
+        assert!(!vf.contains("zscale"), "vf: {vf}");
 
         assert!(args.windows(2).any(|w| w[0] == "-c:a" && w[1] == "copy"));
         assert!(args.windows(2).any(|w| w[0] == "-c:s" && w[1] == "copy"));
@@ -1059,7 +1080,8 @@ mod tests {
         let vf = video_filter(&config);
         assert!(
             vf.starts_with(
-                "scale=3840:2160:flags=lanczos+accurate_rnd+full_chroma_int,format=yuv420p10le,"
+                "scale=3840:2160:flags=lanczos+accurate_rnd+full_chroma_int:\
+                 out_color_matrix=bt709:out_range=limited,format=yuv420p10le,"
             ),
             "vf: {vf}"
         );
@@ -1077,8 +1099,9 @@ mod tests {
         let vf = video_filter(&config);
         assert!(
             vf.starts_with(
-                "scale=1920:1080:flags=bilinear+accurate_rnd+full_chroma_int,\
-                 scale=1280:720:flags=neighbor+accurate_rnd+full_chroma_int,format="
+                "scale=1920:1080:flags=bilinear+accurate_rnd+full_chroma_int,format=rgb24,\
+                 scale=1280:720:flags=neighbor+accurate_rnd+full_chroma_int:\
+                 out_color_matrix=bt709:out_range=limited,format=yuv420p10le,"
             ),
             "vf: {vf}"
         );
@@ -1086,9 +1109,11 @@ mod tests {
     }
 
     #[test]
-    fn video_filter_without_output_scales_starts_with_format() {
+    fn video_filter_without_output_scales_converts_with_bt709_first() {
         let config = default_config();
-        assert!(video_filter(&config).starts_with("format=yuv420p10le,"));
+        assert!(video_filter(&config).starts_with(
+            "scale=flags=bicubic:out_color_matrix=bt709:out_range=limited,format=yuv420p10le,"
+        ));
         assert_eq!(config.output_dimensions(), (3840, 2160));
     }
 
@@ -1385,19 +1410,10 @@ mod tests {
     }
 
     #[test]
-    fn test_ffmpeg_args_nvenc_preserves_zscale() {
+    fn test_ffmpeg_args_nvenc_uses_the_same_bt709_conversion() {
         let mut config = default_config();
         config.codec = "hevc_nvenc".to_string();
-        let args = config.build_ffmpeg_args();
-
-        let vf_idx = args.iter().position(|a| a == "-vf").unwrap();
-        let vf = &args[vf_idx + 1];
-        assert!(vf.contains("format=yuv420p10le"), "vf: {vf}");
-        assert!(vf.contains("setparams="), "vf: {vf}");
-        assert!(vf.contains("zscale"), "vf: {vf}");
-        assert!(vf.contains("bt709"), "vf: {vf}");
-        assert!(vf.contains("limited"), "vf: {vf}");
-        assert!(vf.contains("error_diffusion"), "vf: {vf}");
+        assert_eq!(video_filter(&config), video_filter(&default_config()));
     }
 
     #[test]
@@ -1593,6 +1609,69 @@ mod tests {
         );
 
         verify_output(&output_path, info.width, info.height).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires ffmpeg with libx264 and libx265"]
+    fn encoded_output_decodes_back_to_the_source_colors() {
+        use crate::nodes::video_input::tests::{
+            assert_quadrant_colors, quadrant_frame, rgb8_samples,
+        };
+        use crate::nodes::video_input::{extract_metadata, run_ffprobe, VideoDecoder};
+
+        let (width, height) = (1280_u32, 720_u32);
+        let dir = tempfile::tempdir().unwrap();
+        let source_path = dir.path().join("source.mkv");
+        let status = crate::runtime::command_for("ffmpeg")
+            .args([
+                "-v",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=size=1280x720:rate=1",
+            ])
+            .args(["-frames:v", "1"])
+            .arg(&source_path)
+            .status()
+            .unwrap();
+        assert!(status.success(), "failed to create the mux source");
+
+        for (codec, pixel_format) in [("libx265", "yuv420p10le"), ("libx264", "yuv420p")] {
+            let output_path = dir.path().join(format!("{codec}.mkv"));
+            let config = EncoderConfig {
+                source_path: source_path.clone(),
+                output_path: output_path.clone(),
+                codec: codec.to_string(),
+                crf: 0,
+                pixel_format: pixel_format.to_string(),
+                width,
+                height,
+                fps: "24/1".to_string(),
+                bit_depth: 8,
+                cq_value: None,
+                nvenc_preset: None,
+                x265_preset: None,
+                output_scales: Vec::new(),
+            };
+            let mut encoder = VideoEncoder::new(&config).unwrap();
+            let rgb = quadrant_frame(width as usize, height as usize);
+            for _ in 0..3 {
+                encoder.write_frame(&rgb).unwrap();
+            }
+            encoder.finish().unwrap();
+
+            let probe = run_ffprobe(&output_path).unwrap();
+            let (info, _) = extract_metadata(&probe, &output_path).unwrap();
+            assert_eq!(info.color_space.as_deref(), Some("bt709"), "{codec}");
+            let frame = VideoDecoder::new(&output_path, &info, None)
+                .unwrap()
+                .next()
+                .expect("one frame")
+                .unwrap();
+            assert_quadrant_colors(&rgb8_samples(frame), width as usize, height as usize, codec);
+        }
     }
 
     #[test]

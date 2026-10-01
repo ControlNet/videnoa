@@ -10,7 +10,7 @@ Build or verify the bundled media tools (FFmpeg, FFprobe, mkvpropedit).
            into -OutputDir, then run -Verify on the staged bin/ directory.
   -Verify  Check a bin/ directory (-BinDir) on Windows or Linux. The
            encoders and filters must be present, and the video pipeline's
-           rawvideo -> format/setparams/zscale -> encode path, statistics
+           rawvideo -> scale(BT.709)/format/setparams -> encode path, statistics
            tagging and frame counts must work for libx264 and libx265.
 #>
 [CmdletBinding()]
@@ -108,8 +108,10 @@ function Test-MediaTools([string]$Dir) {
             '-frames:v', '30', '-f', 'rawvideo', '-pix_fmt', 'rgb24', $raw)
         foreach ($case in $EncodeCases) {
             $out = Join-Path $scratch "$($case.Codec)-$($case.PixelFormat).mkv"
-            $vf = "format=$($case.PixelFormat),setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709," +
-                'zscale=range=limited:dither=error_diffusion,setsar=1'
+            # Mirrors EncoderConfig::build_ffmpeg_args in crates/core/src/nodes/video_output.rs.
+            $vf = 'scale=flags=bicubic:out_color_matrix=bt709:out_range=limited,' +
+                "format=$($case.PixelFormat)," +
+                'setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=limited,setsar=1'
             $null = Invoke-Native $ffmpeg @('-hide_banner', '-v', 'error', '-nostdin', '-y',
                 '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', '128x72', '-r', '30', '-i', $raw,
                 '-vf', $vf, '-c:v', $case.Codec, '-crf', '18', '-preset', 'ultrafast', '-pix_fmt', $case.PixelFormat, $out)
