@@ -10,6 +10,14 @@ import { appWorkerUpdateStore } from "./workerUpdates"
 
 export type ConnectionState = "connecting" | "connected" | "reconnecting" | "unavailable"
 
+/*
+ * The Controller emits events only when something changes; its periodic
+ * keep-alives are SSE comments that never reach EventSource listeners. A
+ * stream silent for this long is therefore not proof of a dead peer, only a
+ * reason to verify liveness when the operator returns to the page.
+ */
+const STALE_STREAM_MS = 60_000
+
 type SessionEventsProps = {
   readonly onConnectionStateChange: (state: ConnectionState) => void
 }
@@ -27,6 +35,8 @@ export function SessionEvents({ onConnectionStateChange }: SessionEventsProps) {
     let retryDelay = 1000
     let degraded = false
     let receivedSnapshotSignal = false
+    let lastEventAt = Date.now()
+    let probing = false
 
     function clearRetry() {
       clearTimeout(retryTimer)
@@ -56,7 +66,15 @@ export function SessionEvents({ onConnectionStateChange }: SessionEventsProps) {
       degraded = false
       const listeners = new AbortController()
       const listen = (type: string, listener: (event: Event) => void) => {
-        events.addEventListener(type, listener, { signal: listeners.signal })
+        events.addEventListener(
+          type,
+          (event) => {
+            // Anything the server actually delivered -- even a malformed delta -- proves the stream is alive.
+            if (type !== "error") lastEventAt = Date.now()
+            listener(event)
+          },
+          { signal: listeners.signal },
+        )
       }
       disposeStream = () => {
         listeners.abort()
@@ -119,10 +137,37 @@ export function SessionEvents({ onConnectionStateChange }: SessionEventsProps) {
       })
     }
 
+    /*
+     * After sleep the server side of the stream is usually gone, but the browser
+     * keeps reporting OPEN until the OS notices -- which can take hours -- so
+     * the UI would claim "connected" over stale data. When the operator returns
+     * to a long-silent OPEN stream, probe the Controller with the cheapest
+     * unauthenticated endpoint: if it answers while the stream has stayed
+     * silent, the stream is half-open and is replaced. An unreachable Controller
+     * is left to the native error path so a flaky network does not churn.
+     */
+    async function verifyOpenStream(events: EventSource) {
+      if (probing) return
+      probing = true
+      try {
+        const response = await fetch("/api/health", { cache: "no-store", credentials: "same-origin" })
+        if (!response.ok || current !== events || events.readyState !== EventSource.OPEN) return
+        if (Date.now() - lastEventAt > STALE_STREAM_MS) connect(true)
+      } catch {
+        // Unreachable Controller: EventSource surfaces the failure on its own.
+      } finally {
+        probing = false
+      }
+    }
+
     // Sleep can leave a terminal stream behind. Recover on return without
     // replacing healthy streams or duplicating a fresh connection attempt.
     function resume() {
-      if (!canRecover() || current === null || current.readyState === EventSource.OPEN) return
+      if (!canRecover() || current === null) return
+      if (current.readyState === EventSource.OPEN) {
+        if (Date.now() - lastEventAt > STALE_STREAM_MS) void verifyOpenStream(current)
+        return
+      }
       if (current.readyState !== EventSource.CLOSED && !degraded) return
       connect(true)
     }
@@ -136,6 +181,7 @@ export function SessionEvents({ onConnectionStateChange }: SessionEventsProps) {
     return () => {
       clearRetry()
       disposeStream()
+      current = null
       document.removeEventListener("visibilitychange", resume)
       window.removeEventListener("focus", resume)
       window.removeEventListener("online", resume)

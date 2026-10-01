@@ -123,6 +123,68 @@ it.each(["hidden", "offline"])("defers closed-stream retries while %s and resume
   expect(TestEventSource.instances).toHaveLength(2)
 })
 
+// Mirrors the silence threshold in SessionEvents: the Controller emits no periodic
+// event, so a stream that has been quiet this long is only trusted after a probe.
+const STALE_STREAM_MS = 60000
+
+it("replaces an OPEN stream that stayed silent across a suspend once the Controller answers", async () => {
+  const state = vi.fn()
+  const probe = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ status: "ok" }))
+  vi.stubGlobal("fetch", probe)
+  render(<SessionEvents onConnectionStateChange={state} />)
+  const old = latest()
+  old.emit("refetch", TestEventSource.OPEN)
+  act(() => vi.advanceTimersByTime(STALE_STREAM_MS + 1))
+  act(() => {
+    window.dispatchEvent(new Event("focus"))
+    document.dispatchEvent(new Event("visibilitychange"))
+    window.dispatchEvent(new Event("online"))
+  })
+  expect(probe).toHaveBeenCalledOnce()
+  expect(probe).toHaveBeenCalledWith("/api/health", expect.objectContaining({ cache: "no-store", credentials: "same-origin" }))
+  expect(TestEventSource.instances).toHaveLength(1)
+  await act(async () => {})
+  expect(TestEventSource.instances).toHaveLength(2)
+  expect(old.close).toHaveBeenCalled()
+  expect(state).toHaveBeenLastCalledWith("reconnecting")
+  const generation = appInvalidationStore.snapshot().generation
+  latest().emit("refetch", TestEventSource.OPEN)
+  expect(appInvalidationStore.snapshot().generation).toBe(generation + 1)
+  expect(state).toHaveBeenLastCalledWith("connected")
+})
+
+it("leaves an OPEN stream alone when it delivered an event recently", async () => {
+  const probe = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ status: "ok" }))
+  vi.stubGlobal("fetch", probe)
+  render(<SessionEvents onConnectionStateChange={vi.fn()} />)
+  latest().emit("open", TestEventSource.OPEN)
+  act(() => vi.advanceTimersByTime(STALE_STREAM_MS + 1))
+  latest().emit("task_updated", TestEventSource.OPEN)
+  act(() => vi.advanceTimersByTime(STALE_STREAM_MS - 1))
+  act(() => window.dispatchEvent(new Event("focus")))
+  await act(async () => {})
+  expect(probe).not.toHaveBeenCalled()
+  expect(TestEventSource.instances).toHaveLength(1)
+})
+
+it.each([
+  ["unreachable", () => Promise.reject(new TypeError("Failed to fetch"))],
+  ["not serving", () => Promise.resolve(new Response(null, { status: 503 }))],
+])("keeps a silent OPEN stream while the Controller is %s", async (_name, answer) => {
+  const state = vi.fn()
+  vi.stubGlobal("fetch", vi.fn<typeof fetch>().mockImplementation(answer))
+  render(<SessionEvents onConnectionStateChange={state} />)
+  const old = latest()
+  old.emit("open", TestEventSource.OPEN)
+  state.mockClear()
+  act(() => vi.advanceTimersByTime(STALE_STREAM_MS + 1))
+  act(() => window.dispatchEvent(new Event("focus")))
+  await act(async () => {})
+  expect(TestEventSource.instances).toHaveLength(1)
+  expect(old.close).not.toHaveBeenCalled()
+  expect(state).not.toHaveBeenCalled()
+})
+
 it("cleans up retries and lifecycle listeners on unmount", () => {
   const state = vi.fn()
   const { unmount } = render(<SessionEvents onConnectionStateChange={state} />)
