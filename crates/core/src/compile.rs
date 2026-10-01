@@ -153,38 +153,11 @@ pub(crate) fn compile_graph_with_execution_context(
         bail!("compile_graph only handles VideoFrames pipelines");
     }
 
-    validate_linear_topology(graph, registry, &execution_order)?;
-
-    let mut source_idx: Option<NodeIndex> = None;
-    let mut sink_idx: Option<NodeIndex> = None;
-    let mut processing_order: Vec<NodeIndex> = Vec::new();
-
-    for &node_idx in &execution_order {
-        let incoming_vf = count_video_frames_edges(graph, node_idx, Direction::Incoming);
-        let outgoing_vf = count_video_frames_edges(graph, node_idx, Direction::Outgoing);
-
-        if incoming_vf == 0 && outgoing_vf > 0 {
-            if source_idx.is_some() {
-                bail!(
-                    "multiple source nodes detected — compile_graph only supports linear pipelines"
-                );
-            }
-            source_idx = Some(node_idx);
-        } else if incoming_vf > 0 && outgoing_vf == 0 {
-            if sink_idx.is_some() {
-                bail!(
-                    "multiple sink nodes detected — compile_graph only supports linear pipelines"
-                );
-            }
-            sink_idx = Some(node_idx);
-        } else if incoming_vf > 0 && outgoing_vf > 0 {
-            processing_order.push(node_idx);
-        }
-    }
-
-    let source_idx =
-        source_idx.ok_or_else(|| anyhow!("no source node found in VideoFrames pipeline"))?;
-    let sink_idx = sink_idx.ok_or_else(|| anyhow!("no sink node found in VideoFrames pipeline"))?;
+    let VideoTopology {
+        source: source_idx,
+        sink: sink_idx,
+        processing: processing_order,
+    } = resolve_video_topology(graph, &execution_order)?;
 
     let mut outputs_by_node: HashMap<String, HashMap<String, PortData>> = HashMap::new();
 
@@ -340,21 +313,58 @@ fn has_video_frames_ports(
     Ok(graph.has_video_frames_edges())
 }
 
-/// Node types of the processing nodes between the VideoFrames source and sink,
-/// in execution order. Empty when the graph has no VideoFrames edges.
-pub fn video_processing_node_types(graph: &PipelineGraph) -> Result<Vec<String>> {
-    if !graph.has_video_frames_edges() {
-        return Ok(Vec::new());
+/// The single source, processing nodes (in execution order) and single sink
+/// of a linear VideoFrames pipeline.
+pub struct VideoTopology {
+    pub source: NodeIndex,
+    pub sink: NodeIndex,
+    pub processing: Vec<NodeIndex>,
+}
+
+/// Classify the nodes on the VideoFrames chain, rejecting anything
+/// `compile_graph` cannot run: fan-in/fan-out, several sources or sinks, or
+/// a chain with no source or no sink.
+pub fn resolve_video_topology(
+    graph: &PipelineGraph,
+    execution_order: &[NodeIndex],
+) -> Result<VideoTopology> {
+    check_linear_topology(graph, execution_order)?;
+
+    let mut source: Option<NodeIndex> = None;
+    let mut sink: Option<NodeIndex> = None;
+    let mut processing: Vec<NodeIndex> = Vec::new();
+
+    for &node_idx in execution_order {
+        let incoming_vf = count_video_frames_edges(graph, node_idx, Direction::Incoming);
+        let outgoing_vf = count_video_frames_edges(graph, node_idx, Direction::Outgoing);
+
+        if incoming_vf == 0 && outgoing_vf > 0 {
+            if source.is_some() {
+                bail!(
+                    "multiple source nodes detected — compile_graph only supports linear pipelines"
+                );
+            }
+            source = Some(node_idx);
+        } else if incoming_vf > 0 && outgoing_vf == 0 {
+            if sink.is_some() {
+                bail!(
+                    "multiple sink nodes detected — compile_graph only supports linear pipelines"
+                );
+            }
+            sink = Some(node_idx);
+        } else if incoming_vf > 0 && outgoing_vf > 0 {
+            processing.push(node_idx);
+        }
     }
-    Ok(graph
-        .execution_order()?
-        .into_iter()
-        .filter(|&node_idx| {
-            count_video_frames_edges(graph, node_idx, Direction::Incoming) > 0
-                && count_video_frames_edges(graph, node_idx, Direction::Outgoing) > 0
-        })
-        .map(|node_idx| graph.node(node_idx).node_type.clone())
-        .collect())
+
+    let source = source.ok_or_else(|| anyhow!("no source node found in VideoFrames pipeline"))?;
+    let sink = sink.ok_or_else(|| anyhow!("no sink node found in VideoFrames pipeline"))?;
+
+    Ok(VideoTopology {
+        source,
+        sink,
+        processing,
+    })
 }
 
 /// Validate that the VideoFrames sub-graph is strictly linear: every node has
@@ -364,6 +374,10 @@ pub(crate) fn validate_linear_topology(
     _registry: &NodeRegistry,
     execution_order: &[NodeIndex],
 ) -> Result<()> {
+    check_linear_topology(graph, execution_order)
+}
+
+fn check_linear_topology(graph: &PipelineGraph, execution_order: &[NodeIndex]) -> Result<()> {
     for &node_idx in execution_order {
         let incoming_vf = count_video_frames_edges(graph, node_idx, Direction::Incoming);
         let outgoing_vf = count_video_frames_edges(graph, node_idx, Direction::Outgoing);

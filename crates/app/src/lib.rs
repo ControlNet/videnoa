@@ -655,7 +655,7 @@ async fn run_workflow(
     info!("Validating workflow...");
     graph
         .validate(&registry)
-        .and_then(|()| validate_video_workflow(&graph))
+        .and_then(|()| validate_video_workflow(&graph, &registry))
         .and_then(|()| validate_workflow_encoders(&graph))
         .context("Workflow validation failed")?;
 

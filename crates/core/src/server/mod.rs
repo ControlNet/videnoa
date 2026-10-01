@@ -1412,7 +1412,7 @@ fn parse_and_validate_workflow(
 
     workflow
         .validate(&state.inner.node_registry)
-        .and_then(|()| validate_video_workflow(&workflow))
+        .and_then(|()| validate_video_workflow(&workflow, &state.inner.node_registry))
         .and_then(|()| validate_workflow_encoders(&workflow))
         .map_err(|e| AppError::BadRequest(format!("workflow validation failed: {e:#}")))?;
 
@@ -3447,7 +3447,9 @@ mod tests {
                 {"id": "input", "node_type": "VideoInput", "params": {
                     "path": temp_path_str("nonexistent-video-videnoa-test.mkv")
                 }},
-                {"id": "output", "node_type": "VideoOutput", "params": {}}
+                {"id": "output", "node_type": "VideoOutput", "params": {
+                    "output_path": temp_path_str("nonexistent-video-videnoa-test.out.mkv")
+                }}
             ],
             "connections": [
                 {
@@ -3492,6 +3494,135 @@ mod tests {
             !err_msg.contains("CompileContext"),
             "should not fail due to missing CompileContext, got: {err_msg}"
         );
+    }
+
+    fn all_nodes_state() -> AppState {
+        let mut node_registry = NodeRegistry::new();
+        register_all_nodes(&mut node_registry);
+        let model_registry = ModelRegistry::with_builtin_models(test_models_dir());
+        AppState::new(
+            node_registry,
+            model_registry,
+            DashMap::new(),
+            AppConfig::default(),
+            test_config_path(),
+            test_data_dir(),
+        )
+    }
+
+    /// POST a workflow to /api/jobs and return the status plus the response body.
+    async fn post_job(state: &AppState, workflow: serde_json::Value) -> (StatusCode, String) {
+        let mut app = app_router(state.clone());
+        let body = serde_json::json!({ "workflow": workflow });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/jobs")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let resp = send_request(&mut app, req).await;
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&bytes).to_string())
+    }
+
+    fn frames_edge(from: &str, to: &str) -> serde_json::Value {
+        serde_json::json!({"from_node": from, "from_port": "frames", "to_node": to,
+                           "to_port": "frames", "port_type": "VideoFrames"})
+    }
+
+    fn source_path_edge(from: &str, to: &str) -> serde_json::Value {
+        serde_json::json!({"from_node": from, "from_port": "source_path", "to_node": to,
+                           "to_port": "source_path", "port_type": "Path"})
+    }
+
+    #[tokio::test]
+    async fn test_create_job_rejects_video_output_without_output_path() {
+        let state = all_nodes_state();
+        let workflow = serde_json::json!({
+            "nodes": [
+                {"id": "input", "node_type": "VideoInput", "params": {"path": temp_path_str("in.mkv")}},
+                {"id": "output", "node_type": "VideoOutput", "params": {}}
+            ],
+            "connections": [frames_edge("input", "output"), source_path_edge("input", "output")]
+        });
+
+        let (status, body) = post_job(&state, workflow).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            body.contains("node 'output' missing required input port 'output_path'"),
+            "{body}"
+        );
+        assert!(state.inner.jobs.is_empty(), "no job may be queued");
+    }
+
+    #[tokio::test]
+    async fn test_create_job_rejects_non_source_feeding_video_frames() {
+        let state = all_nodes_state();
+        let workflow = serde_json::json!({
+            "nodes": [
+                {"id": "const", "node_type": "Constant", "params": {"type": "Path", "value": temp_path_str("in.mkv")}},
+                {"id": "output", "node_type": "VideoOutput", "params": {"output_path": temp_path_str("out.mkv")}}
+            ],
+            "connections": [
+                frames_edge("const", "output"),
+                {"from_node": "const", "from_port": "value", "to_node": "output",
+                 "to_port": "source_path", "port_type": "Path"}
+            ]
+        });
+
+        let (status, body) = post_job(&state, workflow).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            body.contains("node 'const' of type 'Constant' cannot be the VideoFrames source"),
+            "{body}"
+        );
+        assert!(state.inner.jobs.is_empty(), "no job may be queued");
+    }
+
+    #[tokio::test]
+    async fn test_create_job_rejects_frame_chain_fan_out() {
+        let state = all_nodes_state();
+        let workflow = serde_json::json!({
+            "nodes": [
+                {"id": "input", "node_type": "VideoInput", "params": {"path": temp_path_str("in.mkv")}},
+                {"id": "out_a", "node_type": "VideoOutput", "params": {"output_path": temp_path_str("a.mkv")}},
+                {"id": "out_b", "node_type": "VideoOutput", "params": {"output_path": temp_path_str("b.mkv")}}
+            ],
+            "connections": [
+                frames_edge("input", "out_a"), frames_edge("input", "out_b"),
+                source_path_edge("input", "out_a"), source_path_edge("input", "out_b")
+            ]
+        });
+
+        let (status, body) = post_job(&state, workflow).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(body.contains("fan-out detected"), "{body}");
+        assert!(state.inner.jobs.is_empty(), "no job may be queued");
+    }
+
+    #[tokio::test]
+    async fn test_create_job_rejects_multiple_video_sources() {
+        let state = all_nodes_state();
+        let workflow = serde_json::json!({
+            "nodes": [
+                {"id": "in_a", "node_type": "VideoInput", "params": {"path": temp_path_str("a.mkv")}},
+                {"id": "in_b", "node_type": "VideoInput", "params": {"path": temp_path_str("b.mkv")}},
+                {"id": "out_a", "node_type": "VideoOutput", "params": {"output_path": temp_path_str("a.out.mkv")}},
+                {"id": "out_b", "node_type": "VideoOutput", "params": {"output_path": temp_path_str("b.out.mkv")}}
+            ],
+            "connections": [
+                frames_edge("in_a", "out_a"), frames_edge("in_b", "out_b"),
+                source_path_edge("in_a", "out_a"), source_path_edge("in_b", "out_b")
+            ]
+        });
+
+        let (status, body) = post_job(&state, workflow).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(body.contains("multiple source nodes detected"), "{body}");
+        assert!(state.inner.jobs.is_empty(), "no job may be queued");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

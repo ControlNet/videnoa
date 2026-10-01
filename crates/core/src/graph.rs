@@ -206,43 +206,72 @@ impl PipelineGraph {
             }
         }
 
+        // Frame-chain nodes are exempt here so previews can run a workflow
+        // whose VideoInput/VideoOutput are not configured yet; jobs must also
+        // call `validate_frame_chain_inputs`.
         for (idx, (input_ports, _)) in &definitions {
-            let has_vf_edge = self
-                .graph
-                .edges_directed(*idx, petgraph::Direction::Incoming)
-                .chain(
-                    self.graph
-                        .edges_directed(*idx, petgraph::Direction::Outgoing),
-                )
-                .any(|e| e.weight().port_type == PortType::VideoFrames);
-
-            if has_vf_edge {
+            if self.has_video_frames_edge(*idx) {
                 continue;
             }
-
-            let connected_inputs: HashSet<String> = self
-                .connections_to(*idx)
-                .into_iter()
-                .map(|(_, conn)| conn.target_port.clone())
-                .collect();
-
-            let node = self.node(*idx);
-            let has_param = |name: &str| -> bool { node.params.contains_key(name) };
-            for input in input_ports {
-                if input.required
-                    && input.default_value.is_none()
-                    && !connected_inputs.contains(&input.name)
-                    && !has_param(&input.name)
-                {
-                    bail!(
-                        "node '{}' missing required input port '{}'",
-                        node.id,
-                        input.name
-                    );
-                }
-            }
+            self.check_required_inputs(*idx, input_ports)?;
         }
 
+        Ok(())
+    }
+
+    /// Require the non-VideoFrames inputs of every node on the frame chain.
+    ///
+    /// `validate` skips these nodes, so without this check a `VideoOutput`
+    /// without `output_path` or a `SuperResolution` without `model_path` is
+    /// accepted and only fails once the job compiles. VideoFrames ports are
+    /// satisfied by the VideoFrames edges themselves.
+    pub fn validate_frame_chain_inputs(&self, registry: &NodeRegistry) -> Result<()> {
+        let definitions = self.collect_port_definitions(registry)?;
+
+        for (idx, (input_ports, _)) in &definitions {
+            if !self.has_video_frames_edge(*idx) {
+                continue;
+            }
+            let param_ports: Vec<PortDefinition> = input_ports
+                .iter()
+                .filter(|port| port.port_type != PortType::VideoFrames)
+                .cloned()
+                .collect();
+            self.check_required_inputs(*idx, &param_ports)?;
+        }
+
+        Ok(())
+    }
+
+    fn has_video_frames_edge(&self, idx: NodeIndex) -> bool {
+        self.graph
+            .edges_directed(idx, Direction::Incoming)
+            .chain(self.graph.edges_directed(idx, Direction::Outgoing))
+            .any(|e| e.weight().port_type == PortType::VideoFrames)
+    }
+
+    /// A required input without a default must be fed by a connection or a param.
+    fn check_required_inputs(&self, idx: NodeIndex, input_ports: &[PortDefinition]) -> Result<()> {
+        let connected_inputs: HashSet<&str> = self
+            .connections_to(idx)
+            .into_iter()
+            .map(|(_, conn)| conn.target_port.as_str())
+            .collect();
+
+        let node = self.node(idx);
+        for input in input_ports {
+            if input.required
+                && input.default_value.is_none()
+                && !connected_inputs.contains(input.name.as_str())
+                && !node.params.contains_key(&input.name)
+            {
+                bail!(
+                    "node '{}' missing required input port '{}'",
+                    node.id,
+                    input.name
+                );
+            }
+        }
         Ok(())
     }
 
@@ -703,6 +732,147 @@ mod tests {
         assert!(full_err.contains(
             "Constant: unsupported type 'VideoFrames', expected one of Int|Float|Str|Bool|Path"
         ));
+    }
+
+    fn video_frames(source: &str, target: &str) -> (String, PortConnection, String) {
+        (
+            source.to_string(),
+            PortConnection {
+                source_port: "frames".to_string(),
+                target_port: "frames".to_string(),
+                port_type: PortType::VideoFrames,
+            },
+            target.to_string(),
+        )
+    }
+
+    /// VideoInput -> [middle nodes] -> VideoOutput, with `source_path` wired
+    /// from the input and `output_path` supplied via `output_params`.
+    fn frame_chain_graph(
+        middle: &[(&str, &str, HashMap<String, serde_json::Value>)],
+        output_params: HashMap<String, serde_json::Value>,
+    ) -> PipelineGraph {
+        let mut graph = PipelineGraph::new();
+        graph
+            .add_node(NodeInstance {
+                id: "input".to_string(),
+                node_type: "VideoInput".to_string(),
+                params: HashMap::from([("path".to_string(), serde_json::json!("/tmp/in.mkv"))]),
+            })
+            .expect("input node should be added");
+        let mut previous = "input".to_string();
+        for (id, node_type, params) in middle {
+            graph
+                .add_node(NodeInstance {
+                    id: id.to_string(),
+                    node_type: node_type.to_string(),
+                    params: params.clone(),
+                })
+                .expect("middle node should be added");
+            let (from, conn, to) = video_frames(&previous, id);
+            graph
+                .add_connection(&from, conn, &to)
+                .expect("frames connection should be added");
+            previous = id.to_string();
+        }
+        graph
+            .add_node(NodeInstance {
+                id: "output".to_string(),
+                node_type: "VideoOutput".to_string(),
+                params: output_params,
+            })
+            .expect("output node should be added");
+        let (from, conn, to) = video_frames(&previous, "output");
+        graph
+            .add_connection(&from, conn, &to)
+            .expect("frames connection should be added");
+        graph
+            .add_connection(
+                "input",
+                PortConnection {
+                    source_port: "source_path".to_string(),
+                    target_port: "source_path".to_string(),
+                    port_type: PortType::Path,
+                },
+                "output",
+            )
+            .expect("source_path connection should be added");
+        graph
+    }
+
+    fn output_path_param() -> HashMap<String, serde_json::Value> {
+        HashMap::from([("output_path".to_string(), serde_json::json!("/tmp/out.mkv"))])
+    }
+
+    #[test]
+    fn test_frame_chain_inputs_reject_video_output_without_output_path() {
+        let registry = build_default_registry();
+        let graph = frame_chain_graph(&[], HashMap::new());
+
+        graph
+            .validate(&registry)
+            .expect("validate() stays lenient on frame-chain nodes for previews");
+        let err = graph
+            .validate_frame_chain_inputs(&registry)
+            .expect_err("VideoOutput without output_path must be rejected");
+        assert_eq!(
+            err.to_string(),
+            "node 'output' missing required input port 'output_path'"
+        );
+    }
+
+    #[test]
+    fn test_frame_chain_inputs_reject_resize_without_dimensions() {
+        let registry = build_default_registry();
+        let graph = frame_chain_graph(&[("resize", "Resize", HashMap::new())], output_path_param());
+
+        let err = graph
+            .validate_frame_chain_inputs(&registry)
+            .expect_err("Resize without width/height must be rejected");
+        assert_eq!(
+            err.to_string(),
+            "node 'resize' missing required input port 'width'"
+        );
+    }
+
+    #[test]
+    fn test_frame_chain_inputs_reject_super_resolution_without_model_path() {
+        let registry = build_default_registry();
+        let graph = frame_chain_graph(
+            &[("sr", "SuperResolution", HashMap::new())],
+            output_path_param(),
+        );
+
+        let err = graph
+            .validate_frame_chain_inputs(&registry)
+            .expect_err("SuperResolution without model_path must be rejected");
+        assert_eq!(
+            err.to_string(),
+            "node 'sr' missing required input port 'model_path'"
+        );
+    }
+
+    #[test]
+    fn test_frame_chain_inputs_accept_complete_super_resolution_chain() {
+        let registry = build_default_registry();
+        let graph = frame_chain_graph(
+            &[(
+                "sr",
+                "SuperResolution",
+                HashMap::from([(
+                    "model_path".to_string(),
+                    serde_json::json!("/tmp/model.onnx"),
+                )]),
+            )],
+            output_path_param(),
+        );
+
+        graph
+            .validate(&registry)
+            .expect("complete chain should pass validate()");
+        graph
+            .validate_frame_chain_inputs(&registry)
+            .expect("complete chain should pass frame-chain input validation");
     }
 
     #[test]

@@ -6,13 +6,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
+use petgraph::stable_graph::NodeIndex;
 
-use crate::compile::{CompileContext, DecoderResult};
+use crate::compile::{resolve_video_topology, CompileContext, DecoderResult};
 use crate::frame_pool::FramePool;
 use crate::graph::PipelineGraph;
 use crate::node::{ExecutionContext, FrameProcessor, Node, PortDefinition};
+use crate::registry::NodeRegistry;
 use crate::streaming_executor::{FrameInterpolator, FrameSink, PipelineStage};
-use crate::types::{Frame, PortData};
+use crate::types::{Frame, PortData, PortType};
 
 use crate::nodes::backend::{
     model_trt_cache_dir, InferenceBackend, TrtCacheIdentity, TrtTileIdentity,
@@ -62,12 +64,92 @@ pub fn validate_video_processing_chain(node_types: &[&str]) -> Result<()> {
     Ok(())
 }
 
-/// Reject video job graphs whose processing chain the pipeline cannot compile,
-/// before any job is queued.
-pub fn validate_video_workflow(graph: &PipelineGraph) -> Result<()> {
-    let node_types = crate::compile::video_processing_node_types(graph)?;
-    let node_types: Vec<&str> = node_types.iter().map(String::as_str).collect();
+/// Node types `create_decoder` accepts as the VideoFrames source.
+const SUPPORTED_VIDEO_SOURCE_NODES: [&str; 1] = ["VideoInput"];
+/// Node types `create_encoder` accepts as the VideoFrames sink.
+const SUPPORTED_VIDEO_SINK_NODES: [&str; 1] = ["VideoOutput"];
+
+/// Reject video job graphs that `compile_graph` with a `VideoCompileContext`
+/// would reject, before any job is queued: a non-linear frame chain, several
+/// sources or sinks, endpoints that cannot produce or consume frames,
+/// frame-chain nodes missing required params, and unsupported processing nodes.
+pub fn validate_video_workflow(graph: &PipelineGraph, registry: &NodeRegistry) -> Result<()> {
+    if !graph.has_video_frames_edges() {
+        return Ok(());
+    }
+
+    let execution_order = graph.execution_order()?;
+    let topology = resolve_video_topology(graph, &execution_order)?;
+    validate_video_endpoint(graph, registry, topology.source, VideoEndpoint::Source)?;
+    validate_video_endpoint(graph, registry, topology.sink, VideoEndpoint::Sink)?;
+    graph.validate_frame_chain_inputs(registry)?;
+
+    let node_types: Vec<&str> = topology
+        .processing
+        .iter()
+        .map(|&node_idx| graph.node(node_idx).node_type.as_str())
+        .collect();
     validate_video_processing_chain(&node_types)
+}
+
+#[derive(Clone, Copy)]
+enum VideoEndpoint {
+    Source,
+    Sink,
+}
+
+/// The chain must start at a node that decodes frames and end at one that
+/// encodes them. Besides the built-in types, a node whose own port definitions
+/// declare a VideoFrames port in that direction (custom registries) qualifies.
+fn validate_video_endpoint(
+    graph: &PipelineGraph,
+    registry: &NodeRegistry,
+    node_idx: NodeIndex,
+    endpoint: VideoEndpoint,
+) -> Result<()> {
+    let instance = graph.node(node_idx);
+    let node_type = instance.node_type.as_str();
+    let (supported, role, verb, expected) = match endpoint {
+        VideoEndpoint::Source => (
+            SUPPORTED_VIDEO_SOURCE_NODES.as_slice(),
+            "source",
+            "produces",
+            "start the frame chain at a VideoInput node",
+        ),
+        VideoEndpoint::Sink => (
+            SUPPORTED_VIDEO_SINK_NODES.as_slice(),
+            "sink",
+            "consumes",
+            "end the frame chain at a VideoOutput node",
+        ),
+    };
+    if supported.contains(&node_type) {
+        return Ok(());
+    }
+
+    let node = registry
+        .create(node_type, instance.params.clone())
+        .with_context(|| {
+            format!(
+                "failed to instantiate node '{}' of type '{}'",
+                instance.id, node_type
+            )
+        })?;
+    let ports = match endpoint {
+        VideoEndpoint::Source => node.output_ports(),
+        VideoEndpoint::Sink => node.input_ports(),
+    };
+    if ports
+        .iter()
+        .any(|port| port.port_type == PortType::VideoFrames)
+    {
+        return Ok(());
+    }
+
+    bail!(
+        "node '{}' of type '{node_type}' cannot be the VideoFrames {role}: it {verb} no frames; {expected}",
+        instance.id
+    )
 }
 
 /// Raw pipe bit depth for frames decoded from a source of `source_bit_depth`.
@@ -1635,6 +1717,252 @@ mod tests {
             error.to_string().contains("'ColorSpace' is not supported"),
             "{error}"
         );
+    }
+
+    /// Workflow JSON helpers for `validate_video_workflow` tests.
+    mod video_workflow {
+        use super::*;
+        use crate::registry::build_default_registry;
+        use serde_json::{json, Value};
+
+        pub fn node(id: &str, node_type: &str, params: Value) -> Value {
+            json!({"id": id, "node_type": node_type, "params": params})
+        }
+
+        pub fn frames(from: &str, to: &str) -> Value {
+            json!({"from_node": from, "from_port": "frames", "to_node": to,
+                   "to_port": "frames", "port_type": "VideoFrames"})
+        }
+
+        pub fn source_path(from: &str, to: &str) -> Value {
+            json!({"from_node": from, "from_port": "source_path", "to_node": to,
+                   "to_port": "source_path", "port_type": "Path"})
+        }
+
+        pub fn graph(nodes: Vec<Value>, connections: Vec<Value>) -> PipelineGraph {
+            serde_json::from_value(json!({"nodes": nodes, "connections": connections}))
+                .expect("workflow JSON should deserialize")
+        }
+
+        pub fn video_input(id: &str) -> Value {
+            node(id, "VideoInput", json!({"path": "/tmp/in.mkv"}))
+        }
+
+        pub fn video_output(id: &str) -> Value {
+            node(id, "VideoOutput", json!({"output_path": "/tmp/out.mkv"}))
+        }
+
+        pub fn validate(graph: &PipelineGraph) -> Result<()> {
+            let registry = build_default_registry();
+            graph.validate(&registry)?;
+            validate_video_workflow(graph, &registry)
+        }
+    }
+
+    #[test]
+    fn video_workflow_accepts_complete_linear_chain() {
+        use video_workflow::*;
+        let graph = graph(
+            vec![
+                video_input("input"),
+                node(
+                    "sr",
+                    "SuperResolution",
+                    serde_json::json!({"model_path": "/tmp/model.onnx"}),
+                ),
+                video_output("output"),
+            ],
+            vec![
+                frames("input", "sr"),
+                frames("sr", "output"),
+                source_path("input", "output"),
+            ],
+        );
+        validate(&graph).expect("complete VideoInput -> SuperResolution -> VideoOutput chain");
+    }
+
+    #[test]
+    fn video_workflow_rejects_non_source_feeding_video_frames() {
+        use video_workflow::*;
+        let graph = graph(
+            vec![
+                node(
+                    "const",
+                    "Constant",
+                    serde_json::json!({"type": "Path", "value": "/tmp/in.mkv"}),
+                ),
+                video_output("output"),
+            ],
+            vec![
+                frames("const", "output"),
+                serde_json::json!({"from_node": "const", "from_port": "value", "to_node": "output",
+                                   "to_port": "source_path", "port_type": "Path"}),
+            ],
+        );
+        let error = validate(&graph).unwrap_err().to_string();
+        assert_eq!(
+            error,
+            "node 'const' of type 'Constant' cannot be the VideoFrames source: it produces no \
+             frames; start the frame chain at a VideoInput node"
+        );
+    }
+
+    #[test]
+    fn video_workflow_rejects_non_sink_consuming_video_frames() {
+        use video_workflow::*;
+        let graph = graph(
+            vec![
+                video_input("input"),
+                node("print", "Print", serde_json::json!({"value": "x"})),
+            ],
+            vec![frames("input", "print")],
+        );
+        let error = validate(&graph).unwrap_err().to_string();
+        assert!(
+            error.contains("node 'print' of type 'Print' cannot be the VideoFrames sink"),
+            "{error}"
+        );
+        assert!(error.contains("VideoOutput"), "{error}");
+    }
+
+    #[test]
+    fn video_workflow_rejects_fan_out() {
+        use video_workflow::*;
+        let graph = graph(
+            vec![
+                video_input("input"),
+                video_output("out_a"),
+                video_output("out_b"),
+            ],
+            vec![
+                frames("input", "out_a"),
+                frames("input", "out_b"),
+                source_path("input", "out_a"),
+                source_path("input", "out_b"),
+            ],
+        );
+        let error = validate(&graph).unwrap_err().to_string();
+        assert!(error.contains("fan-out detected"), "{error}");
+        assert!(error.contains("node 'input'"), "{error}");
+    }
+
+    #[test]
+    fn video_workflow_rejects_fan_in() {
+        use video_workflow::*;
+        let graph = graph(
+            vec![
+                video_input("in_a"),
+                video_input("in_b"),
+                video_output("output"),
+            ],
+            vec![
+                frames("in_a", "output"),
+                frames("in_b", "output"),
+                source_path("in_a", "output"),
+            ],
+        );
+        let error = validate(&graph).unwrap_err().to_string();
+        assert!(error.contains("fan-in detected"), "{error}");
+        assert!(error.contains("node 'output'"), "{error}");
+    }
+
+    #[test]
+    fn video_workflow_rejects_multiple_sources() {
+        use video_workflow::*;
+        let graph = graph(
+            vec![
+                video_input("in_a"),
+                video_output("out_a"),
+                video_input("in_b"),
+                video_output("out_b"),
+            ],
+            vec![
+                frames("in_a", "out_a"),
+                frames("in_b", "out_b"),
+                source_path("in_a", "out_a"),
+                source_path("in_b", "out_b"),
+            ],
+        );
+        let error = validate(&graph).unwrap_err().to_string();
+        assert!(error.contains("multiple source nodes detected"), "{error}");
+    }
+
+    #[test]
+    fn video_workflow_rejects_frame_chain_node_missing_required_param() {
+        use video_workflow::*;
+        let graph = graph(
+            vec![
+                video_input("input"),
+                node("output", "VideoOutput", serde_json::json!({})),
+            ],
+            vec![frames("input", "output"), source_path("input", "output")],
+        );
+        let error = validate(&graph).unwrap_err().to_string();
+        assert_eq!(
+            error,
+            "node 'output' missing required input port 'output_path'"
+        );
+    }
+
+    #[test]
+    fn video_workflow_accepts_custom_nodes_declaring_video_frames_ports() {
+        use video_workflow::*;
+
+        struct PortOnlyNode {
+            inputs: Vec<PortDefinition>,
+            outputs: Vec<PortDefinition>,
+        }
+        impl Node for PortOnlyNode {
+            fn node_type(&self) -> &str {
+                "port_only"
+            }
+            fn input_ports(&self) -> Vec<PortDefinition> {
+                self.inputs.clone()
+            }
+            fn output_ports(&self) -> Vec<PortDefinition> {
+                self.outputs.clone()
+            }
+            fn execute(
+                &mut self,
+                _inputs: &HashMap<String, PortData>,
+                _ctx: &ExecutionContext,
+            ) -> Result<HashMap<String, PortData>> {
+                Ok(HashMap::new())
+            }
+        }
+        fn frames_port() -> PortDefinition {
+            PortDefinition {
+                name: "frames".to_string(),
+                port_type: PortType::VideoFrames,
+                required: true,
+                default_value: None,
+            }
+        }
+
+        let mut registry = NodeRegistry::new();
+        registry.register("custom_source", |_| {
+            Ok(Box::new(PortOnlyNode {
+                inputs: vec![],
+                outputs: vec![frames_port()],
+            }))
+        });
+        registry.register("custom_sink", |_| {
+            Ok(Box::new(PortOnlyNode {
+                inputs: vec![frames_port()],
+                outputs: vec![],
+            }))
+        });
+
+        let graph = graph(
+            vec![
+                node("src", "custom_source", serde_json::json!({})),
+                node("dst", "custom_sink", serde_json::json!({})),
+            ],
+            vec![frames("src", "dst")],
+        );
+        graph.validate(&registry).expect("graph should validate");
+        validate_video_workflow(&graph, &registry)
+            .expect("nodes declaring VideoFrames ports are valid endpoints");
     }
 
     #[test]
