@@ -5,12 +5,13 @@
 //! and muxes the encoded video with ALL original non-video streams (audio, subtitle,
 //! attachment, chapter) from the source file.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use tracing::{debug, info, warn};
@@ -19,7 +20,31 @@ use crate::frame_pool::FramePool;
 use crate::node::{ExecutionContext, Node, PortDefinition};
 use crate::nodes::resize::ResizeAlgorithm;
 use crate::streaming_executor::FrameSink;
+use crate::subprocess::{describe_stderr, wait_or_kill, StderrTail};
 use crate::types::{Frame, PortData, PortType};
+
+/// Test frame for the NVENC probe. NVENC enforces a minimum frame size (an
+/// A40 rejects anything below 144x144 with "Frame dimensions are less than
+/// the minimum supported value"), so the probe must not use a tiny frame.
+const NVENC_PROBE_SIZE: &str = "256x256";
+/// Longest an NVENC probe may run before it is killed and reported as failed.
+const NVENC_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The encoder settings an NVENC probe exercises.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct NvencProbeKey {
+    codec: String,
+    pixel_format: String,
+    preset: String,
+    profile: &'static str,
+}
+
+/// NVENC configurations that passed their probe in this process; the GPU and
+/// FFmpeg do not change while it runs.
+fn probed_nvenc_configs() -> &'static Mutex<HashSet<NvencProbeKey>> {
+    static PROBED: OnceLock<Mutex<HashSet<NvencProbeKey>>> = OnceLock::new();
+    PROBED.get_or_init(|| Mutex::new(HashSet::new()))
+}
 
 /// One spatial resample applied by FFmpeg before pixel-format conversion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,18 +122,48 @@ impl EncoderConfig {
         )
     }
 
+    /// Confirms the NVENC encoder can open with this configuration before a
+    /// job streams frames into it.
     fn probe_nvenc(&self) -> Result<()> {
+        self.probe_nvenc_with(|| crate::runtime::command_for("ffmpeg"))
+    }
+
+    /// Runs the probe from `command` unless the same NVENC configuration
+    /// already passed in this process. Failures are not memoised so a later
+    /// job reports a fresh cause (the GPU may have been busy or recovered).
+    fn probe_nvenc_with(&self, command: impl FnOnce() -> Command) -> Result<()> {
         if !self.is_nvenc() {
             return Ok(());
         }
+        let key = self.nvenc_probe_key();
+        let mut probed = probed_nvenc_configs()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if probed.contains(&key) {
+            debug!(codec = %self.codec, "NVENC probe already passed for this configuration");
+            return Ok(());
+        }
+        self.run_nvenc_probe(&mut command())?;
+        probed.insert(key);
+        Ok(())
+    }
 
-        let mut command = crate::runtime::command_for("ffmpeg");
-        self.run_nvenc_probe(&mut command)
+    fn nvenc_probe_key(&self) -> NvencProbeKey {
+        NvencProbeKey {
+            codec: self.codec.clone(),
+            pixel_format: self.pixel_format.clone(),
+            preset: self.nvenc_preset.as_deref().unwrap_or("p4").to_string(),
+            profile: self.nvenc_profile(),
+        }
     }
 
     fn run_nvenc_probe(&self, command: &mut Command) -> Result<()> {
+        self.run_nvenc_probe_with_timeout(command, NVENC_PROBE_TIMEOUT)
+    }
+
+    fn run_nvenc_probe_with_timeout(&self, command: &mut Command, timeout: Duration) -> Result<()> {
         let cq = self.cq_value.unwrap_or(20).to_string();
-        let output = command
+        let mut child = command
             .args([
                 "-hide_banner",
                 "-loglevel",
@@ -116,7 +171,7 @@ impl EncoderConfig {
                 "-f",
                 "lavfi",
                 "-i",
-                "color=size=64x64:rate=1:color=black",
+                &format!("color=size={NVENC_PROBE_SIZE}:rate=1:color=black"),
                 "-frames:v",
                 "1",
                 "-c:v",
@@ -137,23 +192,32 @@ impl EncoderConfig {
                 "null",
                 "-",
             ])
+            .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
-            .output()
+            .spawn()
             .map_err(|error| {
                 self.nvenc_probe_error(&format!("failed to execute FFmpeg probe: {error}"))
             })?;
+        let stderr = child.stderr.take().expect("stderr should be piped");
+        let mut stderr_tail = StderrTail::spawn(stderr, |line| {
+            debug!(target: "ffmpeg_nvenc_probe_stderr", "{line}");
+        });
 
-        if output.status.success() {
-            return Ok(());
+        let status = wait_or_kill(&mut child, timeout).map_err(|error| {
+            self.nvenc_probe_error(&format!("failed to wait for FFmpeg probe: {error}"))
+        })?;
+        let stderr = describe_stderr(&stderr_tail.join());
+        match status {
+            Some(status) if status.success() => Ok(()),
+            Some(status) => {
+                Err(self.nvenc_probe_error(&format!("FFmpeg exited with {status}; {stderr}")))
+            }
+            None => Err(self.nvenc_probe_error(&format!(
+                "FFmpeg probe did not finish within {}s and was killed; {stderr}",
+                timeout.as_secs(),
+            ))),
         }
-
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(self.nvenc_probe_error(&format!(
-            "FFmpeg exited with {}: {}",
-            output.status,
-            stderr.trim()
-        )))
     }
 
     pub fn build_ffmpeg_args(&self) -> Vec<String> {
@@ -1399,6 +1463,151 @@ mod tests {
         assert!(message.contains("hevc_nvenc"));
         assert!(message.contains("failed to execute FFmpeg probe"));
         assert!(message.contains("software fallback was not applied"));
+    }
+
+    /// Writes an `ffmpeg` stand-in running `body` as a shell script and
+    /// returns a command invoking it. The script runs through `sh` so a fork
+    /// in a concurrent test cannot make exec fail with "text file busy".
+    #[cfg(unix)]
+    fn fake_ffmpeg(dir: &Path, name: &str, body: &str) -> impl Fn() -> std::process::Command {
+        let path = dir.join(name);
+        std::fs::write(&path, format!("{body}\n")).unwrap();
+        move || {
+            let mut command = std::process::Command::new("sh");
+            command.arg(&path);
+            command
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nvenc_probe_encodes_a_frame_large_enough_for_nvenc() {
+        // Given: an FFmpeg stand-in that records the probe arguments.
+        let dir = tempfile::tempdir().unwrap();
+        let args_file = dir.path().join("args");
+        let ffmpeg = fake_ffmpeg(
+            dir.path(),
+            "ffmpeg",
+            &format!("printf '%s\\n' \"$@\" > '{}'", args_file.display()),
+        );
+        let mut config = default_config();
+        config.codec = "hevc_nvenc".to_string();
+        config.pixel_format = "p010le".to_string();
+
+        // When: the probe runs.
+        config.run_nvenc_probe(&mut ffmpeg()).unwrap();
+
+        // Then: the test frame is above NVENC's minimum size (an A40 rejects
+        // frames smaller than 144x144) and the encoder settings match the job.
+        let args: Vec<String> = std::fs::read_to_string(&args_file)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert!(
+            args.contains(&format!("color=size={NVENC_PROBE_SIZE}:rate=1:color=black")),
+            "{args:?}"
+        );
+        assert_eq!(NVENC_PROBE_SIZE, "256x256");
+        for pair in [
+            ["-c:v", "hevc_nvenc"],
+            ["-pix_fmt", "p010le"],
+            ["-profile:v", "main10"],
+            ["-preset", "p4"],
+            ["-cq", "20"],
+            ["-frames:v", "1"],
+            ["-f", "null"],
+        ] {
+            assert!(
+                args.windows(2).any(|window| window == pair),
+                "{pair:?} missing from {args:?}"
+            );
+        }
+        assert_eq!(args.last().map(String::as_str), Some("-"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nvenc_probe_is_killed_after_its_deadline() {
+        // Given: an FFmpeg probe that never finishes.
+        let mut config = default_config();
+        config.codec = "hevc_nvenc".to_string();
+        let mut command = std::process::Command::new("sh");
+        command.args(["-c", "printf 'still starting\\n' >&2; exec sleep 30"]);
+        let start = std::time::Instant::now();
+
+        // When: the deadline passes.
+        let error = config
+            .run_nvenc_probe_with_timeout(&mut command, Duration::from_millis(200))
+            .expect_err("a hung probe should fail encoder creation");
+
+        // Then: the probe is killed and the failure names the deadline and codec.
+        assert!(start.elapsed() < Duration::from_secs(10));
+        let message = error.to_string();
+        assert!(message.contains("hevc_nvenc"), "{message}");
+        assert!(message.contains("did not finish within"), "{message}");
+        assert!(message.contains("still starting"), "{message}");
+        assert!(message.contains("software fallback was not applied"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn successful_nvenc_probe_runs_once_per_configuration() {
+        // Given: an FFmpeg stand-in counting its invocations, and a pixel
+        // format no other test shares so the process-wide memo is isolated.
+        let dir = tempfile::tempdir().unwrap();
+        let count_file = dir.path().join("count");
+        let ffmpeg = fake_ffmpeg(
+            dir.path(),
+            "ffmpeg",
+            &format!("printf 'run\\n' >> '{}'", count_file.display()),
+        );
+        let runs = || {
+            std::fs::read_to_string(&count_file)
+                .map(|text| text.lines().count())
+                .unwrap_or(0)
+        };
+        let mut config = default_config();
+        config.codec = "hevc_nvenc".to_string();
+        config.pixel_format = format!("memo-{}", uuid::Uuid::new_v4());
+
+        // When: the same configuration is probed twice, then a variant.
+        config.probe_nvenc_with(&ffmpeg).unwrap();
+        config.probe_nvenc_with(&ffmpeg).unwrap();
+        assert_eq!(runs(), 1, "a successful probe is reused");
+
+        config.nvenc_preset = Some("p7".to_string());
+        config.probe_nvenc_with(&ffmpeg).unwrap();
+        assert_eq!(runs(), 2, "another preset is probed on its own");
+
+        // Then: a failing probe is reported every time rather than memoised.
+        let failing = fake_ffmpeg(
+            dir.path(),
+            "ffmpeg-failing",
+            &format!(
+                "printf 'run\\n' >> '{}'; printf 'No capable devices found\\n' >&2; exit 1",
+                count_file.display()
+            ),
+        );
+        config.nvenc_preset = Some("p1".to_string());
+        for _ in 0..2 {
+            let error = config.probe_nvenc_with(&failing).unwrap_err();
+            assert!(error.to_string().contains("No capable devices found"));
+        }
+        assert_eq!(runs(), 4);
+    }
+
+    #[test]
+    #[ignore = "requires an NVIDIA GPU and an FFmpeg with NVENC"]
+    fn nvenc_probe_passes_on_real_hardware() {
+        for (codec, pixel_format) in [("hevc_nvenc", "p010le"), ("h264_nvenc", "yuv420p")] {
+            let mut config = default_config();
+            config.codec = codec.to_string();
+            config.pixel_format = pixel_format.to_string();
+            config
+                .run_nvenc_probe(&mut crate::runtime::command_for("ffmpeg"))
+                .unwrap_or_else(|error| panic!("{codec}/{pixel_format}: {error}"));
+        }
     }
 
     #[test]
