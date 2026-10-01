@@ -157,6 +157,122 @@ describe("same-origin API client", () => {
     expect(parsed.success).toBe(false)
   })
 
+  describe("CSRF proof rotated by another tab", () => {
+    const proofRejected = () =>
+      new Response(JSON.stringify({ error: { code: "forbidden", message: "request proof is invalid", retryable: false, field_errors: [] } }), {
+        status: 403,
+        headers: { "content-type": "application/json" },
+      })
+    const sessionWithProof = (proof: string) =>
+      new Response(JSON.stringify(session), { headers: { "content-type": "application/json", "x-csrf-token": proof } })
+    const ok = () => new Response(JSON.stringify(session), { headers: { "content-type": "application/json" } })
+
+    type Sent = { readonly method: string; readonly path: string; readonly proof: string | null }
+    function recorder(route: (sent: Sent, index: number) => Promise<Response> | Response) {
+      const sent: Sent[] = []
+      let calls = 0
+      const fetcher = vi.fn<typeof fetch>().mockImplementation(async (input) => {
+        const request = input instanceof Request ? input : new Request(input)
+        const entry = { method: request.method, path: new URL(request.url).pathname, proof: request.headers.get("x-csrf-token") }
+        sent.push(entry)
+        return route(entry, calls++)
+      })
+      return { fetcher, sent }
+    }
+
+    async function primedClient(route: (sent: Sent, index: number) => Promise<Response> | Response, onUnauthorized = vi.fn()) {
+      const { fetcher, sent } = recorder((entry, index) => (index === 0 ? sessionWithProof("stale") : route(entry, index)))
+      const client = createApiClient({ fetcher, onUnauthorized })
+      await client.request("api/auth/session", { schema: sessionSchema })
+      sent.length = 0
+      return { client, sent }
+    }
+
+    it("refreshes the proof once and retries a rejected mutation", async () => {
+      // Given: a client whose proof was rotated by another tab's session bootstrap.
+      const { client, sent } = await primedClient((entry) => {
+        if (entry.path === "/api/auth/session") return sessionWithProof("fresh")
+        return entry.proof === "fresh" ? ok() : proofRejected()
+      })
+
+      // When: the next mutation is rejected with the Controller's proof error.
+      const result = await client.request("api/settings", { method: "PUT", json: { a: 1 }, schema: sessionSchema })
+
+      // Then: one session refetch supplies the fresh proof and the retry succeeds transparently.
+      expect(result).toEqual(session)
+      expect(sent).toEqual([
+        { method: "PUT", path: "/api/settings", proof: "stale" },
+        { method: "GET", path: "/api/auth/session", proof: null },
+        { method: "PUT", path: "/api/settings", proof: "fresh" },
+      ])
+      expect(client.csrfProof()).toBe("fresh")
+    })
+
+    it("surfaces the rejection when the retry is rejected as well", async () => {
+      // Given: a Controller that rejects the proof even after a refresh.
+      const { client, sent } = await primedClient((entry) => (entry.path === "/api/auth/session" ? sessionWithProof("fresh") : proofRejected()))
+
+      // When/Then: the second rejection reaches the caller and no further retry is attempted.
+      await expect(client.request("api/workers/1", { method: "DELETE", schema: sessionSchema })).rejects.toMatchObject({ code: "forbidden", status: 403 })
+      expect(sent.map((entry) => entry.method)).toEqual(["DELETE", "GET", "DELETE"])
+    })
+
+    it.each([
+      ["a read, which carries no proof", "GET", proofRejected],
+      [
+        "a mutation rejected for another reason",
+        "POST",
+        () => new Response(JSON.stringify({ error: { code: "not_found", message: "task is gone", retryable: false, field_errors: [] } }), { status: 403, headers: { "content-type": "application/json" } }),
+      ],
+    ] as const)("does not retry %s", async (_name, method, response) => {
+      // Given: a 403 that is not a stale-proof rejection of a mutation.
+      const { client, sent } = await primedClient(() => response())
+
+      // When/Then: the error surfaces directly without a session refetch.
+      await expect(client.request("api/tasks", { method, schema: sessionSchema })).rejects.toMatchObject({ status: 403 })
+      expect(sent).toHaveLength(1)
+    })
+
+    it("shares one session refetch between concurrent rejected mutations", async () => {
+      // Given: a session refetch that stays pending while a second mutation is rejected.
+      let releaseSession: (response: Response) => void = () => {}
+      const pendingSession = new Promise<Response>((resolve) => { releaseSession = resolve })
+      const { client, sent } = await primedClient((entry) => {
+        if (entry.path === "/api/auth/session") return pendingSession
+        return entry.proof === "fresh" ? ok() : proofRejected()
+      })
+
+      // When: two mutations are rejected while in flight together.
+      const first = client.request("api/settings", { method: "PUT", json: {}, schema: sessionSchema })
+      const second = client.request("api/workers/1", { method: "DELETE", schema: sessionSchema })
+      await vi.waitFor(() => expect(sent.filter((entry) => entry.path === "/api/auth/session")).toHaveLength(1))
+      releaseSession(sessionWithProof("fresh"))
+
+      // Then: both retries reuse the single fresh proof.
+      await expect(Promise.all([first, second])).resolves.toEqual([session, session])
+      expect(sent.filter((entry) => entry.path === "/api/auth/session")).toHaveLength(1)
+      expect(sent.filter((entry) => entry.proof === "fresh").map((entry) => entry.method).sort()).toEqual(["DELETE", "PUT"])
+    })
+
+    it("treats an expired session discovered during the refresh as unauthorized", async () => {
+      // Given: the session itself expired between the rejection and the refresh.
+      const onUnauthorized = vi.fn()
+      const { client, sent } = await primedClient(
+        (entry) =>
+          entry.path === "/api/auth/session"
+            ? new Response(JSON.stringify({ error: "unauthorized" }), { status: 401, headers: { "content-type": "application/json" } })
+            : proofRejected(),
+        onUnauthorized,
+      )
+
+      // When/Then: the caller sees expiry, the auth owner is told once, and nothing is retried.
+      await expect(client.request("api/settings", { method: "PUT", json: {}, schema: sessionSchema })).rejects.toMatchObject({ code: "unauthorized" })
+      expect(onUnauthorized).toHaveBeenCalledOnce()
+      expect(client.csrfProof()).toBeNull()
+      expect(sent.map((entry) => entry.method)).toEqual(["PUT", "GET"])
+    })
+  })
+
   it("clears CSRF and signals expiry on unauthorized responses", async () => {
     // Given: an authenticated client whose next request expires.
     const onUnauthorized = vi.fn()

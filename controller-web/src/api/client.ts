@@ -32,12 +32,17 @@ type ClientOptions = {
   readonly onUnauthorized: () => void
 }
 
-type RequestOptions<T> = {
-  readonly schema: ZodType<T>
-  readonly method?: "DELETE" | "GET" | "PATCH" | "POST" | "PUT"
+type RequestMethod = "DELETE" | "GET" | "PATCH" | "POST" | "PUT"
+
+type TransportOptions = {
   readonly json?: unknown
   readonly headers?: Readonly<Record<string, string>>
   readonly signal?: AbortSignal
+}
+
+type RequestOptions<T> = TransportOptions & {
+  readonly schema: ZodType<T>
+  readonly method?: RequestMethod
 }
 
 export type ApiClient = {
@@ -48,6 +53,7 @@ export type ApiClient = {
 
 export function createApiClient(options: ClientOptions): ApiClient {
   let csrfProof: string | null = null
+  let proofRefresh: Promise<string | null> | null = null
   const transport = ky.create({
     credentials: "same-origin",
     fetch: (request) => Reflect.apply(options.fetcher, globalThis, [request]),
@@ -57,6 +63,69 @@ export function createApiClient(options: ClientOptions): ApiClient {
     timeout: 15_000,
   })
 
+  async function send(path: string, method: RequestMethod, requestOptions: TransportOptions): Promise<Response> {
+    const headers = new Headers()
+    for (const [name, value] of Object.entries(requestOptions.headers ?? {})) headers.set(name, value)
+    if (method !== "GET" && csrfProof !== null) {
+      headers.set("x-csrf-token", csrfProof)
+    }
+
+    let response: Response
+    try {
+      response = await transport(path, {
+        headers,
+        json: requestOptions.json,
+        method,
+        ...(requestOptions.signal === undefined ? {} : { signal: requestOptions.signal }),
+      })
+    } catch (error) {
+      if (error instanceof TypeError || error instanceof DOMException) {
+        throw new ApiClientError("network_failure", null)
+      }
+      throw error
+    }
+
+    const rotatedProof = response.headers.get("x-csrf-token")
+    if (rotatedProof !== null) csrfProof = rotatedProof
+    return response
+  }
+
+  async function failure(response: Response): Promise<ApiClientError> {
+    if (response.status === 401) {
+      csrfProof = null
+      options.onUnauthorized()
+      return new ApiClientError("unauthorized", response.status)
+    }
+    const parsedError = apiErrorSchema.safeParse(await readJson(response))
+    if (!parsedError.success) return new ApiClientError("malformed_response", response.status)
+    return new ApiClientError(parsedError.data.code, response.status, parsedError.data.message, parsedError.data.retryable, parsedError.data.fieldErrors)
+  }
+
+  /*
+   * The Controller keeps one CSRF digest per session and rotates it on every
+   * `GET /api/auth/session`. All tabs of one browser share the session cookie,
+   * so a second tab bootstrapping silently invalidates the proof this tab
+   * holds and its next mutation is rejected with 403 `forbidden`. Recover by
+   * fetching a fresh proof -- one refetch shared by every mutation rejected
+   * while it is in flight -- so the caller can retry exactly once.
+   */
+  function refreshProof(): Promise<string | null> {
+    proofRefresh ??= (async () => {
+      try {
+        const response = await send("api/auth/session", "GET", {})
+        if (response.status === 401) throw await failure(response)
+        return response.ok ? response.headers.get("x-csrf-token") : null
+      } finally {
+        proofRefresh = null
+      }
+    })()
+    return proofRefresh
+  }
+
+  function isStaleProofRejection(method: string, response: Response, error: ApiClientError) {
+    return method !== "GET" && response.status === 403 && error.code === "forbidden"
+  }
+
   return {
     clearCsrfProof: () => {
       csrfProof = null
@@ -64,39 +133,13 @@ export function createApiClient(options: ClientOptions): ApiClient {
     csrfProof: () => csrfProof,
     request: async <T>(path: string, requestOptions: RequestOptions<T>): Promise<T> => {
       const method = requestOptions.method ?? "GET"
-      const headers = new Headers()
-      for (const [name, value] of Object.entries(requestOptions.headers ?? {})) headers.set(name, value)
-      if (method !== "GET" && csrfProof !== null) {
-        headers.set("x-csrf-token", csrfProof)
-      }
-
-      let response: Response
-      try {
-        response = await transport(path, {
-          headers,
-          json: requestOptions.json,
-          method,
-          ...(requestOptions.signal === undefined ? {} : { signal: requestOptions.signal }),
-        })
-      } catch (error) {
-        if (error instanceof TypeError || error instanceof DOMException) {
-          throw new ApiClientError("network_failure", null)
-        }
-        throw error
-      }
-
-      const rotatedProof = response.headers.get("x-csrf-token")
-      if (rotatedProof !== null) csrfProof = rotatedProof
+      let response = await send(path, method, requestOptions)
 
       if (!response.ok) {
-        if (response.status === 401) {
-          csrfProof = null
-          options.onUnauthorized()
-          throw new ApiClientError("unauthorized", response.status)
-        }
-        const parsedError = apiErrorSchema.safeParse(await readJson(response))
-        if (!parsedError.success) throw new ApiClientError("malformed_response", response.status)
-        throw new ApiClientError(parsedError.data.code, response.status, parsedError.data.message, parsedError.data.retryable, parsedError.data.fieldErrors)
+        const error = await failure(response)
+        if (!isStaleProofRejection(method, response, error) || (await refreshProof()) === null) throw error
+        response = await send(path, method, requestOptions)
+        if (!response.ok) throw await failure(response)
       }
 
       const parsed = requestOptions.schema.safeParse(await readJson(response))
@@ -105,6 +148,7 @@ export function createApiClient(options: ClientOptions): ApiClient {
     },
   }
 }
+
 
 async function readJson(response: Response): Promise<unknown> {
   try {
