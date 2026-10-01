@@ -190,6 +190,7 @@ Routes compose from one shared vocabulary in `src/ui/`. A route-specific rule th
 ### Connection Status
 - **Structure**: indicator plus explicit lifecycle text. The region stays mounted but renders nothing while the stream is healthy: a working connection is the assumption, so only its loss is worth an operator's attention.
 - **States**: connecting and connected are silent; reconnecting after a recoverable stream error and unavailable after closure or missing EventSource support are shown.
+- **Resume**: a closed stream reconnects with bounded backoff (1 s doubling to 30 s) while the page is visible and online, and immediately on focus, visibility, online or pageshow. An open stream is not trusted blindly after sleep: the browser reports OPEN until the OS notices the peer is gone, and the Controller's keep-alives are SSE comments invisible to the page, so a stream silent for over a minute is probed with `GET /api/health` on resume and replaced when the Controller answers. Mutations never surface a stale CSRF proof either: a 403 `forbidden` triggers one session refetch and one retry, so opening a second tab does not break the first.
 - **Accessibility**: status changes are announced politely and every rendered state has explicit text; colour never carries the state alone.
 - **Motion**: no decorative pulse.
 
