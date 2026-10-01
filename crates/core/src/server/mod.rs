@@ -24,6 +24,7 @@ use uuid::Uuid;
 
 pub mod auth;
 mod files;
+mod history;
 mod idempotency;
 pub mod iroh;
 mod persistence;
@@ -155,6 +156,11 @@ impl AppState {
         if let Some(persistence) = &jobs_persistence {
             match persistence.load_jobs_for_startup() {
                 Ok(restored_jobs) => {
+                    let restored_jobs = history::prune_restored(
+                        persistence,
+                        restored_jobs,
+                        config.jobs.history_limit,
+                    );
                     let restored_count = restored_jobs.len();
                     for job in restored_jobs {
                         jobs.insert(job.id.clone(), job);
@@ -2897,6 +2903,7 @@ async fn run_job(state: AppState, job_id: String) {
     state.inner.progress_senders.remove(&job_id);
 
     info!(job_id = %job_id, "Job completed");
+    state.enforce_job_history_limit().await;
 }
 
 #[derive(Debug)]
@@ -3661,6 +3668,7 @@ mod tests {
         let updated = AppConfig {
             iroh: crate::config::IrohConfig::default(),
             auth: crate::config::AuthConfig::default(),
+            jobs: crate::config::JobsConfig { history_limit: 25 },
             paths: crate::config::PathsConfig {
                 models_dir: PathBuf::from("models_custom"),
                 trt_cache_dir: PathBuf::from("cache_custom"),
