@@ -2,6 +2,15 @@ use crate::domain::WorkerApiUrl;
 
 use super::{ClientConfigError, Health, PayloadLimits, RemoteTimeouts, VidenoaClientError};
 
+/// How long an idle pooled connection to a Worker is kept for reuse.
+///
+/// Workers close a keep-alive connection whose next request head has not
+/// arrived within 30 seconds (`HEADER_READ_TIMEOUT`, the same value as this
+/// crate's [`crate::http_server::HEADER_READ_TIMEOUT`]). A request sent just as
+/// the Worker closes fails with an incomplete message, so the Controller must
+/// drop idle connections well before the Worker does.
+const WORKER_POOL_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
 #[derive(Clone)]
 pub struct VidenoaClient {
     pub(super) tunnel: Option<std::sync::Arc<super::iroh::Lease>>,
@@ -61,6 +70,7 @@ impl VidenoaClient {
         let http = builder
             .connect_timeout(timeouts.connect)
             .pool_max_idle_per_host(8)
+            .pool_idle_timeout(WORKER_POOL_IDLE_TIMEOUT)
             .redirect(reqwest::redirect::Policy::none())
             .user_agent(concat!(
                 env!("CARGO_PKG_NAME"),
@@ -88,5 +98,21 @@ impl VidenoaClient {
             .send_public(self.http.get(self.endpoint(&["api", "health"])?))
             .await?;
         self.json(response).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WORKER_POOL_IDLE_TIMEOUT;
+
+    #[test]
+    fn idle_connections_are_dropped_before_the_worker_closes_them() {
+        let worker_header_read_timeout = crate::http_server::HEADER_READ_TIMEOUT;
+        assert!(
+            WORKER_POOL_IDLE_TIMEOUT + std::time::Duration::from_secs(5)
+                <= worker_header_read_timeout,
+            "pool idle timeout {WORKER_POOL_IDLE_TIMEOUT:?} must stay clearly below \
+             the Worker's {worker_header_read_timeout:?} request-head deadline"
+        );
     }
 }

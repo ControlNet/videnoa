@@ -28,3 +28,23 @@
 - Tests: `crates/core/tests/http_server.rs`,
   `crates/controller/tests/http_server.rs` (200 ms override via
   `HttpServer::header_read_timeout`).
+
+## Keep-alive close race with pooling clients (2026-10-02)
+
+- Because the deadline also closes idle keep-alive connections, a pooled
+  client that reuses a connection just as the server closes it gets
+  `hyper::Error(IncompleteMessage)`. Measured with reqwest against a 200 ms
+  deadline: 10/200 requests sent at 190-215 ms after the previous response
+  failed, all at 200-201 ms. Requests clearly after the close are fine (the
+  pool sees the FIN and dials again).
+- reqwest keeps idle connections for 90 s by default, so the Controller's
+  Worker client set `pool_idle_timeout(20 s)` (`WORKER_POOL_IDLE_TIMEOUT` in
+  `crates/controller/src/remote/client.rs`): the client always closes first.
+  Same probe with a 150 ms client idle timeout: 0/200 failures.
+- Impact before the fix: a hit surfaced as `VidenoaClientError::Network`.
+  That is transient for polls, submissions (idempotent replay) and transfers,
+  but one failed health probe marks the Worker offline until the 1 s retry.
+- Keep the Controller constant below the Worker's `HEADER_READ_TIMEOUT` (a
+  unit test asserts a 5 s margin). Controllers older than this fix keep the
+  rare race against new Workers; Worker connections through iroh are not
+  affected (loopback `axum::serve`, no deadline).
