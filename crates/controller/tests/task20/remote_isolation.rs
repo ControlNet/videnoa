@@ -38,7 +38,7 @@ async fn rejected_submission_fails_only_its_task_while_other_work_completes() ->
         .set_fault(Fault::Response(ResponseFault {
             route: Route::Run,
             status: 400,
-            body: br#"{"error":"invalid_request"}"#.to_vec(),
+            body: br#"{"error":"workflow validation failed: node 'output' missing required input port 'output_path'"}"#.to_vec(),
         }))
         .await;
 
@@ -55,6 +55,13 @@ async fn rejected_submission_fails_only_its_task_while_other_work_completes() ->
     assert_eq!(failure.failure_stage, FailureStage::Submission);
     assert_eq!(failure.failure_code, FailureCode::RemoteSubmissionFailed);
     assert!(!failure.retryable);
+    assert!(
+        failure.message.ends_with(
+            ": workflow validation failed: node 'output' missing required input port 'output_path'"
+        ),
+        "the Worker's rejection reason should reach the task: {}",
+        failure.message
+    );
     assert_completed_pipeline(&fixture, &good_worker, &good_task, b"good-output").await
 }
 

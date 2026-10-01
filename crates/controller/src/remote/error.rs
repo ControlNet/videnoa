@@ -16,8 +16,13 @@ pub enum VidenoaClientError {
     Conflict,
     #[error("remote request was rate limited")]
     RateLimited,
-    #[error("remote request was rejected with HTTP {status}")]
-    ClientStatus { status: u16 },
+    #[error("remote request was rejected with HTTP {status}{}", reason_suffix(reason.as_deref()))]
+    ClientStatus {
+        status: u16,
+        /// The Worker's bounded rejection reason; set only for a rejected
+        /// submission (`POST /api/run` answered 400 with a JSON `error`).
+        reason: Option<String>,
+    },
     #[error("remote service failed with HTTP {status}")]
     ServerStatus { status: u16 },
     #[error("remote service returned unexpected HTTP {status}")]
@@ -38,6 +43,12 @@ pub enum VidenoaClientError {
     InvalidFilePath,
     #[error("failed to construct a remote endpoint URL")]
     EndpointUrl,
+}
+
+fn reason_suffix(reason: Option<&str>) -> String {
+    reason
+        .map(|reason| format!(": {reason}"))
+        .unwrap_or_default()
 }
 
 impl VidenoaClientError {
@@ -76,7 +87,10 @@ mod tests {
             VidenoaClientError::NotFound,
             VidenoaClientError::Conflict,
             VidenoaClientError::RateLimited,
-            VidenoaClientError::ClientStatus { status: 400 },
+            VidenoaClientError::ClientStatus {
+                status: 400,
+                reason: None,
+            },
             VidenoaClientError::UnexpectedStatus { status: 300 },
             VidenoaClientError::MalformedPayload,
             VidenoaClientError::OversizedPayload { limit: 1 },

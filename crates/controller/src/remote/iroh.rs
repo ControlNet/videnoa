@@ -77,7 +77,10 @@ impl Lease {
 
     pub(super) fn failure(&self) -> Option<VidenoaClientError> {
         self.failure.lock().ok()?.as_ref().map(|error| match error {
-            TunnelError::Unauthorized => VidenoaClientError::ClientStatus { status: 401 },
+            TunnelError::Unauthorized => VidenoaClientError::ClientStatus {
+                status: 401,
+                reason: None,
+            },
             TunnelError::RateLimited => VidenoaClientError::RateLimited,
             TunnelError::Protocol => VidenoaClientError::MalformedPayload,
             TunnelError::Unavailable => VidenoaClientError::Network,
@@ -120,7 +123,10 @@ impl Drop for Lease {
 }
 fn classify(error: &anyhow::Error) -> VidenoaClientError {
     match error.downcast_ref::<TunnelError>() {
-        Some(TunnelError::Unauthorized) => VidenoaClientError::ClientStatus { status: 401 },
+        Some(TunnelError::Unauthorized) => VidenoaClientError::ClientStatus {
+            status: 401,
+            reason: None,
+        },
         Some(TunnelError::RateLimited) => VidenoaClientError::RateLimited,
         Some(TunnelError::Protocol) => VidenoaClientError::MalformedPayload,
         _ => VidenoaClientError::Network,
@@ -241,7 +247,10 @@ mod tests {
         let rejected = VidenoaClient::new_with_password(url.clone(), timeouts, limits, Some(&bad))?;
         assert_eq!(
             rejected.health().await,
-            Err(VidenoaClientError::ClientStatus { status: 401 })
+            Err(VidenoaClientError::ClientStatus {
+                status: 401,
+                reason: None,
+            })
         );
         drop(rejected);
         drop(client);

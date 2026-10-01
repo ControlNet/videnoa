@@ -310,6 +310,10 @@ because the worker may already be running the job. The attempt API exposes
 An in-flight request retains exclusive ownership within the controller generation;
 only a finished request releases its claim for retry. Restart preserves the retry
 deadline and submission identity. Successful confirmation clears retry metadata.
+A worker that rejects the submission with HTTP 400 (for example a workflow that
+fails validation) fails the task with `remote_submission_failed`; the failure
+message ends with the worker's `error` text, cleaned of control characters and
+cut to 1024 characters. Other rejected responses are not reflected.
 Confirmation and cancellation recovery remain available while scheduling is paused.
 Transfer and cleanup failures use bounded persisted retry. Downstream retries do
 not repeat successful AI work.

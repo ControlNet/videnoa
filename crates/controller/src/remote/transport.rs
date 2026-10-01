@@ -64,9 +64,27 @@ impl VidenoaClient {
 
     pub(super) async fn json<T: DeserializeOwned>(
         &self,
-        mut response: Response,
+        response: Response,
     ) -> Result<T, VidenoaClientError> {
         ensure_success(response.status())?;
+        let body = self.bounded_body(response).await?;
+        serde_json::from_slice(&body).map_err(|_| VidenoaClientError::MalformedPayload)
+    }
+
+    /// The `error` text of a Worker's JSON error envelope, cleaned of control
+    /// characters and cut to [`REJECTION_REASON_CHARS`]. Any other body yields
+    /// `None`, so raw response bytes are never reflected.
+    pub(super) async fn rejection_reason(&self, response: Response) -> Option<String> {
+        #[derive(serde::Deserialize)]
+        struct ErrorEnvelope {
+            error: String,
+        }
+        let body = self.bounded_body(response).await.ok()?;
+        let envelope: ErrorEnvelope = serde_json::from_slice(&body).ok()?;
+        bounded_reason(&envelope.error)
+    }
+
+    async fn bounded_body(&self, mut response: Response) -> Result<Vec<u8>, VidenoaClientError> {
         if response
             .content_length()
             .is_some_and(|length| length > self.limits.json_bytes as u64)
@@ -90,8 +108,29 @@ impl VidenoaClient {
             }
             body.extend_from_slice(&chunk);
         }
-        serde_json::from_slice(&body).map_err(|_| VidenoaClientError::MalformedPayload)
+        Ok(body)
     }
+}
+
+/// Longest Worker rejection reason kept, in characters.
+const REJECTION_REASON_CHARS: usize = 1024;
+
+fn bounded_reason(raw: &str) -> Option<String> {
+    let cleaned: String = raw
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let cleaned = cleaned.trim();
+    if cleaned.is_empty() {
+        return None;
+    }
+    let mut chars = cleaned.chars();
+    let kept: String = chars.by_ref().take(REJECTION_REASON_CHARS).collect();
+    Some(if chars.next().is_some() {
+        format!("{kept}…")
+    } else {
+        kept
+    })
 }
 
 pub(super) fn ensure_success(status: StatusCode) -> Result<(), VidenoaClientError> {
@@ -100,7 +139,10 @@ pub(super) fn ensure_success(status: StatusCode) -> Result<(), VidenoaClientErro
         404 => Err(VidenoaClientError::NotFound),
         409 => Err(VidenoaClientError::Conflict),
         429 => Err(VidenoaClientError::RateLimited),
-        code @ 400..=499 => Err(VidenoaClientError::ClientStatus { status: code }),
+        code @ 400..=499 => Err(VidenoaClientError::ClientStatus {
+            status: code,
+            reason: None,
+        }),
         code @ 500..=599 => Err(VidenoaClientError::ServerStatus { status: code }),
         code => Err(VidenoaClientError::UnexpectedStatus { status: code }),
     }
