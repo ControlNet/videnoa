@@ -33,9 +33,10 @@ $FfmpegAsset = 'ffmpeg-n8.1.3-win64-gpl-8.1.zip'
 $FfmpegSha256 = 'd20ef03f0f4161453b9f46a72471eb5370f56b6410fe8bca14a4b0220c6c924a'
 $CurrentBundleUrl = 'https://github.com/ControlNet/videnoa/releases/download/misc/bin_win64.zip'
 
-$RequiredBuildFlags = @('--enable-gpl', '--enable-libx264', '--enable-libx265', '--enable-libzimg')
+$RequiredBuildFlags = @('--enable-gpl', '--enable-libx264', '--enable-libx265')
 $RequiredEncoders = @('libx264', 'libx265', 'hevc_nvenc', 'h264_nvenc')
-$RequiredFilters = @('scale', 'format', 'setparams', 'zscale', 'setsar')
+# The encode chain is scale (swscale) -> format -> setparams -> setsar; zscale is not used.
+$RequiredFilters = @('scale', 'format', 'setparams', 'setsar')
 # Codec/pixel-format pairs the UI can produce (libx265 defaults to 10-bit).
 $EncodeCases = @(
     @{ Codec = 'libx264'; PixelFormat = 'yuv420p' },

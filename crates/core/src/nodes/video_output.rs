@@ -1,9 +1,10 @@
 //! VideoOutput node: FFmpeg encode with full stream mux from source file.
 //!
 //! Launches an FFmpeg encode subprocess that receives raw RGB frames via stdin
-//! pipe, applies zscale color-space conversion (RGB -> YUV BT.709 limited range),
-//! and muxes the encoded video with ALL original non-video streams (audio, subtitle,
-//! attachment, chapter) from the source file.
+//! pipe, converts them with swscale (`scale` with the BT.709 matrix in limited
+//! range, then `format` and `setparams` tags), and muxes the encoded video with
+//! ALL original non-video streams (audio, subtitle, attachment, chapter) from
+//! the source file.
 
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
