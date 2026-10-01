@@ -128,6 +128,137 @@ encoder creation. A 256x256 probe works; this was verified in a scratch build.
 - The decoder stage timer starts after `Iterator::next()` has produced the
   frame, so `avg_decode_ms` is always 0.0.
 
+## Implementation results (branch `perf/worker-runtime`)
+
+Same machine and fixture. The vGPU makes wall time noisy (the same build
+varies 21-30 s), so compare alternating A/B pairs after a warm-up run and use
+stage averages and sys time, not single wall times.
+
+### Dev media tools and colour fix (audit items 2 and 3)
+
+- `79ddfa9`: `scripts/setup_dev_media_tools.sh` installs the release FFmpeg
+  bundle into `<repo>/bin`, so dev runs and benchmarks use FFmpeg 8.1, not the
+  system 4.4.
+- `a300113`: the decoder scales with the source matrix (tag, else BT.709 for
+  sizes of at least 1280 wide or more than 576 high), and the encoder, stream
+  output and preview convert with `out_color_matrix=bt709:out_range=limited`.
+  Ignored round-trip tests:
+  - `decoder_recovers_source_rgb_for_tagged_and_untagged_matrices`
+  - `encoded_output_decodes_back_to_the_source_colors`
+
+  Run them with `PATH=$PWD/bin:$PATH`.
+- The NVENC 64x64 probe (item 4) is parked by request. The benchmark binaries
+  carry a local-only 256x256 patch.
+
+### Frame buffer pool (`b221df5`, audit item 1)
+
+- `crates/core/src/frame_pool.rs`: one `FramePool` per job, owned by
+  `VideoCompileContext`. The decoder, SR/FI micro-stages and encoder take
+  buffers from it and return them. The encoder gets frames back through the
+  new `FrameSink::release_frame` hook.
+- A free buffer is reused when its capacity is within 25% above the request,
+  so padded and cropped 4K FP32 frames share one class. Taken buffers keep old
+  contents, so every writer must overwrite all elements; the tests seed NaN
+  buffers to check this. The pool keeps only buffers whose size some stage has
+  requested, so a sink behind a non-pooled stage cannot pin dead buffers. The
+  cap is 32 per element type.
+- The copies were removed at their source:
+  - FI inference crops from the ORT output view once, instead of three copies.
+  - FI postprocess converts from the padded planes.
+  - SR inference feeds aligned frames to ORT without a copy, and pads or crops
+    into pooled buffers.
+  - SR preprocess writes FP16 bits in place.
+- SR=1/FI=3, NVENC, 3 alternating pairs:
+
+  | | before | pool |
+  |---|---:|---:|
+  | wall | 32.5 / 25.3 / 31.0 s | 21.8 / 24.4 / 22.9 s |
+  | sys | ~48 s | 11-13 s |
+  | minor faults (incl. children) | 19.5M | 2.5M |
+  | SR inference | ~125 ms | 53-66 ms |
+  | FI postprocess | ~65 ms | ~22 ms |
+
+  SR-only went 14.6 -> 11.9 s and x265 SR->FI 31.3 -> 24.1 s. Decoded
+  framemd5 is identical for NVENC, x265 and SR-only.
+- The pool hit rate is about 95%; misses are the pipeline filling up. The job
+  end logs a `Frame pool summary` with reuse and allocation counts.
+- Videnoa's steady state now has about 0 page faults per second. All 1.9M
+  remaining faults happen in the first ~11 s: CUDA/TRT init, engine
+  deserialisation and pool warm-up.
+- jemalloc on top of the pool no longer changes wall time. The remaining
+  steady-state heap churn (128 MB arena mmaps, 64 MB munmaps) is in the
+  **ffmpeg encoder child** (`dmx0:rawvideo`/`vf#0:0` threads allocate a fresh
+  packet per frame). glibc heap-retention tunables on the child cut faults
+  2.54M -> 2.03M with no wall change, so this was dropped.
+
+### Pinned RIFE input (`5364c12`)
+
+- Each FI lane keeps one `[1,7,H,W]` input tensor, CUDA-pinned when the
+  session supports it, and fills it in place. This replaces a 233 MB pageable
+  array per pair.
+- ORT `Allocator`/`MemoryInfo` are not `Send`/`Sync`. A stage that stores them
+  needs a `Mutex` wrapper; it is accessed through `get_mut`, so there is no
+  locking cost.
+- 1 FI lane, 3 alternating pairs: FI inference 145-171 -> 109-149 ms/pair,
+  wall 27.2/30.8/23.2 -> 25.8/23.4/19.2 s. RSS is +150-370 MB, since ORT's
+  pinned arena rounds up.
+- Test pitfall: `FrameInterpolationNode::process_frame_pair` caches img1 as the
+  next img0, so a reference comparison must call `disable_pair_cache()`. The
+  GPU test `micro_stages_match_the_single_node_path` does this.
+
+### The pipeline is now GPU-bound; FI lanes do not scale here
+
+- FI `session.run` time grows linearly with lane count, so throughput is
+  constant at about 115 ms/pair:
+
+  | FI lanes | 1 | 2 | 3 | 4 |
+  |---|---:|---:|---:|---:|
+  | session.run | 112 ms | 235 ms | ~370 ms | 438 ms |
+  | SR inference | 32 ms | 62 ms | ~66 ms | 108 ms |
+  | RSS | 6.0 GB | 7.1 GB | 7.75 GB | 8.5 GB |
+
+  The run is effectively serialised on the A40-24Q vGPU (compute plus 233 MB
+  H2D and 100 MB D2H per pair). `utilization.gpu` reads only 30-40% here, which
+  is misleading. Shipped presets use FI `num_workers: 2`; they are left
+  unchanged because a full GPU may overlap copies with compute. On this vGPU,
+  1 lane is as fast and uses about 1 GB less memory.
+- The next real lever is keeping SR output on the GPU for FI (no D2H/H2D of 4K
+  frames), or an FP16 RIFE model. Both are larger changes.
+
+### Smaller items
+
+- Decoder stage timer (`ebbf274`): it now times `next()`, so `avg_decode_ms`
+  is real.
+- ORT intra-op spinning off, or `with_intra_threads(1)`: no measurable change
+  on x265 SR->FI (user 248-268 s incl. x265, wall within noise). Left at
+  defaults. The ORT pools are 242 threads and about 9 s user per run.
+- FI lanes burn about 30 s user per run while waiting for CUDA sync (spin
+  wait). This is harmless while the CPU has headroom.
+- FI preprocess takes 17 ms per 4K frame in isolation (`kbench` `fi_pre`,
+  glibc or jemalloc) but about 67 ms in the pipeline. With jemalloc preloaded
+  into the whole process tree it takes 28 ms. The cause is not isolated:
+  child-process heap tunables did not reproduce it, and the pool hit rate is
+  about 95%. It is not on the critical path while GPU-bound, so it was left as
+  is.
+- `inference_output_memory_info` and per-call IoBinding creation are cheap
+  wrappers. They were left as is.
+- target-cpu: still not set (see section 5).
+- The first TensorRT session takes 6-7 s (CUDA/TRT init); later sessions take
+  0.2-0.3 s. This is a per-process cost.
+- TensorRT timing cache (`with_timing_cache` + a shared `<trt_cache>/timing`):
+  tried and **not adopted**. SR-only engine build for a new resolution: 540p
+  after populating the cache at 360p took 56.2 s, vs 57.9 s with no cache.
+  The cache key includes layer input dimensions, so a new resolution reuses
+  almost nothing. Script: `timing-cache-run.sh` in the harness dir.
+
+Harness additions in `.omo/benchmarks/worker-perf-audit-20261001/`:
+
+- `bench-build.sh <rev|WORKTREE> <name>`: release build into `bins/<name>`,
+  with the local-only 256x256 NVENC probe patch; edit `S=` first.
+- `summ.sh <run>`: one-line stage summary.
+- `combined-nvenc-fi{1,2,4}.json`: FI lane sweep.
+- `kbench/src/bin/fi_pre.rs`: isolated FI preprocess kernel.
+
 ## Reproduce
 
 ```bash
