@@ -30,6 +30,7 @@ pub struct Fixture {
     pub output: PathBuf,
     pub scheduler: Scheduler,
     pub store: Store,
+    pub events: EventHub,
     pub workspace: PathBuf,
     pub config_file: PathBuf,
 }
@@ -72,7 +73,7 @@ impl Fixture {
             scheduler: scheduler.clone(),
             paths: paths.clone(),
             config,
-            events,
+            events: events.clone(),
             payload_limits: PayloadLimits::new(1024 * 1024, 4096)?,
         });
         let tasks = TaskService::new(store.clone(), paths);
@@ -85,6 +86,7 @@ impl Fixture {
             output,
             scheduler,
             store,
+            events,
             workspace,
         })
     }
