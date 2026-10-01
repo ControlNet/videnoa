@@ -76,6 +76,10 @@ Publication first attempts atomic no-replace rename. If it returns `EXDEV`
 move semantics: exclusively create the requested final file, copy and fsync its
 bytes, verify its size/SHA-256, then remove the private source. Absolute output
 paths on other filesystems are accepted at intake.
+On Linux, a rename that returns `EINVAL` also takes this copy fallback; this can
+happen when a filesystem does not support the no-replace rename flag. The rename
+is always attempted first, regardless of filesystem type. Other rename errors
+retain their existing failure handling.
 
 **During the copy fallback, the final filename is visible before copying finishes.**
 Jellyfin or another scanner may observe that incomplete file. Same-mount atomic
@@ -95,7 +99,9 @@ Upgrades make legacy cross-mount publication failures with verified-output evide
 retryable; use Retry to resume publication on the same attempt. They do not retry
 automatically.
 
-Register each credential-free Videnoa worker URL in the Web UI. A workflow is
+Register each Videnoa worker in the Web UI by HTTP(S) URL without embedded
+credentials, or by iroh Endpoint ID. A protected worker's access password is a
+separate optional field, never part of the URL. A workflow is
 eligible only when the worker reports a workflow or preset with `Path` inputs
 named exactly `input` and `output`. Controller does not copy or deploy worker
 workflows.
@@ -105,9 +111,9 @@ workflows.
 The generated `./data/controller.toml` and the shipped example contain only
 `server`, `paths`, `auth`, `scheduler`, `timeouts`, and `retry`. Unknown fields are
 rejected. Defaults are loopback port 3001, non-Secure cookies for trusted local
-HTTP, 24-hour absolute sessions, one-hour idle sessions, one compute slot, one
+HTTP, 30-day absolute sessions, seven-day idle sessions, one compute slot, one
 prefetched task, one upload, one download, health/poll/transfer timeouts of
-10/5/900 seconds, retry delays of 1 through 60 seconds, and five attempts.
+10/5/300 seconds, retry delays of 1 through 60 seconds, and five attempts.
 Active tasks are polled again one second after the previous poll completes.
 This cadence is independent of `timeouts.poll_seconds`, which controls the remote
 request timeout. Changed progress is pushed immediately through SSE; unavailable
@@ -324,6 +330,13 @@ Published images are `controlnet/videnoa-controller:<version>` and
 `videnoa-controller-v<version>-linux-x86_64.tar.gz` and
 `videnoa-controller-v<version>-windows-x86_64.zip`.
 
+Environment variables:
+
+| Variable | When | Effect |
+|---|---|---|
+| `RUST_LOG` | Runtime | Console log filter (stderr). Default `warn,videnoa_controller=info`; an invalid value falls back to the default with a warning. |
+| `VIDENOA_CONTROLLER_WEB_PREBUILT` | Build time (`cargo build`) | When set, the build skips `npm ci` and `npm run build` and embeds the existing `controller-web/dist`, which must already contain `index.html`. The Docker image sets it after building the frontend in its own stage. |
+
 ## Troubleshooting
 
 - Startup cannot create `./data`: confirm the current workspace is writable by
@@ -336,8 +349,9 @@ Published images are `controlnet/videnoa-controller:<version>` and
   and inspect readiness before admitting tasks.
 - A path is rejected: use process-accessible task media outside `./data`,
   remove traversal, check resolved link targets, and preserve existing destinations.
-- A worker stays offline or incompatible: verify its credential-free HTTP(S)
-  URL, Videnoa health, persistent data, and exact workflow interface.
+- A worker stays offline or incompatible: verify its HTTP(S) URL (without
+  embedded credentials) or iroh Endpoint ID, its saved access password, Videnoa
+  health, persistent data, and exact workflow interface.
 - Output already exists: preserve it and create a new task with another path.
 - Upload repeatedly restarts: use a Controller build with the transfer-timeout fix;
   older builds incorrectly bound transfers by `poll_seconds` (5 seconds by default).

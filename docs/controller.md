@@ -53,6 +53,13 @@ videnoa-controller --help
 videnoa-controller --version
 ```
 
+Environment variables:
+
+| Variable | When | Effect |
+|---|---|---|
+| `RUST_LOG` | Runtime | Console log filter (stderr). Default `warn,videnoa_controller=info`; an invalid value falls back to the default with a warning. |
+| `VIDENOA_CONTROLLER_WEB_PREBUILT` | Build time (`cargo build`) | When set, the build skips `npm ci` and `npm run build` and embeds the existing `controller-web/dist`, which must already contain `index.html`. The Docker image sets it after building the frontend in its own stage. |
+
 Use [`controller.example.toml`](../controller.example.toml) as a field reference,
 not as a required installation step. Raw TOML accepts exactly these sections:
 
@@ -249,8 +256,14 @@ Register workers in the Web UI or through `POST /api/workers`:
 }
 ```
 
-The reserved domain is illustrative. Worker URLs are credential-free HTTP(S)
-base URLs without query strings or fragments. Controller combines each worker's
+The reserved domain is illustrative. Worker URLs are HTTP(S) base URLs without embedded credentials
+(`user:password@`), query strings, or fragments. A protected worker's access
+password goes in the optional `password` field instead (1 to 1024 UTF-8 bytes,
+no control characters); responses report only `has_password`. On update, omit
+`password` to keep the saved value, send a string to replace it, or send `null`
+to clear it. An iroh worker replaces `api_url` with `"transport": "iroh"` and its
+`endpoint_id`; `"transport": "http"` with `api_url` is the explicit HTTP form.
+Controller combines each worker's
 workflow and preset catalogs. A name is eligible only when its interface has
 `Path` inputs named exactly `input` and `output`. Controller does not deploy or
 synchronize workflows.
@@ -303,8 +316,8 @@ manual retry on the existing attempt; remote-state ambiguity remains non-retryab
 
 Task intake requires the exact output leaf not to exist. Before publication,
 Controller rechecks the output capability and verified artifact, then attempts
-atomic no-replace rename. Only `EXDEV` activates copy fallback, with exclusive
-creation of the final filename. Existing or racing output is never overwritten
+atomic no-replace rename. Only `EXDEV`, or `EINVAL` on Linux, activates copy
+fallback, with exclusive creation of the final filename. Existing or racing output is never overwritten
 or auto-renamed. A partial output is resumed only with matching private ownership
 evidence and a byte-for-byte match against the verified source prefix.
 
@@ -537,7 +550,7 @@ including zero counts.
 | Method | Route | Request or result |
 |---|---|---|
 | `GET` | `/api/workers` | Worker list, capabilities, and capacity |
-| `POST` | `/api/workers` | Create `name`, `api_url`, `enabled`, `compute_slots` |
+| `POST` | `/api/workers` | Create `name`, `api_url` (or `transport`=`iroh` plus `endpoint_id`), `enabled`, `compute_slots`, optional `password` |
 | `PUT` | `/api/workers/{id}` | Current version plus all mutable fields |
 | `GET` | `/api/settings` | Version, editable paths, restart state, server, auth policy, scheduler, timeouts, retry |
 | `PUT` | `/api/settings` | Current `version` plus complete `paths`, `server`, `auth`, `scheduler`, `timeouts`, `retry` |
