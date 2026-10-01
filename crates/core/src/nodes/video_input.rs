@@ -98,9 +98,12 @@ fn detect_bit_depth(pix_fmt: &str, bits_per_raw_sample: Option<&str>) -> u8 {
 }
 
 fn disposition_flag(stream: &FfprobeStream, key: &str) -> bool {
-    stream
-        .disposition
-        .get(key)
+    disposition_value_set(stream.disposition.get(key))
+}
+
+/// Whether an ffprobe disposition value (`1`, `true` or `"1"`) is set.
+pub(crate) fn disposition_value_set(value: Option<&serde_json::Value>) -> bool {
+    value
         .and_then(|value| {
             value
                 .as_bool()
@@ -115,10 +118,23 @@ fn select_primary_video_stream(streams: &[FfprobeStream]) -> Option<&FfprobeStre
         .iter()
         .filter(|stream| stream.codec_type.as_deref() == Some("video"))
         .min_by_key(|stream| {
-            let is_attached_picture = disposition_flag(stream, "attached_pic");
-            let is_default = disposition_flag(stream, "default");
-            (is_attached_picture, !is_default, stream.index)
+            primary_video_stream_rank(
+                disposition_flag(stream, "attached_pic"),
+                disposition_flag(stream, "default"),
+                stream.index,
+            )
         })
+}
+
+/// Sort key of the video stream a job decodes; the lowest key wins. Cover art
+/// loses to real video, a default stream wins over others, then the lowest
+/// index. Previews rank streams with the same key to show the same stream.
+pub(crate) fn primary_video_stream_rank(
+    is_attached_picture: bool,
+    is_default: bool,
+    index: usize,
+) -> (bool, bool, usize) {
+    (is_attached_picture, !is_default, index)
 }
 
 fn is_interlaced(field_order: Option<&str>) -> bool {

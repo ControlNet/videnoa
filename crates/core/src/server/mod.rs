@@ -2364,16 +2364,17 @@ async fn extract_frames(
     };
     let deadline = tokio::time::Instant::now() + preview_cache::EXTRACTION_TIMEOUT;
 
-    let (total_frames, color_matrix) = parse_preview_probe(&probe);
-    let interval = (total_frames / payload.count as u64).max(1);
+    let probe = parse_preview_probe(&probe);
+    let interval = (probe.total_frames / payload.count as u64).max(1);
 
     let output_pattern = session.path().join("frame_%04d.png");
     let mut command = crate::runtime::command_for("ffmpeg");
     command
         .args(preview_extraction_args(
             &payload.video_path,
+            probe.stream_index,
             interval,
-            color_matrix,
+            probe.color_matrix,
             payload.count,
         ))
         .arg(output_pattern);
@@ -2410,18 +2411,20 @@ async fn extract_frames(
     ))
 }
 
-/// ffprobe arguments for the preview's frame count and source matrix. The
-/// probe reads container metadata only: `-count_frames` would decode the
-/// whole file, which alone can exceed the extraction budget on long or 4K
-/// sources.
+/// ffprobe arguments for the preview's stream choice, frame count and source
+/// matrix. Every video stream is listed with its disposition so the preview
+/// can pick the stream a job decodes. The probe reads container metadata
+/// only: `-count_frames` would decode the whole file, which alone can exceed
+/// the extraction budget on long or 4K sources.
 fn preview_probe_args(video_path: &str) -> [&str; 9] {
     [
         "-v",
         "error",
         "-select_streams",
-        "v:0",
+        "v",
         "-show_entries",
-        "stream=nb_frames,duration,r_frame_rate,color_space:format=duration",
+        "stream=index,nb_frames,duration,r_frame_rate,color_space:\
+         stream_disposition=default,attached_pic:format=duration",
         "-of",
         "json",
         video_path,
@@ -2431,12 +2434,39 @@ fn preview_probe_args(video_path: &str) -> [&str; 9] {
 /// Frame count used when the preview probe gives nothing usable.
 const PREVIEW_FALLBACK_FRAMES: u64 = 1000;
 
-/// Frame count and swscale input matrix from the preview ffprobe JSON.
+/// What the preview probe found: the stream to sample, roughly how many
+/// frames it has, and the swscale input matrix.
+#[derive(Debug, PartialEq)]
+struct PreviewProbe {
+    /// Absolute stream index; `None` when the probe gave nothing usable.
+    stream_index: Option<usize>,
+    total_frames: u64,
+    color_matrix: &'static str,
+}
+
+impl PreviewProbe {
+    fn fallback() -> Self {
+        Self {
+            stream_index: None,
+            total_frames: PREVIEW_FALLBACK_FRAMES,
+            color_matrix: crate::nodes::video_input::source_color_matrix(None),
+        }
+    }
+
+    #[cfg(test)]
+    fn frames_and_matrix(&self) -> (u64, &'static str) {
+        (self.total_frames, self.color_matrix)
+    }
+}
+
+/// Stream choice, frame count and swscale input matrix from the preview
+/// ffprobe JSON.
 ///
-/// The count is the stream's `nb_frames` when present, otherwise the stream
-/// (or container) duration times `r_frame_rate`, otherwise 1000. It only
-/// spaces the sampled frames, so an estimate is enough.
-fn parse_preview_probe(probe: &[u8]) -> (u64, &'static str) {
+/// The stream is ranked like a job's (`primary_video_stream_rank`). The count
+/// is its `nb_frames` when present, otherwise the stream (or container)
+/// duration times `r_frame_rate`, otherwise 1000. It only spaces the sampled
+/// frames, so an estimate is enough.
+fn parse_preview_probe(probe: &[u8]) -> PreviewProbe {
     #[derive(Deserialize)]
     struct Probe {
         #[serde(default)]
@@ -2445,6 +2475,9 @@ fn parse_preview_probe(probe: &[u8]) -> (u64, &'static str) {
     }
     #[derive(Deserialize)]
     struct ProbeStream {
+        index: Option<usize>,
+        #[serde(default)]
+        disposition: HashMap<String, serde_json::Value>,
         color_space: Option<String>,
         nb_frames: Option<String>,
         duration: Option<String>,
@@ -2456,17 +2489,19 @@ fn parse_preview_probe(probe: &[u8]) -> (u64, &'static str) {
     }
 
     let Some(probe) = serde_json::from_slice::<Probe>(probe).ok() else {
-        return (
-            PREVIEW_FALLBACK_FRAMES,
-            crate::nodes::video_input::source_color_matrix(None),
-        );
+        return PreviewProbe::fallback();
     };
     let format_duration = probe.format.and_then(|format| format.duration);
-    let Some(stream) = probe.streams.into_iter().next() else {
-        return (
-            PREVIEW_FALLBACK_FRAMES,
-            crate::nodes::video_input::source_color_matrix(None),
-        );
+    let Some(stream) = probe.streams.into_iter().min_by_key(|stream| {
+        let flag =
+            |key| crate::nodes::video_input::disposition_value_set(stream.disposition.get(key));
+        crate::nodes::video_input::primary_video_stream_rank(
+            flag("attached_pic"),
+            flag("default"),
+            stream.index.unwrap_or(usize::MAX),
+        )
+    }) else {
+        return PreviewProbe::fallback();
     };
 
     let positive = |value: f64| (value.is_finite() && value > 0.0).then_some(value);
@@ -2490,19 +2525,24 @@ fn parse_preview_probe(probe: &[u8]) -> (u64, &'static str) {
     let total_frames = counted
         .or_else(estimated)
         .unwrap_or(PREVIEW_FALLBACK_FRAMES);
-    let color_matrix =
-        crate::nodes::video_input::source_color_matrix(stream.color_space.as_deref());
-    (total_frames, color_matrix)
+    PreviewProbe {
+        stream_index: stream.index,
+        total_frames,
+        color_matrix: crate::nodes::video_input::source_color_matrix(stream.color_space.as_deref()),
+    }
 }
 
 /// FFmpeg arguments (before the output pattern) that write `count` preview
-/// frames sampled from the first video stream, the one the probe described.
+/// frames sampled from the probed stream, or from the first video stream when
+/// the probe chose none.
 fn preview_extraction_args(
     video_path: &str,
+    stream_index: Option<usize>,
     interval: u64,
     color_matrix: &str,
     count: u32,
 ) -> Vec<String> {
+    let stream = stream_index.map_or_else(|| "0:v:0".to_owned(), |index| format!("0:{index}"));
     [
         "-nostdin",
         "-v",
@@ -2510,7 +2550,7 @@ fn preview_extraction_args(
         "-i",
         video_path,
         "-map",
-        "0:v:0",
+        &stream,
         "-vf",
         &preview_extraction_filter(interval, color_matrix),
         "-frames:v",
@@ -3020,21 +3060,33 @@ mod tests {
     fn preview_probe_reports_frame_count_and_source_matrix() {
         // The container's frame count wins.
         let counted = br#"{"streams":[{"nb_frames":"240","duration":"99.0","r_frame_rate":"24/1","color_space":"smpte170m"}],"format":{"duration":"99.0"}}"#;
-        assert_eq!(parse_preview_probe(counted), (240, "smpte170m"));
+        assert_eq!(
+            parse_preview_probe(counted).frames_and_matrix(),
+            (240, "smpte170m")
+        );
 
         let untagged = br#"{"streams":[{"color_space":"unknown","nb_frames":"12"}]}"#;
-        assert_eq!(parse_preview_probe(untagged), (12, "bt709"));
+        assert_eq!(
+            parse_preview_probe(untagged).frames_and_matrix(),
+            (12, "bt709")
+        );
     }
 
     #[test]
     fn preview_probe_estimates_frames_from_duration_and_rate() {
         // Matroska has no stream frame count: stream duration x frame rate.
         let stream_duration = br#"{"streams":[{"duration":"10.010000","r_frame_rate":"24000/1001","color_space":"bt709"}],"format":{"duration":"12.0"}}"#;
-        assert_eq!(parse_preview_probe(stream_duration), (240, "bt709"));
+        assert_eq!(
+            parse_preview_probe(stream_duration).frames_and_matrix(),
+            (240, "bt709")
+        );
 
         // Without a stream duration the container duration is used.
         let format_duration = br#"{"streams":[{"nb_frames":"N/A","r_frame_rate":"25/1"}],"format":{"duration":"1440.000000"}}"#;
-        assert_eq!(parse_preview_probe(format_duration), (36_000, "bt709"));
+        assert_eq!(
+            parse_preview_probe(format_duration).frames_and_matrix(),
+            (36_000, "bt709")
+        );
     }
 
     #[test]
@@ -3049,12 +3101,35 @@ mod tests {
             br#"{"streams":[{"nb_frames":"0","r_frame_rate":"24/1","duration":"N/A"}]}"#,
         ] {
             assert_eq!(
-                parse_preview_probe(probe),
+                parse_preview_probe(probe).frames_and_matrix(),
                 (1000, "bt709"),
                 "{}",
                 String::from_utf8_lossy(probe)
             );
         }
+    }
+
+    #[test]
+    fn preview_probe_picks_the_video_stream_jobs_decode() {
+        // Cover art is skipped and the default stream wins over a lower index,
+        // like `select_primary_video_stream`; frames and matrix come from it.
+        let probe = br#"{"streams":[
+            {"index":0,"nb_frames":"1","color_space":"bt470bg","disposition":{"default":1,"attached_pic":1}},
+            {"index":1,"nb_frames":"100","color_space":"smpte170m","disposition":{"default":0,"attached_pic":0}},
+            {"index":3,"nb_frames":"240","color_space":"bt709","disposition":{"default":1,"attached_pic":0}}
+        ]}"#;
+        let parsed = parse_preview_probe(probe);
+        assert_eq!(parsed.stream_index, Some(3));
+        assert_eq!(parsed.frames_and_matrix(), (240, "bt709"));
+
+        // Without dispositions the lowest index wins.
+        let plain = br#"{"streams":[{"index":2,"nb_frames":"5"},{"index":1,"nb_frames":"7"}]}"#;
+        let parsed = parse_preview_probe(plain);
+        assert_eq!(parsed.stream_index, Some(1));
+        assert_eq!(parsed.frames_and_matrix(), (7, "bt709"));
+
+        // An unusable probe chooses no stream.
+        assert_eq!(parse_preview_probe(b"garbage").stream_index, None);
     }
 
     #[test]
@@ -3065,26 +3140,32 @@ mod tests {
             args.windows(2).any(|pair| pair
                 == [
                     "-show_entries",
-                    "stream=nb_frames,duration,r_frame_rate,color_space:format=duration"
+                    "stream=index,nb_frames,duration,r_frame_rate,color_space:\
+                     stream_disposition=default,attached_pic:format=duration"
                 ]),
             "{args:?}"
         );
-        assert!(args
-            .windows(2)
-            .any(|pair| pair == ["-select_streams", "v:0"]));
+        // Every video stream is listed so the preview can pick the one jobs decode.
+        assert!(args.windows(2).any(|pair| pair == ["-select_streams", "v"]));
         assert_eq!(args.last(), Some(&"/media/input.mkv"));
         assert!(PREVIEW_PROBE_TIMEOUT < preview_cache::EXTRACTION_TIMEOUT);
     }
 
     #[test]
     fn preview_extraction_samples_the_probed_video_stream() {
-        let args = preview_extraction_args("/media/input.mkv", 25, "bt709", 4);
+        let args = preview_extraction_args("/media/input.mkv", Some(2), 25, "bt709", 4);
         let input = args.iter().position(|arg| arg == "-i").unwrap();
         assert_eq!(args[input + 1], "/media/input.mkv");
-        // The probe uses `-select_streams v:0`; without `-map` FFmpeg would
-        // pick the "best" (largest) video stream instead.
+        // Without `-map` FFmpeg would pick the "best" (largest) video stream
+        // instead of the one the probe chose.
         let map = args.iter().position(|arg| arg == "-map").unwrap();
         assert!(map > input, "-map must be an output option: {args:?}");
+        assert_eq!(args[map + 1], "0:2");
+
+        // A probe that chose nothing (failed or timed out) samples the first
+        // video stream.
+        let args = preview_extraction_args("/media/input.mkv", None, 25, "bt709", 4);
+        let map = args.iter().position(|arg| arg == "-map").unwrap();
         assert_eq!(args[map + 1], "0:v:0");
         assert!(args
             .windows(2)
@@ -3097,10 +3178,9 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires ffmpeg with libx264"]
-    async fn preview_extraction_reads_frames_from_the_first_video_stream() {
-        // Given: a clip whose first video stream is smaller than its second,
-        // and the second is the default one, so FFmpeg's automatic stream
-        // choice (by disposition and resolution) differs from the probed v:0.
+    async fn preview_extraction_reads_frames_from_the_stream_jobs_decode() {
+        // Given: a clip whose second video stream is the default one, so jobs
+        // decode it, while `v:0` is a smaller non-default stream.
         let state = test_state();
         let video_path = state.inner.data_dir.join("two-video-streams.mkv");
         let status = crate::runtime::command_for("ffmpeg")
@@ -3127,7 +3207,7 @@ mod tests {
         .map_err(|error| error.into_response().status())
         .unwrap();
 
-        // Then: every frame comes from the probed first video stream.
+        // Then: every frame comes from the default stream, as in a job.
         assert_eq!(response.frames.len(), 3);
         let session = state
             .preview_cache()
@@ -3139,7 +3219,7 @@ mod tests {
             let png = session.read(filename).unwrap();
             let width = u32::from_be_bytes(png[16..20].try_into().unwrap());
             let height = u32::from_be_bytes(png[20..24].try_into().unwrap());
-            assert_eq!((width, height), (160, 90), "{filename}");
+            assert_eq!((width, height), (320, 180), "{filename}");
         }
     }
 
