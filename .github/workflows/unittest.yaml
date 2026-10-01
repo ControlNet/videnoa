@@ -24,10 +24,11 @@ jobs:
   workflow-contracts:
     name: Workflow contracts
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Set up Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: '24'
       - name: Install Controller web dependencies
@@ -43,14 +44,17 @@ jobs:
   rust-tests:
     name: Rust tests
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@1.98.0
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+        with:
+          toolchain: 1.98.0
       - name: Install protobuf compiler (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler cmake
@@ -67,20 +71,21 @@ jobs:
         shell: bash
         run: |
           cargo test --locked -p videnoa-transport
-          cargo test -p videnoa-core --lib --tests
-          cargo test -p videnoa-app --lib --tests
+          cargo test --locked -p videnoa-core --lib --tests
+          cargo test --locked -p videnoa-app --lib --tests
 
   web-build-check:
     name: Web build check
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Set up Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: '24'
       - name: Install web dependencies
@@ -91,24 +96,74 @@ jobs:
         run: npm run build
       - name: Share Windows web assets
         if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: worker-web-windows
           path: web/dist
           if-no-files-found: error
           retention-days: 1
 
+  workspace-quality:
+    name: Workspace quality gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+        with:
+          toolchain: 1.98.0
+          components: rustfmt, clippy
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          prefix-key: v1-workspace-quality
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            protobuf-compiler \
+            cmake \
+            libglib2.0-dev \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: '24'
+      - name: Build web assets embedded by the crates
+        run: |
+          (cd web && npm ci --no-fund && npm run build)
+          (cd controller-web && npm ci --no-fund && npm run build)
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Run strict workspace Clippy
+        env:
+          VIDENOA_WEB_PREBUILT: '1'
+          VIDENOA_CONTROLLER_WEB_PREBUILT: '1'
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Check dependency advisories
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check advisories
+          arguments: --locked
+
   controller-rust:
     name: Controller Rust quality and tests
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@1.98.0
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
+          toolchain: 1.98.0
           components: rustfmt, clippy
       - name: Set up Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: '24'
       - name: Install Controller web dependencies
@@ -120,29 +175,32 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Run strict Controller Clippy
-        run: cargo clippy -p videnoa-controller --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked -p videnoa-controller --all-targets --all-features -- -D warnings
       - name: Run Controller tests
-        run: cargo test -p videnoa-controller --all-targets
+        run: cargo test --locked -p videnoa-controller --all-targets
 
   controller-fault-load:
     name: Controller fault and load suites
     needs: [controller-rust]
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@1.98.0
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+        with:
+          toolchain: 1.98.0
       - name: Set up Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: '24'
       - name: Run crash and outage suite
-        run: cargo test -p videnoa-controller --test task20 -- --nocapture
+        run: cargo test --locked -p videnoa-controller --test task20 -- --nocapture
       - name: Run production Argon2 executor contention regression
         run: cargo test --locked -p videnoa-controller --test auth_contention -- --ignored --nocapture
       - name: Run load, concurrency, filesystem, resource, and security suites
         run: |
-          cargo test -p videnoa-controller \
+          cargo test --locked -p videnoa-controller \
             --test task21 \
             --test task21_concurrency \
             --test task21_filesystem \
@@ -153,10 +211,11 @@ jobs:
   controller-web:
     name: Controller web quality and E2E
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Set up Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: '24'
       - name: Install dependencies
@@ -186,12 +245,15 @@ jobs:
     if: ${{ github.event_name != 'workflow_call' || inputs.run_packaging_checks }}
     needs: [controller-rust, controller-web]
     runs-on: ubuntu-22.04
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Set up Rust 1.98.0
-        uses: dtolnay/rust-toolchain@1.98.0
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+        with:
+          toolchain: 1.98.0
       - name: Set up Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: '24'
       - name: Validate archive root files
@@ -206,12 +268,15 @@ jobs:
     if: ${{ github.event_name != 'workflow_call' || inputs.run_packaging_checks }}
     needs: [controller-rust, controller-web]
     runs-on: windows-latest
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Set up Rust 1.98.0
-        uses: dtolnay/rust-toolchain@1.98.0
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+        with:
+          toolchain: 1.98.0
       - name: Set up Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: '24'
       - name: Package Windows Controller archive
@@ -230,15 +295,16 @@ jobs:
     if: ${{ github.event_name != 'workflow_call' || inputs.run_packaging_checks }}
     needs: [controller-rust, controller-web]
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Validate Docker slimming contracts
         run: bash scripts/tests/docker_slimming_contract_test.sh
       - name: Build Controller image
         run: docker build -f Dockerfile.controller -t videnoa-controller:ci .
       - name: Verify Controller image and content
         run: bash scripts/check_controller_container.sh videnoa-controller:ci --all
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: '24'
       - name: Install browser smoke dependencies
@@ -254,19 +320,22 @@ jobs:
     if: ${{ github.event_name != 'workflow_call' || inputs.run_packaging_checks }}
     needs: [rust-tests, web-build-check]
     runs-on: ubuntu-22.04
+    timeout-minutes: 60
     env:
       ARCHIVE_NAME: videnoa-linux64-smoke.7z
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@1.98.0
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+        with:
+          toolchain: 1.98.0
       - name: Cache package Rust dependencies
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           prefix-key: v1-package-target
           workspaces: ". -> ../videnoa-package-target"
       - name: Set up Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: '24'
       - name: Install dependencies
@@ -309,19 +378,22 @@ jobs:
     if: ${{ github.event_name != 'workflow_call' || inputs.run_packaging_checks }}
     needs: [rust-tests, web-build-check]
     runs-on: windows-latest
+    timeout-minutes: 60
     env:
       ARCHIVE_NAME: videnoa-win64-smoke.7z
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@1.98.0
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+        with:
+          toolchain: 1.98.0
       - name: Cache package Rust dependencies
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           prefix-key: v1-package-target
           workspaces: ". -> ../videnoa-package-target"
       - name: Set up Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: '24'
       - name: Set up protoc
@@ -348,7 +420,7 @@ jobs:
             Write-Warning 'aria2 not available; package_dist.ps1 will fallback to curl/Invoke-WebRequest'
           }
       - name: Restore verified Windows web assets
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: worker-web-windows
           path: web/dist
@@ -415,8 +487,9 @@ jobs:
     if: ${{ github.event_name != 'workflow_call' || inputs.run_packaging_checks }}
     needs: [rust-tests, web-build-check]
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Validate Docker slimming contracts
         run: bash scripts/tests/docker_slimming_contract_test.sh
       - name: Build Docker image

@@ -19,14 +19,14 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Build and verify media tools
         shell: pwsh
         run: ./scripts/media_tools.ps1 -Build -OutputDir "$env:RUNNER_TEMP/media-tools"
 
       - name: Upload candidate bundle
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: bin_win64-candidate
           path: |

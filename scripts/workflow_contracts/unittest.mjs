@@ -6,15 +6,17 @@ import {
 	requireValue,
 	expression,
 	validateGraph,
+	validateJobHygiene,
 } from "./common.mjs";
 
 export function validateUnitWorkflow(workflow) {
 	const jobs = workflow.jobs;
 	validateGraph(jobs, "unittest");
+	validateJobHygiene(jobs, "unittest");
 	const legacy = {
 		"rust-tests": [
-			"cargo test -p videnoa-core --lib --tests",
-			"cargo test -p videnoa-app --lib --tests",
+			"cargo test --locked -p videnoa-core --lib --tests",
+			"cargo test --locked -p videnoa-app --lib --tests",
 		],
 		"web-build-check": [
 			'working-directory":"web',
@@ -30,7 +32,7 @@ export function validateUnitWorkflow(workflow) {
 			"$HOME/.cargo/registry",
 			"videnoa-linux64-smoke.7z",
 			"2000m 0",
-			"Swatinem/rust-cache@v2",
+			"Swatinem/rust-cache@",
 			"CARGO_TARGET_DIR",
 		],
 		"package-win64-smoke": [
@@ -38,7 +40,7 @@ export function validateUnitWorkflow(workflow) {
 			"videnoa-win64-smoke.7z",
 			"-mx=0",
 			"7z t $firstVolume",
-			"Swatinem/rust-cache@v2",
+			"Swatinem/rust-cache@",
 			"CARGO_TARGET_DIR",
 		],
 		"docker-build-smoke": [
@@ -50,7 +52,7 @@ export function validateUnitWorkflow(workflow) {
 		requireText(requireJob(jobs, name), name, contracts);
 	// Windows runs multi-line steps in pwsh, which reports only the last
 	// command's exit code; bash -eo pipefail stops at the first failing crate.
-	const cargoStep = jobs["rust-tests"].steps.find((step) => step.run?.includes("cargo test -p videnoa-core"));
+	const cargoStep = jobs["rust-tests"].steps.find((step) => step.run?.includes("cargo test --locked -p videnoa-core"));
 	requireValue(cargoStep?.shell === "bash", "rust-tests: the Cargo test step must use shell: bash");
 	for (const name of [
 		"package-linux64-smoke",
@@ -60,7 +62,7 @@ export function validateUnitWorkflow(workflow) {
 		requireNeeds(jobs[name], name, ["rust-tests", "web-build-check"]);
 	}
 	for (const name of ["package-linux64-smoke", "package-win64-smoke"]) {
-		const cache = jobs[name].steps.find((step) => step.uses === "Swatinem/rust-cache@v2");
+		const cache = jobs[name].steps.find((step) => step.uses?.startsWith("Swatinem/rust-cache@"));
 		const mapping = cache?.with?.workspaces?.split(" -> ");
 		requireValue(mapping?.length === 2 && mapping[0] === ".", `${name}: invalid cache mapping`);
 		const target = mapping[1];
@@ -73,8 +75,15 @@ export function validateUnitWorkflow(workflow) {
 		const verifyIndex = jobs[name].steps.findIndex((step) => step.run?.includes("scripts/media_tools.ps1 -Verify"));
 		requireValue(verifyIndex > buildIndex, `${name}: must verify the bundled media tools after building the bundle`);
 	}
-	requireText(jobs["web-build-check"], "web-build-check", ["actions/upload-artifact@v6", "worker-web-windows", "if-no-files-found"]);
-	requireText(jobs["package-win64-smoke"], "package-win64-smoke", ["actions/download-artifact@v7", "worker-web-windows", "-FrontendDist"]);
+	requireText(jobs["web-build-check"], "web-build-check", ["actions/upload-artifact@", "worker-web-windows", "if-no-files-found"]);
+	requireText(jobs["package-win64-smoke"], "package-win64-smoke", ["actions/download-artifact@", "worker-web-windows", "-FrontendDist"]);
+	// The whole workspace is held to fmt, strict Clippy and advisory checks.
+	requireText(requireJob(jobs, "workspace-quality"), "workspace-quality", [
+		"cargo fmt --all -- --check",
+		"cargo clippy --locked --workspace --all-targets -- -D warnings",
+		"EmbarkStudios/cargo-deny-action@",
+		"check advisories",
+	]);
 	requireText(requireJob(jobs, "workflow-contracts"), "workflow-contracts", [
 		"npm ci --no-fund",
 		"scripts/tests/package_dist_download_test.sh",
@@ -86,8 +95,8 @@ export function validateUnitWorkflow(workflow) {
 		"npm ci --no-fund",
 		"npm run build",
 		"cargo fmt --all -- --check",
-		"cargo clippy -p videnoa-controller --all-targets --all-features -- -D warnings",
-		"cargo test -p videnoa-controller --all-targets",
+		"cargo clippy --locked -p videnoa-controller --all-targets --all-features -- -D warnings",
+		"cargo test --locked -p videnoa-controller --all-targets",
 	]);
 	const faultLoad = requireJob(jobs, "controller-fault-load");
 	requireNeeds(faultLoad, "controller-fault-load", ["controller-rust"]);
