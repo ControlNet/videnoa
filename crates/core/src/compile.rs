@@ -287,40 +287,18 @@ pub(crate) fn compile_graph_with_execution_context(
             )
         })?;
     let sink_inputs = resolve_inputs(graph, registry, sink_idx, &outputs_by_node)?;
-    let sink_outputs = match sink_node.execute(&sink_inputs, exec_ctx) {
-        Ok(outputs) => {
-            emit_print_debug_event(
-                &sink_instance.id,
-                &sink_instance.node_type,
-                &outputs,
-                &mut node_debug_callback,
-            );
-            outputs
-        }
-        Err(_) => {
-            let mut fallback = HashMap::new();
-            for (key, value) in &sink_instance.params {
-                if let Ok(pd) = port_data_from_json(&PortType::Path, value)
-                    .or_else(|_| port_data_from_json(&PortType::Str, value))
-                    .or_else(|_| port_data_from_json(&PortType::Int, value))
-                    .or_else(|_| port_data_from_json(&PortType::Bool, value))
-                {
-                    fallback.insert(key.clone(), pd);
-                }
-            }
-            for (source_idx, conn) in graph.connections_to(sink_idx) {
-                if conn.port_type == PortType::VideoFrames {
-                    continue;
-                }
-                if let Some(src_out) = outputs_by_node.get(&graph.node(source_idx).id) {
-                    if let Some(data) = src_out.get(&conn.source_port) {
-                        fallback.insert(conn.target_port.clone(), clone_port_data(data));
-                    }
-                }
-            }
-            fallback
-        }
-    };
+    // The sink's execute() validates its configuration (output path, source
+    // file, codec settings). Its error is the most specific diagnosis available,
+    // so surface it instead of guessing outputs from raw params.
+    let sink_outputs = sink_node
+        .execute(&sink_inputs, exec_ctx)
+        .with_context(|| format!("execution failed for sink node '{}'", sink_instance.id))?;
+    emit_print_debug_event(
+        &sink_instance.id,
+        &sink_instance.node_type,
+        &sink_outputs,
+        &mut node_debug_callback,
+    );
     exec_ctx.check_cancelled()?;
     let encoder = ctx.create_encoder(sink_node.as_mut(), &sink_inputs, &sink_outputs)?;
     outputs_by_node.insert(sink_instance.id.clone(), sink_outputs);
@@ -1458,6 +1436,69 @@ mod tests {
         assert_eq!(
             compile_ctx.encoder_settings.borrow().as_ref(),
             Some(&("libx264".to_string(), 27, "yuv444p".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_compile_reports_sink_execute_error_for_missing_source_file() {
+        let registry = build_video_registry();
+        let compile_ctx = MockCompileContext::new(1);
+        let missing_source = std::env::temp_dir().join(format!(
+            "videnoa-compile-missing-source-{}-{}.mkv",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        let mut graph = PipelineGraph::new();
+        graph
+            .add_node(NodeInstance {
+                id: "source".to_string(),
+                node_type: "mock_source".to_string(),
+                params: HashMap::new(),
+            })
+            .expect("source node should be added");
+        graph
+            .add_node(NodeInstance {
+                id: "sink".to_string(),
+                node_type: "VideoOutput".to_string(),
+                params: HashMap::from([
+                    ("source_path".to_string(), serde_json::json!(missing_source)),
+                    (
+                        "output_path".to_string(),
+                        serde_json::json!(missing_source.with_extension("out.mkv")),
+                    ),
+                ]),
+            })
+            .expect("sink node should be added");
+        graph
+            .add_connection(
+                "source",
+                PortConnection {
+                    source_port: "frames".to_string(),
+                    target_port: "frames".to_string(),
+                    port_type: PortType::VideoFrames,
+                },
+                "sink",
+            )
+            .expect("source -> sink frames connection should be added");
+
+        let err = compile_graph(&graph, &registry, &compile_ctx)
+            .expect_err("a missing source file must fail compilation");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("execution failed for sink node 'sink'"),
+            "error should name the sink node, got: {msg}"
+        );
+        assert!(
+            msg.contains("source file does not exist"),
+            "error should carry VideoOutput's own message, got: {msg}"
+        );
+        assert!(
+            compile_ctx.encoder_settings.borrow().is_none(),
+            "encoder must not be created when the sink failed to execute"
         );
     }
 
