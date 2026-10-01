@@ -123,3 +123,62 @@ async fn worker_health_refresh_publishes_background_delta() -> TestResult {
     assert!(delta.contains("\"online\":false"));
     Ok(())
 }
+
+#[tokio::test]
+async fn worker_create_and_update_reject_unknown_fields() -> TestResult {
+    // Given: a registered worker and otherwise valid payloads carrying one unknown key.
+    let fixture = Fixture::new().await?;
+    let create = json!({
+        "name": "worker-a", "api_url": "https://worker.example/api/",
+        "enabled": true, "compute_slots": 1
+    });
+    let response = fixture
+        .router
+        .clone()
+        .oneshot(Fixture::request("POST", "/api/workers", Some(&create))?)
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let id = json_body(response).await?["id"]
+        .as_str()
+        .ok_or("worker id missing")?
+        .to_owned();
+    let mut unknown_create = create.clone();
+    unknown_create["api_token"] = json!("smuggled");
+    let mut unknown_update = create;
+    unknown_update["version"] = json!(0);
+    unknown_update["unexpected"] = json!(true);
+
+    // When: both mutation routes receive the unknown key.
+    let created = fixture
+        .router
+        .clone()
+        .oneshot(Fixture::request(
+            "POST",
+            "/api/workers",
+            Some(&unknown_create),
+        )?)
+        .await?;
+    let uri = format!("/api/workers/{id}");
+    let updated = fixture
+        .router
+        .clone()
+        .oneshot(Fixture::request("PUT", &uri, Some(&unknown_update))?)
+        .await?;
+
+    // Then: each request is rejected as invalid and the worker is unchanged.
+    assert_eq!(created.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        json_body(created).await?["error"]["code"],
+        "invalid_request"
+    );
+    assert_eq!(updated.status(), StatusCode::BAD_REQUEST);
+    let listed = fixture
+        .router
+        .clone()
+        .oneshot(Fixture::request("GET", "/api/workers", None)?)
+        .await?;
+    let workers = json_body(listed).await?;
+    assert_eq!(workers["total"], 1);
+    assert_eq!(workers["items"][0]["version"], 0);
+    Ok(())
+}
