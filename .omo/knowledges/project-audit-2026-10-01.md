@@ -3,7 +3,7 @@
 Four parallel read-only reviews (frame pool and pinned input; colour pipeline;
 worker app, server and hygiene; controller and its web) plus dependency
 advisories. Every item below was re-read in the code before being recorded.
-Nothing here was fixed yet; see the follow-up commits for what was done.
+All findings were fixed on dev on 2026-10-02; see "Resolution" at the end.
 
 ## Verified clean
 
@@ -137,3 +137,53 @@ Nothing here was fixed yet; see the follow-up commits for what was done.
 - Missing `// SAFETY` at `runtime.rs:312`.
 - Unmaintained transitive crates (Tauri/GTK/iroh): fxhash, paste,
   proc-macro-error, unic-*.
+
+## Resolution (dev, 2026-10-02)
+
+Every item above is fixed, each with tests written first. Decisions and
+deviations worth knowing:
+
+- Bugs 1-3: frame-chain required inputs, topology (sources, sinks, fan-in/out)
+  and sink `execute()` errors are rejected before a job is queued, for both
+  `POST /api/jobs` and `videnoa run`. `create_batch` is all-or-nothing.
+- Bug 2 / NVENC: probe is 256x256, killed after 30 s, successes memoised per
+  (codec, pix_fmt, preset, profile). Verified on the A40.
+- Bug 4: the controller SPA refetches the CSRF proof once on a 403 `forbidden`
+  and retries (one shared refetch). The server still rotates per session GET.
+- Bug 6 and preview: probe reads container metadata (no `-count_frames`) with
+  its own 20 s budget; the preview samples the stream a job decodes
+  (`primary_video_stream_rank`), not `v:0`. Extraction still decodes up to the
+  last sampled frame, so a very long 4K source can still hit the 120 s budget.
+- Risk 7: the login/Bearer limiter is checked before Argon2. Once a peer is
+  limited, even the correct password gets 429 until the 5-minute window ends.
+- Risk 16: BT.2020/P3/XYZ primaries only warn (no conversion). SD primaries do
+  not warn: the difference from BT.709 is barely visible and every DVD would
+  log it.
+- Risk 14 and flakes found while integrating:
+  - pool acquire timeout decoupled from the 5 s busy timeout (30 s default);
+  - task12 `saturated_upload_pool_does_not_block_download_pool`: the parked
+    upload hit the fixture's 1 s transfer timeout under load;
+  - `logging::committed_creation_is_logged_once...`: tracing callsite
+    registration raced the scoped subscriber; the test registers the callsite
+    first.
+- Risk 17: actions SHA-pinned, `--locked` everywhere, workspace fmt/clippy/
+  cargo-deny gate, job timeouts, dependabot, Docker publish after packaging.
+  `cargo fmt --all` does not follow `include!`
+  (`crates/controller/src/module_topology.rs`), so CI also runs rustfmt on
+  every tracked `.rs` file; eight drifted controller files were formatted.
+- Risk 18: the Worker image ships the release FFmpeg 8.1 bundle, pinned by
+  SHA256 (`MEDIA_TOOLS_SHA256` in `Dockerfile`; bump it with the asset).
+- Nits: Worker job history is capped by `[jobs] history_limit` (default 1000,
+  0 = unlimited); controller SSE reads each change once for all subscribers
+  (shared `event_id`); both servers bound the request head to 30 s and serve
+  HTTP/1 only (h2c would bypass the deadline); presets capped at 256.
+- Not a bug: worker DTO unknown fields were already rejected (serde 1.0.228
+  enforces `deny_unknown_fields` with this flatten); regression tests added.
+- Listener host-only change: returns a clear 400 (change the port too or
+  restart); no release-then-bind.
+
+Final local gate on dev: fmt + rustfmt on every file, workspace clippy,
+cargo-deny, workflow contracts, script tests, Rust workspace 1451 passed /
+0 failed, ignored FFmpeg tests on 8.1 and 4.4, GPU micro-stage test, web
+222 and controller-web 194 tests, npm audit 0 in both.
+
