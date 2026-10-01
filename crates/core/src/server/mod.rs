@@ -108,6 +108,8 @@ const DEFAULT_WORKFLOW_NAME_API_JOBS: &str = "ad-hoc workflow";
 const DEFAULT_WORKFLOW_NAME_API_BATCH: &str = "batch workflow";
 const RERUN_COMPLETED_REJECTION: &str = "cannot rerun completed job";
 const PREVIEW_VSYNC_MODE: &str = "vfr";
+/// Budget for the preview's metadata probe, separate from the extraction's.
+const PREVIEW_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 impl AppState {
     pub fn ensure_auth_ready(&self) -> Result<()> {
@@ -2297,26 +2299,23 @@ async fn extract_frames(
     })?;
     let session = cache.create()?;
     let preview_id = Uuid::new_v4().to_string();
-    let deadline = tokio::time::Instant::now() + preview_cache::EXTRACTION_TIMEOUT;
     let mut probe = crate::runtime::command_for("ffprobe");
-    probe.args([
-        "-v",
-        "error",
-        "-count_frames",
-        "-select_streams",
-        "v:0",
-        "-show_entries",
-        "stream=color_space,nb_read_frames",
-        "-of",
-        "json",
-        &payload.video_path,
-    ]);
-    let probe = preview_cache::run_command(
-        probe,
-        &session,
-        deadline.saturating_duration_since(tokio::time::Instant::now()),
-    )
-    .await?;
+    probe.args(preview_probe_args(&payload.video_path));
+    // The probe reads container metadata only and has its own short budget;
+    // a probe that cannot finish in time falls back to the default estimate.
+    let probe = match preview_cache::run_command(probe, &session, PREVIEW_PROBE_TIMEOUT).await {
+        Ok(probe) => probe,
+        Err(error) if preview_cache::is_timeout(&error) => {
+            warn!(
+                video_path = %payload.video_path,
+                timeout_s = PREVIEW_PROBE_TIMEOUT.as_secs(),
+                "preview probe timed out; sampling with the default frame estimate"
+            );
+            Vec::new()
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let deadline = tokio::time::Instant::now() + preview_cache::EXTRACTION_TIMEOUT;
 
     let (total_frames, color_matrix) = parse_preview_probe(&probe);
     let interval = (total_frames / payload.count as u64).max(1);
@@ -2371,30 +2370,86 @@ async fn extract_frames(
     ))
 }
 
+/// ffprobe arguments for the preview's frame count and source matrix. The
+/// probe reads container metadata only: `-count_frames` would decode the
+/// whole file, which alone can exceed the extraction budget on long or 4K
+/// sources.
+fn preview_probe_args(video_path: &str) -> [&str; 9] {
+    [
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=nb_frames,duration,r_frame_rate,color_space:format=duration",
+        "-of",
+        "json",
+        video_path,
+    ]
+}
+
+/// Frame count used when the preview probe gives nothing usable.
+const PREVIEW_FALLBACK_FRAMES: u64 = 1000;
+
 /// Frame count and swscale input matrix from the preview ffprobe JSON.
-/// Unparseable output falls back to 1000 frames, like the former CSV probe.
+///
+/// The count is the stream's `nb_frames` when present, otherwise the stream
+/// (or container) duration times `r_frame_rate`, otherwise 1000. It only
+/// spaces the sampled frames, so an estimate is enough.
 fn parse_preview_probe(probe: &[u8]) -> (u64, &'static str) {
     #[derive(Deserialize)]
     struct Probe {
+        #[serde(default)]
         streams: Vec<ProbeStream>,
+        format: Option<ProbeFormat>,
     }
     #[derive(Deserialize)]
     struct ProbeStream {
         color_space: Option<String>,
-        nb_read_frames: Option<String>,
+        nb_frames: Option<String>,
+        duration: Option<String>,
+        r_frame_rate: Option<String>,
+    }
+    #[derive(Deserialize)]
+    struct ProbeFormat {
+        duration: Option<String>,
     }
 
-    let stream = serde_json::from_slice::<Probe>(probe)
-        .ok()
-        .and_then(|probe| probe.streams.into_iter().next());
-    let Some(stream) = stream else {
-        return (1000, crate::nodes::video_input::source_color_matrix(None));
+    let Some(probe) = serde_json::from_slice::<Probe>(probe).ok() else {
+        return (
+            PREVIEW_FALLBACK_FRAMES,
+            crate::nodes::video_input::source_color_matrix(None),
+        );
     };
-    let total_frames = stream
-        .nb_read_frames
+    let format_duration = probe.format.and_then(|format| format.duration);
+    let Some(stream) = probe.streams.into_iter().next() else {
+        return (
+            PREVIEW_FALLBACK_FRAMES,
+            crate::nodes::video_input::source_color_matrix(None),
+        );
+    };
+
+    let positive = |value: f64| (value.is_finite() && value > 0.0).then_some(value);
+    let counted = stream
+        .nb_frames
         .as_deref()
-        .and_then(|frames| frames.trim().parse().ok())
-        .unwrap_or(1000);
+        .and_then(|frames| frames.trim().parse::<u64>().ok())
+        .filter(|&frames| frames > 0);
+    let estimated = || {
+        let duration = [stream.duration.as_deref(), format_duration.as_deref()]
+            .into_iter()
+            .flatten()
+            .find_map(|duration| duration.trim().parse::<f64>().ok().and_then(positive))?;
+        let rate = stream
+            .r_frame_rate
+            .as_deref()
+            .and_then(crate::nodes::video_input::parse_frame_rate)
+            .and_then(positive)?;
+        Some((duration * rate).round() as u64).filter(|&frames| frames > 0)
+    };
+    let total_frames = counted
+        .or_else(estimated)
+        .unwrap_or(PREVIEW_FALLBACK_FRAMES);
     let color_matrix =
         crate::nodes::video_input::source_color_matrix(stream.color_space.as_deref());
     (total_frames, color_matrix)
@@ -2896,18 +2951,62 @@ mod tests {
 
     #[test]
     fn preview_probe_reports_frame_count_and_source_matrix() {
-        let tagged = br#"{"streams":[{"width":720,"height":480,"color_space":"bt709","nb_read_frames":"240"}]}"#;
-        assert_eq!(parse_preview_probe(tagged), (240, "bt709"));
+        // The container's frame count wins.
+        let counted = br#"{"streams":[{"nb_frames":"240","duration":"99.0","r_frame_rate":"24/1","color_space":"smpte170m"}],"format":{"duration":"99.0"}}"#;
+        assert_eq!(parse_preview_probe(counted), (240, "smpte170m"));
 
-        let untagged_hd =
-            br#"{"streams":[{"width":1920,"height":1080,"color_space":"unknown","nb_read_frames":"12"}]}"#;
-        assert_eq!(parse_preview_probe(untagged_hd), (12, "bt709"));
+        let untagged = br#"{"streams":[{"color_space":"unknown","nb_frames":"12"}]}"#;
+        assert_eq!(parse_preview_probe(untagged), (12, "bt709"));
+    }
 
-        let untagged_sd = br#"{"streams":[{"width":720,"height":480,"nb_read_frames":"5"}]}"#;
-        assert_eq!(parse_preview_probe(untagged_sd), (5, "bt709"));
+    #[test]
+    fn preview_probe_estimates_frames_from_duration_and_rate() {
+        // Matroska has no stream frame count: stream duration x frame rate.
+        let stream_duration = br#"{"streams":[{"duration":"10.010000","r_frame_rate":"24000/1001","color_space":"bt709"}],"format":{"duration":"12.0"}}"#;
+        assert_eq!(parse_preview_probe(stream_duration), (240, "bt709"));
 
-        // Unparseable output keeps the previous frame-count fallback.
-        assert_eq!(parse_preview_probe(b"garbage"), (1000, "bt709"));
+        // Without a stream duration the container duration is used.
+        let format_duration = br#"{"streams":[{"nb_frames":"N/A","r_frame_rate":"25/1"}],"format":{"duration":"1440.000000"}}"#;
+        assert_eq!(parse_preview_probe(format_duration), (36_000, "bt709"));
+    }
+
+    #[test]
+    fn preview_probe_falls_back_to_1000_frames() {
+        for probe in [
+            &br#"garbage"#[..],
+            br#""#,
+            br#"{"streams":[]}"#,
+            // A rate without any duration, and a duration without a usable rate.
+            br#"{"streams":[{"r_frame_rate":"24/1"}],"format":{}}"#,
+            br#"{"streams":[{"r_frame_rate":"0/0"}],"format":{"duration":"60.0"}}"#,
+            br#"{"streams":[{"nb_frames":"0","r_frame_rate":"24/1","duration":"N/A"}]}"#,
+        ] {
+            assert_eq!(
+                parse_preview_probe(probe),
+                (1000, "bt709"),
+                "{}",
+                String::from_utf8_lossy(probe)
+            );
+        }
+    }
+
+    #[test]
+    fn preview_probe_reads_container_metadata_without_decoding() {
+        let args = preview_probe_args("/media/input.mkv");
+        assert!(!args.contains(&"-count_frames"), "{args:?}");
+        assert!(
+            args.windows(2).any(|pair| pair
+                == [
+                    "-show_entries",
+                    "stream=nb_frames,duration,r_frame_rate,color_space:format=duration"
+                ]),
+            "{args:?}"
+        );
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["-select_streams", "v:0"]));
+        assert_eq!(args.last(), Some(&"/media/input.mkv"));
+        assert!(PREVIEW_PROBE_TIMEOUT < preview_cache::EXTRACTION_TIMEOUT);
     }
 
     #[test]

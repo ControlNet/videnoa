@@ -63,7 +63,7 @@ struct FfprobeFormat {
     tags: HashMap<String, String>,
 }
 
-fn parse_frame_rate(s: &str) -> Option<f64> {
+pub(crate) fn parse_frame_rate(s: &str) -> Option<f64> {
     let parts: Vec<&str> = s.split('/').collect();
     if parts.len() == 2 {
         let num: f64 = parts[0].parse().ok()?;
