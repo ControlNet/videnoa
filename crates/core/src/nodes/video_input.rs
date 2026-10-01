@@ -2,11 +2,13 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::process::{Child, Stdio};
+use std::sync::Arc;
 use std::thread;
 
 use anyhow::{anyhow, bail, Context, Result};
 use tracing::{debug, warn};
 
+use crate::frame_pool::FramePool;
 use crate::node::{ExecutionContext, Node, PortDefinition};
 use crate::types::{Chapter, Frame, MediaMetadata, PortData, PortType, StreamInfo};
 // ffprobe JSON model (serde)
@@ -391,7 +393,7 @@ pub struct VideoDecoder {
     bit_depth: u8,
     frame_size: usize,
     _stderr_thread: Option<thread::JoinHandle<()>>,
-    buf: Vec<u8>,
+    pool: Arc<FramePool>,
     done: bool,
     #[allow(dead_code)]
     hwaccel: Option<String>,
@@ -514,10 +516,15 @@ impl VideoDecoder {
             },
             frame_size,
             _stderr_thread: Some(stderr_thread),
-            buf: vec![0u8; frame_size],
+            pool: FramePool::shared(),
             done: false,
             hwaccel: hwaccel.map(|s| s.to_string()),
         })
+    }
+
+    /// Takes frame buffers from `pool`, where downstream stages return them.
+    pub fn set_frame_pool(&mut self, pool: Arc<FramePool>) {
+        self.pool = pool;
     }
 
     fn read_frame(&mut self) -> Result<Option<Frame>> {
@@ -527,11 +534,14 @@ impl VideoDecoder {
             .as_mut()
             .ok_or_else(|| anyhow!("ffmpeg stdout not available"))?;
 
+        // The read loop fills the whole buffer or fails.
+        let mut data = self.pool.take_u8(self.frame_size);
         let mut total_read = 0;
         while total_read < self.frame_size {
-            match stdout.read(&mut self.buf[total_read..self.frame_size]) {
+            match stdout.read(&mut data[total_read..]) {
                 Ok(0) => {
                     if total_read == 0 {
+                        self.pool.recycle_u8(data);
                         return Ok(None);
                     }
                     bail!(
@@ -552,7 +562,7 @@ impl VideoDecoder {
         }
 
         Ok(Some(Frame::CpuRgb {
-            data: self.buf[..self.frame_size].to_vec(),
+            data,
             width: self.width,
             height: self.height,
             bit_depth: self.bit_depth,
@@ -620,7 +630,7 @@ pub(crate) mod tests {
             bit_depth: 8,
             frame_size: 3,
             _stderr_thread: None,
-            buf: vec![0; 3],
+            pool: FramePool::shared(),
             done: false,
             hwaccel: None,
         }
@@ -652,6 +662,26 @@ pub(crate) mod tests {
             .unwrap()
             .to_string()
             .contains("partial frame"));
+        assert!(decoder.next().is_none());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn decoder_reads_frames_into_buffers_returned_to_its_pool() {
+        let mut decoder = fault_injected_decoder("printf abcdef");
+        let pool = FramePool::shared();
+        let recycled = pool.seed_u8(3, 0);
+        decoder.set_frame_pool(Arc::clone(&pool));
+
+        let Some(Ok(Frame::CpuRgb { data, .. })) = decoder.next() else {
+            panic!("expected a frame");
+        };
+        assert_eq!(data.as_ptr(), recycled);
+        assert_eq!(data, b"abc");
+        let Some(Ok(Frame::CpuRgb { data, .. })) = decoder.next() else {
+            panic!("expected a second frame");
+        };
+        assert_eq!(data, b"def");
         assert!(decoder.next().is_none());
     }
 

@@ -8,6 +8,7 @@ mod fp16_rgb;
 pub mod frame_interpolation;
 pub mod http_request;
 pub mod jellyfin_video;
+mod nchw_layout;
 pub mod path_divider;
 pub mod path_joiner;
 pub mod print;

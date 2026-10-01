@@ -10,14 +10,15 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, Context, Result};
 use half::f16;
-use half::slice::HalfFloatSliceExt;
+use half::slice::{HalfBitsSliceExt, HalfFloatSliceExt};
 use ndarray::{s, Array4};
 use ort::{
     session::Session,
-    value::{Tensor, TensorElementType},
+    value::{Tensor, TensorElementType, TensorRef},
 };
 use tracing::debug;
 
+use crate::frame_pool::FramePool;
 use crate::model_registry::builtin_model_scale;
 use crate::node::{ExecutionContext, FrameProcessor, Node, PortDefinition};
 use crate::types::{Frame, PortData, PortType};
@@ -26,7 +27,8 @@ use crate::nodes::backend::{
     build_session, ensure_inference_output_memory, inference_output_memory_info, InferenceBackend,
     SessionConfig,
 };
-use crate::nodes::fp16_rgb::{f16_nchw_to_rgb, NchwCrop, Quantization};
+use crate::nodes::fp16_rgb::{f16_nchw_to_rgb_into, NchwCrop, Quantization};
+use crate::nodes::nchw_layout::{crop_planes_into, reflect_pad_planes_into};
 use crate::nodes::worker_count::WorkerCount;
 
 /// Tile overlap in pixels per side — prevents seam artifacts between tiles.
@@ -125,6 +127,15 @@ pub struct SuperResMicroStages {
     pub postprocess: SuperResPostprocess,
 }
 
+impl SuperResMicroStages {
+    /// Makes all three stages take and recycle frame buffers through `pool`.
+    pub fn set_frame_pool(&mut self, pool: &Arc<FramePool>) {
+        self.preprocess.pool = Arc::clone(pool);
+        self.inference.set_frame_pool(Arc::clone(pool));
+        self.postprocess.pool = Arc::clone(pool);
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SuperResOutputMode {
     PostprocessRgb,
@@ -150,16 +161,18 @@ impl SuperResNode {
         let input_name = self.input_name?;
         let output_name = self.output_name?;
 
+        let pool = FramePool::shared();
         Some(SuperResMicroStages {
-            preprocess: SuperResPreprocess { f16_nchw_buf: None },
+            preprocess: SuperResPreprocess::new(Arc::clone(&pool)),
             inference: SuperResInference {
                 session,
                 scale: self.scale as usize,
                 input_name,
                 output_name,
                 direct_rgb: Arc::new(AtomicBool::new(false)),
+                pool: Arc::clone(&pool),
             },
-            postprocess: SuperResPostprocess,
+            postprocess: SuperResPostprocess::new(pool),
         })
     }
 }
@@ -173,7 +186,13 @@ impl SuperResNode {
 /// Performs u8 → f16 with ÷255 normalization and HWC → CHW deinterleave.
 /// Does NOT pad — padding is handled by the inference stage.
 pub struct SuperResPreprocess {
-    f16_nchw_buf: Option<ndarray::ArrayD<f16>>,
+    pool: Arc<FramePool>,
+}
+
+impl SuperResPreprocess {
+    pub fn new(pool: Arc<FramePool>) -> Self {
+        Self { pool }
+    }
 }
 
 impl Node for SuperResPreprocess {
@@ -227,16 +246,10 @@ impl FrameProcessor for SuperResPreprocess {
                     );
                 }
 
-                let target_shape: &[usize] = &[1, 3, h, w];
-                let mut nchw = match self.f16_nchw_buf.take() {
-                    Some(mut arr) if arr.shape() == target_shape => {
-                        arr.fill(f16::ZERO);
-                        arr
-                    }
-                    _ => ndarray::ArrayD::from_elem(ndarray::IxDyn(&[1, 3, h, w]), f16::ZERO),
-                };
                 let hw = h * w;
-                let nchw_slice = nchw.as_slice_mut().unwrap();
+                // Every sample of the pooled buffer is overwritten below.
+                let mut out_data = self.pool.take_u16(3 * hw);
+                let nchw_slice: &mut [f16] = out_data.reinterpret_cast_mut();
 
                 const CHUNK: usize = 4096;
                 let mut r_buf = [0.0f32; CHUNK];
@@ -284,9 +297,7 @@ impl FrameProcessor for SuperResPreprocess {
                         .convert_from_f32_slice(&b_buf[..len]);
                     offset += len;
                 }
-
-                let out_data: Vec<u16> = nchw_slice.iter().map(|v| v.to_bits()).collect();
-                self.f16_nchw_buf = Some(nchw);
+                self.pool.recycle_u8(data);
 
                 Ok(Frame::NchwF16 {
                     data: out_data,
@@ -313,15 +324,8 @@ impl FrameProcessor for SuperResPreprocess {
                     );
                 }
 
-                let target_shape: &[usize] = &[1, 3, h, w];
-                let mut nchw = match self.f16_nchw_buf.take() {
-                    Some(mut arr) if arr.shape() == target_shape => {
-                        arr.fill(f16::ZERO);
-                        arr
-                    }
-                    _ => ndarray::ArrayD::from_elem(ndarray::IxDyn(&[1, 3, h, w]), f16::ZERO),
-                };
-                let nchw_slice = nchw.as_slice_mut().unwrap();
+                let mut out_data = self.pool.take_u16(expected);
+                let nchw_slice: &mut [f16] = out_data.reinterpret_cast_mut();
 
                 const CHUNK: usize = 4096;
                 let mut offset = 0;
@@ -331,9 +335,7 @@ impl FrameProcessor for SuperResPreprocess {
                         .convert_from_f32_slice(&data[offset..offset + len]);
                     offset += len;
                 }
-
-                let out_data: Vec<u16> = nchw_slice.iter().map(|v| v.to_bits()).collect();
-                self.f16_nchw_buf = Some(nchw);
+                self.pool.recycle_f32(data);
 
                 Ok(Frame::NchwF16 {
                     data: out_data,
@@ -360,11 +362,16 @@ pub struct SuperResInference {
     input_name: String,
     output_name: String,
     direct_rgb: Arc<AtomicBool>,
+    pool: Arc<FramePool>,
 }
 
 impl SuperResInference {
     pub(crate) fn set_direct_rgb_flag(&mut self, direct_rgb: Arc<AtomicBool>) {
         self.direct_rgb = direct_rgb;
+    }
+
+    pub fn set_frame_pool(&mut self, pool: Arc<FramePool>) {
+        self.pool = pool;
     }
 }
 
@@ -400,100 +407,100 @@ impl FrameProcessor for SuperResInference {
 
         let h = height as usize;
         let w = width as usize;
-
-        let f16_vec: Vec<f16> = data.into_iter().map(f16::from_bits).collect();
-        let input_arr = ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(&[1, 3, h, w]), f16_vec)
-            .context("SuperResInference: failed to reshape input")?;
-
-        let padded = pad_f16_nchw(&input_arr, h, w);
-
+        anyhow::ensure!(
+            data.len() == 3 * h * w,
+            "SuperResInference: expected {} samples for 3x{h}x{w}, got {}",
+            3 * h * w,
+            data.len()
+        );
+        let padded_h = h + pad_amount(h);
+        let padded_w = w + pad_amount(w);
         let out_h = h * self.scale;
         let out_w = w * self.scale;
-        let input_tensor = Tensor::from_array(padded.clone())?;
-        let output_owned = {
+
+        // Aligned frames feed the model straight from the frame buffer.
+        let padded = if (padded_h, padded_w) == (h, w) {
+            None
+        } else {
+            let mut buffer = self.pool.take_u16(3 * padded_h * padded_w);
+            reflect_pad_planes_into(&data, h, w, padded_h, padded_w, &mut buffer)?;
+            Some(buffer)
+        };
+        let input_values: &[f16] = padded.as_deref().unwrap_or(&data).reinterpret_cast();
+        let direct_rgb = self.direct_rgb.load(Ordering::Relaxed);
+
+        let output = {
+            let input_tensor =
+                TensorRef::from_array_view(([1_usize, 3, padded_h, padded_w], input_values))?;
             let mut session = self.session.lock().unwrap();
             let mut binding = session.create_binding()?;
             binding.bind_input(self.input_name.as_str(), &input_tensor)?;
             let output_memory = inference_output_memory_info(&session)?;
             binding.bind_output_to_device(self.output_name.as_str(), &output_memory)?;
             let outputs = session.run_binding(&binding)?;
-            ensure_inference_output_memory(&outputs[self.output_name.as_str()], &output_memory)?;
-            let output_view = outputs[self.output_name.as_str()].try_extract_array::<f16>()?;
-            check_output_scale(
-                padded.shape()[2],
-                padded.shape()[3],
-                output_view.shape(),
-                self.scale,
-            )?;
+            let output = &outputs[self.output_name.as_str()];
+            ensure_inference_output_memory(output, &output_memory)?;
+            let (shape, values) = output.try_extract_tensor::<f16>()?;
+            let shape: Vec<usize> = shape.iter().map(|&dim| dim as usize).collect();
+            check_output_scale(padded_h, padded_w, &shape, self.scale)?;
+            anyhow::ensure!(
+                shape.len() == 4 && shape[0] == 1 && shape[1] == 3,
+                "SuperResInference: expected output shape [1, 3, H, W], got {shape:?}"
+            );
 
-            if self.direct_rgb.load(Ordering::Relaxed) {
-                let shape = output_view.shape();
-                anyhow::ensure!(
-                    shape.len() == 4 && shape[0] == 1 && shape[1] == 3,
-                    "SuperResInference: expected output shape [1, 3, H, W], got {shape:?}"
-                );
-                let values = output_view
-                    .as_slice()
-                    .context("SuperResInference: output tensor must be contiguous")?;
-                let rgb = cropped_f16_output_to_rgb(
+            if direct_rgb {
+                let mut rgb = self.pool.take_u8(out_h * out_w * 3);
+                cropped_f16_output_to_rgb_into(
                     values,
                     [shape[0], shape[1], shape[2], shape[3]],
                     out_h,
                     out_w,
+                    &mut rgb,
                 )?;
-                return Ok(Frame::CpuRgb {
+                Frame::CpuRgb {
                     data: rgb,
                     width: out_w as u32,
                     height: out_h as u32,
                     bit_depth: 8,
-                });
+                }
+            } else {
+                let mut cropped = self.pool.take_u16(3 * out_h * out_w);
+                crop_planes_into(
+                    values,
+                    shape[2],
+                    shape[3],
+                    out_h,
+                    out_w,
+                    cropped.reinterpret_cast_mut(),
+                )?;
+                Frame::NchwF16 {
+                    data: cropped,
+                    height: out_h as u32,
+                    width: out_w as u32,
+                }
             }
-
-            output_view.to_owned()
         };
 
-        let padded_h = padded.shape()[2];
-        let padded_w = padded.shape()[3];
-        let pad_h = padded_h - h;
-        let pad_w = padded_w - w;
-
-        let final_arr = if pad_h > 0 || pad_w > 0 {
-            output_owned
-                .slice(s![.., .., ..out_h, ..out_w])
-                .to_owned()
-                .into_dyn()
-        } else {
-            output_owned
-        };
-
-        let owned_contig;
-        let slice = if let Some(s) = final_arr.as_slice() {
-            s
-        } else {
-            owned_contig = final_arr.as_standard_layout().into_owned();
-            owned_contig.as_slice().unwrap()
-        };
-        let out_data: Vec<u16> = slice.iter().map(|v| v.to_bits()).collect();
-
-        Ok(Frame::NchwF16 {
-            data: out_data,
-            height: out_h as u32,
-            width: out_w as u32,
-        })
+        if let Some(buffer) = padded {
+            self.pool.recycle_u16(buffer);
+        }
+        self.pool.recycle_u16(data);
+        Ok(output)
     }
 }
 
-fn cropped_f16_output_to_rgb(
+fn cropped_f16_output_to_rgb_into(
     values: &[f16],
     shape: [usize; 4],
     output_height: usize,
     output_width: usize,
-) -> Result<Vec<u8>> {
+    rgb: &mut [u8],
+) -> Result<()> {
     anyhow::ensure!(
         shape[0] == 1 && shape[1] == 3,
         "FP16 output shape must start with [1, 3], got {shape:?}"
     );
-    f16_nchw_to_rgb(
+    f16_nchw_to_rgb_into(
         values,
         NchwCrop {
             source_height: shape[2],
@@ -502,6 +509,7 @@ fn cropped_f16_output_to_rgb(
             output_width,
         },
         Quantization::Truncate,
+        rgb,
     )
 }
 
@@ -512,7 +520,15 @@ fn cropped_f16_output_to_rgb(
 /// Converts `Frame::NchwF16` → `Frame::CpuRgb`.
 ///
 /// Performs f16 → u8 with ×255 denormalization and CHW → HWC interleave.
-pub struct SuperResPostprocess;
+pub struct SuperResPostprocess {
+    pool: Arc<FramePool>,
+}
+
+impl SuperResPostprocess {
+    pub fn new(pool: Arc<FramePool>) -> Self {
+        Self { pool }
+    }
+}
 
 impl Node for SuperResPostprocess {
     fn node_type(&self) -> &str {
@@ -548,14 +564,14 @@ impl FrameProcessor for SuperResPostprocess {
         let w = width as usize;
         let hw = h * w;
 
-        let f16_vec: Vec<f16> = data.into_iter().map(f16::from_bits).collect();
-        if f16_vec.len() != 3 * hw {
+        if data.len() != 3 * hw {
             bail!(
                 "SuperResPostprocess: f16 data length mismatch: expected {}, got {}",
                 3 * hw,
-                f16_vec.len()
+                data.len()
             );
         }
+        let f16_vec: &[f16] = data.reinterpret_cast();
 
         let r_chan = &f16_vec[..hw];
         let g_chan = &f16_vec[hw..2 * hw];
@@ -566,7 +582,7 @@ impl FrameProcessor for SuperResPostprocess {
         let mut g_buf = [0.0f32; CHUNK];
         let mut b_buf = [0.0f32; CHUNK];
 
-        let mut rgb = vec![0u8; hw * 3];
+        let mut rgb = self.pool.take_u8(hw * 3);
         let mut offset = 0;
         while offset < hw {
             let len = CHUNK.min(hw - offset);
@@ -581,6 +597,7 @@ impl FrameProcessor for SuperResPostprocess {
             }
             offset += len;
         }
+        self.pool.recycle_u16(data);
 
         Ok(Frame::CpuRgb {
             data: rgb,
@@ -2110,6 +2127,17 @@ mod tests {
         assert_eq!(rgb[8], 63); // f16(0.25) * 255.0 = 63.75 → 63
     }
 
+    fn cropped_f16_output_to_rgb(
+        values: &[f16],
+        shape: [usize; 4],
+        output_height: usize,
+        output_width: usize,
+    ) -> Result<Vec<u8>> {
+        let mut rgb = vec![0xAA; output_height * output_width * 3];
+        cropped_f16_output_to_rgb_into(values, shape, output_height, output_width, &mut rgb)?;
+        Ok(rgb)
+    }
+
     #[test]
     fn direct_f16_output_rgb_preserves_superres_truncation() {
         let values = vec![f16::from_f32(0.5); 3];
@@ -2159,7 +2187,7 @@ mod tests {
             bit_depth: 8,
         };
         let ctx = ExecutionContext::default();
-        let mut stage = SuperResPreprocess { f16_nchw_buf: None };
+        let mut stage = SuperResPreprocess::new(FramePool::shared());
         let result = stage.process_frame(frame, &ctx).unwrap();
 
         match result {
@@ -2196,7 +2224,7 @@ mod tests {
             bit_depth: 10,
         };
         let ctx = ExecutionContext::default();
-        let mut stage = SuperResPreprocess { f16_nchw_buf: None };
+        let mut stage = SuperResPreprocess::new(FramePool::shared());
         let result = stage.process_frame(frame, &ctx).unwrap();
 
         match result {
@@ -2235,7 +2263,7 @@ mod tests {
             width: 2,
         };
         let ctx = ExecutionContext::default();
-        let mut stage = SuperResPostprocess;
+        let mut stage = SuperResPostprocess::new(FramePool::shared());
         let result = stage.process_frame(frame, &ctx).unwrap();
 
         match result {
@@ -2272,11 +2300,11 @@ mod tests {
         };
         let ctx = ExecutionContext::default();
 
-        let mut pre = SuperResPreprocess { f16_nchw_buf: None };
+        let mut pre = SuperResPreprocess::new(FramePool::shared());
         let tensor = pre.process_frame(frame, &ctx).unwrap();
         assert!(matches!(tensor, Frame::NchwF16 { .. }));
 
-        let mut post = SuperResPostprocess;
+        let mut post = SuperResPostprocess::new(FramePool::shared());
         let result = post.process_frame(tensor, &ctx).unwrap();
         match result {
             Frame::CpuRgb { data, .. } => {
@@ -2300,7 +2328,7 @@ mod tests {
             width: 2,
         };
         let ctx = ExecutionContext::default();
-        let mut stage = SuperResPreprocess { f16_nchw_buf: None };
+        let mut stage = SuperResPreprocess::new(FramePool::shared());
         assert!(stage.process_frame(frame, &ctx).is_err());
     }
 
@@ -2313,7 +2341,7 @@ mod tests {
             bit_depth: 8,
         };
         let ctx = ExecutionContext::default();
-        let mut stage = SuperResPostprocess;
+        let mut stage = SuperResPostprocess::new(FramePool::shared());
         assert!(stage.process_frame(frame, &ctx).is_err());
     }
 
@@ -2333,7 +2361,7 @@ mod tests {
     #[test]
     fn test_preprocess_buffer_reuse() {
         let ctx = ExecutionContext::default();
-        let mut stage = SuperResPreprocess { f16_nchw_buf: None };
+        let mut stage = SuperResPreprocess::new(FramePool::shared());
 
         for _ in 0..3 {
             let frame = Frame::CpuRgb {
@@ -2345,7 +2373,139 @@ mod tests {
             let result = stage.process_frame(frame, &ctx).unwrap();
             assert!(matches!(result, Frame::NchwF16 { .. }));
         }
-        assert!(stage.f16_nchw_buf.is_some());
+    }
+
+    fn test_rgb(height: usize, width: usize) -> Vec<u8> {
+        (0..height * width * 3)
+            .map(|i| (i * 7 % 256) as u8)
+            .collect()
+    }
+
+    #[test]
+    fn preprocess_writes_into_a_pooled_buffer_and_recycles_the_input() {
+        // Given: a pool holding a poisoned FP16 buffer of the output size.
+        let (height, width) = (5usize, 7usize);
+        let rgb = test_rgb(height, width);
+        let mut reference_stage = SuperResPreprocess::new(FramePool::shared());
+        let Frame::NchwF16 { data: expected, .. } = reference_stage
+            .process_frame(
+                Frame::CpuRgb {
+                    data: rgb.clone(),
+                    width: width as u32,
+                    height: height as u32,
+                    bit_depth: 8,
+                },
+                &ExecutionContext::default(),
+            )
+            .unwrap()
+        else {
+            panic!("expected NchwF16");
+        };
+        let pool = FramePool::shared();
+        let pooled_ptr = pool.seed_u16(3 * height * width, f16::NAN.to_bits());
+        let rgb = pool.copy_u8(&rgb);
+        let input_ptr = rgb.as_ptr();
+        let mut stage = SuperResPreprocess::new(Arc::clone(&pool));
+
+        // When
+        let output = stage
+            .process_frame(
+                Frame::CpuRgb {
+                    data: rgb,
+                    width: width as u32,
+                    height: height as u32,
+                    bit_depth: 8,
+                },
+                &ExecutionContext::default(),
+            )
+            .unwrap();
+
+        // Then: pooled storage is reused and fully overwritten, and the
+        // consumed RGB buffer returns to the pool.
+        let Frame::NchwF16 { data, .. } = output else {
+            panic!("expected NchwF16");
+        };
+        assert_eq!(data.as_ptr(), pooled_ptr);
+        assert_eq!(data, expected);
+        let recycled = pool.take_u8(height * width * 3);
+        assert_eq!(recycled.as_ptr(), input_ptr);
+    }
+
+    #[test]
+    fn preprocess_converts_fp32_into_a_pooled_buffer_and_recycles_the_input() {
+        let (height, width) = (5usize, 7usize);
+        let data: Vec<f32> = (0..3 * height * width).map(|i| i as f32 / 105.0).collect();
+        let expected: Vec<u16> = data.iter().map(|&v| f16::from_f32(v).to_bits()).collect();
+        let pool = FramePool::shared();
+        let pooled_ptr = pool.seed_u16(data.len(), f16::NAN.to_bits());
+        let data = pool.copy_f32(&data);
+        let input_ptr = data.as_ptr();
+        let mut stage = SuperResPreprocess::new(Arc::clone(&pool));
+
+        let output = stage
+            .process_frame(
+                Frame::NchwF32 {
+                    data,
+                    height: height as u32,
+                    width: width as u32,
+                },
+                &ExecutionContext::default(),
+            )
+            .unwrap();
+
+        let Frame::NchwF16 { data, .. } = output else {
+            panic!("expected NchwF16");
+        };
+        assert_eq!(data.as_ptr(), pooled_ptr);
+        assert_eq!(data, expected);
+        let recycled = pool.take_f32(3 * height * width);
+        assert_eq!(recycled.as_ptr(), input_ptr);
+    }
+
+    #[test]
+    fn postprocess_writes_into_a_pooled_buffer_and_recycles_the_input() {
+        let (height, width) = (5usize, 7usize);
+        let data: Vec<u16> = (0..3 * height * width)
+            .map(|i| f16::from_f32(i as f32 / 105.0).to_bits())
+            .collect();
+        let mut reference_stage = SuperResPostprocess::new(FramePool::shared());
+        let Frame::CpuRgb { data: expected, .. } = reference_stage
+            .process_frame(
+                Frame::NchwF16 {
+                    data: data.clone(),
+                    height: height as u32,
+                    width: width as u32,
+                },
+                &ExecutionContext::default(),
+            )
+            .unwrap()
+        else {
+            panic!("expected CpuRgb");
+        };
+        let pool = FramePool::shared();
+        let pooled_ptr = pool.seed_u8(height * width * 3, 0xAA);
+        let data = pool.copy_u16(&data);
+        let input_ptr = data.as_ptr();
+        let mut stage = SuperResPostprocess::new(Arc::clone(&pool));
+
+        let output = stage
+            .process_frame(
+                Frame::NchwF16 {
+                    data,
+                    height: height as u32,
+                    width: width as u32,
+                },
+                &ExecutionContext::default(),
+            )
+            .unwrap();
+
+        let Frame::CpuRgb { data, .. } = output else {
+            panic!("expected CpuRgb");
+        };
+        assert_eq!(data.as_ptr(), pooled_ptr);
+        assert_eq!(data, expected);
+        let recycled = pool.take_u16(3 * height * width);
+        assert_eq!(recycled.as_ptr(), input_ptr);
     }
 
     #[test]

@@ -60,6 +60,10 @@ impl IndexedFrame {
 pub trait FrameSink: Send + 'static {
     fn write_frame(&mut self, frame: &Frame) -> Result<()>;
     fn finish(&mut self) -> Result<()>;
+
+    /// Takes back a frame after [`write_frame`](Self::write_frame) so the sink
+    /// can recycle its buffer.
+    fn release_frame(&mut self, _frame: Frame) {}
 }
 
 pub trait FrameInterpolator: Send + 'static {
@@ -761,6 +765,7 @@ where
             .write_frame(&indexed_frame.frame)
             .with_context(|| format!("failed to encode frame {}", indexed_frame.index))?;
         total_encode_ms += t_enc.elapsed().as_secs_f64() * 1000.0;
+        encoder.release_frame(indexed_frame.frame);
 
         written = written.saturating_add(1);
 
@@ -1223,6 +1228,56 @@ mod tests {
             state.written_count() < 10_000,
             "cancel should stop processing before completion"
         );
+    }
+
+    struct ReleaseCountingSink {
+        written: Arc<AtomicUsize>,
+        released: Arc<AtomicUsize>,
+    }
+
+    impl FrameSink for ReleaseCountingSink {
+        fn write_frame(&mut self, _frame: &Frame) -> Result<()> {
+            self.written.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn finish(&mut self) -> Result<()> {
+            Ok(())
+        }
+
+        fn release_frame(&mut self, _frame: Frame) {
+            assert_eq!(
+                self.released.fetch_add(1, Ordering::SeqCst) + 1,
+                self.written.load(Ordering::SeqCst),
+                "a frame must be released after it was written"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn encoder_loop_releases_every_written_frame_to_the_sink() {
+        let written = Arc::new(AtomicUsize::new(0));
+        let released = Arc::new(AtomicUsize::new(0));
+        let sink: Box<dyn FrameSink> = Box::new(ReleaseCountingSink {
+            written: Arc::clone(&written),
+            released: Arc::clone(&released),
+        });
+        let (_cancel_tx, cancel_rx) = watch::channel(false);
+
+        StreamingExecutor::new(4)
+            .execute_pipeline_stages(
+                (0_u8..5).map(sample_frame).map(Ok),
+                Vec::new(),
+                sink,
+                PipelineFrameCounts::new(Some(5), Some(5)),
+                cancel_rx,
+                None,
+            )
+            .await
+            .expect("pipeline should complete");
+
+        assert_eq!(written.load(Ordering::SeqCst), 5);
+        assert_eq!(released.load(Ordering::SeqCst), 5);
     }
 
     #[tokio::test]

@@ -9,11 +9,13 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
 use anyhow::{bail, Context, Result};
 use tracing::{debug, info, warn};
 
+use crate::frame_pool::FramePool;
 use crate::node::{ExecutionContext, Node, PortDefinition};
 use crate::nodes::resize::ResizeAlgorithm;
 use crate::streaming_executor::FrameSink;
@@ -302,6 +304,8 @@ pub struct VideoEncoder {
     /// Pipe bit depth; RGB frames of another depth are converted before writing.
     bit_depth: u8,
     output_path: PathBuf,
+    /// Receives written frames so upstream stages can reuse their buffers.
+    pool: Arc<FramePool>,
 }
 
 impl VideoEncoder {
@@ -365,7 +369,12 @@ impl VideoEncoder {
             frame_size,
             bit_depth: config.bit_depth,
             output_path: config.output_path.clone(),
+            pool: FramePool::shared(),
         })
+    }
+
+    pub fn set_frame_pool(&mut self, pool: Arc<FramePool>) {
+        self.pool = pool;
     }
 
     /// Frame data must be exactly `width * height * bpp` bytes.
@@ -487,6 +496,10 @@ impl FrameSink for VideoEncoder {
 
     fn finish(&mut self) -> Result<()> {
         VideoEncoder::finish(self)
+    }
+
+    fn release_frame(&mut self, frame: Frame) {
+        self.pool.recycle_frame(frame);
     }
 }
 
@@ -1461,6 +1474,7 @@ mod tests {
             frame_size,
             bit_depth: 8,
             output_path: null_path(),
+            pool: FramePool::shared(),
         };
 
         let frame = Frame::CpuRgb {
@@ -1472,6 +1486,42 @@ mod tests {
 
         FrameSink::write_frame(&mut encoder, &frame).expect("FrameSink write should accept CpuRgb");
         FrameSink::finish(&mut encoder).expect("mock encoder should finish successfully");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn released_frames_return_to_the_encoder_pool() {
+        let mut child = std::process::Command::new("true")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .spawn()
+            .expect("failed to spawn mock encoder process");
+        let _ = child.wait();
+        let pool = FramePool::shared();
+        let mut encoder = VideoEncoder {
+            child,
+            stdin: None,
+            stderr_thread: None,
+            frame_size: 6,
+            bit_depth: 8,
+            output_path: null_path(),
+            pool: Arc::clone(&pool),
+        };
+        let data = pool.copy_u8(&[0, 1, 2, 3, 4, 5]);
+        let pointer = data.as_ptr();
+
+        FrameSink::release_frame(
+            &mut encoder,
+            Frame::CpuRgb {
+                data,
+                width: 1,
+                height: 2,
+                bit_depth: 8,
+            },
+        );
+
+        let reused = pool.take_u8(6);
+        assert_eq!(reused.as_ptr(), pointer);
     }
 
     fn capture_sink_bytes(bit_depth: u8, frame: &Frame) -> Vec<u8> {
@@ -1495,6 +1545,7 @@ mod tests {
             frame_size: if bit_depth > 8 { 6 } else { 3 },
             bit_depth,
             output_path: null_path(),
+            pool: FramePool::shared(),
         };
 
         FrameSink::write_frame(&mut encoder, frame).expect("FrameSink write should succeed");
