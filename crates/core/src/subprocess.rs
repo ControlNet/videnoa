@@ -1,9 +1,10 @@
 //! Helpers for the FFmpeg child processes Videnoa drives over pipes: a
-//! bounded stderr capture for error messages and a deadline for `wait`.
+//! bounded stderr capture for error messages, a deadline for `wait`, and a
+//! deadline-bounded run with concurrent stdin/stdout/stderr.
 
 use std::collections::VecDeque;
-use std::io::{BufRead, BufReader};
-use std::process::{Child, ChildStderr, ExitStatus};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::process::{Child, ChildStderr, Command, ExitStatus, Stdio};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -94,10 +95,99 @@ pub(crate) fn wait_or_kill(
     }
 }
 
+/// Result of [`output_with_timeout`].
+pub(crate) struct TimedOutput {
+    /// `None` when the deadline passed and the child was killed.
+    pub(crate) status: Option<ExitStatus>,
+    pub(crate) stdout: Vec<u8>,
+    /// The last [`STDERR_TAIL_BYTES`] of stderr lines.
+    pub(crate) stderr: String,
+    /// Set when stdin could not be written completely (usually because the
+    /// child exited early; its stderr then says why).
+    pub(crate) stdin_error: Option<std::io::Error>,
+    timeout: Duration,
+}
+
+impl TimedOutput {
+    /// Fails unless the child exited successfully and took all of stdin.
+    /// `what` names the process in the error.
+    pub(crate) fn check(&self, what: &str) -> anyhow::Result<()> {
+        let stderr = describe_stderr(&self.stderr);
+        match self.status {
+            None => anyhow::bail!(
+                "{what} timed out after {}s and was killed; {stderr}",
+                self.timeout.as_secs_f64()
+            ),
+            Some(status) if !status.success() => {
+                anyhow::bail!("{what} exited with {status}; {stderr}")
+            }
+            Some(_) => match &self.stdin_error {
+                Some(error) => anyhow::bail!("failed to write {what} input: {error}; {stderr}"),
+                None => Ok(()),
+            },
+        }
+    }
+}
+
+/// Runs `command` to completion within `timeout`, killing it on expiry.
+///
+/// `stdin` (if any) is written from its own thread while stdout and stderr
+/// are drained concurrently, so a child that writes a lot before reading its
+/// input cannot deadlock the pipes. stdout is kept in full and stderr as a
+/// bounded tail.
+pub(crate) fn output_with_timeout(
+    command: &mut Command,
+    stdin: Option<Vec<u8>>,
+    timeout: Duration,
+) -> std::io::Result<TimedOutput> {
+    let mut child = command
+        .stdin(if stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    let writer = match (stdin, child.stdin.take()) {
+        (Some(data), Some(mut pipe)) => Some(thread::spawn(move || {
+            // Dropping the pipe afterwards signals EOF.
+            pipe.write_all(&data)
+        })),
+        _ => None,
+    };
+    let mut stdout_pipe = child.stdout.take().expect("stdout is piped");
+    let reader = thread::spawn(move || {
+        let mut stdout = Vec::new();
+        stdout_pipe.read_to_end(&mut stdout).map(|_| stdout)
+    });
+    let mut stderr = StderrTail::spawn(child.stderr.take().expect("stderr is piped"), |line| {
+        tracing::debug!(target: "ffmpeg_subprocess_stderr", "{line}");
+    });
+
+    let status = wait_or_kill(&mut child, timeout)?;
+    // The child has exited (or was killed), so every pipe is closed or
+    // broken and the helper threads finish.
+    let stdin_error = writer
+        .and_then(|writer| writer.join().ok())
+        .and_then(Result::err);
+    let stdout = reader
+        .join()
+        .unwrap_or_else(|_| Ok(Vec::new()))
+        .unwrap_or_default();
+    Ok(TimedOutput {
+        status,
+        stdout,
+        stderr: stderr.join(),
+        stdin_error,
+        timeout,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::{Command, Stdio};
     use std::sync::{Arc, Mutex};
 
     #[cfg(unix)]
@@ -154,5 +244,84 @@ mod tests {
         assert!(start.elapsed() < Duration::from_secs(5));
         // The child was reaped: a second wait reports the kill, not a hang.
         assert!(!child.wait().unwrap().success());
+    }
+
+    #[cfg(unix)]
+    fn sh(script: &str) -> Command {
+        let mut command = Command::new("sh");
+        command.args(["-c", script]);
+        command
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn output_with_timeout_feeds_stdin_and_collects_stdout_and_stderr() {
+        let output = output_with_timeout(
+            &mut sh("printf 'note\\n' >&2; tr a-z A-Z"),
+            Some(b"pixels".to_vec()),
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        assert!(output.status.unwrap().success());
+        assert_eq!(output.stdout, b"PIXELS");
+        assert_eq!(output.stderr, "note");
+        assert!(output.stdin_error.is_none());
+        output.check("tr").unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn output_with_timeout_reads_stderr_while_writing_stdin() {
+        // The child fills its stderr pipe (64 KiB on Linux) before it reads
+        // stdin; writing all of stdin before draining stderr would deadlock.
+        let script = "i=0; while [ $i -lt 4000 ]; do \
+                      printf 'warning line %06d padding padding\\n' $i >&2; i=$((i+1)); done; \
+                      exec cat > /dev/null";
+        let output = output_with_timeout(
+            &mut sh(script),
+            Some(vec![7_u8; 4 * 1024 * 1024]),
+            Duration::from_secs(30),
+        )
+        .unwrap();
+        assert!(output.status.unwrap().success());
+        assert!(output.stdin_error.is_none());
+        assert!(output
+            .stderr
+            .ends_with("warning line 003999 padding padding"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn output_with_timeout_kills_a_hung_child() {
+        let start = Instant::now();
+        let output = output_with_timeout(
+            &mut sh("printf 'waiting for GPU\\n' >&2; exec sleep 30"),
+            Some(vec![0_u8; 16]),
+            Duration::from_millis(200),
+        )
+        .unwrap();
+        assert!(start.elapsed() < Duration::from_secs(10));
+        assert!(output.status.is_none());
+        let message = output.check("preview decoder").unwrap_err().to_string();
+        assert!(message.contains("preview decoder"), "{message}");
+        assert!(message.contains("timed out after 0.2s"), "{message}");
+        assert!(message.contains("waiting for GPU"), "{message}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn output_with_timeout_reports_failures_with_stderr() {
+        let output = output_with_timeout(
+            &mut sh("printf 'Invalid data found\\n' >&2; exit 4"),
+            None,
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        let message = output.check("ffprobe").unwrap_err().to_string();
+        assert!(
+            message.contains("ffprobe exited with exit status: 4"),
+            "{message}"
+        );
+        assert!(message.contains("Invalid data found"), "{message}");
     }
 }

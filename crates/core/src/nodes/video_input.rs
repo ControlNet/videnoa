@@ -4,12 +4,14 @@ use std::path::Path;
 use std::process::{Child, Stdio};
 use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use tracing::{debug, warn};
 
 use crate::frame_pool::FramePool;
 use crate::node::{ExecutionContext, Node, PortDefinition};
+use crate::subprocess::output_with_timeout;
 use crate::types::{Chapter, Frame, MediaMetadata, PortData, PortType, StreamInfo};
 // ffprobe JSON model (serde)
 // ---------------------------------------------------------------------------
@@ -133,17 +135,30 @@ fn is_hdr(color_transfer: Option<&str>) -> bool {
     }
 }
 
+/// ffprobe options for the metadata [`extract_metadata`] reads.
+const FFPROBE_ARGS: [&str; 7] = [
+    "-v",
+    "quiet",
+    "-print_format",
+    "json",
+    "-show_format",
+    "-show_streams",
+    "-show_chapters",
+];
+
+/// [`run_ffprobe`], killed when it does not finish within `timeout`.
+pub(crate) fn run_ffprobe_within(path: &Path, timeout: Duration) -> Result<FfprobeOutput> {
+    let mut command = crate::runtime::command_for("ffprobe");
+    command.args(FFPROBE_ARGS).arg(path);
+    let output = output_with_timeout(&mut command, None, timeout)
+        .context("failed to execute ffprobe — is FFmpeg installed?")?;
+    output.check("ffprobe")?;
+    serde_json::from_slice(&output.stdout).context("failed to parse ffprobe JSON output")
+}
+
 pub fn run_ffprobe(path: &Path) -> Result<FfprobeOutput> {
     let output = crate::runtime::command_for("ffprobe")
-        .args([
-            "-v",
-            "quiet",
-            "-print_format",
-            "json",
-            "-show_format",
-            "-show_streams",
-            "-show_chapters",
-        ])
+        .args(FFPROBE_ARGS)
         .arg(path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -495,6 +510,57 @@ fn build_decoder_args(
     args
 }
 
+/// Decodes only the first frame of `path`, exactly as [`VideoDecoder`] would
+/// (same matrix, RGB format and software decode), killing FFmpeg when it does
+/// not finish within `timeout`.
+pub(crate) fn decode_first_frame(
+    path: &Path,
+    info: &VideoStreamInfo,
+    timeout: Duration,
+) -> Result<Frame> {
+    decode_first_frame_with(crate::runtime::command_for("ffmpeg"), path, info, timeout)
+}
+
+fn decode_first_frame_with(
+    mut command: std::process::Command,
+    path: &Path,
+    info: &VideoStreamInfo,
+    timeout: Duration,
+) -> Result<Frame> {
+    let (pix_fmt, bytes_per_pixel) = if info.bit_depth > 8 {
+        ("rgb48le", 6usize)
+    } else {
+        ("rgb24", 3usize)
+    };
+    let frame_size = info.width as usize * info.height as usize * bytes_per_pixel;
+    let color_matrix = source_color_matrix(info.color_space.as_deref());
+    let mut args = build_decoder_args(path, pix_fmt, info.stream_index, None, color_matrix);
+    // Stop after one frame; the output target stays last.
+    let output_index = args.len() - 1;
+    args.splice(
+        output_index..output_index,
+        ["-frames:v".to_string(), "1".to_string()],
+    );
+
+    let output = output_with_timeout(command.args(&args), None, timeout)
+        .context("failed to launch ffmpeg — is it installed?")?;
+    output.check("ffmpeg frame decoder")?;
+    let mut data = output.stdout;
+    match data.len() {
+        0 => bail!("ffmpeg decoded no frame from {}", path.display()),
+        len if len < frame_size => {
+            bail!("partial frame from ffmpeg ({len}/{frame_size} bytes)")
+        }
+        _ => data.truncate(frame_size),
+    }
+    Ok(Frame::CpuRgb {
+        data,
+        width: info.width,
+        height: info.height,
+        bit_depth: info.bit_depth.max(8),
+    })
+}
+
 impl VideoDecoder {
     pub fn new(path: &Path, info: &VideoStreamInfo, hwaccel: Option<&str>) -> Result<Self> {
         let (pix_fmt, bytes_per_pixel) = if info.bit_depth > 8 {
@@ -738,6 +804,121 @@ pub(crate) mod tests {
         assert!(decoder.next().unwrap().is_ok());
         assert!(decoder.next().is_none());
         assert!(decoder.next().is_none());
+    }
+
+    fn one_pixel_info() -> VideoStreamInfo {
+        VideoStreamInfo {
+            stream_index: 0,
+            width: 1,
+            height: 1,
+            fps: 1.0,
+            codec_name: "png".to_string(),
+            pix_fmt: "rgb24".to_string(),
+            bit_depth: 8,
+            color_space: None,
+            color_primaries: None,
+        }
+    }
+
+    #[cfg(unix)]
+    fn sh_command(script: &str) -> std::process::Command {
+        // Decoder arguments follow as ignored positional parameters.
+        let mut command = std::process::Command::new("sh");
+        command.args(["-c", script, "ffmpeg"]);
+        command
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn first_frame_decode_returns_one_rgb_frame() {
+        let frame = decode_first_frame_with(
+            sh_command("printf abc"),
+            Path::new("frame.png"),
+            &one_pixel_info(),
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        let Frame::CpuRgb {
+            data,
+            width,
+            height,
+            bit_depth,
+        } = frame
+        else {
+            panic!("expected an RGB frame");
+        };
+        assert_eq!(
+            (data.as_slice(), width, height, bit_depth),
+            (&b"abc"[..], 1, 1, 8)
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn first_frame_decode_uses_the_job_decoder_arguments_for_one_frame() {
+        let dir = tempfile::tempdir().unwrap();
+        let args_file = dir.path().join("args");
+        let script = format!(
+            "printf '%s\\n' \"$@\" > '{}'; printf abc",
+            args_file.display()
+        );
+        decode_first_frame_with(
+            sh_command(&script),
+            Path::new("frame.png"),
+            &one_pixel_info(),
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        let args: Vec<String> = std::fs::read_to_string(&args_file)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        let mut expected = build_decoder_args(Path::new("frame.png"), "rgb24", 0, None, "bt709");
+        expected.insert(expected.len() - 1, "-frames:v".to_string());
+        expected.insert(expected.len() - 1, "1".to_string());
+        assert_eq!(args, expected);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn first_frame_decode_rejects_missing_or_partial_frames() {
+        for (script, expected) in [
+            ("exit 0", "no frame"),
+            ("printf ab", "partial frame"),
+            (
+                "printf 'Invalid data found\\n' >&2; exit 1",
+                "Invalid data found",
+            ),
+        ] {
+            let message = decode_first_frame_with(
+                sh_command(script),
+                Path::new("frame.png"),
+                &one_pixel_info(),
+                Duration::from_secs(10),
+            )
+            .err()
+            .expect("the decode should fail")
+            .to_string();
+            assert!(message.contains(expected), "{script}: {message}");
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn first_frame_decode_kills_a_hung_ffmpeg() {
+        let start = std::time::Instant::now();
+        let message = decode_first_frame_with(
+            sh_command("exec sleep 30"),
+            Path::new("frame.png"),
+            &one_pixel_info(),
+            Duration::from_millis(200),
+        )
+        .err()
+        .expect("a hung decoder should fail")
+        .to_string();
+        assert!(start.elapsed() < Duration::from_secs(10));
+        assert!(message.contains("timed out"), "{message}");
     }
 
     const SAMPLE_FFPROBE_JSON: &str = r#"{
@@ -1567,6 +1748,27 @@ pub(crate) mod tests {
             "ffmpeg failed to write {}",
             path.display()
         );
+    }
+
+    #[test]
+    #[ignore = "requires ffmpeg with libx264"]
+    fn first_frame_decode_matches_the_streaming_decoder() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("clip.mkv");
+        write_quadrant_clip(&path, 1280, 720, "bt709", false, Some("bt709"));
+        let info = extract_metadata(
+            &run_ffprobe_within(&path, Duration::from_secs(30)).unwrap(),
+            &path,
+        )
+        .unwrap()
+        .0;
+        let streamed = VideoDecoder::new(&path, &info, None)
+            .unwrap()
+            .next()
+            .expect("one frame")
+            .unwrap();
+        let first = decode_first_frame(&path, &info, Duration::from_secs(30)).unwrap();
+        assert_eq!(rgb8_samples(first), rgb8_samples(streamed));
     }
 
     #[test]

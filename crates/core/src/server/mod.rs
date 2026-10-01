@@ -2323,19 +2323,12 @@ async fn extract_frames(
     let output_pattern = session.path().join("frame_%04d.png");
     let mut command = crate::runtime::command_for("ffmpeg");
     command
-        .args([
-            "-nostdin",
-            "-v",
-            "error",
-            "-i",
+        .args(preview_extraction_args(
             &payload.video_path,
-            "-vf",
-            &preview_extraction_filter(interval, color_matrix),
-            "-frames:v",
-            &payload.count.to_string(),
-            "-vsync",
-            PREVIEW_VSYNC_MODE,
-        ])
+            interval,
+            color_matrix,
+            payload.count,
+        ))
         .arg(output_pattern);
     preview_cache::run_command(
         command,
@@ -2453,6 +2446,33 @@ fn parse_preview_probe(probe: &[u8]) -> (u64, &'static str) {
     let color_matrix =
         crate::nodes::video_input::source_color_matrix(stream.color_space.as_deref());
     (total_frames, color_matrix)
+}
+
+/// FFmpeg arguments (before the output pattern) that write `count` preview
+/// frames sampled from the first video stream, the one the probe described.
+fn preview_extraction_args(
+    video_path: &str,
+    interval: u64,
+    color_matrix: &str,
+    count: u32,
+) -> Vec<String> {
+    [
+        "-nostdin",
+        "-v",
+        "error",
+        "-i",
+        video_path,
+        "-map",
+        "0:v:0",
+        "-vf",
+        &preview_extraction_filter(interval, color_matrix),
+        "-frames:v",
+        &count.to_string(),
+        "-vsync",
+        PREVIEW_VSYNC_MODE,
+    ]
+    .map(str::to_owned)
+    .to_vec()
 }
 
 /// Samples every `interval`-th frame and converts it to RGB with the source matrix,
@@ -3007,6 +3027,73 @@ mod tests {
             .any(|pair| pair == ["-select_streams", "v:0"]));
         assert_eq!(args.last(), Some(&"/media/input.mkv"));
         assert!(PREVIEW_PROBE_TIMEOUT < preview_cache::EXTRACTION_TIMEOUT);
+    }
+
+    #[test]
+    fn preview_extraction_samples_the_probed_video_stream() {
+        let args = preview_extraction_args("/media/input.mkv", 25, "bt709", 4);
+        let input = args.iter().position(|arg| arg == "-i").unwrap();
+        assert_eq!(args[input + 1], "/media/input.mkv");
+        // The probe uses `-select_streams v:0`; without `-map` FFmpeg would
+        // pick the "best" (largest) video stream instead.
+        let map = args.iter().position(|arg| arg == "-map").unwrap();
+        assert!(map > input, "-map must be an output option: {args:?}");
+        assert_eq!(args[map + 1], "0:v:0");
+        assert!(args
+            .windows(2)
+            .any(|pair| pair[0] == "-vf" && pair[1] == preview_extraction_filter(25, "bt709")));
+        assert!(args.windows(2).any(|pair| pair == ["-frames:v", "4"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair[0] == "-vsync" && pair[1] == PREVIEW_VSYNC_MODE));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires ffmpeg with libx264"]
+    async fn preview_extraction_reads_frames_from_the_first_video_stream() {
+        // Given: a clip whose first video stream is smaller than its second,
+        // and the second is the default one, so FFmpeg's automatic stream
+        // choice (by disposition and resolution) differs from the probed v:0.
+        let state = test_state();
+        let video_path = state.inner.data_dir.join("two-video-streams.mkv");
+        let status = crate::runtime::command_for("ffmpeg")
+            .args(["-v", "error", "-y"])
+            .args(["-f", "lavfi", "-i", "testsrc2=size=160x90:rate=24"])
+            .args(["-f", "lavfi", "-i", "testsrc2=size=320x180:rate=24"])
+            .args(["-map", "0:v", "-map", "1:v", "-t", "2", "-c:v", "libx264"])
+            .args(["-disposition:v:0", "0", "-disposition:v:1", "default"])
+            .arg(&video_path)
+            .status()
+            .unwrap();
+        assert!(status.success(), "failed to write the fixture");
+
+        // When: preview frames are extracted.
+        let Json(response) = extract_frames(
+            State(state.clone()),
+            Json(ExtractFramesRequest {
+                video_path: video_path.to_string_lossy().into_owned(),
+                count: 3,
+            }),
+        )
+        .await
+        .map(|(_, json)| json)
+        .map_err(|error| error.into_response().status())
+        .unwrap();
+
+        // Then: every frame comes from the probed first video stream.
+        assert_eq!(response.frames.len(), 3);
+        let session = state
+            .preview_cache()
+            .unwrap()
+            .get(&response.preview_id)
+            .unwrap();
+        for frame in &response.frames {
+            let filename = frame.url.rsplit('/').next().unwrap();
+            let png = session.read(filename).unwrap();
+            let width = u32::from_be_bytes(png[16..20].try_into().unwrap());
+            let height = u32::from_be_bytes(png[20..24].try_into().unwrap());
+            assert_eq!((width, height), (160, 90), "{filename}");
+        }
     }
 
     #[test]
