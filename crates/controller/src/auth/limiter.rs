@@ -140,8 +140,15 @@ mod tests {
         let limiter = LoginLimiter::default();
         // Peer 0 is the only entry whose latest failure is the oldest.
         for index in 0..MAX_TRACKED_PEERS {
-            let seconds = if index == 0 { 0 } else { 1 + i64::try_from(index % 100).expect("small") };
-            limiter.record_failure(peer(u32::try_from(index).expect("small index")), at(seconds));
+            let seconds = if index == 0 {
+                0
+            } else {
+                1 + i64::try_from(index % 100).expect("small")
+            };
+            limiter.record_failure(
+                peer(u32::try_from(index).expect("small index")),
+                at(seconds),
+            );
         }
         assert_eq!(limiter.tracked_peers(), MAX_TRACKED_PEERS);
 
