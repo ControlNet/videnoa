@@ -9,10 +9,11 @@ use axum::http::{header, Request, StatusCode};
 use chrono::{Duration as ChronoDuration, Utc};
 use tempfile::TempDir;
 use tower::ServiceExt;
-use videnoa_controller::auth::{AuthService, CSRF_HEADER, SESSION_COOKIE};
+use videnoa_controller::auth::{AuthError, AuthService, CSRF_HEADER, SESSION_COOKIE};
 use videnoa_controller::config::ControllerConfig;
 use videnoa_controller::domain::SecretString;
-use videnoa_controller::persistence::{Database, DatabaseOptions, Store};
+use videnoa_controller::domain::SessionId;
+use videnoa_controller::persistence::{AuthDigest, Database, DatabaseOptions, NewSession, Store};
 use videnoa_controller::{authenticated_app_router, FrontendAssets};
 
 type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -22,6 +23,7 @@ struct Fixture {
     _directory: TempDir,
     assets: FrontendAssets,
     auth: AuthService,
+    store: Store,
 }
 
 impl Fixture {
@@ -35,13 +37,15 @@ impl Fixture {
         config.secure_cookie = false;
         config.session_absolute = Duration::from_hours(24);
         config.session_idle = Duration::from_secs(3_600);
-        let auth = AuthService::new(config, Store::new(database))?;
+        let store = Store::new(database);
+        let auth = AuthService::new(config, store.clone())?;
         auth.setup(SecretString::new(PASSWORD), Utc::now()).await?;
         let assets = test_frontend_assets(directory.path())?;
         Ok(Self {
             _directory: directory,
             assets,
             auth,
+            store,
         })
     }
 
@@ -329,15 +333,25 @@ async fn login_and_bearer_share_the_direct_peer_failure_budget() -> TestResult {
         StatusCode::UNAUTHORIZED
     );
 
+    // The budget applies before verification: a correct credential stays limited.
     let mut valid = request_from("GET", "/api/readiness", Body::empty(), limited_peer)?;
     valid
         .headers_mut()
         .insert(header::AUTHORIZATION, format!("Bearer {PASSWORD}").parse()?);
     assert_eq!(
         fixture.router().oneshot(valid).await?.status(),
-        StatusCode::OK
+        StatusCode::TOO_MANY_REQUESTS
     );
 
+    // Once the window has passed, a successful verification clears the peer's failures.
+    fixture
+        .auth
+        .authenticate_bearer(
+            limited_peer.ip(),
+            PASSWORD,
+            Utc::now() + ChronoDuration::minutes(5),
+        )
+        .await?;
     let mut after_clear = request_from("GET", "/api/readiness", Body::empty(), limited_peer)?;
     after_clear
         .headers_mut()
@@ -473,5 +487,146 @@ async fn default_sessions_expire_after_seven_days_without_api_activity() -> Test
         .authenticate_session_at(token, initial.idle_expires_at)
         .await
         .is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn limited_peer_is_rejected_before_verification_until_the_window_passes() -> TestResult {
+    // Given: a peer that has spent its five-failure budget at the service boundary.
+    let fixture = Fixture::new().await?;
+    let peer = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let started = Utc::now();
+    for _ in 0..5 {
+        let error = fixture
+            .auth
+            .login(peer, &SecretString::new("wrong-secret"), started)
+            .await
+            .err()
+            .ok_or_else(|| std::io::Error::other("wrong password was accepted"))?;
+        assert!(matches!(error, AuthError::Unauthorized));
+    }
+    let verifications = fixture.auth.password_verification_count();
+    assert_eq!(verifications, 5);
+
+    // When: the same peer submits the correct password while limited.
+    let body = serde_json::to_vec(&serde_json::json!({"password": PASSWORD}))?;
+    let response = fixture
+        .router()
+        .oneshot(request("POST", "/api/auth/login", Body::from(body))?)
+        .await?;
+
+    // Then: it is throttled without running Argon2, and succeeds once the window passes.
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(fixture.auth.password_verification_count(), verifications);
+    let later = started + ChronoDuration::minutes(5);
+    fixture
+        .auth
+        .login(peer, &SecretString::new(PASSWORD), later)
+        .await
+        .map_err(|error| std::io::Error::other(format!("login after window: {error}")))?;
+    assert_eq!(
+        fixture.auth.password_verification_count(),
+        verifications + 1
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn limited_bearer_peer_does_not_consume_a_verification_permit() -> TestResult {
+    // Given: a peer whose Bearer failures exhausted the shared budget.
+    let fixture = Fixture::new().await?;
+    let peer = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let started = Utc::now();
+    for _ in 0..5 {
+        let error = fixture
+            .auth
+            .authenticate_bearer(peer, "wrong-secret", started)
+            .await
+            .err()
+            .ok_or_else(|| std::io::Error::other("wrong bearer was accepted"))?;
+        assert!(matches!(error, AuthError::Unauthorized));
+    }
+    let verifications = fixture.auth.password_verification_count();
+
+    // When: that peer presents the correct Bearer credential over HTTP.
+    let mut bearer = request("GET", "/api/readiness", Body::empty())?;
+    bearer
+        .headers_mut()
+        .insert(header::AUTHORIZATION, format!("Bearer {PASSWORD}").parse()?);
+    let response = fixture.router().oneshot(bearer).await?;
+
+    // Then: the typed limit is returned before any Argon2 work is scheduled.
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(fixture.auth.password_verification_count(), verifications);
+    fixture
+        .auth
+        .authenticate_bearer(peer, PASSWORD, started + ChronoDuration::minutes(5))
+        .await
+        .map_err(|error| std::io::Error::other(format!("bearer after window: {error}")))?;
+    assert_eq!(
+        fixture.auth.password_verification_count(),
+        verifications + 1
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn session_maintenance_purges_expired_rows_at_startup_and_stops_on_shutdown() -> TestResult {
+    // Given: one expired and one live durable session alongside the setup session.
+    let fixture = Fixture::new().await?;
+    let now = Utc::now();
+    let expired = NewSession {
+        id: SessionId::random(),
+        token_digest: AuthDigest::new([7; 32]),
+        csrf_digest: AuthDigest::new([7; 32]),
+        password_hash_fingerprint: AuthDigest::new([7; 32]),
+        absolute_expires_at: now - ChronoDuration::seconds(1),
+        idle_expires_at: now - ChronoDuration::seconds(1),
+        created_at: now - ChronoDuration::hours(1),
+    };
+    let live = NewSession {
+        id: SessionId::random(),
+        token_digest: AuthDigest::new([8; 32]),
+        absolute_expires_at: now + ChronoDuration::hours(1),
+        idle_expires_at: now + ChronoDuration::hours(1),
+        ..expired
+    };
+    fixture.store.insert_session(&expired).await?;
+    fixture.store.insert_session(&live).await?;
+
+    // When: the maintenance loop starts with a long cadence.
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let maintenance = tokio::spawn(
+        fixture
+            .auth
+            .clone()
+            .run_session_maintenance(Duration::from_secs(3_600), shutdown.clone()),
+    );
+    let gone = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match fixture
+                .store
+                .session_by_token_digest(expired.token_digest)
+                .await
+            {
+                Ok(None) => return Ok::<(), Box<dyn Error + Send + Sync>>(()),
+                Ok(Some(_)) => tokio::time::sleep(Duration::from_millis(10)).await,
+                Err(error) => return Err(error.into()),
+            }
+        }
+    })
+    .await;
+
+    // Then: the startup pass removed only the expired row and the loop exits on shutdown.
+    gone.map_err(|_| std::io::Error::other("expired session was not purged"))??;
+    assert!(fixture
+        .store
+        .session_by_token_digest(live.token_digest)
+        .await?
+        .is_some());
+    shutdown.cancel();
+    tokio::time::timeout(Duration::from_secs(5), maintenance)
+        .await
+        .map_err(|_| std::io::Error::other("maintenance loop ignored shutdown"))??;
     Ok(())
 }

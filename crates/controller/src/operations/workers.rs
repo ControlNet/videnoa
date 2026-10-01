@@ -6,8 +6,8 @@ use chrono::Utc;
 use serde::Deserialize;
 
 use crate::domain::{
-    TaskActionRequest, WorkerCreateRequest, WorkerDeleteResponse, WorkerId, WorkerListResponse,
-    WorkerSummary, WorkerUpdateRequest,
+    TaskActionRequest, WorkerCapacity, WorkerCreateRequest, WorkerDeleteResponse, WorkerId,
+    WorkerListResponse, WorkerSummary, WorkerUpdateRequest,
 };
 use crate::persistence::WorkerRecord;
 
@@ -29,10 +29,21 @@ pub(super) async fn list(
         .await
         .map_err(|_| OperationsError::Internal)?;
     let total = u64::try_from(records.len()).map_err(|_| OperationsError::Internal)?;
-    let mut items = Vec::with_capacity(records.len());
-    for record in records {
-        items.push(summary(&state, record).await?);
-    }
+    let mut capacities = state
+        .workers
+        .capacities()
+        .await
+        .map_err(|error| OperationsError::from_worker(&error))?;
+    let items = records
+        .into_iter()
+        .map(|record| {
+            // A worker deleted between the two reads has no capacity row; it owns no tasks.
+            let capacity = capacities
+                .remove(&record.id)
+                .unwrap_or_else(|| idle_capacity(&record));
+            summary_with(record, capacity)
+        })
+        .collect();
     Ok(Json(WorkerListResponse { items, total }))
 }
 
@@ -131,7 +142,24 @@ pub(super) async fn summary(
         .capacity(record.id)
         .await
         .map_err(|error| OperationsError::from_worker(&error))?;
-    Ok(WorkerSummary {
+    Ok(summary_with(record, capacity))
+}
+
+fn idle_capacity(record: &WorkerRecord) -> WorkerCapacity {
+    WorkerCapacity {
+        used_slots: 0,
+        available_slots: record.compute_slots.get(),
+        assigned_tasks: 0,
+        staged_tasks: 0,
+        processing_tasks: 0,
+        active_uploads: 0,
+        active_downloads: 0,
+        progress: None,
+    }
+}
+
+fn summary_with(record: WorkerRecord, capacity: WorkerCapacity) -> WorkerSummary {
+    WorkerSummary {
         has_password: record.password.is_some(),
         id: record.id,
         version: record.version,
@@ -147,5 +175,5 @@ pub(super) async fn summary(
         created_at: record.created_at,
         updated_at: record.updated_at,
         last_error: record.last_error,
-    })
+    }
 }

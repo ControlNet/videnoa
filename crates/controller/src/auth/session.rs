@@ -139,6 +139,9 @@ impl AuthService {
         password: &str,
         now: DateTime<Utc>,
     ) -> Result<(), AuthError> {
+        if self.inner.limiter.is_limited(address, now) {
+            return Err(AuthError::RateLimited);
+        }
         let Some(loaded) = self.inner.password.load(&self.inner.store).await? else {
             return Err(AuthError::Unauthorized);
         };

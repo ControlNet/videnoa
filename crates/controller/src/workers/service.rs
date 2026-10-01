@@ -196,6 +196,16 @@ impl WorkerRegistry {
         self.store.worker_capacity(id).await.map_err(Into::into)
     }
 
+    /// Computes current capacity for every worker with one durable query.
+    ///
+    /// # Errors
+    /// Returns an error when capacity cannot be loaded.
+    pub async fn capacities(
+        &self,
+    ) -> Result<std::collections::HashMap<WorkerId, WorkerCapacity>, WorkerRegistryError> {
+        self.store.worker_capacities().await.map_err(Into::into)
+    }
+
     async fn load(&self, id: WorkerId) -> Result<WorkerRecord, WorkerRegistryError> {
         self.worker(id).await?.ok_or(WorkerRegistryError::NotFound)
     }

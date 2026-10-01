@@ -393,3 +393,71 @@ async fn server_change_without_listener_capability_is_rejected_before_commit() -
     assert_eq!(unchanged.server, current_server);
     Ok(())
 }
+
+#[tokio::test]
+async fn host_only_change_on_held_port_is_rejected_with_restart_guidance() -> TestResult {
+    // Given: settings whose live listener holds 127.0.0.1:P and a live listener capability.
+    let live = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+    let port = live.local_addr()?.port();
+    let workspace = TempDir::new()?;
+    let bootstrap = ConfigBootstrap::open(workspace.path())?;
+    let database = Database::open(DatabaseOptions::new(
+        workspace.path().join("data/controller.sqlite3"),
+    ))
+    .await?;
+    let store = Store::new(database);
+    let config = bootstrap.initialize_with_server_override(
+        &store,
+        &crate::config::ServerOverride {
+            host: Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            port: std::num::NonZeroU16::new(port),
+        },
+    )?;
+    let paths = PathCapabilities::open(&config.paths)?;
+    let scheduler = Scheduler::load(store.clone())?;
+    let auth = AuthService::new(config.auth.clone(), store.clone())?;
+    let (listener, _receiver) = listener_channel();
+    let state = OperationsState::new(OperationsDependencies {
+        auth,
+        store: store.clone(),
+        scheduler,
+        paths,
+        config,
+        events: EventHub::new(),
+        payload_limits: PayloadLimits::new(1024 * 1024, 64 * 1024)?,
+    })
+    .with_configuration_listener(listener);
+    let current = store.config_manager().settings()?;
+    assert_eq!(current.server.port, port);
+    let current_server = current.server.clone();
+    let mut request = SettingsUpdateRequest {
+        version: current.version,
+        paths: SettingsPaths {
+            data_root: workspace.path().join("data"),
+            cache_root: workspace.path().join("data"),
+        },
+        server: current.server,
+        auth: current.auth,
+        scheduler: current.scheduler,
+        timeouts: current.timeouts,
+        retry: current.retry,
+    };
+
+    // When: only the host changes to the wildcard address on the same port.
+    request.server.host = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
+    let result = apply(&state, request).await;
+
+    // Then: the operator is told to change the port or restart, and nothing is committed.
+    match result {
+        Err(OperationsError::InvalidField("server", message)) => {
+            assert!(message.contains("restart"), "{message}");
+            assert!(message.contains("port"), "{message}");
+        }
+        other => panic!("unexpected result: {:?}", other.map(|_| ())),
+    }
+    let unchanged = store.config_manager().settings()?;
+    assert_eq!(unchanged.version, current.version);
+    assert_eq!(unchanged.server, current_server);
+    drop(live);
+    Ok(())
+}

@@ -276,6 +276,50 @@ async fn session_and_idempotency_repositories_store_only_digests_and_fingerprint
 }
 
 #[tokio::test]
+async fn purge_expired_sessions_removes_revoked_and_expired_rows_but_keeps_live_ones() -> TestResult
+{
+    // Given: one live session plus absolutely expired, idle-expired, and revoked sessions.
+    let (_directory, store) = store(2).await?;
+    let now = timestamp(1_788_307_200)?;
+    let session = |seed: u8, absolute: i64, idle: i64| -> TestResult<NewSession> {
+        Ok(NewSession {
+            id: SessionId::random(),
+            token_digest: AuthDigest::new([seed; 32]),
+            csrf_digest: AuthDigest::new([seed; 32]),
+            password_hash_fingerprint: AuthDigest::new([9; 32]),
+            absolute_expires_at: timestamp(absolute)?,
+            idle_expires_at: timestamp(idle)?,
+            created_at: timestamp(1_788_300_000)?,
+        })
+    };
+    let live = session(1, 1_788_393_600, 1_788_310_800)?;
+    let absolute_expired = session(2, 1_788_307_200, 1_788_307_100)?;
+    let idle_expired = session(3, 1_788_393_600, 1_788_307_199)?;
+    let revoked = session(4, 1_788_393_600, 1_788_310_800)?;
+    for row in [&live, &absolute_expired, &idle_expired, &revoked] {
+        store.insert_session(row).await?;
+    }
+    assert!(store.revoke_session(revoked.id, now).await?);
+
+    // When: the purge runs at the current instant.
+    let purged = store.purge_expired_sessions(now).await?;
+
+    // Then: exactly the three unusable rows are deleted and the live session survives.
+    assert_eq!(purged, 3);
+    assert!(store
+        .session_by_token_digest(live.token_digest)
+        .await?
+        .is_some());
+    for gone in [&absolute_expired, &idle_expired, &revoked] {
+        assert!(store
+            .session_by_token_digest(gone.token_digest)
+            .await?
+            .is_none());
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn constraints_reject_invalid_relations_and_unknown_persisted_enums_are_typed_errors(
 ) -> TestResult {
     // Given: one valid task in a single-connection database.
