@@ -1,8 +1,10 @@
+use std::collections::HashMap;
+
 use sqlx::Row;
 
 use crate::domain::{WorkerApiUrl, WorkerCapacity, WorkerId, WorkerName};
 
-use super::codec::{rust_u32, rust_u64, sqlite_u64};
+use super::codec::{parse_brand, rust_u32, rust_u64, sqlite_u64};
 use super::models::{WorkerDeleteOutcome, WorkerIdentityConflict};
 use super::{PersistenceError, Store};
 
@@ -94,38 +96,57 @@ impl Store {
     /// # Errors
     /// Returns an error when `SQLite` access or count conversion fails.
     pub async fn worker_capacity(&self, id: WorkerId) -> Result<WorkerCapacity, PersistenceError> {
-        let row = sqlx::query(
-            "SELECT w.compute_slots,
-                SUM(CASE WHEN t.status IN ('submitting', 'processing') THEN 1 ELSE 0 END) AS used,
-                SUM(CASE WHEN t.status NOT IN ('completed', 'failed', 'cancelled') THEN 1 ELSE 0 END) AS assigned,
-                SUM(CASE WHEN t.status = 'staged' THEN 1 ELSE 0 END) AS staged,
-                SUM(CASE WHEN t.status = 'processing' THEN 1 ELSE 0 END) AS processing,
-                SUM(CASE WHEN t.status = 'uploading' THEN 1 ELSE 0 END) AS uploads,
-                SUM(CASE WHEN t.status = 'downloading' THEN 1 ELSE 0 END) AS downloads
-             FROM workers w LEFT JOIN tasks t ON t.worker_id = w.id
-             WHERE w.id = ? GROUP BY w.id",
-        )
-        .bind(id.to_string())
-        .fetch_one(self.database.pool())
-        .await?;
-        let total = rust_u64("compute_slots", row.try_get("compute_slots")?)?;
-        let used = rust_u64("used_slots", row.try_get("used")?)?;
-        Ok(WorkerCapacity {
-            used_slots: u16::try_from(used)
-                .map_err(|_| super::codec::corrupt("used_slots", used))?,
-            available_slots: u16::try_from(total.saturating_sub(used))
-                .map_err(|_| super::codec::corrupt("available_slots", total))?,
-            assigned_tasks: rust_u32("assigned_tasks", row.try_get("assigned")?)?,
-            staged_tasks: rust_u32("staged_tasks", row.try_get("staged")?)?,
-            processing_tasks: rust_u32("processing_tasks", row.try_get("processing")?)?,
-            active_uploads: u16::try_from(rust_u64("active_uploads", row.try_get("uploads")?)?)
-                .map_err(|_| super::codec::corrupt("active_uploads", "overflow"))?,
-            active_downloads: u16::try_from(rust_u64(
-                "active_downloads",
-                row.try_get("downloads")?,
-            )?)
-            .map_err(|_| super::codec::corrupt("active_downloads", "overflow"))?,
-            progress: None,
-        })
+        let sql = format!("{CAPACITY_SELECT} WHERE w.id = ? GROUP BY w.id");
+        let row = sqlx::query(&sql)
+            .bind(id.to_string())
+            .fetch_one(self.database.pool())
+            .await?;
+        map_capacity(&row)
     }
+
+    /// Computes durable capacity for every worker in one grouped query.
+    ///
+    /// # Errors
+    /// Returns an error when `SQLite` access, identifier decoding, or count conversion fails.
+    pub async fn worker_capacities(
+        &self,
+    ) -> Result<HashMap<WorkerId, WorkerCapacity>, PersistenceError> {
+        let sql = format!("{CAPACITY_SELECT} GROUP BY w.id");
+        sqlx::query(&sql)
+            .fetch_all(self.database.pool())
+            .await?
+            .iter()
+            .map(|row| {
+                let id = parse_brand::<WorkerId>("id", row.try_get("id")?)?;
+                Ok((id, map_capacity(row)?))
+            })
+            .collect()
+    }
+}
+
+const CAPACITY_SELECT: &str = "SELECT w.id, w.compute_slots,
+    SUM(CASE WHEN t.status IN ('submitting', 'processing') THEN 1 ELSE 0 END) AS used,
+    SUM(CASE WHEN t.status NOT IN ('completed', 'failed', 'cancelled') THEN 1 ELSE 0 END) AS assigned,
+    SUM(CASE WHEN t.status = 'staged' THEN 1 ELSE 0 END) AS staged,
+    SUM(CASE WHEN t.status = 'processing' THEN 1 ELSE 0 END) AS processing,
+    SUM(CASE WHEN t.status = 'uploading' THEN 1 ELSE 0 END) AS uploads,
+    SUM(CASE WHEN t.status = 'downloading' THEN 1 ELSE 0 END) AS downloads
+    FROM workers w LEFT JOIN tasks t ON t.worker_id = w.id";
+
+fn map_capacity(row: &sqlx::sqlite::SqliteRow) -> Result<WorkerCapacity, PersistenceError> {
+    let total = rust_u64("compute_slots", row.try_get("compute_slots")?)?;
+    let used = rust_u64("used_slots", row.try_get("used")?)?;
+    Ok(WorkerCapacity {
+        used_slots: u16::try_from(used).map_err(|_| super::codec::corrupt("used_slots", used))?,
+        available_slots: u16::try_from(total.saturating_sub(used))
+            .map_err(|_| super::codec::corrupt("available_slots", total))?,
+        assigned_tasks: rust_u32("assigned_tasks", row.try_get("assigned")?)?,
+        staged_tasks: rust_u32("staged_tasks", row.try_get("staged")?)?,
+        processing_tasks: rust_u32("processing_tasks", row.try_get("processing")?)?,
+        active_uploads: u16::try_from(rust_u64("active_uploads", row.try_get("uploads")?)?)
+            .map_err(|_| super::codec::corrupt("active_uploads", "overflow"))?,
+        active_downloads: u16::try_from(rust_u64("active_downloads", row.try_get("downloads")?)?)
+            .map_err(|_| super::codec::corrupt("active_downloads", "overflow"))?,
+        progress: None,
+    })
 }
