@@ -1400,14 +1400,26 @@ pub(crate) mod tests {
         }
     }
 
-    /// Losslessly encodes one quadrant frame converted with `matrix`, optionally tagged.
+    /// Losslessly encodes one quadrant frame converted with `matrix` in
+    /// limited or full range, optionally tagged. An untagged clip carries no
+    /// colour tags at all: FFmpeg 5+ stamps the `scale` output matrix on the
+    /// frame and libx264 writes it to the VUI, so `setparams` clears it.
     fn write_quadrant_clip(
         path: &Path,
         width: usize,
         height: usize,
         matrix: &str,
+        full_range: bool,
         tag: Option<&str>,
     ) {
+        let range = if full_range { "full" } else { "limited" };
+        let mut filter =
+            format!("scale=out_color_matrix={matrix}:out_range={range},format=yuv444p");
+        if tag.is_none() {
+            filter.push_str(
+                ",setparams=colorspace=unknown:color_primaries=unknown:color_trc=unknown",
+            );
+        }
         let mut command = crate::runtime::command_for("ffmpeg");
         command.args(["-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24"]);
         command.args([
@@ -1418,14 +1430,7 @@ pub(crate) mod tests {
             "-i",
             "pipe:0",
         ]);
-        command.args([
-            "-vf",
-            &format!("scale=out_color_matrix={matrix}:out_range=limited,format=yuv444p"),
-            "-c:v",
-            "libx264",
-            "-qp",
-            "0",
-        ]);
+        command.args(["-vf", &filter, "-c:v", "libx264", "-qp", "0"]);
         if let Some(tag) = tag {
             command.args([
                 "-colorspace",
@@ -1435,6 +1440,9 @@ pub(crate) mod tests {
                 "-color_trc",
                 tag,
             ]);
+        }
+        if full_range {
+            command.args(["-color_range", "pc"]);
         }
         let mut child = command
             .arg(path)
@@ -1458,16 +1466,34 @@ pub(crate) mod tests {
     #[ignore = "requires ffmpeg with libx264"]
     fn decoder_recovers_source_rgb_for_tagged_and_untagged_matrices() {
         let dir = tempfile::tempdir().unwrap();
-        for (name, width, height, matrix, tag) in [
-            ("untagged-hd-bt709", 1280, 720, "bt709", None),
-            ("untagged-sd-bt709", 720, 480, "bt709", None),
-            ("tagged-sd-bt601", 720, 480, "smpte170m", Some("smpte170m")),
-            ("tagged-hd-bt709", 1280, 720, "bt709", Some("bt709")),
+        for (name, width, height, matrix, full_range, tag) in [
+            ("untagged-hd-bt709", 1280, 720, "bt709", false, None),
+            ("untagged-sd-bt709", 720, 480, "bt709", false, None),
+            (
+                "tagged-sd-bt601",
+                720,
+                480,
+                "smpte170m",
+                false,
+                Some("smpte170m"),
+            ),
+            ("tagged-hd-bt709", 1280, 720, "bt709", false, Some("bt709")),
+            // Range is taken from the stream, not assumed limited.
+            (
+                "tagged-hd-bt709-full",
+                1280,
+                720,
+                "bt709",
+                true,
+                Some("bt709"),
+            ),
         ] {
             let path = dir.path().join(format!("{name}.mkv"));
-            write_quadrant_clip(&path, width, height, matrix, tag);
+            write_quadrant_clip(&path, width, height, matrix, full_range, tag);
             let probe = run_ffprobe(&path).unwrap();
             let (info, _) = extract_metadata(&probe, &path).unwrap();
+            // The fixture must really be (un)tagged under every FFmpeg version.
+            assert_eq!(info.color_space.as_deref(), tag, "{name}");
             let frame = VideoDecoder::new(&path, &info, None)
                 .unwrap()
                 .next()
