@@ -267,3 +267,43 @@ async fn http2_prior_knowledge_is_not_served() -> TestResult {
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn pooled_client_survives_idle_keep_alive_close() -> TestResult {
+    // Given: a server with a short head deadline and a pooling client such as
+    // the Controller's (reqwest keeps idle connections for 90 s by default).
+    let (listener, address) = bind().await?;
+    let server = tokio::spawn(
+        HttpServer::new(
+            listener,
+            Router::new()
+                .route("/", get(|| async { "ok" }))
+                .route("/echo", post(|body: String| async move { body })),
+        )
+        .header_read_timeout(TEST_HEADER_TIMEOUT)
+        .serve(),
+    );
+    let client = reqwest::Client::builder()
+        .pool_max_idle_per_host(8)
+        .build()?;
+    let url = format!("http://{address}");
+
+    // When: every request follows an idle gap longer than the head deadline,
+    // so the server has closed the pooled connection in between.
+    for round in 0..3 {
+        let get = client.get(format!("{url}/")).send().await?;
+        assert_eq!(get.text().await?, "ok", "GET after idle gap {round}");
+        tokio::time::sleep(TEST_HEADER_TIMEOUT * 3).await;
+        let post = client
+            .post(format!("{url}/echo"))
+            .body(format!("body-{round}"))
+            .send()
+            .await?;
+        // Then: the client opens a fresh connection instead of failing.
+        assert_eq!(post.text().await?, format!("body-{round}"));
+        tokio::time::sleep(TEST_HEADER_TIMEOUT * 3).await;
+    }
+
+    server.abort();
+    Ok(())
+}

@@ -7227,4 +7227,38 @@ mod tests {
             "enabled"
         );
     }
+
+    /// `POST /api/run` validates the saved workflow before the Controller's
+    /// params are injected, so every bundled preset must pass that validation
+    /// with its inputs fed only through `WorkflowInput` connections.
+    #[test]
+    fn bundled_presets_pass_run_validation_before_param_injection() {
+        let presets_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../presets");
+        let data_dir = unique_temp_dir("videnoa-preset-validation");
+        let mut config = AppConfig::default();
+        config.paths.presets_dir = presets_dir.clone();
+        let state = app_state_with_config(config, data_dir.join("config.toml"), data_dir);
+
+        let preset_files = std::fs::read_dir(&presets_dir)
+            .expect("read presets dir")
+            .flatten()
+            .filter(|entry| entry.path().extension().and_then(|e| e.to_str()) == Some("json"))
+            .count();
+        assert!(
+            preset_files > 0,
+            "no presets found in {}",
+            presets_dir.display()
+        );
+        assert_eq!(
+            state.inner.presets.len(),
+            preset_files,
+            "every preset should load"
+        );
+
+        for preset in state.inner.presets.iter() {
+            if let Err(error) = parse_and_validate_workflow(&state, preset.workflow.clone()) {
+                panic!("preset '{}' fails run validation: {error:?}", preset.key());
+            }
+        }
+    }
 }
