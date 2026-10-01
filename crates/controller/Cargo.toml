@@ -23,7 +23,7 @@ figment.workspace = true
 futures-util.workspace = true
 glob = "=0.3.3"
 hyper = { version = "1", features = ["http1", "server"] }
-hyper-util = { version = "0.1", features = ["server-auto", "server-graceful", "tokio"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 mime_guess.workspace = true
 percent-encoding.workspace = true
 rand_core.workspace = true

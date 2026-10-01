@@ -117,6 +117,7 @@ The HTTP server closes an HTTP/1.1 connection whose request head (request line
 and headers) does not arrive within 30 seconds, including the next request on an
 idle keep-alive connection. Request bodies, uploads, event streams, and
 WebSockets are not limited by this timeout.
+The server speaks HTTP/1.1 only; cleartext HTTP/2 (h2c) is not accepted.
 
 ## Video processing notes
 

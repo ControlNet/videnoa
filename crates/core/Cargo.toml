@@ -20,7 +20,7 @@ ndarray = { workspace = true }
 ort = { workspace = true }
 half = { workspace = true }
 hyper = { version = "1", features = ["http1", "server"] }
-hyper-util = { version = "0.1", features = ["server-auto", "server-graceful", "tokio"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }

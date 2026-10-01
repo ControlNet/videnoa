@@ -6,6 +6,10 @@
 //! (axum 0.8.8, `src/serve/mod.rs`) with a Tokio timer and an explicit header
 //! read timeout. Only the request head is bounded: request bodies, handlers,
 //! long-lived responses such as SSE, and upgraded WebSocket connections are not.
+//!
+//! Connections speak HTTP/1 only. hyper-util's auto builder would also accept
+//! cleartext HTTP/2 (h2c), which no client of ours uses (browsers use HTTP/2
+//! only over TLS) and which the request-head deadline does not cover.
 
 use std::future::Future;
 use std::io;
@@ -18,10 +22,10 @@ use axum::extract::ConnectInfo;
 use axum::http::Request;
 use axum::Router;
 use hyper::body::Incoming;
-use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
-use hyper_util::server::conn::auto::Builder;
-use hyper_util::server::graceful::GracefulShutdown;
+use hyper::server::conn::http1;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::watch;
 use tower::ServiceExt as _;
 
 /// Longest time a connection may spend sending one HTTP/1 request head,
@@ -92,12 +96,15 @@ impl HttpServer {
             router,
             header_read_timeout,
         } = self;
-        let mut builder = Builder::new(TokioExecutor::new());
+        let mut builder = http1::Builder::new();
         builder
-            .http1()
             .timer(TokioTimer::new())
             .header_read_timeout(header_read_timeout);
-        let graceful = GracefulShutdown::new();
+        // Like axum's graceful serve: `shutdown_tx` tells connections to close,
+        // and every connection holds a `close_rx` clone, so `close_tx.closed()`
+        // resolves once the last one has finished.
+        let (shutdown_tx, shutdown_rx) = watch::channel(());
+        let (close_tx, close_rx) = watch::channel(());
         let mut signal = pin!(signal);
 
         loop {
@@ -115,21 +122,35 @@ impl HttpServer {
                 request.extensions_mut().insert(ConnectInfo(remote_addr));
                 router.clone().oneshot(request.map(Body::new))
             });
-            let connection = graceful.watch(
-                builder
-                    .serve_connection_with_upgrades(TokioIo::new(stream), service)
-                    .into_owned(),
-            );
+            let connection = builder
+                .serve_connection(TokioIo::new(stream), service)
+                .with_upgrades();
+            let mut shutdown_rx = shutdown_rx.clone();
+            let close_rx = close_rx.clone();
             tokio::spawn(async move {
-                if let Err(error) = connection.await {
+                let mut connection = pin!(connection);
+                let result = tokio::select! {
+                    result = connection.as_mut() => result,
+                    _ = shutdown_rx.changed() => {
+                        connection.as_mut().graceful_shutdown();
+                        connection.as_mut().await
+                    }
+                };
+                if let Err(error) = result {
                     tracing::trace!("failed to serve connection: {error:#}");
                 }
+                drop(close_rx);
             });
         }
 
         drop(listener);
-        tracing::trace!("waiting for {} connection(s) to finish", graceful.count());
-        graceful.shutdown().await;
+        drop(close_rx);
+        let _ = shutdown_tx.send(());
+        tracing::trace!(
+            "waiting for {} connection(s) to finish",
+            close_tx.receiver_count()
+        );
+        close_tx.closed().await;
     }
 }
 

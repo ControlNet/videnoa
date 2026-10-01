@@ -184,3 +184,30 @@ async fn graceful_shutdown_stops_accepting_and_drains_in_flight_requests() -> Te
     tokio::time::timeout(CLOSE_BOUND, server).await???;
     Ok(())
 }
+
+#[tokio::test]
+async fn http2_prior_knowledge_is_not_served() -> TestResult {
+    // Given: a server; no client of ours speaks cleartext HTTP/2 (h2c).
+    let (listener, address) = bind().await?;
+    let server = tokio::spawn(
+        HttpServer::new(listener, Router::new().route("/", get(|| async { "ok" })))
+            .header_read_timeout(TEST_HEADER_TIMEOUT)
+            .serve(),
+    );
+
+    // When: a peer opens with the HTTP/2 connection preface.
+    let mut stream = TcpStream::connect(address).await?;
+    stream
+        .write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
+        .await?;
+
+    // Then: the server never answers with an HTTP/2 SETTINGS frame (frame
+    // type 0x4 at byte 3), so h2c cannot bypass the request-head deadline.
+    let received = read_until_closed(&mut stream).await?;
+    server.abort();
+    assert!(
+        received.len() < 4 || received[3] != 0x4,
+        "server spoke HTTP/2: {received:02x?}"
+    );
+    Ok(())
+}

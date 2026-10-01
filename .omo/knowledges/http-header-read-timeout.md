@@ -9,16 +9,22 @@
   - Controller: `videnoa_controller::http_server` (the Controller does not
     depend on core).
   Both mirror axum's accept loop (accept-error backoff of 1 s for non-transient
-  errors), set `http1().timer(TokioTimer::new()).header_read_timeout(..)`, use
-  `serve_connection_with_upgrades` (WebSockets), insert
-  `ConnectInfo<SocketAddr>` per request, and drain with
-  `hyper_util::server::graceful::GracefulShutdown`.
+  errors), build connections with `hyper::server::conn::http1::Builder`
+  (`.timer(TokioTimer::new()).header_read_timeout(..)`,
+  `serve_connection(..).with_upgrades()` for WebSockets), insert
+  `ConnectInfo<SocketAddr>` per request, and drain like axum's graceful serve:
+  a watch channel tells connections to `graceful_shutdown()`, another counts
+  live connections (`close_tx.closed()`).
+- HTTP/1 only. hyper-util's auto builder also accepts cleartext HTTP/2 (h2c),
+  which bypasses the head deadline, and `auto::Builder::http1_only()` is a
+  no-op with `serve_connection_with_upgrades`. hyper-util 0.1.20 also has no
+  `GracefulConnection` impl for `http1::UpgradeableConnection` (sealed trait),
+  hence the hand-rolled drain. No client of ours speaks h2c.
 - hyper starts the head deadline only while reading a request head (also the
   next head on an idle keep-alive connection). Bodies, slow handlers, SSE and
   upgraded sockets are not bounded.
-- Not covered: HTTP/2 prior-knowledge (h2c) connections, which hyper-util's
-  auto builder still accepts, as before. The iroh loopback servers still use
-  `axum::serve`; they only accept local tunnel traffic.
+- The iroh loopback servers still use `axum::serve`; they only accept local
+  tunnel traffic.
 - Tests: `crates/core/tests/http_server.rs`,
   `crates/controller/tests/http_server.rs` (200 ms override via
   `HttpServer::header_read_timeout`).
