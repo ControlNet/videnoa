@@ -15,7 +15,9 @@ async fn saturated_upload_pool_does_not_block_download_pool() -> TestResult {
     let uploading = fixture.reserved_task(vec![17_u8; 24_000]).await?;
     let upload_ticket = server.pause(Checkpoint::BeforeAcceptingUpload).await;
     let download_ticket = server.pause(Checkpoint::BeforeDownloadBody).await;
-    let upload_executor = fixture.executor()?;
+    // The upload stays parked while the whole download runs, so its transfer
+    // timeout must not be what ends it (the default 1 s expires under load).
+    let upload_executor = fixture.executor_with_transfer_seconds(60)?;
     let upload_now = fixture.now;
     let upload_task = uploading.task_id;
     let upload = tokio::spawn(async move {
@@ -50,7 +52,15 @@ async fn saturated_upload_pool_does_not_block_download_pool() -> TestResult {
     assert!(matches!(download_outcome, DownloadOutcome::Verified(_)));
     server.release(upload_ticket).await?;
     let upload_outcome = upload.await??;
-    assert!(matches!(upload_outcome, UploadOutcome::Staged(_)));
+    assert!(
+        matches!(upload_outcome, UploadOutcome::Staged(_)),
+        "upload was not staged: {}",
+        match upload_outcome {
+            UploadOutcome::Staged(_) => "staged",
+            UploadOutcome::RetryScheduled { .. } => "retry scheduled",
+            UploadOutcome::Failed => "failed",
+        }
+    );
     let _ = zero_jitter()?;
     Ok(())
 }
