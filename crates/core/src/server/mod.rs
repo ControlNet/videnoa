@@ -4969,11 +4969,13 @@ mod tests {
             .await
             .unwrap();
         let json: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json.len(), 22);
+        assert_eq!(json.len(), 20);
         let node_types: Vec<&str> = json
             .iter()
             .map(|n| n["node_type"].as_str().unwrap())
             .collect();
+        assert!(!node_types.contains(&"ColorSpace"));
+        assert!(!node_types.contains(&"SceneDetect"));
         assert!(node_types.contains(&"Downloader"));
         assert!(node_types.contains(&"PathDivider"));
         assert!(node_types.contains(&"PathJoiner"));

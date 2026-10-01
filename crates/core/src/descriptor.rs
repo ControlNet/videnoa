@@ -285,66 +285,6 @@ pub fn all_node_descriptors() -> Vec<NodeDescriptor> {
             outputs: vec![stream("frames", "VideoFrames")],
         },
         // ---------------------------------------------------------------
-        // 6. ColorSpace
-        // ---------------------------------------------------------------
-        NodeDescriptor {
-            node_type: "ColorSpace".to_string(),
-            display_name: "Color Space".to_string(),
-            category: "processing".to_string(),
-            accent_color: "#EAB308".to_string(),
-            icon: "palette".to_string(),
-            inputs: vec![
-                // param-only node: from ColorSpaceNode::input_ports()
-                PortDescriptor {
-                    enum_options: Some(vec![
-                        "bt709".to_string(),
-                        "bt601".to_string(),
-                        "bt2020".to_string(),
-                    ]),
-                    ..param_opt("matrix", "Str", serde_json::json!("bt709"))
-                },
-                PortDescriptor {
-                    enum_options: Some(vec!["limited".to_string(), "full".to_string()]),
-                    ..param_opt("range", "Str", serde_json::json!("limited"))
-                },
-                param_opt("transfer", "Str", serde_json::json!("bt709")),
-                param_opt("primaries", "Str", serde_json::json!("bt709")),
-                param_opt("dither", "Str", serde_json::json!("error_diffusion")),
-            ],
-            outputs: vec![
-                // param: from ColorSpaceNode::output_ports()
-                PortDescriptor {
-                    direction: "param".to_string(),
-                    ..param_required("config", "Str")
-                },
-            ],
-        },
-        // ---------------------------------------------------------------
-        // 7. SceneDetect
-        // ---------------------------------------------------------------
-        NodeDescriptor {
-            node_type: "SceneDetect".to_string(),
-            display_name: "Scene Detect".to_string(),
-            category: "processing".to_string(),
-            accent_color: "#EF4444".to_string(),
-            icon: "scissors".to_string(),
-            inputs: vec![
-                // stream
-                stream("frames", "VideoFrames"),
-                // param: from SceneDetectNode::input_ports()
-                param_opt("threshold", "Float", serde_json::json!(0.3)),
-            ],
-            outputs: vec![
-                // stream
-                stream("frames", "VideoFrames"),
-                // param: from SceneDetectNode::output_ports()
-                PortDescriptor {
-                    direction: "param".to_string(),
-                    ..param_required("is_scene_change", "Bool")
-                },
-            ],
-        },
-        // ---------------------------------------------------------------
         // ---------------------------------------------------------------
         NodeDescriptor {
             node_type: "Downloader".to_string(),
@@ -676,7 +616,21 @@ mod tests {
     #[test]
     fn test_all_node_descriptors_count() {
         let descs = all_node_descriptors();
-        assert_eq!(descs.len(), 22);
+        assert_eq!(descs.len(), 20);
+    }
+
+    #[test]
+    fn test_palette_omits_nodes_the_video_pipeline_cannot_compile() {
+        // ColorSpace and SceneDetect still exist in the registry so saved
+        // workflows parse, but validate_video_processing_chain rejects them in
+        // every frame chain, so the editor must not offer them.
+        let descs = all_node_descriptors();
+        for node_type in ["ColorSpace", "SceneDetect"] {
+            assert!(
+                descs.iter().all(|d| d.node_type != node_type),
+                "{node_type} must not be offered in the palette"
+            );
+        }
     }
 
     #[test]
@@ -685,7 +639,7 @@ mod tests {
         let mut types: Vec<&str> = descs.iter().map(|d| d.node_type.as_str()).collect();
         types.sort();
         types.dedup();
-        assert_eq!(types.len(), 22);
+        assert_eq!(types.len(), 20);
     }
 
     #[test]
