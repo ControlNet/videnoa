@@ -264,6 +264,11 @@ impl VideoCompileContext {
         }
     }
 
+    /// Directory where TensorRT engines are cached for this context.
+    pub fn trt_cache_dir(&self) -> &Path {
+        &self.trt_cache_dir
+    }
+
     /// Resolution after the trailing Resize/Rescale nodes compiled so far.
     fn scaled_output_dimensions(&self) -> (u32, u32) {
         self.output_scales.borrow().last().map_or(
