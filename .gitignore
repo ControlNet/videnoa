@@ -474,3 +474,6 @@ auth.lock
 
 # Persistent iroh identity ownership lock
 iroh.lock
+
+# Generated Claude Design canvas payload for the Worker WebUI (regenerate with seed-canvas.mjs)
+web/design/videnoa-worker-gui.html
