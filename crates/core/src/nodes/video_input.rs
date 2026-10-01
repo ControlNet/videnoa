@@ -401,14 +401,9 @@ pub struct VideoDecoder {
 
 /// swscale `in_color_matrix` for a source stream.
 ///
-/// A matrix tag wins. Untagged streams follow the common player convention
-/// (mpv): HD sizes are BT.709, SD sizes BT.601. Without this, swscale assumes
-/// BT.601 for every untagged stream, which skews HD colours.
-pub(crate) fn source_color_matrix(
-    color_space: Option<&str>,
-    width: u32,
-    height: u32,
-) -> &'static str {
+/// A matrix tag wins. Untagged streams are treated as BT.709 at any size;
+/// without this, swscale assumes BT.601 for every untagged stream.
+pub(crate) fn source_color_matrix(color_space: Option<&str>) -> &'static str {
     match color_space {
         Some("bt709") => "bt709",
         Some("bt470bg") => "bt470",
@@ -416,8 +411,7 @@ pub(crate) fn source_color_matrix(
         Some("smpte240m") => "smpte240m",
         Some("fcc") => "fcc",
         Some("bt2020nc" | "bt2020c") => "bt2020",
-        _ if width >= 1280 || height > 576 => "bt709",
-        _ => "bt601",
+        _ => "bt709",
     }
 }
 
@@ -472,8 +466,7 @@ impl VideoDecoder {
             Some(other) => Some(other),
         };
 
-        let color_matrix =
-            source_color_matrix(info.color_space.as_deref(), info.width, info.height);
+        let color_matrix = source_color_matrix(info.color_space.as_deref());
         let decode_args =
             build_decoder_args(path, pix_fmt, info.stream_index, hwaccel, color_matrix);
 
@@ -1321,28 +1314,15 @@ pub(crate) mod tests {
             ("bt2020nc", "bt2020"),
             ("bt2020c", "bt2020"),
         ] {
-            // A tag wins over the resolution heuristic in both directions.
-            assert_eq!(source_color_matrix(Some(tag), 640, 480), expected, "{tag}");
-            assert_eq!(
-                source_color_matrix(Some(tag), 1920, 1080),
-                expected,
-                "{tag}"
-            );
+            assert_eq!(source_color_matrix(Some(tag)), expected, "{tag}");
         }
     }
 
     #[test]
-    fn untagged_hd_sources_are_treated_as_bt709() {
-        assert_eq!(source_color_matrix(None, 1920, 1080), "bt709");
-        assert_eq!(source_color_matrix(Some("unknown"), 1280, 720), "bt709");
-        assert_eq!(source_color_matrix(Some("reserved"), 960, 720), "bt709");
-    }
-
-    #[test]
-    fn untagged_sd_sources_are_treated_as_bt601() {
-        assert_eq!(source_color_matrix(None, 720, 480), "bt601");
-        assert_eq!(source_color_matrix(Some("unknown"), 720, 576), "bt601");
-        assert_eq!(source_color_matrix(None, 1024, 576), "bt601");
+    fn untagged_sources_are_treated_as_bt709_at_any_size() {
+        assert_eq!(source_color_matrix(None), "bt709");
+        assert_eq!(source_color_matrix(Some("unknown")), "bt709");
+        assert_eq!(source_color_matrix(Some("reserved")), "bt709");
     }
 
     #[test]
@@ -1480,7 +1460,8 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().unwrap();
         for (name, width, height, matrix, tag) in [
             ("untagged-hd-bt709", 1280, 720, "bt709", None),
-            ("untagged-sd-bt601", 720, 480, "bt601", None),
+            ("untagged-sd-bt709", 720, 480, "bt709", None),
+            ("tagged-sd-bt601", 720, 480, "smpte170m", Some("smpte170m")),
             ("tagged-hd-bt709", 1280, 720, "bt709", Some("bt709")),
         ] {
             let path = dir.path().join(format!("{name}.mkv"));
