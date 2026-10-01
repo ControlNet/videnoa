@@ -1,0 +1,16 @@
+# cargo-deny configuration used by `cargo deny check advisories` (locally and
+# in the CI quality gate). Only the advisories check is configured here.
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+    { id = "RUSTSEC-2025-0057", reason = "fxhash: unmaintained; transitive via tauri-utils -> kuchikiki -> selectors (desktop app), no vulnerability" },
+    { id = "RUSTSEC-2024-0436", reason = "paste: unmaintained; transitive via iroh -> netwatch -> netlink-packet-core, no vulnerability" },
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error: unmaintained; transitive via glib-macros (GTK bindings of the desktop app), no vulnerability" },
+    { id = "RUSTSEC-2025-0081", reason = "unic-char-property: unmaintained; transitive via tauri-utils -> urlpattern (desktop app), no vulnerability" },
+    { id = "RUSTSEC-2025-0075", reason = "unic-char-range: unmaintained; transitive via tauri-utils -> urlpattern (desktop app), no vulnerability" },
+    { id = "RUSTSEC-2025-0080", reason = "unic-common: unmaintained; transitive via tauri-utils -> urlpattern (desktop app), no vulnerability" },
+    { id = "RUSTSEC-2025-0100", reason = "unic-ucd-ident: unmaintained; transitive via tauri-utils -> urlpattern (desktop app), no vulnerability" },
+    { id = "RUSTSEC-2025-0098", reason = "unic-ucd-version: unmaintained; transitive via tauri-utils -> urlpattern (desktop app), no vulnerability" },
+]
