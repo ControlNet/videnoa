@@ -443,10 +443,9 @@ pub(crate) fn source_color_matrix(color_space: Option<&str>) -> &'static str {
 /// round trip within ±2 per channel on 4:2:0 sources (±3 with plain bicubic).
 pub(crate) const RGB_DECODE_SCALE_FLAGS: &str = "bicubic+accurate_rnd+full_chroma_int";
 
-/// Whether a source's colours lie outside BT.709 primaries. The decoder
-/// converts YUV to RGB with the source matrix, but the output is tagged BT.709
-/// without a primaries conversion, so such sources come out desaturated
-/// (wide gamut) or slightly shifted (SD) under a BT.709 tag.
+/// Whether a source uses wide-gamut primaries. The decoder converts YUV to RGB
+/// with the source matrix, but the output is tagged BT.709 without a primaries
+/// conversion, so such sources come out visibly desaturated.
 ///
 /// A BT.2020 matrix implies BT.2020 primaries even when the primaries tag is
 /// missing; PQ/HLG BT.2020 sources are rejected as HDR before this point.
@@ -456,20 +455,9 @@ pub(crate) fn primaries_not_converted(
 ) -> bool {
     color_space.is_some_and(|matrix| matrix.starts_with("bt2020"))
         || color_primaries.is_some_and(|primaries| {
-            matches!(
-                primaries,
-                "bt2020"
-                    | "bt470m"
-                    | "bt470bg"
-                    | "smpte170m"
-                    | "smpte240m"
-                    | "film"
-                    | "smpte428"
-                    | "smpte431"
-                    | "smpte432"
-                    | "jedec-p22"
-                    | "ebu3213"
-            )
+            // Wide gamuts only: BT.2020, XYZ (SMPTE 428) and DCI-P3 (431/432).
+            // SD and other near-BT.709 primaries differ too little to warn about.
+            matches!(primaries, "bt2020" | "smpte428" | "smpte431" | "smpte432")
         })
 }
 
@@ -1553,25 +1541,30 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn primaries_warning_covers_bt2020_matrices_and_non_bt709_primaries() {
+    fn primaries_warning_covers_bt2020_matrices_and_wide_gamut_primaries() {
         // BT.2020 matrices (SDR; PQ/HLG are rejected earlier) imply BT.2020 primaries.
         assert!(primaries_not_converted(Some("bt2020nc"), None));
         assert!(primaries_not_converted(Some("bt2020c"), Some("bt2020")));
+        for primaries in ["bt2020", "smpte428", "smpte431", "smpte432"] {
+            assert!(
+                primaries_not_converted(Some("bt709"), Some(primaries)),
+                "{primaries}"
+            );
+        }
+
+        // SD and other near-BT.709 gamuts shift colours only slightly, so common
+        // DVD/SD sources must not warn.
         for primaries in [
-            "bt2020",
             "bt470m",
             "bt470bg",
             "smpte170m",
             "smpte240m",
             "film",
-            "smpte428",
-            "smpte431",
-            "smpte432",
             "jedec-p22",
             "ebu3213",
         ] {
             assert!(
-                primaries_not_converted(Some("bt709"), Some(primaries)),
+                !primaries_not_converted(Some("smpte170m"), Some(primaries)),
                 "{primaries}"
             );
         }
