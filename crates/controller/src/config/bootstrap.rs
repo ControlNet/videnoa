@@ -75,7 +75,8 @@ impl ConfigBootstrap {
                 root_locator::persist(&bootstrap_root, &data_root)?;
                 private::prepare_root(&config.paths.temp_root, "paths.cache_root")?;
                 let mut retained_private_roots = root_locator::retained_sources(&data_root)?;
-                if bootstrap_root != data_root && !retained_private_roots.contains(&bootstrap_root) {
+                if bootstrap_root != data_root && !retained_private_roots.contains(&bootstrap_root)
+                {
                     retained_private_roots.push(bootstrap_root.clone());
                 }
                 return Ok(Self {

@@ -140,6 +140,11 @@ jobs:
           (cd controller-web && npm ci --no-fund && npm run build)
       - name: Check formatting
         run: cargo fmt --all -- --check
+      - name: Check formatting of include!-ed modules
+        # cargo fmt does not follow include!, which wires most Controller
+        # modules (crates/controller/src/module_topology.rs), so also check
+        # every tracked Rust file directly.
+        run: git ls-files -z '*.rs' | xargs -0 -n1 rustfmt --edition 2021 --check
       - name: Run strict workspace Clippy
         env:
           VIDENOA_WEB_PREBUILT: '1'

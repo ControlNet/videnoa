@@ -111,12 +111,14 @@ pub(super) async fn inspect_verified(
     if metadata.len() != expected_size || hash_file(file).await? != expected_sha256 {
         return Ok(VerifiedArtifactInspection::Invalid);
     }
-    Ok(VerifiedArtifactInspection::Valid(Box::new(VerifiedArtifact {
-        path: verified.display_path().to_path_buf(),
-        size: expected_size,
-        sha256: expected_sha256,
-        source: verified,
-    })))
+    Ok(VerifiedArtifactInspection::Valid(Box::new(
+        VerifiedArtifact {
+            path: verified.display_path().to_path_buf(),
+            size: expected_size,
+            sha256: expected_sha256,
+            source: verified,
+        },
+    )))
 }
 
 async fn remove_invalid_verified(
