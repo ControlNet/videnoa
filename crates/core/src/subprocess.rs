@@ -48,6 +48,12 @@ impl StderrTail {
         }
     }
 
+    /// A tail with no reader, for tests whose child has no stderr pipe.
+    #[cfg(test)]
+    pub(crate) fn none() -> Self {
+        Self { handle: None }
+    }
+
     /// Waits for the child's stderr to close (the child has exited or closed
     /// it) and returns the retained tail. Empty once already joined.
     pub(crate) fn join(&mut self) -> String {

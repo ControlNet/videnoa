@@ -6,11 +6,10 @@
 //! attachment, chapter) from the source file.
 
 use std::collections::{HashMap, HashSet};
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
-use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -363,7 +362,7 @@ impl EncoderConfig {
 pub struct VideoEncoder {
     child: Child,
     stdin: Option<ChildStdin>,
-    stderr_thread: Option<JoinHandle<()>>,
+    stderr: StderrTail,
     frame_size: usize,
     /// Pipe bit depth; RGB frames of another depth are converted before writing.
     bit_depth: u8,
@@ -372,9 +371,19 @@ pub struct VideoEncoder {
     pool: Arc<FramePool>,
 }
 
+/// How long a failed encoder may take to exit before it is killed so its
+/// stderr can be reported.
+const ENCODER_FAILURE_EXIT_TIMEOUT: Duration = Duration::from_secs(5);
+
 impl VideoEncoder {
     pub fn new(config: &EncoderConfig) -> Result<Self> {
         config.probe_nvenc()?;
+        Self::spawn_with(config, crate::runtime::command_for("ffmpeg"))
+    }
+
+    /// Starts the encoder from `command` (an FFmpeg executable) with the
+    /// arguments built from `config`.
+    fn spawn_with(config: &EncoderConfig, mut command: Command) -> Result<Self> {
         let args = config.build_ffmpeg_args();
         let frame_size = config.frame_size();
 
@@ -383,7 +392,7 @@ impl VideoEncoder {
             "launching FFmpeg encoder"
         );
 
-        let mut child = crate::runtime::command_for("ffmpeg")
+        let mut child = command
             .args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
@@ -397,20 +406,8 @@ impl VideoEncoder {
             .ok_or_else(|| anyhow::anyhow!("failed to open ffmpeg stdin"))?;
 
         let stderr = child.stderr.take().expect("stderr should be piped");
-        let stderr_thread = thread::spawn(move || {
-            let reader = BufReader::new(stderr);
-            for line in reader.lines() {
-                match line {
-                    Ok(line) if !line.is_empty() => {
-                        debug!(target: "ffmpeg_encode_stderr", "{}", line);
-                    }
-                    Err(e) => {
-                        debug!(target: "ffmpeg_encode_stderr", "read error: {}", e);
-                        break;
-                    }
-                    _ => {}
-                }
-            }
+        let stderr = StderrTail::spawn(stderr, |line| {
+            debug!(target: "ffmpeg_encode_stderr", "{line}");
         });
 
         let (output_width, output_height) = config.output_dimensions();
@@ -429,7 +426,7 @@ impl VideoEncoder {
         Ok(Self {
             child,
             stdin: Some(stdin),
-            stderr_thread: Some(stderr_thread),
+            stderr,
             frame_size,
             bit_depth: config.bit_depth,
             output_path: config.output_path.clone(),
@@ -456,9 +453,11 @@ impl VideoEncoder {
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("encoder stdin already closed"))?;
 
-        stdin
-            .write_all(data)
-            .context("failed to write frame to ffmpeg stdin")?;
+        if let Err(error) = stdin.write_all(data) {
+            // A broken pipe means FFmpeg already exited; its stderr says why.
+            let exit = describe_encoder_exit(&mut self.child, &mut self.stderr);
+            bail!("failed to write frame to ffmpeg stdin: {error}; {exit}");
+        }
 
         Ok(())
     }
@@ -467,13 +466,13 @@ impl VideoEncoder {
         drop(self.stdin.take());
 
         let status = self.child.wait().context("failed to wait for ffmpeg")?;
-
-        if let Some(handle) = self.stderr_thread.take() {
-            let _ = handle.join();
-        }
+        let stderr = self.stderr.join();
 
         if !status.success() {
-            bail!("ffmpeg encoder exited with status {}", status);
+            bail!(
+                "ffmpeg encoder exited with {status}; {}",
+                describe_stderr(&stderr)
+            );
         }
 
         debug!("FFmpeg encoder finished successfully");
@@ -485,14 +484,23 @@ impl VideoEncoder {
     }
 }
 
+/// Reports how a failed encoder process ended, quoting its stderr tail.
+/// Waits briefly for the exit, killing the process if it is still running.
+pub(crate) fn describe_encoder_exit(child: &mut Child, stderr: &mut StderrTail) -> String {
+    let exit = match wait_or_kill(child, ENCODER_FAILURE_EXIT_TIMEOUT) {
+        Ok(Some(status)) => format!("ffmpeg exited with {status}"),
+        Ok(None) => "ffmpeg was still running and has been killed".to_string(),
+        Err(error) => format!("failed to wait for ffmpeg: {error}"),
+    };
+    format!("{exit}; {}", describe_stderr(&stderr.join()))
+}
+
 impl Drop for VideoEncoder {
     fn drop(&mut self) {
         drop(self.stdin.take());
         let _ = self.child.kill();
         let _ = self.child.wait();
-        if let Some(handle) = self.stderr_thread.take() {
-            let _ = handle.join();
-        }
+        self.stderr.join();
     }
 }
 
@@ -1597,6 +1605,44 @@ mod tests {
         assert_eq!(runs(), 4);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn encoder_exit_failure_quotes_ffmpeg_stderr() {
+        // Given: an encoder process that fails after printing its diagnosis.
+        let mut command = std::process::Command::new("sh");
+        command.args([
+            "-c",
+            "printf 'x265 [error]: unsupported pixel format\\n' >&2; exit 3",
+        ]);
+        let mut encoder = VideoEncoder::spawn_with(&default_config(), command).unwrap();
+
+        // When: the job finishes the encode.
+        let message = encoder.finish().unwrap_err().to_string();
+
+        // Then: the job error carries the exit status and FFmpeg's message.
+        assert!(message.contains("exit status: 3"), "{message}");
+        assert!(message.contains("unsupported pixel format"), "{message}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn encoder_write_failure_quotes_ffmpeg_stderr() {
+        // Given: an encoder process that dies without reading any frame.
+        let mut command = std::process::Command::new("sh");
+        command.args(["-c", "printf 'Conversion failed!\\n' >&2; exit 1"]);
+        let config = default_config();
+        let mut encoder = VideoEncoder::spawn_with(&config, command).unwrap();
+
+        // When: a frame larger than the pipe buffer is written.
+        let frame = vec![0_u8; config.frame_size()];
+        let message = encoder.write_frame(&frame).unwrap_err().to_string();
+
+        // Then: the broken pipe is explained by FFmpeg's own output.
+        assert!(message.contains("failed to write frame"), "{message}");
+        assert!(message.contains("exit status: 1"), "{message}");
+        assert!(message.contains("Conversion failed!"), "{message}");
+    }
+
     #[test]
     #[ignore = "requires an NVIDIA GPU and an FFmpeg with NVENC"]
     fn nvenc_probe_passes_on_real_hardware() {
@@ -1679,7 +1725,7 @@ mod tests {
         let mut encoder = VideoEncoder {
             child,
             stdin: Some(stdin),
-            stderr_thread: None,
+            stderr: StderrTail::none(),
             frame_size,
             bit_depth: 8,
             output_path: null_path(),
@@ -1710,7 +1756,7 @@ mod tests {
         let mut encoder = VideoEncoder {
             child,
             stdin: None,
-            stderr_thread: None,
+            stderr: StderrTail::none(),
             frame_size: 6,
             bit_depth: 8,
             output_path: null_path(),
@@ -1750,7 +1796,7 @@ mod tests {
         let mut encoder = VideoEncoder {
             child,
             stdin: Some(stdin),
-            stderr_thread: None,
+            stderr: StderrTail::none(),
             frame_size: if bit_depth > 8 { 6 } else { 3 },
             bit_depth,
             output_path: null_path(),
