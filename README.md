@@ -96,17 +96,7 @@ host = "0.0.0.0"
 
 [performance]
 profiling_enabled = false
-
-[jobs]
-history_limit = 1000
 ```
-
-`jobs.history_limit` caps how many finished (completed, failed or cancelled)
-jobs the Worker keeps in its job list and `jobs.db`. Whenever a job finishes,
-and once at startup, the oldest finished jobs beyond the limit (by finish time)
-are deleted; queued and running jobs are never removed. `0` keeps the full
-history. Keep the limit well above the number of jobs that finish while a
-client is still polling for them.
 
 CLI flags override config values (`--host`, `--port`, `--data-dir`). For the
 server port the precedence is `--port`, then the `PORT` environment variable,

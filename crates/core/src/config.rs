@@ -18,7 +18,6 @@ pub struct AppConfig {
     pub performance: PerformanceConfig,
     pub auth: AuthConfig,
     pub iroh: IrohConfig,
-    pub jobs: JobsConfig,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -48,24 +47,6 @@ pub struct ServerConfig {
 #[derive(Default)]
 pub struct PerformanceConfig {
     pub profiling_enabled: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct JobsConfig {
-    /// Finished (completed, failed or cancelled) jobs kept in the job history.
-    /// Older finished jobs are deleted from memory and `jobs.db` whenever a job
-    /// finishes and at startup; queued and running jobs are never removed.
-    /// `0` keeps the full history.
-    pub history_limit: usize,
-}
-
-impl Default for JobsConfig {
-    fn default() -> Self {
-        Self {
-            history_limit: 1000,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -112,7 +93,6 @@ impl Default for AppConfig {
             performance: PerformanceConfig::default(),
             auth: AuthConfig::default(),
             iroh: IrohConfig::default(),
-            jobs: JobsConfig::default(),
         }
     }
 }
@@ -365,27 +345,6 @@ mod tests {
     fn resolve_relative_to_joins_relative_path() {
         let result = resolve_relative_to(Path::new("/base"), Path::new("sub"));
         assert_eq!(result, PathBuf::from("/base/sub"));
-    }
-
-    #[test]
-    fn jobs_history_limit_defaults_to_one_thousand() {
-        assert_eq!(AppConfig::default().jobs.history_limit, 1000);
-        let without_section: AppConfig =
-            toml::from_str("locale = \"en\"\n").expect("parse config without [jobs]");
-        assert_eq!(without_section.jobs.history_limit, 1000);
-    }
-
-    #[test]
-    fn jobs_history_limit_is_read_from_config_file() {
-        let path = unique_temp_config_path();
-        fs::write(&path, "[jobs]\nhistory_limit = 25\n").expect("write config");
-        let loaded = AppConfig::load_from_path(&path).expect("load config");
-        fs::remove_file(&path).ok();
-        assert_eq!(loaded.jobs.history_limit, 25);
-
-        let unlimited: AppConfig =
-            toml::from_str("[jobs]\nhistory_limit = 0\n").expect("parse unlimited history");
-        assert_eq!(unlimited.jobs.history_limit, 0);
     }
 
     #[test]
