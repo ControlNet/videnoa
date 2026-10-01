@@ -1412,7 +1412,7 @@ fn parse_and_validate_workflow(
 
     workflow
         .validate(&state.inner.node_registry)
-        .and_then(|()| validate_video_workflow(&workflow))
+        .and_then(|()| validate_video_workflow(&workflow, &state.inner.node_registry))
         .and_then(|()| validate_workflow_encoders(&workflow))
         .map_err(|e| AppError::BadRequest(format!("workflow validation failed: {e:#}")))?;
 
@@ -1585,7 +1585,9 @@ async fn create_batch(
     let base_workflow: serde_json::Value = payload.workflow;
     let workflow_name = workflow_name_from_request(&base_workflow, DEFAULT_WORKFLOW_NAME_API_BATCH);
 
-    let mut job_ids = Vec::with_capacity(payload.file_paths.len());
+    // Prepare every entry before starting any, so one bad file rejects the
+    // whole batch instead of leaving the earlier jobs running behind a 400.
+    let mut prepared = Vec::with_capacity(payload.file_paths.len());
 
     for file_path in &payload.file_paths {
         let mut wf = base_workflow.clone();
@@ -1641,22 +1643,50 @@ async fn create_batch(
             }
         }
 
-        let workflow: PipelineGraph = parse_and_validate_workflow(&state, wf)?;
+        let workflow: PipelineGraph =
+            parse_and_validate_workflow(&state, wf).map_err(|error| match error {
+                AppError::BadRequest(message) => {
+                    AppError::BadRequest(format!("batch entry '{file_path}': {message}"))
+                }
+                other => other,
+            })?;
 
-        let created = create_and_spawn_job(
-            &state,
-            JobSubmission {
-                workflow,
-                params: None,
-                workflow_name: workflow_name.clone(),
-                workflow_source: WORKFLOW_SOURCE_API_BATCH.to_string(),
-                rerun_of_job_id: None,
-            },
-        )?;
-        let id = created.id;
+        let (job, response) = prepare_job(JobSubmission {
+            workflow,
+            params: None,
+            workflow_name: workflow_name.clone(),
+            workflow_source: WORKFLOW_SOURCE_API_BATCH.to_string(),
+            rerun_of_job_id: None,
+        });
+        prepared.push((file_path, job, response));
+    }
 
-        info!(job_id = %id, file_path = %file_path, "Batch job created");
-        job_ids.push(id);
+    // Persist all jobs before spawning any; on a storage failure remove the
+    // ones already stored so the batch leaves nothing behind.
+    for (index, (_, job, _)) in prepared.iter().enumerate() {
+        if let Err(error) = state.persist_job_snapshot(job) {
+            if let Some(persistence) = &state.inner.jobs_persistence {
+                for (_, stored, _) in &prepared[..index] {
+                    if let Err(rollback_error) = persistence.delete_job(&stored.id) {
+                        error!(
+                            job_id = %stored.id,
+                            error = ?rollback_error,
+                            "Failed to roll back persisted batch job"
+                        );
+                    }
+                }
+            }
+            return Err(AppError::Internal(format!(
+                "failed to persist new job: {error:#}"
+            )));
+        }
+    }
+
+    let mut job_ids = Vec::with_capacity(prepared.len());
+    for (file_path, job, response) in prepared {
+        spawn_job(&state, job);
+        info!(job_id = %response.id, file_path = %file_path, "Batch job created");
+        job_ids.push(response.id);
     }
 
     let total = job_ids.len();
@@ -3456,7 +3486,9 @@ mod tests {
                 {"id": "input", "node_type": "VideoInput", "params": {
                     "path": temp_path_str("nonexistent-video-videnoa-test.mkv")
                 }},
-                {"id": "output", "node_type": "VideoOutput", "params": {}}
+                {"id": "output", "node_type": "VideoOutput", "params": {
+                    "output_path": temp_path_str("nonexistent-video-videnoa-test.out.mkv")
+                }}
             ],
             "connections": [
                 {
@@ -3501,6 +3533,135 @@ mod tests {
             !err_msg.contains("CompileContext"),
             "should not fail due to missing CompileContext, got: {err_msg}"
         );
+    }
+
+    fn all_nodes_state() -> AppState {
+        let mut node_registry = NodeRegistry::new();
+        register_all_nodes(&mut node_registry);
+        let model_registry = ModelRegistry::with_builtin_models(test_models_dir());
+        AppState::new(
+            node_registry,
+            model_registry,
+            DashMap::new(),
+            AppConfig::default(),
+            test_config_path(),
+            test_data_dir(),
+        )
+    }
+
+    /// POST a workflow to /api/jobs and return the status plus the response body.
+    async fn post_job(state: &AppState, workflow: serde_json::Value) -> (StatusCode, String) {
+        let mut app = app_router(state.clone());
+        let body = serde_json::json!({ "workflow": workflow });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/jobs")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let resp = send_request(&mut app, req).await;
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&bytes).to_string())
+    }
+
+    fn frames_edge(from: &str, to: &str) -> serde_json::Value {
+        serde_json::json!({"from_node": from, "from_port": "frames", "to_node": to,
+                           "to_port": "frames", "port_type": "VideoFrames"})
+    }
+
+    fn source_path_edge(from: &str, to: &str) -> serde_json::Value {
+        serde_json::json!({"from_node": from, "from_port": "source_path", "to_node": to,
+                           "to_port": "source_path", "port_type": "Path"})
+    }
+
+    #[tokio::test]
+    async fn test_create_job_rejects_video_output_without_output_path() {
+        let state = all_nodes_state();
+        let workflow = serde_json::json!({
+            "nodes": [
+                {"id": "input", "node_type": "VideoInput", "params": {"path": temp_path_str("in.mkv")}},
+                {"id": "output", "node_type": "VideoOutput", "params": {}}
+            ],
+            "connections": [frames_edge("input", "output"), source_path_edge("input", "output")]
+        });
+
+        let (status, body) = post_job(&state, workflow).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            body.contains("node 'output' missing required input port 'output_path'"),
+            "{body}"
+        );
+        assert!(state.inner.jobs.is_empty(), "no job may be queued");
+    }
+
+    #[tokio::test]
+    async fn test_create_job_rejects_non_source_feeding_video_frames() {
+        let state = all_nodes_state();
+        let workflow = serde_json::json!({
+            "nodes": [
+                {"id": "const", "node_type": "Constant", "params": {"type": "Path", "value": temp_path_str("in.mkv")}},
+                {"id": "output", "node_type": "VideoOutput", "params": {"output_path": temp_path_str("out.mkv")}}
+            ],
+            "connections": [
+                frames_edge("const", "output"),
+                {"from_node": "const", "from_port": "value", "to_node": "output",
+                 "to_port": "source_path", "port_type": "Path"}
+            ]
+        });
+
+        let (status, body) = post_job(&state, workflow).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            body.contains("node 'const' of type 'Constant' cannot be the VideoFrames source"),
+            "{body}"
+        );
+        assert!(state.inner.jobs.is_empty(), "no job may be queued");
+    }
+
+    #[tokio::test]
+    async fn test_create_job_rejects_frame_chain_fan_out() {
+        let state = all_nodes_state();
+        let workflow = serde_json::json!({
+            "nodes": [
+                {"id": "input", "node_type": "VideoInput", "params": {"path": temp_path_str("in.mkv")}},
+                {"id": "out_a", "node_type": "VideoOutput", "params": {"output_path": temp_path_str("a.mkv")}},
+                {"id": "out_b", "node_type": "VideoOutput", "params": {"output_path": temp_path_str("b.mkv")}}
+            ],
+            "connections": [
+                frames_edge("input", "out_a"), frames_edge("input", "out_b"),
+                source_path_edge("input", "out_a"), source_path_edge("input", "out_b")
+            ]
+        });
+
+        let (status, body) = post_job(&state, workflow).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(body.contains("fan-out detected"), "{body}");
+        assert!(state.inner.jobs.is_empty(), "no job may be queued");
+    }
+
+    #[tokio::test]
+    async fn test_create_job_rejects_multiple_video_sources() {
+        let state = all_nodes_state();
+        let workflow = serde_json::json!({
+            "nodes": [
+                {"id": "in_a", "node_type": "VideoInput", "params": {"path": temp_path_str("a.mkv")}},
+                {"id": "in_b", "node_type": "VideoInput", "params": {"path": temp_path_str("b.mkv")}},
+                {"id": "out_a", "node_type": "VideoOutput", "params": {"output_path": temp_path_str("a.out.mkv")}},
+                {"id": "out_b", "node_type": "VideoOutput", "params": {"output_path": temp_path_str("b.out.mkv")}}
+            ],
+            "connections": [
+                frames_edge("in_a", "out_a"), frames_edge("in_b", "out_b"),
+                source_path_edge("in_a", "out_a"), source_path_edge("in_b", "out_b")
+            ]
+        });
+
+        let (status, body) = post_job(&state, workflow).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(body.contains("multiple source nodes detected"), "{body}");
+        assert!(state.inner.jobs.is_empty(), "no job may be queued");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4978,11 +5139,13 @@ mod tests {
             .await
             .unwrap();
         let json: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json.len(), 22);
+        assert_eq!(json.len(), 20);
         let node_types: Vec<&str> = json
             .iter()
             .map(|n| n["node_type"].as_str().unwrap())
             .collect();
+        assert!(!node_types.contains(&"ColorSpace"));
+        assert!(!node_types.contains(&"SceneDetect"));
         assert!(node_types.contains(&"Downloader"));
         assert!(node_types.contains(&"PathDivider"));
         assert!(node_types.contains(&"PathJoiner"));
@@ -5122,6 +5285,114 @@ mod tests {
 
         let resp = send_request(&mut app, req).await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    fn persisted_job_count(state: &AppState) -> i64 {
+        let persistence = state.inner.jobs_persistence.as_ref().unwrap();
+        let conn = Connection::open(persistence.db_path()).unwrap();
+        conn.query_row("SELECT COUNT(*) FROM jobs", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    async fn post_batch(
+        state: &AppState,
+        file_paths: Vec<String>,
+        workflow: serde_json::Value,
+    ) -> (StatusCode, String) {
+        let mut app = app_router(state.clone());
+        let body = serde_json::json!({ "file_paths": file_paths, "workflow": workflow });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/batch")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let resp = send_request(&mut app, req).await;
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&bytes).to_string())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_create_batch_starts_nothing_when_a_later_entry_is_invalid() {
+        // Test-only factory: the real VideoInput accepts any path at validation
+        // time, so reject one marker path to force a failure on the second entry.
+        const REJECTED: &str = "rejected-by-test-factory.mkv";
+        let mut node_registry = NodeRegistry::new();
+        register_all_nodes(&mut node_registry);
+        node_registry.register("VideoInput", |params| {
+            let path = params
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            if path.ends_with(REJECTED) {
+                anyhow::bail!("test factory rejects {path}");
+            }
+            Ok(Box::new(crate::nodes::video_input::VideoInputNode::new(
+                &params,
+            )?))
+        });
+        let state = AppState::new(
+            node_registry,
+            ModelRegistry::with_builtin_models(test_models_dir()),
+            DashMap::new(),
+            AppConfig::default(),
+            test_config_path(),
+            test_data_dir(),
+        );
+        let workflow = serde_json::json!({
+            "nodes": [
+                {"id": "input", "node_type": "VideoInput", "params": {}},
+                {"id": "output", "node_type": "VideoOutput", "params": {"output_path": temp_path_str("batch-out.mkv")}}
+            ],
+            "connections": [frames_edge("input", "output"), source_path_edge("input", "output")]
+        });
+
+        let (status, body) = post_batch(
+            &state,
+            vec![temp_path_str("batch-ok.mkv"), temp_path_str(REJECTED)],
+            workflow,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            body.contains(REJECTED),
+            "error should name the entry: {body}"
+        );
+        assert!(state.inner.jobs.is_empty(), "no batch job may be started");
+        assert_eq!(persisted_job_count(&state), 0, "no batch job may be stored");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_create_batch_rolls_back_when_a_later_entry_fails_to_persist() {
+        let state = test_state();
+        let persistence = state.inner.jobs_persistence.as_ref().unwrap();
+        let conn = Connection::open(persistence.db_path()).unwrap();
+        // Deliberate database fault injection: the second insert fails.
+        conn.execute_batch(
+            "CREATE TRIGGER reject_second_job BEFORE INSERT ON jobs \
+             WHEN (SELECT COUNT(*) FROM jobs) >= 1 \
+             BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
+        )
+        .unwrap();
+
+        let (status, body) = post_batch(
+            &state,
+            vec![temp_path_str("video1.mkv"), temp_path_str("video2.mkv")],
+            valid_workflow_json(),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+        assert!(state.inner.jobs.is_empty(), "no batch job may be started");
+        assert_eq!(
+            persisted_job_count(&state),
+            0,
+            "jobs stored before the failure must be rolled back"
+        );
     }
 
     #[tokio::test]

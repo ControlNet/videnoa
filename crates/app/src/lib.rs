@@ -137,7 +137,14 @@ pub async fn run_from_env() -> Result<()> {
             unreachable!("Authentication CLI returns before runtime initialization")
         }
         Some(Commands::Run(run)) => {
-            run_workflow(run.workflow, run.input, run.output, run.params).await
+            run_workflow(
+                run.workflow,
+                run.input,
+                run.output,
+                run.params,
+                resolved_data_dir,
+            )
+            .await
         }
         None => run_server(cli.port, cli.host, resolved_data_dir).await,
     }
@@ -569,11 +576,19 @@ fn parse_dynamic_args(args: &[String], workflow_ports: &[String]) -> HashMap<Str
     dynamic
 }
 
+/// Build the compile context for `videnoa run` from the same `config.toml`
+/// the server reads, so `paths.trt_cache_dir` applies to CLI runs as well.
+fn cli_compile_context(data_dir: &Path) -> Result<VideoCompileContext> {
+    let config = AppConfig::load_from_path(&config_path(data_dir))?;
+    Ok(VideoCompileContext::new(config.paths.trt_cache_dir))
+}
+
 async fn run_workflow(
     workflow_path: PathBuf,
     input: Option<PathBuf>,
     output: Option<PathBuf>,
     raw_params: Vec<String>,
+    data_dir: PathBuf,
 ) -> Result<()> {
     if !workflow_path.exists() {
         bail!("Workflow file does not exist: {}", workflow_path.display());
@@ -640,7 +655,7 @@ async fn run_workflow(
     info!("Validating workflow...");
     graph
         .validate(&registry)
-        .and_then(|()| validate_video_workflow(&graph))
+        .and_then(|()| validate_video_workflow(&graph, &registry))
         .and_then(|()| validate_workflow_encoders(&graph))
         .context("Workflow validation failed")?;
 
@@ -651,7 +666,7 @@ async fn run_workflow(
         );
     }
 
-    let compile_ctx = VideoCompileContext::default();
+    let compile_ctx = cli_compile_context(&data_dir)?;
     let (_frames_written, progress_callback) = make_progress_callback();
 
     info!("Executing workflow...");
@@ -850,6 +865,48 @@ mod unwrap_workflow_tests {
     fn unrecognised_shape_returned_as_is() {
         let unknown = serde_json::json!({"something": "else"});
         assert_eq!(unwrap_workflow(unknown.clone()), unknown);
+    }
+}
+
+#[cfg(test)]
+mod cli_compile_context_tests {
+    use super::*;
+
+    fn unique_data_dir(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "videnoa-cli-ctx-{tag}-{}-{nanos}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn honours_trt_cache_dir_from_config() {
+        let data_dir = unique_data_dir("configured");
+        let mut config = AppConfig::default();
+        config.paths.trt_cache_dir = data_dir.join("engines");
+        config
+            .save_to_path(&config_path(&data_dir))
+            .expect("config should be written");
+
+        let ctx = cli_compile_context(&data_dir).expect("compile context should build");
+        assert_eq!(ctx.trt_cache_dir(), data_dir.join("engines"));
+
+        std::fs::remove_dir_all(&data_dir).ok();
+    }
+
+    #[test]
+    fn falls_back_to_default_without_config_file() {
+        let data_dir = unique_data_dir("missing");
+
+        let ctx = cli_compile_context(&data_dir).expect("compile context should build");
+        assert_eq!(
+            ctx.trt_cache_dir(),
+            AppConfig::default().paths.trt_cache_dir.as_path()
+        );
     }
 }
 
