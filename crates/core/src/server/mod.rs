@@ -2403,7 +2403,10 @@ fn parse_preview_probe(probe: &[u8]) -> (u64, &'static str) {
 /// Samples every `interval`-th frame and converts it to RGB with the source matrix,
 /// matching how video jobs decode.
 fn preview_extraction_filter(interval: u64, color_matrix: &str) -> String {
-    format!("select='not(mod(n\\,{interval}))',scale=in_color_matrix={color_matrix}:flags=bicubic")
+    format!(
+        "select='not(mod(n\\,{interval}))',scale=in_color_matrix={color_matrix}:flags={}",
+        crate::nodes::video_input::RGB_DECODE_SCALE_FLAGS
+    )
 }
 
 async fn serve_preview_frame(
@@ -2911,7 +2914,7 @@ mod tests {
     fn preview_extraction_converts_with_the_source_matrix() {
         assert_eq!(
             preview_extraction_filter(25, "bt709"),
-            "select='not(mod(n\\,25))',scale=in_color_matrix=bt709:flags=bicubic"
+            "select='not(mod(n\\,25))',scale=in_color_matrix=bt709:flags=bicubic+accurate_rnd+full_chroma_int"
         );
     }
 

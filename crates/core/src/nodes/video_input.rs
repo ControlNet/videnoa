@@ -423,6 +423,11 @@ pub(crate) fn source_color_matrix(color_space: Option<&str>) -> &'static str {
     }
 }
 
+/// swscale flags for the YUV -> RGB conversion of decoded and preview frames.
+/// `accurate_rnd` and `full_chroma_int` match the encoder side and keep the
+/// round trip within ±2 per channel on 4:2:0 sources (±3 with plain bicubic).
+pub(crate) const RGB_DECODE_SCALE_FLAGS: &str = "bicubic+accurate_rnd+full_chroma_int";
+
 /// Whether a source's colours lie outside BT.709 primaries. The decoder
 /// converts YUV to RGB with the source matrix, but the output is tagged BT.709
 /// without a primaries conversion, so such sources come out desaturated
@@ -476,7 +481,7 @@ fn build_decoder_args(
         format!("0:{stream_index}"),
         // Convert to RGB explicitly so the source matrix is applied.
         "-vf".to_string(),
-        format!("scale=in_color_matrix={color_matrix}:flags=bicubic"),
+        format!("scale=in_color_matrix={color_matrix}:flags={RGB_DECODE_SCALE_FLAGS}"),
         "-f".to_string(),
         "rawvideo".to_string(),
         "-pix_fmt".to_string(),
@@ -1347,7 +1352,7 @@ pub(crate) mod tests {
         assert!(vf_idx > i_idx, "-vf must be an output option");
         assert_eq!(
             args[vf_idx + 1],
-            "scale=in_color_matrix=bt601:flags=bicubic"
+            "scale=in_color_matrix=bt601:flags=bicubic+accurate_rnd+full_chroma_int"
         );
     }
 
@@ -1472,7 +1477,7 @@ pub(crate) mod tests {
             let close = actual
                 .iter()
                 .zip(expected)
-                .all(|(a, e)| (i16::from(*a) - i16::from(*e)).abs() <= 3);
+                .all(|(a, e)| (i16::from(*a) - i16::from(*e)).abs() <= 2);
             assert!(
                 close,
                 "{label}: quadrant {quadrant} decoded {actual:?}, expected {expected:?}"
