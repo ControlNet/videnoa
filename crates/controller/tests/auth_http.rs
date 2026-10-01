@@ -9,7 +9,7 @@ use axum::http::{header, Request, StatusCode};
 use chrono::{Duration as ChronoDuration, Utc};
 use tempfile::TempDir;
 use tower::ServiceExt;
-use videnoa_controller::auth::{AuthService, CSRF_HEADER, SESSION_COOKIE};
+use videnoa_controller::auth::{AuthError, AuthService, CSRF_HEADER, SESSION_COOKIE};
 use videnoa_controller::config::ControllerConfig;
 use videnoa_controller::domain::SecretString;
 use videnoa_controller::persistence::{Database, DatabaseOptions, Store};
@@ -329,15 +329,25 @@ async fn login_and_bearer_share_the_direct_peer_failure_budget() -> TestResult {
         StatusCode::UNAUTHORIZED
     );
 
+    // The budget applies before verification: a correct credential stays limited.
     let mut valid = request_from("GET", "/api/readiness", Body::empty(), limited_peer)?;
     valid
         .headers_mut()
         .insert(header::AUTHORIZATION, format!("Bearer {PASSWORD}").parse()?);
     assert_eq!(
         fixture.router().oneshot(valid).await?.status(),
-        StatusCode::OK
+        StatusCode::TOO_MANY_REQUESTS
     );
 
+    // Once the window has passed, a successful verification clears the peer's failures.
+    fixture
+        .auth
+        .authenticate_bearer(
+            limited_peer.ip(),
+            PASSWORD,
+            Utc::now() + ChronoDuration::minutes(5),
+        )
+        .await?;
     let mut after_clear = request_from("GET", "/api/readiness", Body::empty(), limited_peer)?;
     after_clear
         .headers_mut()
@@ -473,5 +483,85 @@ async fn default_sessions_expire_after_seven_days_without_api_activity() -> Test
         .authenticate_session_at(token, initial.idle_expires_at)
         .await
         .is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn limited_peer_is_rejected_before_verification_until_the_window_passes() -> TestResult {
+    // Given: a peer that has spent its five-failure budget at the service boundary.
+    let fixture = Fixture::new().await?;
+    let peer = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let started = Utc::now();
+    for _ in 0..5 {
+        let error = fixture
+            .auth
+            .login(peer, &SecretString::new("wrong-secret"), started)
+            .await
+            .err()
+            .ok_or_else(|| std::io::Error::other("wrong password was accepted"))?;
+        assert!(matches!(error, AuthError::Unauthorized));
+    }
+    let verifications = fixture.auth.password_verification_count();
+    assert_eq!(verifications, 5);
+
+    // When: the same peer submits the correct password while limited.
+    let body = serde_json::to_vec(&serde_json::json!({"password": PASSWORD}))?;
+    let response = fixture
+        .router()
+        .oneshot(request("POST", "/api/auth/login", Body::from(body))?)
+        .await?;
+
+    // Then: it is throttled without running Argon2, and succeeds once the window passes.
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(fixture.auth.password_verification_count(), verifications);
+    let later = started + ChronoDuration::minutes(5);
+    fixture
+        .auth
+        .login(peer, &SecretString::new(PASSWORD), later)
+        .await
+        .map_err(|error| std::io::Error::other(format!("login after window: {error}")))?;
+    assert_eq!(
+        fixture.auth.password_verification_count(),
+        verifications + 1
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn limited_bearer_peer_does_not_consume_a_verification_permit() -> TestResult {
+    // Given: a peer whose Bearer failures exhausted the shared budget.
+    let fixture = Fixture::new().await?;
+    let peer = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let started = Utc::now();
+    for _ in 0..5 {
+        let error = fixture
+            .auth
+            .authenticate_bearer(peer, "wrong-secret", started)
+            .await
+            .err()
+            .ok_or_else(|| std::io::Error::other("wrong bearer was accepted"))?;
+        assert!(matches!(error, AuthError::Unauthorized));
+    }
+    let verifications = fixture.auth.password_verification_count();
+
+    // When: that peer presents the correct Bearer credential over HTTP.
+    let mut bearer = request("GET", "/api/readiness", Body::empty())?;
+    bearer
+        .headers_mut()
+        .insert(header::AUTHORIZATION, format!("Bearer {PASSWORD}").parse()?);
+    let response = fixture.router().oneshot(bearer).await?;
+
+    // Then: the typed limit is returned before any Argon2 work is scheduled.
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(fixture.auth.password_verification_count(), verifications);
+    fixture
+        .auth
+        .authenticate_bearer(peer, PASSWORD, started + ChronoDuration::minutes(5))
+        .await
+        .map_err(|error| std::io::Error::other(format!("bearer after window: {error}")))?;
+    assert_eq!(
+        fixture.auth.password_verification_count(),
+        verifications + 1
+    );
     Ok(())
 }

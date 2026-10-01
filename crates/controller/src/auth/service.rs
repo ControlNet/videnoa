@@ -159,6 +159,11 @@ impl AuthService {
         password: &SecretString,
         now: DateTime<Utc>,
     ) -> Result<IssuedSession, AuthError> {
+        // The failure budget is spent before verification so a limited peer
+        // cannot occupy an Argon2 permit, and a correct password stays limited.
+        if self.inner.limiter.is_limited(address, now) {
+            return Err(AuthError::RateLimited);
+        }
         let Some(loaded) = self.inner.password.load(&self.inner.store).await? else {
             return Err(AuthError::Unauthorized);
         };
@@ -176,6 +181,12 @@ impl AuthService {
         }
         self.inner.limiter.clear(address);
         self.issue_session(loaded.fingerprint(), now).await
+    }
+
+    /// Diagnostic count of Argon2 verifications started by login and Bearer checks.
+    #[must_use]
+    pub fn password_verification_count(&self) -> u64 {
+        self.inner.password.verification_count()
     }
 
     pub(super) fn policy(&self) -> AuthConfig {
