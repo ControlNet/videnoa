@@ -148,7 +148,12 @@ private temporary TOML file, fsyncs it, atomically replaces `controller.toml`, a
 fsyncs `data`. Only after persistence succeeds does it update runtime policy and
 hot-apply scheduler, independent transfer limits, auth, timeouts, retry, and the
 listener. Failed persistence leaves runtime unchanged. Stale Settings generations
-return conflict; the generation is in memory and resets on restart. A shared
+return conflict; the generation is in memory and resets on restart.
+The new listener is bound before the old one is released, so changing only
+the host on the same port to an overlapping address (for example `127.0.0.1`
+to `0.0.0.0`) cannot be hot-applied: Settings rejects it before persistence and
+asks you to change the port as well, or to edit `controller.toml` and restart.
+A shared
 admission lock holds pause/config commits behind already admitted submissions
 and prevents new reservations, uploads, or submissions after pause commits.
 Processing and downstream work continue. Shutdown pauses admission in memory only,

@@ -153,11 +153,24 @@ async fn prepare_listener(
             "live listener reconfiguration is unavailable",
         ));
     }
+    // The new listener is bound before the old one is released so a failed bind
+    // leaves the Controller reachable. Moving to an overlapping host on the same
+    // port (for example 127.0.0.1 to 0.0.0.0) therefore cannot be hot-applied.
+    let same_port = current.server.port == request.server.port;
     PreparedListener::bind(SocketAddr::new(request.server.host, request.server.port))
         .await
         .map(Some)
-        .map_err(|_| OperationsError::InvalidField("server", "address could not be bound"))
+        .map_err(|error| {
+            if same_port && error.kind() == std::io::ErrorKind::AddrInUse {
+                OperationsError::InvalidField("server", SAME_PORT_HOST_CHANGE)
+            } else {
+                OperationsError::InvalidField("server", "address could not be bound")
+            }
+        })
 }
+
+const SAME_PORT_HOST_CHANGE: &str = "the host cannot change while the current listener holds \
+    this port; change the port as well, or edit controller.toml and restart the Controller";
 
 fn current(state: &OperationsState) -> Result<SettingsResponse, OperationsError> {
     let record = state

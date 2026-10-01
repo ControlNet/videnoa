@@ -555,6 +555,10 @@ evidence. The configuration file is always `<DATA ROOT>/controller.toml`.
 Other mutable fields are persisted and hot-applied, including listener and
 authentication policy. A listener update is rejected before persistence when
 the requested address cannot be bound.
+The new listener is bound before the old one is released, so changing only
+the host on the same port to an overlapping address (for example `127.0.0.1`
+to `0.0.0.0`) cannot be hot-applied: Settings rejects it before persistence and
+asks you to change the port as well, or to edit `controller.toml` and restart.
 
 ### SSE Semantics
 
