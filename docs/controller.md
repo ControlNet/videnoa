@@ -578,7 +578,9 @@ asks you to change the port as well, or to edit `controller.toml` and restart.
 `GET /api/events` is authenticated SSE. Every connection first receives a
 `refetch` event with reason `snapshot_required`. Durable changes may emit
 `task_updated`, `worker_updated`, or `scheduler_updated`; lag and deletion use
-`refetch`. SSE is an invalidation hint, not durable history.
+`refetch`. Each durable change is read back from the database once, and every
+open connection receives the same event, including its `event_id`. SSE is an
+invalidation hint, not durable history.
 
 ### Errors
 

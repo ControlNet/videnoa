@@ -249,6 +249,27 @@ impl JobsPersistence {
         })
     }
 
+    /// Deletes every listed job row in one transaction: all or none.
+    pub(crate) fn delete_jobs<'a>(
+        &self,
+        job_ids: impl IntoIterator<Item = &'a str>,
+    ) -> Result<usize> {
+        self.with_connection(|conn| {
+            let transaction = conn.transaction()?;
+            let mut deleted_rows = 0;
+            {
+                let mut statement = transaction.prepare("DELETE FROM jobs WHERE id = ?1")?;
+                for job_id in job_ids {
+                    deleted_rows += statement
+                        .execute(params![job_id])
+                        .with_context(|| format!("failed to delete persisted job {job_id}"))?;
+                }
+            }
+            transaction.commit()?;
+            Ok(deleted_rows)
+        })
+    }
+
     fn initialize_schema(&self) -> Result<()> {
         self.with_connection(|conn| {
             conn.execute_batch(
