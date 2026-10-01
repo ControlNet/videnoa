@@ -173,8 +173,12 @@ deviations worth knowing:
   every tracked `.rs` file; eight drifted controller files were formatted.
 - Risk 18: the Worker image ships the release FFmpeg 8.1 bundle, pinned by
   SHA256 (`MEDIA_TOOLS_SHA256` in `Dockerfile`; bump it with the asset).
-- Nits: Worker job history is capped by `[jobs] history_limit` (default 1000,
-  0 = unlimited); controller SSE reads each change once for all subscribers
+- Nits: Worker job history stays unbounded on purpose. A `[jobs]
+  history_limit` was added and then reverted (`1a7d75b`): pruning a finished
+  job makes the Controller's poll get 404 (task fails as
+  `remote_state_ambiguous`) and drops its idempotency key (see
+  `job-history-limit-and-sse-fanout-2026-10-01.md`). Controller SSE reads
+  each change once for all subscribers
   (shared `event_id`); both servers bound the request head to 30 s and serve
   HTTP/1 only (h2c would bypass the deadline); presets capped at 256.
 - Not a bug: worker DTO unknown fields were already rejected (serde 1.0.228

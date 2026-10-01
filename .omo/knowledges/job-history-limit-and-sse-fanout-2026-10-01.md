@@ -1,26 +1,24 @@
-# Worker job history limit and Controller SSE fan-out (2026-10-01)
+# Worker job history (kept unbounded) and Controller SSE fan-out (2026-10-01)
 
-## Worker: `[jobs] history_limit`
+## Worker job history: no automatic limit (reverted 2026-10-02)
 
-- `crates/core/src/config.rs` `JobsConfig { history_limit: usize }`, default
-  `1000`; `0` keeps the full history (TOML cannot express "unset" once a
-  default exists, and `0 = keep none` would make clients polling a finished job
-  see 404 immediately).
-- Logic lives in `crates/core/src/server/history.rs`:
-  - finished = `JobStatus::is_terminal()` (completed, failed, cancelled);
-    ordered by `completed_at`, falling back to `created_at`, then id.
-  - Runtime: `AppState::enforce_job_history_limit()` runs at the end of
-    `run_job`. Each pruned job holds its DashMap entry until
-    `JobsPersistence::delete_job` succeeds (same ordering as
-    `delete_job_history`); a failed delete keeps the job.
-  - Startup: `history::prune_restored()` runs in `AppState::new` after
-    `load_jobs_for_startup` (so Running/Queued rows are already reconciled to
-    Cancelled and count as finished), deleting all overflow rows in one
-    transaction (`JobsPersistence::delete_jobs`). On failure nothing is dropped.
-- A lowered limit saved through `PUT /api/config` applies at the next job
-  completion or restart, not immediately.
-- Pruning removes the idempotency mapping stored on the row, exactly like a
-  manual history delete.
+A `[jobs] history_limit` (default 1000) that pruned finished jobs was added in
+`4898246` and reverted in `1a7d75b`. Do not reintroduce automatic pruning of
+Worker jobs; it breaks the Controller-Worker contract:
+
+- The Controller polls `GET /api/jobs/{id}` until a terminal state
+  (`crates/controller/src/recovery/processing.rs`); a pruned job returns 404
+  and the task fails as `remote_state_ambiguous`.
+- The idempotency key lives on the job row, so pruning it turns a replayed
+  `POST /api/run` into a duplicate run instead of `Replayed`.
+- `processing_retry` (`operations/tasks.rs`) looks up the original remote job.
+- The Controller never deletes Worker job records: `DELETE /api/jobs/{id}` is
+  sent only on cancellation (`recovery/submission.rs`) and remote cleanup
+  (`scheduler/cleanup_remote.rs`) removes workspace files only.
+
+Finished jobs are small rows; users delete them manually via Job History
+(`delete_job_history`). If bounding is ever needed, it must be driven or
+acknowledged by the Controller, not by a Worker-local count.
 
 ## Controller: one store read per durable change
 
