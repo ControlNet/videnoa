@@ -77,6 +77,20 @@ pub(crate) fn inference_output_memory_info(session: &Session) -> ort::Result<Mem
     }
 }
 
+/// A CUDA-pinned host allocator for model inputs, when the session runs on
+/// CUDA. Pinned inputs let ONNX Runtime copy them to the GPU with DMA instead
+/// of staging pageable memory.
+pub(crate) fn pinned_input_allocator(session: &Session) -> Option<Allocator> {
+    let memory = MemoryInfo::new(
+        AllocationDevice::CUDA_PINNED,
+        0,
+        AllocatorType::Device,
+        MemoryType::CPUInput,
+    )
+    .ok()?;
+    Allocator::new(session, memory).ok()
+}
+
 pub(crate) fn ensure_inference_output_memory(
     value: &DynValue,
     expected: &MemoryInfo,

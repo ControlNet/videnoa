@@ -16,8 +16,9 @@ use std::sync::{Arc, LazyLock, Mutex};
 use anyhow::{anyhow, bail, Context, Result};
 use half::f16;
 use half::slice::HalfFloatSliceExt;
-use ndarray::{s, Array4, ArrayView4};
+use ndarray::{s, Array4};
 use ort::{
+    memory::Allocator,
     session::Session,
     value::{Tensor, TensorRef},
 };
@@ -31,8 +32,8 @@ use crate::streaming_executor::FrameInterpolator;
 use crate::types::{Frame, PortData, PortType};
 
 use crate::nodes::backend::{
-    build_session, ensure_inference_output_memory, inference_output_memory_info, InferenceBackend,
-    SessionConfig,
+    build_session, ensure_inference_output_memory, inference_output_memory_info,
+    pinned_input_allocator, InferenceBackend, SessionConfig,
 };
 use crate::nodes::nchw_layout::crop_planes_into;
 use crate::nodes::worker_count::WorkerCount;
@@ -158,7 +159,7 @@ impl FrameInterpolationNode {
             inference: FrameInterpolationInference {
                 session,
                 use_iobinding: self.use_iobinding,
-                concat_buf: self.concat_buf,
+                concat_input: Mutex::new(None),
                 multiplier: self.multiplier,
                 pool: Arc::clone(&pool),
             },
@@ -615,7 +616,8 @@ fn into_standard_layout_vec(array: Array4<f32>) -> Result<Vec<f32>> {
 pub struct FrameInterpolationInference {
     session: Arc<Mutex<Session>>,
     use_iobinding: bool,
-    concat_buf: Option<Array4<f32>>,
+    /// Only accessed through `&mut self`; the mutex makes the stage `Sync`.
+    concat_input: Mutex<Option<ConcatInput>>,
     multiplier: u32,
     pool: Arc<FramePool>,
 }
@@ -624,6 +626,46 @@ impl FrameInterpolationInference {
     pub fn set_frame_pool(&mut self, pool: Arc<FramePool>) {
         self.pool = pool;
     }
+
+    /// The reusable `[1, 7, H, W]` model input, allocated in CUDA-pinned
+    /// memory when the session supports it.
+    fn concat_input(&mut self, padded_h: usize, padded_w: usize) -> Result<&mut Tensor<f32>> {
+        let shape = [1_i64, 7, padded_h as i64, padded_w as i64];
+        let concat_input = self
+            .concat_input
+            .get_mut()
+            .unwrap_or_else(|error| error.into_inner());
+        if concat_input
+            .as_ref()
+            .is_none_or(|input| input.tensor.shape()[..] != shape)
+        {
+            // Drop the previous tensor before allocating its replacement.
+            *concat_input = None;
+            let session = self.session.lock().unwrap();
+            let allocator = pinned_input_allocator(&session);
+            drop(session);
+            let tensor = match &allocator {
+                Some(allocator) => Tensor::new(allocator, shape)?,
+                None => Tensor::new(&Allocator::default(), shape)?,
+            };
+            debug!(
+                pinned = allocator.is_some(),
+                padded_h, padded_w, "allocated RIFE concatenated input"
+            );
+            *concat_input = Some(ConcatInput {
+                tensor,
+                _allocator: allocator,
+            });
+        }
+        Ok(&mut concat_input.as_mut().expect("input allocated above").tensor)
+    }
+}
+
+/// A model input tensor and the allocator that owns its memory.
+struct ConcatInput {
+    // Declared before the allocator so it is released first.
+    tensor: Tensor<f32>,
+    _allocator: Option<Allocator>,
 }
 
 impl Node for FrameInterpolationInference {
@@ -668,38 +710,37 @@ impl FrameInterpolator for FrameInterpolationInference {
 
         let padded_h = orig_h + pad_amount(orig_h);
         let padded_w = orig_w + pad_amount(orig_w);
+        let image_len = 3 * padded_h * padded_w;
+        anyhow::ensure!(
+            prev_data.len() == image_len && curr_data.len() == image_len,
+            "FrameInterpolationInference: expected padded frames of {image_len} samples, got {} and {}",
+            prev_data.len(),
+            curr_data.len()
+        );
 
-        let img0 = ArrayView4::from_shape((1, 3, padded_h, padded_w), prev_data)
-            .context("FrameInterpolationInference: failed to reshape previous frame")?;
-        let img1 = ArrayView4::from_shape((1, 3, padded_h, padded_w), curr_data)
-            .context("FrameInterpolationInference: failed to reshape current frame")?;
-
-        let target_shape = [1, 7, padded_h, padded_w];
-        let mut concat = match self.concat_buf.take() {
-            Some(arr) if arr.shape() == target_shape => arr,
-            _ => Array4::<f32>::zeros(target_shape),
-        };
-
-        concat.slice_mut(s![.., 0..3, .., ..]).assign(&img0);
-        concat.slice_mut(s![.., 3..6, .., ..]).assign(&img1);
+        let session = Arc::clone(&self.session);
+        let use_iobinding = self.use_iobinding;
+        let pool = Arc::clone(&self.pool);
+        let concat = self.concat_input(padded_h, padded_w)?;
+        {
+            // Channels: img0 RGB, img1 RGB, timestep.
+            let (_, values) = concat.extract_tensor_mut();
+            values[..image_len].copy_from_slice(prev_data);
+            values[image_len..2 * image_len].copy_from_slice(curr_data);
+        }
 
         let mut results = Vec::with_capacity(steps.len());
         for &t in &steps {
-            concat.slice_mut(s![.., 6..7, .., ..]).fill(t);
+            concat.extract_tensor_mut().1[2 * image_len..].fill(t);
 
-            let mut cropped = self.pool.take_f32(3 * orig_h * orig_w);
-            run_concatenated_with(
-                &self.session,
-                &concat,
-                self.use_iobinding,
-                |shape, output| {
-                    anyhow::ensure!(
-                        shape == [1, 3, padded_h as i64, padded_w as i64],
-                        "FrameInterpolationInference: unexpected output shape {shape:?}"
-                    );
-                    crop_planes_into(output, padded_h, padded_w, orig_h, orig_w, &mut cropped)
-                },
-            )?;
+            let mut cropped = pool.take_f32(3 * orig_h * orig_w);
+            run_concatenated_with(&session, concat, use_iobinding, |shape, output| {
+                anyhow::ensure!(
+                    shape == [1, 3, padded_h as i64, padded_w as i64],
+                    "FrameInterpolationInference: unexpected output shape {shape:?}"
+                );
+                crop_planes_into(output, padded_h, padded_w, orig_h, orig_w, &mut cropped)
+            })?;
             results.push(Frame::NchwF32 {
                 data: cropped,
                 height: orig_h as u32,
@@ -707,13 +748,10 @@ impl FrameInterpolator for FrameInterpolationInference {
             });
         }
 
-        self.concat_buf = Some(concat);
         Ok(results)
     }
 }
 
-/// Scene-change output for the inference stage: copies of `frame` in pooled
-/// buffers, still padded like the stage input.
 fn duplicate_nchw_f32_frame(frame: &Frame, count: usize, pool: &FramePool) -> Result<Vec<Frame>> {
     let (data, height, width) = extract_nchw_f32(frame, "previous")?;
     Ok((0..count)
@@ -1371,7 +1409,8 @@ fn run_concatenated(
     concat: &Array4<f32>,
     use_iobinding: bool,
 ) -> Result<ndarray::ArrayD<f32>> {
-    run_concatenated_with(session_arc, concat, use_iobinding, |shape, output| {
+    let tensor = TensorRef::from_array_view(concat.view())?;
+    run_concatenated_with(session_arc, &tensor, use_iobinding, |shape, output| {
         let shape: Vec<usize> = shape.iter().map(|&dim| dim as usize).collect();
         Ok(ndarray::ArrayD::from_shape_vec(shape, output.to_vec())?)
     })
@@ -1381,14 +1420,10 @@ fn run_concatenated(
 /// contiguous samples) to `read` while the output is still borrowed from ORT.
 fn run_concatenated_with<R>(
     session_arc: &Arc<Mutex<Session>>,
-    concat: &Array4<f32>,
+    tensor: &Tensor<f32>,
     use_iobinding: bool,
     read: impl FnOnce(&[i64], &[f32]) -> Result<R>,
 ) -> Result<R> {
-    let t_tensor = std::time::Instant::now();
-    let tensor = TensorRef::from_array_view(concat.view())?;
-    let tensor_ms = t_tensor.elapsed().as_secs_f64() * 1000.0;
-
     let t_lock = std::time::Instant::now();
     let mut session = session_arc.lock().unwrap();
     let lock_ms = t_lock.elapsed().as_secs_f64() * 1000.0;
@@ -1396,7 +1431,7 @@ fn run_concatenated_with<R>(
     let t_run = std::time::Instant::now();
     let result = if use_iobinding {
         let mut binding = session.create_binding()?;
-        binding.bind_input(INPUT_CONCAT, &tensor)?;
+        binding.bind_input(INPUT_CONCAT, tensor)?;
         let output_memory = inference_output_memory_info(&session)?;
         binding.bind_output_to_device(OUTPUT_NAME, &output_memory)?;
         let outputs = session.run_binding(&binding)?;
@@ -1411,7 +1446,6 @@ fn run_concatenated_with<R>(
     let run_ms = t_run.elapsed().as_secs_f64() * 1000.0;
 
     debug!(
-        tensor_copy_ms = format!("{tensor_ms:.1}"),
         lock_ms = format!("{lock_ms:.1}"),
         session_run_ms = format!("{run_ms:.1}"),
         "RIFE run_concatenated detail"
@@ -2148,6 +2182,85 @@ mod tests {
                 assert_eq!(data.len(), 64 * 64 * 3);
             }
             _ => panic!("Expected CpuRgb frame"),
+        }
+    }
+
+    fn gradient_rgb(width: usize, height: usize, phase: usize) -> Frame {
+        let data = (0..width * height * 3)
+            .map(|i| ((i / 3 % width + i / 3 / width * 2 + i % 3 * 40 + phase) % 256) as u8)
+            .collect();
+        Frame::CpuRgb {
+            data,
+            width: width as u32,
+            height: height as u32,
+            bit_depth: 8,
+        }
+    }
+
+    fn concatenated_rife_node() -> FrameInterpolationNode {
+        let mut node = FrameInterpolationNode::new();
+        let mut inputs = HashMap::new();
+        inputs.insert(
+            "model_path".to_string(),
+            PortData::Path(PathBuf::from(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../models/rife_v4.26.onnx"
+            ))),
+        );
+        inputs.insert("multiplier".to_string(), PortData::Int(2));
+        node.execute(&inputs, &ExecutionContext::default())
+            .expect("load RIFE model");
+        assert_eq!(node.model_format(), ModelFormat::Concatenated);
+        node
+    }
+
+    #[test]
+    #[ignore = "needs a CUDA GPU and models/rife_v4.26.onnx"]
+    fn micro_stages_match_the_single_node_path() {
+        // Given: the reference node path and the pooled micro-stage path with
+        // its reusable (pinned when available) model input.
+        let ctx = ExecutionContext::default();
+        let mut reference = concatenated_rife_node();
+        // Each pair below is independent, not a sliding window.
+        reference.disable_pair_cache();
+        let mut micro = concatenated_rife_node()
+            .into_micro_stages()
+            .expect("concatenated model splits into micro-stages");
+
+        // Unaligned sizes need padding; the size change reallocates the input.
+        for (width, height) in [(96, 72), (96, 72), (64, 64)] {
+            let frame0 = gradient_rgb(width, height, 0);
+            let frame1 = gradient_rgb(width, height, 60);
+            let expected = reference
+                .process_frame_pair(&frame0, &frame1, false)
+                .expect("node interpolation");
+
+            // When
+            let pre0 = micro.preprocess.process_frame(frame0, &ctx).unwrap();
+            let pre1 = micro.preprocess.process_frame(frame1, &ctx).unwrap();
+            let mut interpolated = micro
+                .inference
+                .interpolate(&pre0, &pre1, false, &ctx)
+                .expect("micro-stage interpolation");
+            let actual = micro
+                .postprocess
+                .process_frame(interpolated.remove(0), &ctx)
+                .unwrap();
+
+            // Then
+            let (Frame::CpuRgb { data: expected, .. }, Frame::CpuRgb { data: actual, .. }) =
+                (&expected[0], &actual)
+            else {
+                panic!("both paths should produce RGB");
+            };
+            assert_eq!(actual.len(), expected.len());
+            let max_diff = actual
+                .iter()
+                .zip(expected)
+                .map(|(a, e)| a.abs_diff(*e))
+                .max()
+                .unwrap();
+            assert!(max_diff <= 1, "{width}x{height}: max difference {max_diff}");
         }
     }
 
