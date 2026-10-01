@@ -1854,10 +1854,27 @@ async fn list_presets(State(state): State<AppState>) -> Json<Vec<PresetResponse>
     Json(presets)
 }
 
+/// Upper bound on entries in the in-memory preset map (built-in presets
+/// included). Presets created through the API are not persisted, so the map
+/// must stay bounded for the lifetime of the process.
+const MAX_PRESETS: usize = 256;
+
 async fn create_preset(
     State(state): State<AppState>,
     Json(payload): Json<CreatePresetRequest>,
-) -> (StatusCode, Json<PresetResponse>) {
+) -> Result<(StatusCode, Json<PresetResponse>), (StatusCode, Json<ErrorResponse>)> {
+    if state.inner.presets.len() >= MAX_PRESETS {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(ErrorResponse {
+                error: format!(
+                    "preset limit reached ({MAX_PRESETS} presets); API-created presets are kept in memory only, restart the server to clear them"
+                ),
+                code: Some("preset_limit_reached"),
+            }),
+        ));
+    }
+
     let id = Uuid::new_v4().to_string();
     let preset = Preset {
         name: payload.name,
@@ -1874,7 +1891,7 @@ async fn create_preset(
 
     state.inner.presets.insert(id, preset);
 
-    (StatusCode::CREATED, Json(response))
+    Ok((StatusCode::CREATED, Json(response)))
 }
 
 // ---------------------------------------------------------------------------
@@ -5208,6 +5225,48 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(json["id"].is_string());
         assert_eq!(json["name"], "My Custom Preset");
+    }
+
+    #[tokio::test]
+    async fn test_create_preset_rejects_when_map_is_full() {
+        let state = test_state();
+        for index in 0..MAX_PRESETS {
+            state.inner.presets.insert(
+                format!("prefilled-{index}"),
+                Preset {
+                    name: format!("Prefilled {index}"),
+                    description: String::new(),
+                    workflow: serde_json::json!({"nodes": [], "connections": []}),
+                },
+            );
+        }
+        let mut app = app_router(state.clone());
+
+        let body = serde_json::json!({
+            "name": "One Too Many",
+            "description": "",
+            "workflow": {"nodes": [], "connections": []}
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/presets")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let resp = send_request(&mut app, req).await;
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["code"], "preset_limit_reached");
+        assert!(json["error"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("{MAX_PRESETS} presets")));
+        assert_eq!(state.inner.presets.len(), MAX_PRESETS);
     }
 
     fn fs_test_state(models_dir: PathBuf) -> AppState {
