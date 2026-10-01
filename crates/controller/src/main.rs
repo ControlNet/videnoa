@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::Parser;
-use videnoa_controller::auth::AuthService;
+use videnoa_controller::auth::{AuthService, SESSION_PURGE_INTERVAL};
 use videnoa_controller::config::{
     listener_channel, serve_reconfigurable, ConfigBootstrap, ControllerConfig, PreparedListener,
     ServerOverride,
@@ -95,7 +95,7 @@ async fn run_controller(cli: Cli) -> anyhow::Result<()> {
         shutdown.clone(),
         &events,
     );
-    let runtime = run_background_services(orchestration, worker_health);
+    let runtime = run_background_services(orchestration, worker_health, auth.clone(), &shutdown);
     let tasks = TaskService::with_events(store.clone(), paths.clone(), events.clone());
     warn_runtime_config(&config);
     let assets = frontend_assets()?;
@@ -273,9 +273,17 @@ fn recovery_runtime(
 async fn run_background_services(
     orchestration: Orchestrator,
     worker_health: WorkerHealthService,
+    auth: AuthService,
+    shutdown: &ShutdownCoordinator,
 ) -> Result<(), RuntimeError> {
+    let cancellation = shutdown.cancellation_token();
     let orchestration = async { orchestration.run().await.map_err(RuntimeError::from) };
     let worker_health = async { worker_health.run().await.map_err(RuntimeError::from) };
-    tokio::try_join!(orchestration, worker_health)?;
+    let sessions = async {
+        auth.run_session_maintenance(SESSION_PURGE_INTERVAL, cancellation)
+            .await;
+        Ok(())
+    };
+    tokio::try_join!(orchestration, worker_health, sessions)?;
     Ok(())
 }

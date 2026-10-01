@@ -12,7 +12,8 @@ use tower::ServiceExt;
 use videnoa_controller::auth::{AuthError, AuthService, CSRF_HEADER, SESSION_COOKIE};
 use videnoa_controller::config::ControllerConfig;
 use videnoa_controller::domain::SecretString;
-use videnoa_controller::persistence::{Database, DatabaseOptions, Store};
+use videnoa_controller::domain::SessionId;
+use videnoa_controller::persistence::{AuthDigest, Database, DatabaseOptions, NewSession, Store};
 use videnoa_controller::{authenticated_app_router, FrontendAssets};
 
 type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -22,6 +23,7 @@ struct Fixture {
     _directory: TempDir,
     assets: FrontendAssets,
     auth: AuthService,
+    store: Store,
 }
 
 impl Fixture {
@@ -35,13 +37,15 @@ impl Fixture {
         config.secure_cookie = false;
         config.session_absolute = Duration::from_hours(24);
         config.session_idle = Duration::from_secs(3_600);
-        let auth = AuthService::new(config, Store::new(database))?;
+        let store = Store::new(database);
+        let auth = AuthService::new(config, store.clone())?;
         auth.setup(SecretString::new(PASSWORD), Utc::now()).await?;
         let assets = test_frontend_assets(directory.path())?;
         Ok(Self {
             _directory: directory,
             assets,
             auth,
+            store,
         })
     }
 
@@ -563,5 +567,66 @@ async fn limited_bearer_peer_does_not_consume_a_verification_permit() -> TestRes
         fixture.auth.password_verification_count(),
         verifications + 1
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn session_maintenance_purges_expired_rows_at_startup_and_stops_on_shutdown() -> TestResult {
+    // Given: one expired and one live durable session alongside the setup session.
+    let fixture = Fixture::new().await?;
+    let now = Utc::now();
+    let expired = NewSession {
+        id: SessionId::random(),
+        token_digest: AuthDigest::new([7; 32]),
+        csrf_digest: AuthDigest::new([7; 32]),
+        password_hash_fingerprint: AuthDigest::new([7; 32]),
+        absolute_expires_at: now - ChronoDuration::seconds(1),
+        idle_expires_at: now - ChronoDuration::seconds(1),
+        created_at: now - ChronoDuration::hours(1),
+    };
+    let live = NewSession {
+        id: SessionId::random(),
+        token_digest: AuthDigest::new([8; 32]),
+        absolute_expires_at: now + ChronoDuration::hours(1),
+        idle_expires_at: now + ChronoDuration::hours(1),
+        ..expired
+    };
+    fixture.store.insert_session(&expired).await?;
+    fixture.store.insert_session(&live).await?;
+
+    // When: the maintenance loop starts with a long cadence.
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let maintenance = tokio::spawn(
+        fixture
+            .auth
+            .clone()
+            .run_session_maintenance(Duration::from_secs(3_600), shutdown.clone()),
+    );
+    let gone = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match fixture
+                .store
+                .session_by_token_digest(expired.token_digest)
+                .await
+            {
+                Ok(None) => return Ok::<(), Box<dyn Error + Send + Sync>>(()),
+                Ok(Some(_)) => tokio::time::sleep(Duration::from_millis(10)).await,
+                Err(error) => return Err(error.into()),
+            }
+        }
+    })
+    .await;
+
+    // Then: the startup pass removed only the expired row and the loop exits on shutdown.
+    gone.map_err(|_| std::io::Error::other("expired session was not purged"))??;
+    assert!(fixture
+        .store
+        .session_by_token_digest(live.token_digest)
+        .await?
+        .is_some());
+    shutdown.cancel();
+    tokio::time::timeout(Duration::from_secs(5), maintenance)
+        .await
+        .map_err(|_| std::io::Error::other("maintenance loop ignored shutdown"))??;
     Ok(())
 }
