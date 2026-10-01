@@ -39,6 +39,8 @@ struct FfprobeStream {
     color_transfer: Option<String>,
     /// YUV matrix tag, e.g. "bt709"; "unknown" or absent when untagged.
     color_space: Option<String>,
+    /// Colour primaries tag, e.g. "bt709"; "unknown" or absent when untagged.
+    color_primaries: Option<String>,
     bits_per_raw_sample: Option<String>,
     #[serde(default)]
     tags: HashMap<String, String>,
@@ -178,6 +180,8 @@ pub struct VideoStreamInfo {
     pub bit_depth: u8,
     /// YUV matrix tag reported by ffprobe; `None` when the stream is untagged.
     pub color_space: Option<String>,
+    /// Colour primaries tag reported by ffprobe; `None` when untagged.
+    pub color_primaries: Option<String>,
 }
 
 pub fn extract_metadata(
@@ -241,6 +245,10 @@ pub fn extract_metadata(
         bit_depth,
         color_space: video_stream
             .color_space
+            .clone()
+            .filter(|tag| tag != "unknown"),
+        color_primaries: video_stream
+            .color_primaries
             .clone()
             .filter(|tag| tag != "unknown"),
     };
@@ -415,6 +423,36 @@ pub(crate) fn source_color_matrix(color_space: Option<&str>) -> &'static str {
     }
 }
 
+/// Whether a source's colours lie outside BT.709 primaries. The decoder
+/// converts YUV to RGB with the source matrix, but the output is tagged BT.709
+/// without a primaries conversion, so such sources come out desaturated
+/// (wide gamut) or slightly shifted (SD) under a BT.709 tag.
+///
+/// A BT.2020 matrix implies BT.2020 primaries even when the primaries tag is
+/// missing; PQ/HLG BT.2020 sources are rejected as HDR before this point.
+pub(crate) fn primaries_not_converted(
+    color_space: Option<&str>,
+    color_primaries: Option<&str>,
+) -> bool {
+    color_space.is_some_and(|matrix| matrix.starts_with("bt2020"))
+        || color_primaries.is_some_and(|primaries| {
+            matches!(
+                primaries,
+                "bt2020"
+                    | "bt470m"
+                    | "bt470bg"
+                    | "smpte170m"
+                    | "smpte240m"
+                    | "film"
+                    | "smpte428"
+                    | "smpte431"
+                    | "smpte432"
+                    | "jedec-p22"
+                    | "ebu3213"
+            )
+        })
+}
+
 fn build_decoder_args(
     path: &Path,
     pix_fmt: &str,
@@ -467,6 +505,16 @@ impl VideoDecoder {
         };
 
         let color_matrix = source_color_matrix(info.color_space.as_deref());
+        if primaries_not_converted(info.color_space.as_deref(), info.color_primaries.as_deref()) {
+            warn!(
+                path = %path.display(),
+                color_space = info.color_space.as_deref().unwrap_or("unknown"),
+                color_primaries = info.color_primaries.as_deref().unwrap_or("unknown"),
+                "source colours are converted with the source matrix ({color_matrix}), but \
+                 its primaries are not converted to BT.709; the BT.709-tagged output will \
+                 look less saturated or shifted"
+            );
+        }
         let decode_args =
             build_decoder_args(path, pix_fmt, info.stream_index, hwaccel, color_matrix);
 
@@ -1316,6 +1364,60 @@ pub(crate) mod tests {
         ] {
             assert_eq!(source_color_matrix(Some(tag)), expected, "{tag}");
         }
+    }
+
+    #[test]
+    fn primaries_warning_covers_bt2020_matrices_and_non_bt709_primaries() {
+        // BT.2020 matrices (SDR; PQ/HLG are rejected earlier) imply BT.2020 primaries.
+        assert!(primaries_not_converted(Some("bt2020nc"), None));
+        assert!(primaries_not_converted(Some("bt2020c"), Some("bt2020")));
+        for primaries in [
+            "bt2020",
+            "bt470m",
+            "bt470bg",
+            "smpte170m",
+            "smpte240m",
+            "film",
+            "smpte428",
+            "smpte431",
+            "smpte432",
+            "jedec-p22",
+            "ebu3213",
+        ] {
+            assert!(
+                primaries_not_converted(Some("bt709"), Some(primaries)),
+                "{primaries}"
+            );
+        }
+
+        // BT.709 or unknown primaries need no warning.
+        assert!(!primaries_not_converted(Some("bt709"), Some("bt709")));
+        assert!(!primaries_not_converted(None, None));
+        assert!(!primaries_not_converted(Some("smpte170m"), None));
+        assert!(!primaries_not_converted(Some("bt709"), Some("unknown")));
+        assert!(!primaries_not_converted(None, Some("reserved")));
+    }
+
+    #[test]
+    fn extract_metadata_reads_the_primaries_tag() {
+        let json = br#"{
+            "streams": [{
+                "index": 0, "codec_type": "video", "codec_name": "hevc",
+                "width": 3840, "height": 2160, "pix_fmt": "yuv420p10le",
+                "r_frame_rate": "24/1", "color_space": "bt2020nc",
+                "color_transfer": "bt709", "color_primaries": "bt2020"
+            }],
+            "chapters": [],
+            "format": {"format_name": "matroska,webm"}
+        }"#;
+        let probe = parse_ffprobe_json(json).unwrap();
+        let (info, _) = extract_metadata(&probe, Path::new("/tmp/test.mkv")).unwrap();
+        assert_eq!(info.color_space.as_deref(), Some("bt2020nc"));
+        assert_eq!(info.color_primaries.as_deref(), Some("bt2020"));
+
+        let untagged = parse_ffprobe_json(SAMPLE_FFPROBE_JSON.as_bytes()).unwrap();
+        let (info, _) = extract_metadata(&untagged, Path::new("/tmp/test.mkv")).unwrap();
+        assert_eq!(info.color_primaries, None);
     }
 
     #[test]
