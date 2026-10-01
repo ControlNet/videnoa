@@ -155,6 +155,12 @@ mod tests {
             task_id: task.id,
             created_at: now,
         };
+        // Other tests insert tasks concurrently and so register this callsite
+        // on their threads. A registration that overlaps the creation of the
+        // scoped subscriber below can cache the callsite as disabled for it.
+        // Registering it here first (no subscriber is active, nothing is
+        // captured) makes the subscriber's registration rebuild its interest.
+        super::task_created(&task);
         let capture = Capture::default();
         let writer = capture.clone();
         let subscriber = tracing_subscriber::fmt()
