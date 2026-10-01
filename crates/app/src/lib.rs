@@ -358,11 +358,9 @@ async fn run_server(
     info!(%addr, "Starting videnoa server");
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-    )
-    .await?;
+    videnoa_core::server::http_server::HttpServer::new(listener, app)
+        .serve()
+        .await?;
     Ok(())
 }
 

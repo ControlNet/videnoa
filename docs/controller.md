@@ -184,6 +184,11 @@ require exposing the service publicly. Never
 record passwords, Authorization values, cookies, CSRF values, or setup bodies in
 logs, configuration, URLs, or source control.
 
+The listener closes an HTTP/1.1 connection whose request head (request line and
+headers) does not arrive within 30 seconds, including the next request on an
+idle keep-alive connection. Request bodies, uploads, and SSE streams are not
+limited by this timeout.
+
 ## Workspace and Paths
 
 Task paths may refer to any safe filesystem location visible to the Controller

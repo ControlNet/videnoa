@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 use crate::domain::{
     AuthMethod, LoginRequest, LogoutResponse, ReadinessCheck, ReadinessResponse, ReadinessStatus,
 };
+use crate::http_server::HttpServer;
 use crate::{app_router, FrontendAssets, StartupError};
 
 use super::authentication_service::IssuedSession;
@@ -73,12 +74,10 @@ pub async fn serve_authenticated(
     let listener = tokio::net::TcpListener::bind(address)
         .await
         .map_err(|source| StartupError::Bind { address, source })?;
-    axum::serve(
-        listener,
-        authenticated_app_router(assets, auth).into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .await
-    .map_err(StartupError::Serve)
+    HttpServer::new(listener, authenticated_app_router(assets, auth))
+        .serve()
+        .await
+        .map_err(StartupError::Serve)
 }
 
 /// Serves the complete authenticated Controller API and frontend.
@@ -119,12 +118,11 @@ pub async fn serve_controller_until(
         .await
         .map_err(|source| StartupError::Bind { address, source })?;
     let operations = operations.with_shutdown(shutdown.child_token());
-    axum::serve(
+    HttpServer::new(
         listener,
-        controller_app_router(assets, auth, tasks, operations)
-            .into_make_service_with_connect_info::<SocketAddr>(),
+        controller_app_router(assets, auth, tasks, operations),
     )
-    .with_graceful_shutdown(shutdown.cancelled_owned())
+    .serve_with_graceful_shutdown(shutdown.cancelled_owned())
     .await
     .map_err(StartupError::Serve)
 }

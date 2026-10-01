@@ -8,6 +8,8 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
+use crate::http_server::HttpServer;
+
 pub struct PreparedListener {
     listener: TcpListener,
     address: SocketAddr,
@@ -165,11 +167,8 @@ fn spawn_server(
                 }
             },
         ));
-        axum::serve(
-            prepared.listener,
-            router.into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .with_graceful_shutdown(shutdown.cancelled_owned())
-        .await
+        HttpServer::new(prepared.listener, router)
+            .serve_with_graceful_shutdown(shutdown.cancelled_owned())
+            .await
     });
 }

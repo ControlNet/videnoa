@@ -24,6 +24,7 @@ use uuid::Uuid;
 
 pub mod auth;
 mod files;
+pub mod http_server;
 mod idempotency;
 pub mod iroh;
 mod persistence;
