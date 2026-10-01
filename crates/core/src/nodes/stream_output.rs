@@ -49,6 +49,12 @@ fn detect_format_from_url(url: &str) -> Option<&'static str> {
     }
 }
 
+/// Pixel format of every live stream. Without an explicit format the RGB
+/// pipe makes libx264 negotiate 4:4:4 (yuv444p, or yuv444p10le from a 10-bit
+/// pipe), which RTMP ingest services such as Twitch and YouTube reject;
+/// 8-bit 4:2:0 is what they accept.
+pub(crate) const STREAM_PIXEL_FORMAT: &str = "yuv420p";
+
 #[derive(Debug, Clone)]
 pub struct StreamEncoderConfig {
     pub url: String,
@@ -85,7 +91,12 @@ impl StreamEncoderConfig {
             "-i".into(),
             "pipe:0".into(),
             "-vf".into(),
-            format!("scale=flags=bicubic:{BT709_LIMITED_OUTPUT},{BT709_LIMITED_TAGS}"),
+            format!(
+                "scale=flags=bicubic:{BT709_LIMITED_OUTPUT},format={STREAM_PIXEL_FORMAT},\
+                 {BT709_LIMITED_TAGS}"
+            ),
+            "-pix_fmt".into(),
+            STREAM_PIXEL_FORMAT.into(),
             "-c:v".into(),
             self.codec.clone(),
             "-b:v".into(),
@@ -540,15 +551,33 @@ mod tests {
         assert!(args.contains(&"no_duration_filesize".to_string()));
         assert_eq!(args.last().unwrap(), "rtmp://live.example.com/app/key");
 
-        // RGB -> YUV uses BT.709 and the stream is tagged to match.
+        // RGB -> YUV uses BT.709, the stream is 4:2:0 (RTMP ingest rejects
+        // the 4:4:4 that libx264 would otherwise pick) and tagged to match.
         let vf_idx = args.iter().position(|a| a == "-vf").unwrap();
         let input_idx = args.iter().position(|a| a == "pipe:0").unwrap();
         assert!(vf_idx > input_idx, "-vf must be an output option");
+        assert_eq!(STREAM_PIXEL_FORMAT, "yuv420p");
         assert_eq!(
             args[vf_idx + 1],
-            "scale=flags=bicubic:out_color_matrix=bt709:out_range=limited,\
+            "scale=flags=bicubic:out_color_matrix=bt709:out_range=limited,format=yuv420p,\
              setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=limited"
         );
+        let pix_fmt_idx = args.iter().rposition(|a| a == "-pix_fmt").unwrap();
+        assert!(
+            pix_fmt_idx > input_idx,
+            "output -pix_fmt must follow the input"
+        );
+        assert_eq!(args[pix_fmt_idx + 1], "yuv420p");
+    }
+
+    #[test]
+    fn stream_output_stays_8bit_420_for_10bit_frames() {
+        let mut config = rtmp_config();
+        config.bit_depth = 10;
+        let args = config.build_ffmpeg_args();
+        let vf_idx = args.iter().position(|a| a == "-vf").unwrap();
+        assert!(args[vf_idx + 1].contains(",format=yuv420p,"), "{args:?}");
+        assert!(!args.iter().any(|a| a.contains("yuv444p")), "{args:?}");
     }
 
     #[test]
