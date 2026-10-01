@@ -7,6 +7,7 @@ use anyhow::{bail, Context, Result};
 use tracing::{debug, info};
 
 use crate::node::{ExecutionContext, Node, PortDefinition};
+use crate::nodes::video_output::{BT709_LIMITED_OUTPUT, BT709_LIMITED_TAGS};
 use crate::types::{PortData, PortType};
 
 fn validate_stream_url(url: &str) -> Result<()> {
@@ -83,6 +84,8 @@ impl StreamEncoderConfig {
             self.fps.clone(),
             "-i".into(),
             "pipe:0".into(),
+            "-vf".into(),
+            format!("scale=flags=bicubic:{BT709_LIMITED_OUTPUT},{BT709_LIMITED_TAGS}"),
             "-c:v".into(),
             self.codec.clone(),
             "-b:v".into(),
@@ -542,6 +545,16 @@ mod tests {
         assert!(args.contains(&"-flvflags".to_string()));
         assert!(args.contains(&"no_duration_filesize".to_string()));
         assert_eq!(args.last().unwrap(), "rtmp://live.example.com/app/key");
+
+        // RGB -> YUV uses BT.709 and the stream is tagged to match.
+        let vf_idx = args.iter().position(|a| a == "-vf").unwrap();
+        let input_idx = args.iter().position(|a| a == "pipe:0").unwrap();
+        assert!(vf_idx > input_idx, "-vf must be an output option");
+        assert_eq!(
+            args[vf_idx + 1],
+            "scale=flags=bicubic:out_color_matrix=bt709:out_range=limited,\
+             setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=limited"
+        );
     }
 
     #[test]

@@ -42,20 +42,38 @@ impl NchwCrop {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn f16_nchw_to_rgb(
     values: &[f16],
     crop: NchwCrop,
     quantization: Quantization,
 ) -> Result<Vec<u8>> {
+    let mut rgb = vec![0_u8; crop.output_height * crop.output_width * 3];
+    f16_nchw_to_rgb_into(values, crop, quantization, &mut rgb)?;
+    Ok(rgb)
+}
+
+/// Like [`f16_nchw_to_rgb`], writing every byte of a caller-provided buffer.
+pub(crate) fn f16_nchw_to_rgb_into(
+    values: &[f16],
+    crop: NchwCrop,
+    quantization: Quantization,
+    rgb: &mut [u8],
+) -> Result<()> {
     let plane_size = validate_layout(values.len(), crop)?;
     let channels = [
         &values[..plane_size],
         &values[plane_size..2 * plane_size],
         &values[2 * plane_size..],
     ];
-    let mut rgb = vec![0_u8; crop.output_height * crop.output_width * 3];
+    ensure!(
+        rgb.len() == crop.output_height * crop.output_width * 3,
+        "RGB output holds {} bytes, expected {}",
+        rgb.len(),
+        crop.output_height * crop.output_width * 3
+    );
     if rgb.is_empty() {
-        return Ok(rgb);
+        return Ok(());
     }
     let row_bytes = crop.output_width * 3;
     let rows_per_band = crop.output_height.div_ceil(PARALLEL_BANDS);
@@ -89,7 +107,7 @@ pub(crate) fn f16_nchw_to_rgb(
             });
     });
 
-    Ok(rgb)
+    Ok(())
 }
 
 pub(crate) fn f16_bits_nchw_to_rgb(

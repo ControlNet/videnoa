@@ -2306,9 +2306,9 @@ async fn extract_frames(
         "-select_streams",
         "v:0",
         "-show_entries",
-        "stream=nb_read_frames",
+        "stream=width,height,color_space,nb_read_frames",
         "-of",
-        "csv=p=0",
+        "json",
         &payload.video_path,
     ]);
     let probe = preview_cache::run_command(
@@ -2318,10 +2318,7 @@ async fn extract_frames(
     )
     .await?;
 
-    let total_frames: u64 = String::from_utf8_lossy(&probe)
-        .trim()
-        .parse()
-        .unwrap_or(1000);
+    let (total_frames, color_matrix) = parse_preview_probe(&probe);
     let interval = (total_frames / payload.count as u64).max(1);
 
     let output_pattern = session.path().join("frame_%04d.png");
@@ -2334,7 +2331,7 @@ async fn extract_frames(
             "-i",
             &payload.video_path,
             "-vf",
-            &format!("select='not(mod(n\\,{interval}))'"),
+            &preview_extraction_filter(interval, color_matrix),
             "-frames:v",
             &payload.count.to_string(),
             "-vsync",
@@ -2372,6 +2369,49 @@ async fn extract_frames(
         StatusCode::CREATED,
         Json(ExtractFramesResponse { preview_id, frames }),
     ))
+}
+
+/// Frame count and swscale input matrix from the preview ffprobe JSON.
+/// Unparseable output falls back to 1000 frames, like the former CSV probe.
+fn parse_preview_probe(probe: &[u8]) -> (u64, &'static str) {
+    #[derive(Deserialize)]
+    struct Probe {
+        streams: Vec<ProbeStream>,
+    }
+    #[derive(Deserialize)]
+    struct ProbeStream {
+        width: Option<u32>,
+        height: Option<u32>,
+        color_space: Option<String>,
+        nb_read_frames: Option<String>,
+    }
+
+    let stream = serde_json::from_slice::<Probe>(probe)
+        .ok()
+        .and_then(|probe| probe.streams.into_iter().next());
+    let Some(stream) = stream else {
+        return (
+            1000,
+            crate::nodes::video_input::source_color_matrix(None, 0, 0),
+        );
+    };
+    let total_frames = stream
+        .nb_read_frames
+        .as_deref()
+        .and_then(|frames| frames.trim().parse().ok())
+        .unwrap_or(1000);
+    let color_matrix = crate::nodes::video_input::source_color_matrix(
+        stream.color_space.as_deref(),
+        stream.width.unwrap_or(0),
+        stream.height.unwrap_or(0),
+    );
+    (total_frames, color_matrix)
+}
+
+/// Samples every `interval`-th frame and converts it to RGB with the source matrix,
+/// matching how video jobs decode.
+fn preview_extraction_filter(interval: u64, color_matrix: &str) -> String {
+    format!("select='not(mod(n\\,{interval}))',scale=in_color_matrix={color_matrix}:flags=bicubic")
 }
 
 async fn serve_preview_frame(
@@ -2857,6 +2897,30 @@ mod tests {
     #[test]
     fn preview_extraction_uses_variable_frame_rate_sync_mode() {
         assert_eq!(PREVIEW_VSYNC_MODE, "vfr");
+    }
+
+    #[test]
+    fn preview_probe_reports_frame_count_and_source_matrix() {
+        let tagged = br#"{"streams":[{"width":720,"height":480,"color_space":"bt709","nb_read_frames":"240"}]}"#;
+        assert_eq!(parse_preview_probe(tagged), (240, "bt709"));
+
+        let untagged_hd =
+            br#"{"streams":[{"width":1920,"height":1080,"color_space":"unknown","nb_read_frames":"12"}]}"#;
+        assert_eq!(parse_preview_probe(untagged_hd), (12, "bt709"));
+
+        let untagged_sd = br#"{"streams":[{"width":720,"height":480,"nb_read_frames":"5"}]}"#;
+        assert_eq!(parse_preview_probe(untagged_sd), (5, "bt601"));
+
+        // Unparseable output keeps the previous frame-count fallback.
+        assert_eq!(parse_preview_probe(b"garbage"), (1000, "bt601"));
+    }
+
+    #[test]
+    fn preview_extraction_converts_with_the_source_matrix() {
+        assert_eq!(
+            preview_extraction_filter(25, "bt709"),
+            "select='not(mod(n\\,25))',scale=in_color_matrix=bt709:flags=bicubic"
+        );
     }
 
     fn test_state() -> AppState {

@@ -2,11 +2,13 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::process::{Child, Stdio};
+use std::sync::Arc;
 use std::thread;
 
 use anyhow::{anyhow, bail, Context, Result};
 use tracing::{debug, warn};
 
+use crate::frame_pool::FramePool;
 use crate::node::{ExecutionContext, Node, PortDefinition};
 use crate::types::{Chapter, Frame, MediaMetadata, PortData, PortType, StreamInfo};
 // ffprobe JSON model (serde)
@@ -35,6 +37,8 @@ struct FfprobeStream {
     field_order: Option<String>,
     /// "smpte2084" = PQ, "arib-std-b67" = HLG
     color_transfer: Option<String>,
+    /// YUV matrix tag, e.g. "bt709"; "unknown" or absent when untagged.
+    color_space: Option<String>,
     bits_per_raw_sample: Option<String>,
     #[serde(default)]
     tags: HashMap<String, String>,
@@ -172,6 +176,8 @@ pub struct VideoStreamInfo {
     pub codec_name: String,
     pub pix_fmt: String,
     pub bit_depth: u8,
+    /// YUV matrix tag reported by ffprobe; `None` when the stream is untagged.
+    pub color_space: Option<String>,
 }
 
 pub fn extract_metadata(
@@ -233,6 +239,10 @@ pub fn extract_metadata(
         codec_name,
         pix_fmt,
         bit_depth,
+        color_space: video_stream
+            .color_space
+            .clone()
+            .filter(|tag| tag != "unknown"),
     };
 
     let mut audio_streams = Vec::new();
@@ -383,10 +393,32 @@ pub struct VideoDecoder {
     bit_depth: u8,
     frame_size: usize,
     _stderr_thread: Option<thread::JoinHandle<()>>,
-    buf: Vec<u8>,
+    pool: Arc<FramePool>,
     done: bool,
     #[allow(dead_code)]
     hwaccel: Option<String>,
+}
+
+/// swscale `in_color_matrix` for a source stream.
+///
+/// A matrix tag wins. Untagged streams follow the common player convention
+/// (mpv): HD sizes are BT.709, SD sizes BT.601. Without this, swscale assumes
+/// BT.601 for every untagged stream, which skews HD colours.
+pub(crate) fn source_color_matrix(
+    color_space: Option<&str>,
+    width: u32,
+    height: u32,
+) -> &'static str {
+    match color_space {
+        Some("bt709") => "bt709",
+        Some("bt470bg") => "bt470",
+        Some("smpte170m") => "smpte170m",
+        Some("smpte240m") => "smpte240m",
+        Some("fcc") => "fcc",
+        Some("bt2020nc" | "bt2020c") => "bt2020",
+        _ if width >= 1280 || height > 576 => "bt709",
+        _ => "bt601",
+    }
 }
 
 fn build_decoder_args(
@@ -394,6 +426,7 @@ fn build_decoder_args(
     pix_fmt: &str,
     stream_index: usize,
     hwaccel: Option<&str>,
+    color_matrix: &str,
 ) -> Vec<String> {
     let mut args: Vec<String> = vec!["-nostdin".to_string()];
 
@@ -409,6 +442,9 @@ fn build_decoder_args(
     args.extend([
         "-map".to_string(),
         format!("0:{stream_index}"),
+        // Convert to RGB explicitly so the source matrix is applied.
+        "-vf".to_string(),
+        format!("scale=in_color_matrix={color_matrix}:flags=bicubic"),
         "-f".to_string(),
         "rawvideo".to_string(),
         "-pix_fmt".to_string(),
@@ -436,7 +472,10 @@ impl VideoDecoder {
             Some(other) => Some(other),
         };
 
-        let decode_args = build_decoder_args(path, pix_fmt, info.stream_index, hwaccel);
+        let color_matrix =
+            source_color_matrix(info.color_space.as_deref(), info.width, info.height);
+        let decode_args =
+            build_decoder_args(path, pix_fmt, info.stream_index, hwaccel, color_matrix);
 
         if hwaccel == Some("cuda") {
             debug!("NVDEC hardware decode enabled (hwaccel=cuda)");
@@ -477,10 +516,15 @@ impl VideoDecoder {
             },
             frame_size,
             _stderr_thread: Some(stderr_thread),
-            buf: vec![0u8; frame_size],
+            pool: FramePool::shared(),
             done: false,
             hwaccel: hwaccel.map(|s| s.to_string()),
         })
+    }
+
+    /// Takes frame buffers from `pool`, where downstream stages return them.
+    pub fn set_frame_pool(&mut self, pool: Arc<FramePool>) {
+        self.pool = pool;
     }
 
     fn read_frame(&mut self) -> Result<Option<Frame>> {
@@ -490,11 +534,14 @@ impl VideoDecoder {
             .as_mut()
             .ok_or_else(|| anyhow!("ffmpeg stdout not available"))?;
 
+        // The read loop fills the whole buffer or fails.
+        let mut data = self.pool.take_u8(self.frame_size);
         let mut total_read = 0;
         while total_read < self.frame_size {
-            match stdout.read(&mut self.buf[total_read..self.frame_size]) {
+            match stdout.read(&mut data[total_read..]) {
                 Ok(0) => {
                     if total_read == 0 {
+                        self.pool.recycle_u8(data);
                         return Ok(None);
                     }
                     bail!(
@@ -515,7 +562,7 @@ impl VideoDecoder {
         }
 
         Ok(Some(Frame::CpuRgb {
-            data: self.buf[..self.frame_size].to_vec(),
+            data,
             width: self.width,
             height: self.height,
             bit_depth: self.bit_depth,
@@ -563,8 +610,9 @@ impl Drop for VideoDecoder {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+    use std::io::Write;
     use std::path::PathBuf;
 
     #[cfg(unix)]
@@ -582,7 +630,7 @@ mod tests {
             bit_depth: 8,
             frame_size: 3,
             _stderr_thread: None,
-            buf: vec![0; 3],
+            pool: FramePool::shared(),
             done: false,
             hwaccel: None,
         }
@@ -614,6 +662,26 @@ mod tests {
             .unwrap()
             .to_string()
             .contains("partial frame"));
+        assert!(decoder.next().is_none());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn decoder_reads_frames_into_buffers_returned_to_its_pool() {
+        let mut decoder = fault_injected_decoder("printf abcdef");
+        let pool = FramePool::shared();
+        let recycled = pool.seed_u8(3, 0);
+        decoder.set_frame_pool(Arc::clone(&pool));
+
+        let Some(Ok(Frame::CpuRgb { data, .. })) = decoder.next() else {
+            panic!("expected a frame");
+        };
+        assert_eq!(data.as_ptr(), recycled);
+        assert_eq!(data, b"abc");
+        let Some(Ok(Frame::CpuRgb { data, .. })) = decoder.next() else {
+            panic!("expected a second frame");
+        };
+        assert_eq!(data, b"def");
         assert!(decoder.next().is_none());
     }
 
@@ -1182,7 +1250,7 @@ mod tests {
     #[test]
     fn test_decoder_args_no_hwaccel() {
         let path = test_mkv_path();
-        let args = build_decoder_args(path.as_path(), "rgb24", 4, None);
+        let args = build_decoder_args(path.as_path(), "rgb24", 4, None, "bt709");
 
         assert!(!args.contains(&"-hwaccel".to_string()));
         let i_idx = args.iter().position(|a| a == "-i").unwrap();
@@ -1197,7 +1265,7 @@ mod tests {
     #[test]
     fn test_decoder_args_cuda_hwaccel() {
         let path = test_mkv_path();
-        let args = build_decoder_args(path.as_path(), "rgb48le", 2, Some("cuda"));
+        let args = build_decoder_args(path.as_path(), "rgb48le", 2, Some("cuda"), "bt709");
 
         let hwaccel_idx = args.iter().position(|a| a == "-hwaccel").unwrap();
         let i_idx = args.iter().position(|a| a == "-i").unwrap();
@@ -1213,7 +1281,7 @@ mod tests {
     #[test]
     fn test_decoder_args_none_string_hwaccel() {
         let path = test_mkv_path();
-        let args = build_decoder_args(path.as_path(), "rgb24", 0, Some("none"));
+        let args = build_decoder_args(path.as_path(), "rgb24", 0, Some("none"), "bt709");
 
         assert!(!args.contains(&"-hwaccel".to_string()));
     }
@@ -1221,11 +1289,211 @@ mod tests {
     #[test]
     fn test_decoder_args_unknown_hwaccel_ignored() {
         let path = test_mkv_path();
-        let args = build_decoder_args(path.as_path(), "rgb24", 7, Some("vulkan"));
+        let args = build_decoder_args(path.as_path(), "rgb24", 7, Some("vulkan"), "bt709");
 
         assert!(!args.contains(&"-hwaccel".to_string()));
         let map_idx = args.iter().position(|a| a == "-map").unwrap();
         assert_eq!(args[map_idx + 1], "0:7");
+    }
+
+    #[test]
+    fn decoder_args_convert_to_rgb_with_the_given_matrix() {
+        let path = test_mkv_path();
+        let args = build_decoder_args(path.as_path(), "rgb24", 0, None, "bt601");
+
+        let i_idx = args.iter().position(|a| a == "-i").unwrap();
+        let vf_idx = args.iter().position(|a| a == "-vf").unwrap();
+        assert!(vf_idx > i_idx, "-vf must be an output option");
+        assert_eq!(
+            args[vf_idx + 1],
+            "scale=in_color_matrix=bt601:flags=bicubic"
+        );
+    }
+
+    #[test]
+    fn source_color_matrix_follows_the_stream_tag() {
+        for (tag, expected) in [
+            ("bt709", "bt709"),
+            ("bt470bg", "bt470"),
+            ("smpte170m", "smpte170m"),
+            ("smpte240m", "smpte240m"),
+            ("fcc", "fcc"),
+            ("bt2020nc", "bt2020"),
+            ("bt2020c", "bt2020"),
+        ] {
+            // A tag wins over the resolution heuristic in both directions.
+            assert_eq!(source_color_matrix(Some(tag), 640, 480), expected, "{tag}");
+            assert_eq!(
+                source_color_matrix(Some(tag), 1920, 1080),
+                expected,
+                "{tag}"
+            );
+        }
+    }
+
+    #[test]
+    fn untagged_hd_sources_are_treated_as_bt709() {
+        assert_eq!(source_color_matrix(None, 1920, 1080), "bt709");
+        assert_eq!(source_color_matrix(Some("unknown"), 1280, 720), "bt709");
+        assert_eq!(source_color_matrix(Some("reserved"), 960, 720), "bt709");
+    }
+
+    #[test]
+    fn untagged_sd_sources_are_treated_as_bt601() {
+        assert_eq!(source_color_matrix(None, 720, 480), "bt601");
+        assert_eq!(source_color_matrix(Some("unknown"), 720, 576), "bt601");
+        assert_eq!(source_color_matrix(None, 1024, 576), "bt601");
+    }
+
+    #[test]
+    fn extract_metadata_reads_the_color_space_tag() {
+        let json = br#"{
+            "streams": [{
+                "index": 0, "codec_type": "video", "codec_name": "hevc",
+                "width": 1920, "height": 1080, "pix_fmt": "yuv420p",
+                "r_frame_rate": "24/1", "color_space": "bt709"
+            }],
+            "chapters": [],
+            "format": {"format_name": "matroska,webm"}
+        }"#;
+        let probe = parse_ffprobe_json(json).unwrap();
+        let (info, _) = extract_metadata(&probe, Path::new("/tmp/test.mkv")).unwrap();
+        assert_eq!(info.color_space.as_deref(), Some("bt709"));
+
+        let untagged = parse_ffprobe_json(SAMPLE_FFPROBE_JSON.as_bytes()).unwrap();
+        let (info, _) = extract_metadata(&untagged, Path::new("/tmp/test.mkv")).unwrap();
+        assert_eq!(info.color_space, None);
+    }
+
+    pub(crate) const COLOR_QUADRANTS: [[u8; 3]; 4] =
+        [[200, 30, 30], [30, 200, 30], [30, 30, 200], [128, 128, 128]];
+
+    /// RGB24 frame split into four solid quadrants of [`COLOR_QUADRANTS`].
+    pub(crate) fn quadrant_frame(width: usize, height: usize) -> Vec<u8> {
+        let mut rgb = Vec::with_capacity(width * height * 3);
+        for y in 0..height {
+            for x in 0..width {
+                let quadrant = usize::from(y >= height / 2) * 2 + usize::from(x >= width / 2);
+                rgb.extend_from_slice(&COLOR_QUADRANTS[quadrant]);
+            }
+        }
+        rgb
+    }
+
+    /// Asserts each quadrant centre of an RGB24 frame matches [`COLOR_QUADRANTS`].
+    pub(crate) fn assert_quadrant_colors(rgb: &[u8], width: usize, height: usize, label: &str) {
+        for (quadrant, expected) in COLOR_QUADRANTS.iter().enumerate() {
+            let x = width / 4 + (quadrant % 2) * width / 2;
+            let y = height / 4 + (quadrant / 2) * height / 2;
+            let offset = (y * width + x) * 3;
+            let actual = &rgb[offset..offset + 3];
+            let close = actual
+                .iter()
+                .zip(expected)
+                .all(|(a, e)| (i16::from(*a) - i16::from(*e)).abs() <= 3);
+            assert!(
+                close,
+                "{label}: quadrant {quadrant} decoded {actual:?}, expected {expected:?}"
+            );
+        }
+    }
+
+    /// 8-bit RGB samples of a decoded `CpuRgb` frame (16-bit samples are rounded down to 8 bits).
+    pub(crate) fn rgb8_samples(frame: Frame) -> Vec<u8> {
+        let Frame::CpuRgb {
+            data, bit_depth, ..
+        } = frame
+        else {
+            panic!("expected a CpuRgb frame");
+        };
+        if bit_depth > 8 {
+            data.as_chunks::<2>()
+                .0
+                .iter()
+                .map(|sample| {
+                    let value = u32::from(u16::from_le_bytes(*sample));
+                    ((value * 255 + 32_767) / 65_535) as u8
+                })
+                .collect()
+        } else {
+            data
+        }
+    }
+
+    /// Losslessly encodes one quadrant frame converted with `matrix`, optionally tagged.
+    fn write_quadrant_clip(
+        path: &Path,
+        width: usize,
+        height: usize,
+        matrix: &str,
+        tag: Option<&str>,
+    ) {
+        let mut command = crate::runtime::command_for("ffmpeg");
+        command.args(["-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24"]);
+        command.args([
+            "-s",
+            &format!("{width}x{height}"),
+            "-r",
+            "1",
+            "-i",
+            "pipe:0",
+        ]);
+        command.args([
+            "-vf",
+            &format!("scale=out_color_matrix={matrix}:out_range=limited,format=yuv444p"),
+            "-c:v",
+            "libx264",
+            "-qp",
+            "0",
+        ]);
+        if let Some(tag) = tag {
+            command.args([
+                "-colorspace",
+                tag,
+                "-color_primaries",
+                tag,
+                "-color_trc",
+                tag,
+            ]);
+        }
+        let mut child = command
+            .arg(path)
+            .stdin(Stdio::piped())
+            .spawn()
+            .expect("ffmpeg should start");
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(&quadrant_frame(width, height))
+            .unwrap();
+        assert!(
+            child.wait().unwrap().success(),
+            "ffmpeg failed to write {}",
+            path.display()
+        );
+    }
+
+    #[test]
+    #[ignore = "requires ffmpeg with libx264"]
+    fn decoder_recovers_source_rgb_for_tagged_and_untagged_matrices() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, width, height, matrix, tag) in [
+            ("untagged-hd-bt709", 1280, 720, "bt709", None),
+            ("untagged-sd-bt601", 720, 480, "bt601", None),
+            ("tagged-hd-bt709", 1280, 720, "bt709", Some("bt709")),
+        ] {
+            let path = dir.path().join(format!("{name}.mkv"));
+            write_quadrant_clip(&path, width, height, matrix, tag);
+            let probe = run_ffprobe(&path).unwrap();
+            let (info, _) = extract_metadata(&probe, &path).unwrap();
+            let frame = VideoDecoder::new(&path, &info, None)
+                .unwrap()
+                .next()
+                .expect("one frame")
+                .unwrap();
+            assert_quadrant_colors(&rgb8_samples(frame), width, height, name);
+        }
     }
 
     fn test_mkv_path() -> PathBuf {

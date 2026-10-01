@@ -78,6 +78,7 @@ export function validateUnitWorkflow(workflow) {
 	requireText(requireJob(jobs, "workflow-contracts"), "workflow-contracts", [
 		"npm ci --no-fund",
 		"scripts/tests/package_dist_download_test.sh",
+		"scripts/tests/setup_dev_media_tools_test.sh",
 		"validate_ci_release_workflows.test.mjs",
 	]);
 	requireText(requireJob(jobs, "controller-rust"), "controller-rust", [

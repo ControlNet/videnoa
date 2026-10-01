@@ -5,6 +5,7 @@ pub mod config;
 pub mod debug_event;
 pub mod descriptor;
 pub mod executor;
+pub mod frame_pool;
 pub mod graph;
 pub mod jellyfin;
 pub mod logging;

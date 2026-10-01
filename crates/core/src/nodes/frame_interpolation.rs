@@ -16,8 +16,9 @@ use std::sync::{Arc, LazyLock, Mutex};
 use anyhow::{anyhow, bail, Context, Result};
 use half::f16;
 use half::slice::HalfFloatSliceExt;
-use ndarray::{s, Array4, ArrayView4};
+use ndarray::{s, Array4};
 use ort::{
+    memory::Allocator,
     session::Session,
     value::{Tensor, TensorRef},
 };
@@ -25,14 +26,16 @@ use rayon::prelude::*;
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use tracing::debug;
 
+use crate::frame_pool::FramePool;
 use crate::node::{ExecutionContext, FrameProcessor, Node, PortDefinition};
 use crate::streaming_executor::FrameInterpolator;
 use crate::types::{Frame, PortData, PortType};
 
 use crate::nodes::backend::{
-    build_session, ensure_inference_output_memory, inference_output_memory_info, InferenceBackend,
-    SessionConfig,
+    build_session, ensure_inference_output_memory, inference_output_memory_info,
+    pinned_input_allocator, InferenceBackend, SessionConfig,
 };
+use crate::nodes::nchw_layout::crop_planes_into;
 use crate::nodes::worker_count::WorkerCount;
 
 const PAD_ALIGN: usize = 32;
@@ -149,16 +152,18 @@ impl FrameInterpolationNode {
             return None;
         }
         let session = self.session?;
+        let pool = FramePool::shared();
 
         Some(FrameInterpolationMicroStages {
-            preprocess: FrameInterpolationPreprocess { nchw_buf: None },
+            preprocess: FrameInterpolationPreprocess::new(Arc::clone(&pool)),
             inference: FrameInterpolationInference {
                 session,
                 use_iobinding: self.use_iobinding,
-                concat_buf: self.concat_buf,
+                concat_input: Mutex::new(None),
                 multiplier: self.multiplier,
+                pool: Arc::clone(&pool),
             },
-            postprocess: FrameInterpolationPostprocess { emit_tensor: false },
+            postprocess: FrameInterpolationPostprocess::new(pool),
         })
     }
 
@@ -500,12 +505,35 @@ pub struct FrameInterpolationMicroStages {
     pub postprocess: FrameInterpolationPostprocess,
 }
 
+impl FrameInterpolationMicroStages {
+    /// Makes all three stages take and recycle frame buffers through `pool`.
+    pub fn set_frame_pool(&mut self, pool: &Arc<FramePool>) {
+        self.preprocess.pool = Arc::clone(pool);
+        self.inference.set_frame_pool(Arc::clone(pool));
+        self.postprocess.pool = Arc::clone(pool);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Micro-stage 1: Preprocess — CpuRgb → NchwF32 (padded, normalized)
 // ---------------------------------------------------------------------------
 
 pub struct FrameInterpolationPreprocess {
-    nchw_buf: Option<Array4<f32>>,
+    pool: Arc<FramePool>,
+}
+
+impl FrameInterpolationPreprocess {
+    pub fn new(pool: Arc<FramePool>) -> Self {
+        Self { pool }
+    }
+
+    fn take_padded(&self, height: usize, width: usize) -> Result<Array4<f32>> {
+        let padded_h = height + pad_amount(height);
+        let padded_w = width + pad_amount(width);
+        let buffer = self.pool.take_f32(3 * padded_h * padded_w);
+        Array4::from_shape_vec((1, 3, padded_h, padded_w), buffer)
+            .context("FrameInterpolationPreprocess: failed to shape pooled buffer")
+    }
 }
 
 impl Node for FrameInterpolationPreprocess {
@@ -529,6 +557,8 @@ impl Node for FrameInterpolationPreprocess {
 
 impl FrameProcessor for FrameInterpolationPreprocess {
     fn process_frame(&mut self, frame: Frame, _ctx: &ExecutionContext) -> Result<Frame> {
+        // Both conversions write every padded element, so stale pooled
+        // contents never reach the output.
         match frame {
             Frame::CpuRgb {
                 data,
@@ -536,18 +566,11 @@ impl FrameProcessor for FrameInterpolationPreprocess {
                 height,
                 bit_depth,
             } => {
-                let nchw = cpu_rgb_to_nchw_buffered(
-                    &data,
-                    width,
-                    height,
-                    bit_depth,
-                    self.nchw_buf.take(),
-                )?;
-                let padded_data = nchw.as_slice().unwrap().to_vec();
-                self.nchw_buf = Some(nchw);
-
+                let padded = self.take_padded(height as usize, width as usize)?;
+                let nchw = cpu_rgb_to_nchw_buffered(&data, width, height, bit_depth, Some(padded))?;
+                self.pool.recycle_u8(data);
                 Ok(Frame::NchwF32 {
-                    data: padded_data,
+                    data: into_standard_layout_vec(nchw)?,
                     height,
                     width,
                 })
@@ -557,10 +580,11 @@ impl FrameProcessor for FrameInterpolationPreprocess {
                 height,
                 width,
             } => {
-                let padded = nchw_f16_to_padded_array4(&data, height as usize, width as usize)?;
-                let padded_data = into_standard_layout_vec(padded)?;
+                let mut padded = self.take_padded(height as usize, width as usize)?;
+                nchw_f16_to_padded_into(&data, height as usize, width as usize, &mut padded)?;
+                self.pool.recycle_u16(data);
                 Ok(Frame::NchwF32 {
-                    data: padded_data,
+                    data: into_standard_layout_vec(padded)?,
                     height,
                     width,
                 })
@@ -592,8 +616,56 @@ fn into_standard_layout_vec(array: Array4<f32>) -> Result<Vec<f32>> {
 pub struct FrameInterpolationInference {
     session: Arc<Mutex<Session>>,
     use_iobinding: bool,
-    concat_buf: Option<Array4<f32>>,
+    /// Only accessed through `&mut self`; the mutex makes the stage `Sync`.
+    concat_input: Mutex<Option<ConcatInput>>,
     multiplier: u32,
+    pool: Arc<FramePool>,
+}
+
+impl FrameInterpolationInference {
+    pub fn set_frame_pool(&mut self, pool: Arc<FramePool>) {
+        self.pool = pool;
+    }
+
+    /// The reusable `[1, 7, H, W]` model input, allocated in CUDA-pinned
+    /// memory when the session supports it.
+    fn concat_input(&mut self, padded_h: usize, padded_w: usize) -> Result<&mut Tensor<f32>> {
+        let shape = [1_i64, 7, padded_h as i64, padded_w as i64];
+        let concat_input = self
+            .concat_input
+            .get_mut()
+            .unwrap_or_else(|error| error.into_inner());
+        if concat_input
+            .as_ref()
+            .is_none_or(|input| input.tensor.shape()[..] != shape)
+        {
+            // Drop the previous tensor before allocating its replacement.
+            *concat_input = None;
+            let session = self.session.lock().unwrap();
+            let allocator = pinned_input_allocator(&session);
+            drop(session);
+            let tensor = match &allocator {
+                Some(allocator) => Tensor::new(allocator, shape)?,
+                None => Tensor::new(&Allocator::default(), shape)?,
+            };
+            debug!(
+                pinned = allocator.is_some(),
+                padded_h, padded_w, "allocated RIFE concatenated input"
+            );
+            *concat_input = Some(ConcatInput {
+                tensor,
+                _allocator: allocator,
+            });
+        }
+        Ok(&mut concat_input.as_mut().expect("input allocated above").tensor)
+    }
+}
+
+/// A model input tensor and the allocator that owns its memory.
+struct ConcatInput {
+    // Declared before the allocator so it is released first.
+    tensor: Tensor<f32>,
+    _allocator: Option<Allocator>,
 }
 
 impl Node for FrameInterpolationInference {
@@ -630,7 +702,7 @@ impl FrameInterpolator for FrameInterpolationInference {
         let steps = timesteps_for_multiplier(self.multiplier);
 
         if is_scene_change {
-            return duplicate_first_frame(previous, steps.len());
+            return duplicate_nchw_f32_frame(previous, steps.len(), &self.pool);
         }
 
         let (prev_data, orig_h, orig_w) = extract_nchw_f32(previous, "previous")?;
@@ -638,39 +710,61 @@ impl FrameInterpolator for FrameInterpolationInference {
 
         let padded_h = orig_h + pad_amount(orig_h);
         let padded_w = orig_w + pad_amount(orig_w);
+        let image_len = 3 * padded_h * padded_w;
+        anyhow::ensure!(
+            prev_data.len() == image_len && curr_data.len() == image_len,
+            "FrameInterpolationInference: expected padded frames of {image_len} samples, got {} and {}",
+            prev_data.len(),
+            curr_data.len()
+        );
 
-        let img0 = ArrayView4::from_shape((1, 3, padded_h, padded_w), prev_data)
-            .context("FrameInterpolationInference: failed to reshape previous frame")?;
-        let img1 = ArrayView4::from_shape((1, 3, padded_h, padded_w), curr_data)
-            .context("FrameInterpolationInference: failed to reshape current frame")?;
-
-        let target_shape = [1, 7, padded_h, padded_w];
-        let mut concat = match self.concat_buf.take() {
-            Some(arr) if arr.shape() == target_shape => arr,
-            _ => Array4::<f32>::zeros(target_shape),
-        };
-
-        concat.slice_mut(s![.., 0..3, .., ..]).assign(&img0);
-        concat.slice_mut(s![.., 3..6, .., ..]).assign(&img1);
+        let session = Arc::clone(&self.session);
+        let use_iobinding = self.use_iobinding;
+        let pool = Arc::clone(&self.pool);
+        let concat = self.concat_input(padded_h, padded_w)?;
+        {
+            // Channels: img0 RGB, img1 RGB, timestep.
+            let (_, values) = concat.extract_tensor_mut();
+            values[..image_len].copy_from_slice(prev_data);
+            values[image_len..2 * image_len].copy_from_slice(curr_data);
+        }
 
         let mut results = Vec::with_capacity(steps.len());
         for &t in &steps {
-            concat.slice_mut(s![.., 6..7, .., ..]).fill(t);
+            concat.extract_tensor_mut().1[2 * image_len..].fill(t);
 
-            let output_raw = run_concatenated(&self.session, &concat, self.use_iobinding)?;
-            let output = crop_output(output_raw, &img0, orig_h, orig_w)?;
-
-            let cropped_data = output.as_slice().unwrap().to_vec();
+            let mut cropped = pool.take_f32(3 * orig_h * orig_w);
+            run_concatenated_with(&session, concat, use_iobinding, |shape, output| {
+                anyhow::ensure!(
+                    shape == [1, 3, padded_h as i64, padded_w as i64],
+                    "FrameInterpolationInference: unexpected output shape {shape:?}"
+                );
+                crop_planes_into(output, padded_h, padded_w, orig_h, orig_w, &mut cropped)
+            })?;
             results.push(Frame::NchwF32 {
-                data: cropped_data,
+                data: cropped,
                 height: orig_h as u32,
                 width: orig_w as u32,
             });
         }
 
-        self.concat_buf = Some(concat);
         Ok(results)
     }
+}
+
+fn duplicate_nchw_f32_frame(frame: &Frame, count: usize, pool: &FramePool) -> Result<Vec<Frame>> {
+    let (data, height, width) = extract_nchw_f32(frame, "previous")?;
+    Ok((0..count)
+        .map(|_| {
+            let mut copy = pool.take_f32(data.len());
+            copy.copy_from_slice(data);
+            Frame::NchwF32 {
+                data: copy,
+                height: height as u32,
+                width: width as u32,
+            }
+        })
+        .collect())
 }
 
 fn extract_nchw_f32<'a>(frame: &'a Frame, label: &str) -> Result<(&'a [f32], usize, usize)> {
@@ -691,6 +785,16 @@ fn extract_nchw_f32<'a>(frame: &'a Frame, label: &str) -> Result<(&'a [f32], usi
 
 pub struct FrameInterpolationPostprocess {
     pub emit_tensor: bool,
+    pool: Arc<FramePool>,
+}
+
+impl FrameInterpolationPostprocess {
+    pub fn new(pool: Arc<FramePool>) -> Self {
+        Self {
+            emit_tensor: false,
+            pool,
+        }
+    }
 }
 
 impl Node for FrameInterpolationPostprocess {
@@ -727,36 +831,10 @@ impl FrameProcessor for FrameInterpolationPostprocess {
         let w = width as usize;
         let expected_len = 3 * h * w;
 
-        if self.emit_tensor {
-            if data.len() == expected_len {
-                return Ok(Frame::NchwF32 {
-                    data,
-                    height,
-                    width,
-                });
-            }
-            let padded_h = h + pad_amount(h);
-            let padded_w = w + pad_amount(w);
-            let padded_expected = 3 * padded_h * padded_w;
-            anyhow::ensure!(
-                data.len() == padded_expected,
-                "FrameInterpolationPostprocess: data length {} doesn't match cropped ({}) or padded ({}) expectations for {}x{}",
-                data.len(), expected_len, padded_expected, w, h
-            );
-            let padded = Array4::from_shape_vec((1, 3, padded_h, padded_w), data)
-                .context("FrameInterpolationPostprocess: failed to reshape padded NchwF32 data")?;
-            let cropped = padded.slice(ndarray::s![.., .., ..h, ..w]).to_owned();
-            let cropped_data = cropped.as_slice().unwrap().to_vec();
-            return Ok(Frame::NchwF32 {
-                data: cropped_data,
-                height,
-                width,
-            });
-        }
-
-        let arr = if data.len() == expected_len {
-            Array4::from_shape_vec((1, 3, h, w), data)
-                .context("FrameInterpolationPostprocess: failed to reshape cropped NchwF32 data")?
+        // Interpolated frames arrive cropped; source frames still carry the
+        // inference padding.
+        let (plane_h, plane_w) = if data.len() == expected_len {
+            (h, w)
         } else {
             let padded_h = h + pad_amount(h);
             let padded_w = w + pad_amount(w);
@@ -766,12 +844,30 @@ impl FrameProcessor for FrameInterpolationPostprocess {
                 "FrameInterpolationPostprocess: data length {} doesn't match cropped ({}) or padded ({}) expectations for {}x{}",
                 data.len(), expected_len, padded_expected, w, h
             );
-            let padded = Array4::from_shape_vec((1, 3, padded_h, padded_w), data)
-                .context("FrameInterpolationPostprocess: failed to reshape padded NchwF32 data")?;
-            padded.slice(ndarray::s![.., .., ..h, ..w]).to_owned()
+            (padded_h, padded_w)
         };
 
-        let rgb = nchw_to_cpu_rgb(&arr, h, w)?;
+        if self.emit_tensor {
+            if (plane_h, plane_w) == (h, w) {
+                return Ok(Frame::NchwF32 {
+                    data,
+                    height,
+                    width,
+                });
+            }
+            let mut cropped = self.pool.take_f32(expected_len);
+            crop_planes_into(&data, plane_h, plane_w, h, w, &mut cropped)?;
+            self.pool.recycle_f32(data);
+            return Ok(Frame::NchwF32 {
+                data: cropped,
+                height,
+                width,
+            });
+        }
+
+        let mut rgb = self.pool.take_u8(h * w * 3);
+        nchw_planes_to_rgb_into(&data, plane_h, plane_w, h, w, &mut rgb)?;
+        self.pool.recycle_f32(data);
         Ok(Frame::CpuRgb {
             data: rgb,
             width,
@@ -1011,6 +1107,19 @@ fn nchw_f16_to_array4(data: &[u16], h: usize, w: usize) -> Result<(Array4<f32>, 
 }
 
 fn nchw_f16_to_padded_array4(data: &[u16], h: usize, w: usize) -> Result<Array4<f32>> {
+    let mut padded = Array4::<f32>::zeros((1, 3, h + pad_amount(h), w + pad_amount(w)));
+    nchw_f16_to_padded_into(data, h, w, &mut padded)?;
+    Ok(padded)
+}
+
+/// Converts FP16 NCHW planes to FP32 and reflection-pads them, writing every
+/// element of `padded` (shape `[1, 3, padded_h, padded_w]`).
+fn nchw_f16_to_padded_into(
+    data: &[u16],
+    h: usize,
+    w: usize,
+    padded: &mut Array4<f32>,
+) -> Result<()> {
     let expected = 3 * h * w;
     if data.len() != expected {
         bail!(
@@ -1021,8 +1130,13 @@ fn nchw_f16_to_padded_array4(data: &[u16], h: usize, w: usize) -> Result<Array4<
 
     let padded_h = h + pad_amount(h);
     let padded_w = w + pad_amount(w);
+    if padded.shape() != [1, 3, padded_h, padded_w] {
+        bail!(
+            "padded NCHW output has shape {:?}, expected [1, 3, {padded_h}, {padded_w}]",
+            padded.shape()
+        );
+    }
     let padded_hw = padded_h * padded_w;
-    let mut padded = Array4::<f32>::zeros((1, 3, padded_h, padded_w));
     let output = padded
         .as_slice_mut()
         .context("padded NCHW output must be contiguous")?;
@@ -1068,7 +1182,7 @@ fn nchw_f16_to_padded_array4(data: &[u16], h: usize, w: usize) -> Result<Array4<
         }
     }
 
-    Ok(padded)
+    Ok(())
 }
 
 fn pad_nchw(arr: &Array4<f32>, h: usize, w: usize) -> Array4<f32> {
@@ -1124,21 +1238,51 @@ fn nchw_to_cpu_rgb(arr: &Array4<f32>, out_h: usize, out_w: usize) -> Result<Vec<
 }
 
 fn nchw_to_cpu_rgb_parallel(arr: &Array4<f32>, out_h: usize, out_w: usize) -> Result<Vec<u8>> {
-    let hw = out_h * out_w;
-    let mut rgb = vec![0u8; hw * 3];
-    if rgb.is_empty() {
-        return Ok(rgb);
-    }
-
-    // Contiguous-slice gather: read from channel planes [R: 0..hw, G: hw..2hw, B: 2hw..3hw]
     let contiguous = arr.as_standard_layout();
-    let arr_slice = contiguous
+    let planes = contiguous
         .as_slice()
         .expect("standard layout must be contiguous");
+    let mut rgb = vec![0u8; out_h * out_w * 3];
+    nchw_planes_to_rgb_into(
+        planes,
+        arr.shape()[2],
+        arr.shape()[3],
+        out_h,
+        out_w,
+        &mut rgb,
+    )?;
+    Ok(rgb)
+}
 
-    let r_plane = &arr_slice[..hw];
-    let g_plane = &arr_slice[hw..2 * hw];
-    let b_plane = &arr_slice[2 * hw..3 * hw];
+/// Interleaves the top-left `out_h`x`out_w` region of three `plane_h`x`plane_w`
+/// FP32 planes into 8-bit RGB, overwriting all of `rgb`.
+fn nchw_planes_to_rgb_into(
+    planes: &[f32],
+    plane_h: usize,
+    plane_w: usize,
+    out_h: usize,
+    out_w: usize,
+    rgb: &mut [u8],
+) -> Result<()> {
+    let plane_len = plane_h * plane_w;
+    anyhow::ensure!(
+        planes.len() == 3 * plane_len && out_h <= plane_h && out_w <= plane_w,
+        "cannot convert {out_w}x{out_h} RGB from {} samples of {plane_w}x{plane_h} planes",
+        planes.len()
+    );
+    anyhow::ensure!(
+        rgb.len() == out_h * out_w * 3,
+        "RGB output holds {} bytes, expected {}",
+        rgb.len(),
+        out_h * out_w * 3
+    );
+    if rgb.is_empty() {
+        return Ok(());
+    }
+
+    let r_plane = &planes[..plane_len];
+    let g_plane = &planes[plane_len..2 * plane_len];
+    let b_plane = &planes[2 * plane_len..];
 
     const CHUNK: usize = 4096;
     let row_bytes = out_w * 3;
@@ -1151,7 +1295,7 @@ fn nchw_to_cpu_rgb_parallel(arr: &Array4<f32>, out_h: usize, out_w: usize) -> Re
             .enumerate()
             .for_each(|(band, output_band)| {
                 for (row, output_row) in output_band.chunks_mut(row_bytes).enumerate() {
-                    let source_row = (band * rows_per_band + row) * out_w;
+                    let source_row = (band * rows_per_band + row) * plane_w;
                     let mut x = 0;
                     while x < out_w {
                         let len = CHUNK.min(out_w - x);
@@ -1170,7 +1314,7 @@ fn nchw_to_cpu_rgb_parallel(arr: &Array4<f32>, out_h: usize, out_w: usize) -> Re
                 }
             });
     });
-    Ok(rgb)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1265,10 +1409,21 @@ fn run_concatenated(
     concat: &Array4<f32>,
     use_iobinding: bool,
 ) -> Result<ndarray::ArrayD<f32>> {
-    let t_tensor = std::time::Instant::now();
     let tensor = TensorRef::from_array_view(concat.view())?;
-    let tensor_ms = t_tensor.elapsed().as_secs_f64() * 1000.0;
+    run_concatenated_with(session_arc, &tensor, use_iobinding, |shape, output| {
+        let shape: Vec<usize> = shape.iter().map(|&dim| dim as usize).collect();
+        Ok(ndarray::ArrayD::from_shape_vec(shape, output.to_vec())?)
+    })
+}
 
+/// Runs the concatenated-input model and hands its output (shape and
+/// contiguous samples) to `read` while the output is still borrowed from ORT.
+fn run_concatenated_with<R>(
+    session_arc: &Arc<Mutex<Session>>,
+    tensor: &Tensor<f32>,
+    use_iobinding: bool,
+    read: impl FnOnce(&[i64], &[f32]) -> Result<R>,
+) -> Result<R> {
     let t_lock = std::time::Instant::now();
     let mut session = session_arc.lock().unwrap();
     let lock_ms = t_lock.elapsed().as_secs_f64() * 1000.0;
@@ -1276,22 +1431,21 @@ fn run_concatenated(
     let t_run = std::time::Instant::now();
     let result = if use_iobinding {
         let mut binding = session.create_binding()?;
-        binding.bind_input(INPUT_CONCAT, &tensor)?;
+        binding.bind_input(INPUT_CONCAT, tensor)?;
         let output_memory = inference_output_memory_info(&session)?;
         binding.bind_output_to_device(OUTPUT_NAME, &output_memory)?;
         let outputs = session.run_binding(&binding)?;
         ensure_inference_output_memory(&outputs[OUTPUT_NAME], &output_memory)?;
-        let output_view = outputs[OUTPUT_NAME].try_extract_array::<f32>()?;
-        output_view.to_owned()
+        let (shape, output) = outputs[OUTPUT_NAME].try_extract_tensor::<f32>()?;
+        read(shape, output)?
     } else {
         let outputs = session.run(ort::inputs![INPUT_CONCAT => tensor])?;
-        let output_view = outputs[OUTPUT_NAME].try_extract_array::<f32>()?;
-        output_view.to_owned()
+        let (shape, output) = outputs[OUTPUT_NAME].try_extract_tensor::<f32>()?;
+        read(shape, output)?
     };
     let run_ms = t_run.elapsed().as_secs_f64() * 1000.0;
 
     debug!(
-        tensor_copy_ms = format!("{tensor_ms:.1}"),
         lock_ms = format!("{lock_ms:.1}"),
         session_run_ms = format!("{run_ms:.1}"),
         "RIFE run_concatenated detail"
@@ -1486,7 +1640,7 @@ mod tests {
         let reference = Array4::from_shape_vec((1, 3, height, width), reference_data).unwrap();
         let expected = pad_nchw(&reference, height, width);
         let expected_bits: Vec<u32> = expected.iter().map(|value| value.to_bits()).collect();
-        let mut preprocess = FrameInterpolationPreprocess { nchw_buf: None };
+        let mut preprocess = FrameInterpolationPreprocess::new(FramePool::shared());
         let input = Frame::NchwF16 {
             data,
             height: height as u32,
@@ -2031,6 +2185,85 @@ mod tests {
         }
     }
 
+    fn gradient_rgb(width: usize, height: usize, phase: usize) -> Frame {
+        let data = (0..width * height * 3)
+            .map(|i| ((i / 3 % width + i / 3 / width * 2 + i % 3 * 40 + phase) % 256) as u8)
+            .collect();
+        Frame::CpuRgb {
+            data,
+            width: width as u32,
+            height: height as u32,
+            bit_depth: 8,
+        }
+    }
+
+    fn concatenated_rife_node() -> FrameInterpolationNode {
+        let mut node = FrameInterpolationNode::new();
+        let mut inputs = HashMap::new();
+        inputs.insert(
+            "model_path".to_string(),
+            PortData::Path(PathBuf::from(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../models/rife_v4.26.onnx"
+            ))),
+        );
+        inputs.insert("multiplier".to_string(), PortData::Int(2));
+        node.execute(&inputs, &ExecutionContext::default())
+            .expect("load RIFE model");
+        assert_eq!(node.model_format(), ModelFormat::Concatenated);
+        node
+    }
+
+    #[test]
+    #[ignore = "needs a CUDA GPU and models/rife_v4.26.onnx"]
+    fn micro_stages_match_the_single_node_path() {
+        // Given: the reference node path and the pooled micro-stage path with
+        // its reusable (pinned when available) model input.
+        let ctx = ExecutionContext::default();
+        let mut reference = concatenated_rife_node();
+        // Each pair below is independent, not a sliding window.
+        reference.disable_pair_cache();
+        let mut micro = concatenated_rife_node()
+            .into_micro_stages()
+            .expect("concatenated model splits into micro-stages");
+
+        // Unaligned sizes need padding; the size change reallocates the input.
+        for (width, height) in [(96, 72), (96, 72), (64, 64)] {
+            let frame0 = gradient_rgb(width, height, 0);
+            let frame1 = gradient_rgb(width, height, 60);
+            let expected = reference
+                .process_frame_pair(&frame0, &frame1, false)
+                .expect("node interpolation");
+
+            // When
+            let pre0 = micro.preprocess.process_frame(frame0, &ctx).unwrap();
+            let pre1 = micro.preprocess.process_frame(frame1, &ctx).unwrap();
+            let mut interpolated = micro
+                .inference
+                .interpolate(&pre0, &pre1, false, &ctx)
+                .expect("micro-stage interpolation");
+            let actual = micro
+                .postprocess
+                .process_frame(interpolated.remove(0), &ctx)
+                .unwrap();
+
+            // Then
+            let (Frame::CpuRgb { data: expected, .. }, Frame::CpuRgb { data: actual, .. }) =
+                (&expected[0], &actual)
+            else {
+                panic!("both paths should produce RGB");
+            };
+            assert_eq!(actual.len(), expected.len());
+            let max_diff = actual
+                .iter()
+                .zip(expected)
+                .map(|(a, e)| a.abs_diff(*e))
+                .max()
+                .unwrap();
+            assert!(max_diff <= 1, "{width}x{height}: max difference {max_diff}");
+        }
+    }
+
     #[test]
     fn test_frame_to_nchw_from_nchw_f32_aligned() {
         let h = 32usize;
@@ -2452,7 +2685,7 @@ mod tests {
     #[test]
     fn test_fi_preprocess() {
         let ctx = ExecutionContext::default();
-        let mut pre = FrameInterpolationPreprocess { nchw_buf: None };
+        let mut pre = FrameInterpolationPreprocess::new(FramePool::shared());
 
         let frame = Frame::CpuRgb {
             data: vec![128u8; 32 * 32 * 3],
@@ -2482,11 +2715,214 @@ mod tests {
             }
             _ => panic!("expected NchwF32"),
         }
+    }
 
-        assert!(
-            pre.nchw_buf.is_some(),
-            "buffer should be retained for reuse"
-        );
+    /// A pooled buffer whose previous contents must never leak into output.
+    fn poisoned_f32(len: usize) -> Vec<f32> {
+        vec![f32::NAN; len]
+    }
+
+    fn assert_same_bits(actual: &[f32], expected: &[f32]) {
+        assert_eq!(actual.len(), expected.len());
+        for (index, (a, e)) in actual.iter().zip(expected).enumerate() {
+            assert_eq!(a.to_bits(), e.to_bits(), "sample {index} differs");
+        }
+    }
+
+    #[test]
+    fn fi_preprocess_writes_rgb_into_a_pooled_buffer_and_recycles_the_input() {
+        // Given: an unaligned frame (needs right and bottom padding) and a pool
+        // holding a poisoned buffer of the padded size.
+        let (height, width) = (30usize, 45usize);
+        let padded_len = 3 * (height + pad_amount(height)) * (width + pad_amount(width));
+        let rgb: Vec<u8> = (0..height * width * 3)
+            .map(|i| (i * 7 % 256) as u8)
+            .collect();
+        let reference =
+            cpu_rgb_to_nchw_buffered(&rgb, width as u32, height as u32, 8, None).unwrap();
+        let pool = FramePool::shared();
+        let pooled_ptr = pool.seed_f32(padded_len, f32::NAN);
+        let rgb = pool.copy_u8(&rgb);
+        let input_ptr = rgb.as_ptr();
+        let mut pre = FrameInterpolationPreprocess::new(Arc::clone(&pool));
+
+        // When
+        let output = pre
+            .process_frame(
+                Frame::CpuRgb {
+                    data: rgb,
+                    width: width as u32,
+                    height: height as u32,
+                    bit_depth: 8,
+                },
+                &ExecutionContext::default(),
+            )
+            .unwrap();
+
+        // Then: the output reuses the pooled storage, every element is
+        // overwritten, and the consumed input returns to the pool.
+        let Frame::NchwF32 { data, .. } = output else {
+            panic!("expected NchwF32");
+        };
+        assert_eq!(data.as_ptr(), pooled_ptr);
+        assert_same_bits(&data, reference.as_slice().unwrap());
+        let recycled = pool.take_u8(height * width * 3);
+        assert_eq!(recycled.as_ptr(), input_ptr);
+    }
+
+    #[test]
+    fn fi_preprocess_converts_fp16_into_a_pooled_buffer_and_recycles_the_input() {
+        let (height, width) = (30usize, 45usize);
+        let data: Vec<u16> = (0..3 * height * width)
+            .map(|i| f16::from_f32((i % 97) as f32 / 97.0).to_bits())
+            .collect();
+        let reference = nchw_f16_to_padded_array4(&data, height, width).unwrap();
+        let pool = FramePool::shared();
+        let pooled_ptr = pool.seed_f32(reference.len(), f32::NAN);
+        let data = pool.copy_u16(&data);
+        let input_ptr = data.as_ptr();
+        let mut pre = FrameInterpolationPreprocess::new(Arc::clone(&pool));
+
+        let output = pre
+            .process_frame(
+                Frame::NchwF16 {
+                    data,
+                    height: height as u32,
+                    width: width as u32,
+                },
+                &ExecutionContext::default(),
+            )
+            .unwrap();
+
+        let Frame::NchwF32 { data, .. } = output else {
+            panic!("expected NchwF32");
+        };
+        assert_eq!(data.as_ptr(), pooled_ptr);
+        assert_same_bits(&data, reference.as_slice().unwrap());
+        let recycled = pool.take_u16(3 * height * width);
+        assert_eq!(recycled.as_ptr(), input_ptr);
+    }
+
+    fn padded_test_planes(height: usize, width: usize) -> (Vec<f32>, usize, usize) {
+        let padded_h = height + pad_amount(height);
+        let padded_w = width + pad_amount(width);
+        let planes = (0..3 * padded_h * padded_w)
+            .map(|i| (i % 251) as f32 / 250.0)
+            .collect();
+        (planes, padded_h, padded_w)
+    }
+
+    #[test]
+    fn fi_postprocess_converts_padded_planes_into_pooled_rgb_and_recycles_the_input() {
+        // Given: a padded source frame as forwarded by the inference stage.
+        let (height, width) = (30usize, 45usize);
+        let (planes, padded_h, padded_w) = padded_test_planes(height, width);
+        let padded = Array4::from_shape_vec((1, 3, padded_h, padded_w), planes.clone()).unwrap();
+        let expected = nchw_to_cpu_rgb_scalar(
+            &padded.slice(s![.., .., ..height, ..width]).to_owned(),
+            height,
+            width,
+        )
+        .unwrap();
+        let pool = FramePool::shared();
+        let pooled_ptr = pool.seed_u8(height * width * 3, 0xAA);
+        let planes = pool.copy_f32(&planes);
+        let input_ptr = planes.as_ptr();
+        let mut post = FrameInterpolationPostprocess::new(Arc::clone(&pool));
+
+        // When
+        let output = post
+            .process_frame(
+                Frame::NchwF32 {
+                    data: planes,
+                    height: height as u32,
+                    width: width as u32,
+                },
+                &ExecutionContext::default(),
+            )
+            .unwrap();
+
+        // Then
+        let Frame::CpuRgb { data, .. } = output else {
+            panic!("expected CpuRgb");
+        };
+        assert_eq!(data.as_ptr(), pooled_ptr);
+        assert_eq!(data, expected);
+        let recycled = pool.take_f32(3 * padded_h * padded_w);
+        assert_eq!(recycled.as_ptr(), input_ptr);
+    }
+
+    #[test]
+    fn fi_postprocess_tensor_mode_crops_padded_planes_into_a_pooled_buffer() {
+        let (height, width) = (30usize, 45usize);
+        let (planes, padded_h, padded_w) = padded_test_planes(height, width);
+        let padded = Array4::from_shape_vec((1, 3, padded_h, padded_w), planes.clone()).unwrap();
+        let expected = padded.slice(s![.., .., ..height, ..width]).to_owned();
+        let pool = FramePool::shared();
+        let pooled_ptr = pool.seed_f32(3 * height * width, f32::NAN);
+        let mut post = FrameInterpolationPostprocess::new(Arc::clone(&pool));
+        post.emit_tensor = true;
+
+        let output = post
+            .process_frame(
+                Frame::NchwF32 {
+                    data: planes,
+                    height: height as u32,
+                    width: width as u32,
+                },
+                &ExecutionContext::default(),
+            )
+            .unwrap();
+
+        let Frame::NchwF32 { data, .. } = output else {
+            panic!("expected NchwF32");
+        };
+        assert_eq!(data.as_ptr(), pooled_ptr);
+        assert_same_bits(&data, expected.as_slice().unwrap());
+    }
+
+    #[test]
+    fn crop_planes_into_matches_ndarray_crop() {
+        for (height, width) in [(30usize, 45usize), (32, 45), (30, 64), (32, 64)] {
+            let (planes, padded_h, padded_w) = padded_test_planes(height, width);
+            let padded =
+                Array4::from_shape_vec((1, 3, padded_h, padded_w), planes.clone()).unwrap();
+            let expected = padded.slice(s![.., .., ..height, ..width]).to_owned();
+            let mut output = poisoned_f32(3 * height * width);
+
+            crop_planes_into(&planes, padded_h, padded_w, height, width, &mut output).unwrap();
+
+            assert_same_bits(&output, expected.as_slice().unwrap());
+        }
+    }
+
+    #[test]
+    fn inference_scene_change_duplicates_into_pooled_buffers() {
+        let pool = FramePool::new();
+        let pooled_ptr = pool.seed_f32(12, f32::NAN);
+        let source: Vec<f32> = (0..12).map(|i| i as f32).collect();
+        let frame = Frame::NchwF32 {
+            data: source.clone(),
+            height: 2,
+            width: 2,
+        };
+
+        let frames = duplicate_nchw_f32_frame(&frame, 2, &pool).unwrap();
+
+        assert_eq!(frames.len(), 2);
+        for (index, frame) in frames.iter().enumerate() {
+            let Frame::NchwF32 {
+                data,
+                height,
+                width,
+            } = frame
+            else {
+                panic!("expected NchwF32");
+            };
+            assert_eq!((*height, *width), (2, 2));
+            assert_same_bits(data, &source);
+            assert_eq!(index == 0, data.as_ptr() == pooled_ptr);
+        }
     }
 
     #[test]
@@ -2512,7 +2948,7 @@ mod tests {
     #[test]
     fn test_fi_postprocess() {
         let ctx = ExecutionContext::default();
-        let mut post = FrameInterpolationPostprocess { emit_tensor: false };
+        let mut post = FrameInterpolationPostprocess::new(FramePool::shared());
 
         let h = 2usize;
         let w = 2usize;
@@ -2592,7 +3028,7 @@ mod tests {
         };
 
         let ctx = ExecutionContext::default();
-        let mut postprocess = FrameInterpolationPostprocess { emit_tensor: false };
+        let mut postprocess = FrameInterpolationPostprocess::new(FramePool::shared());
         let result = postprocess.process_frame(frame, &ctx).unwrap();
 
         match result {
@@ -2633,7 +3069,7 @@ mod tests {
         };
 
         let ctx = ExecutionContext::default();
-        let mut postprocess = FrameInterpolationPostprocess { emit_tensor: false };
+        let mut postprocess = FrameInterpolationPostprocess::new(FramePool::shared());
         let result = postprocess.process_frame(frame, &ctx).unwrap();
 
         match result {

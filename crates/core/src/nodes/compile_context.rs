@@ -8,6 +8,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, bail, Context, Result};
 
 use crate::compile::{CompileContext, DecoderResult};
+use crate::frame_pool::FramePool;
 use crate::graph::PipelineGraph;
 use crate::node::{ExecutionContext, FrameProcessor, Node, PortDefinition};
 use crate::streaming_executor::{FrameInterpolator, FrameSink, PipelineStage};
@@ -105,6 +106,8 @@ pub struct VideoCompileContext {
     /// Bit depth of the frames reaching the encoder (8 or 16).
     pipe_bit_depth: Cell<u8>,
     trt_cache_dir: PathBuf,
+    /// Frame buffers shared by the decoder, pooled stages and encoder of a job.
+    frame_pool: Arc<FramePool>,
 }
 
 impl Drop for VideoCompileContext {
@@ -112,6 +115,7 @@ impl Drop for VideoCompileContext {
         // Compilation can fail while the context still owns initialized stages.
         // Drop their sessions and buffers before asking the allocator to reclaim pages.
         self.accumulated_stages.get_mut().clear();
+        self.frame_pool.clear();
 
         // Repeated inference jobs leave GiB of freed buffers in glibc's thread
         // arenas. Return those pages at the job boundary, outside the frame loop.
@@ -256,6 +260,7 @@ impl VideoCompileContext {
             output_scales: RefCell::new(Vec::new()),
             pipe_bit_depth: Cell::new(8),
             trt_cache_dir,
+            frame_pool: FramePool::shared(),
         }
     }
 
@@ -433,6 +438,7 @@ impl VideoCompileContext {
             let mut micro = node
                 .into_micro_stages()
                 .ok_or_else(|| anyhow!("failed to build SuperResolution micro-stages"))?;
+            micro.set_frame_pool(&self.frame_pool);
             let mut inference_lanes: Vec<Box<dyn FrameProcessor>> = Vec::new();
             inference_lanes
                 .try_reserve_exact(num_workers)
@@ -463,6 +469,9 @@ impl VideoCompileContext {
                 worker_micro
                     .inference
                     .set_direct_rgb_flag(Arc::clone(&direct_rgb));
+                worker_micro
+                    .inference
+                    .set_frame_pool(Arc::clone(&self.frame_pool));
                 inference_lanes.push(Box::new(worker_micro.inference));
             }
             self.accumulated_stages
@@ -562,6 +571,7 @@ impl VideoCompileContext {
             let mut micro = node
                 .into_micro_stages()
                 .ok_or_else(|| anyhow!("failed to build FrameInterpolation micro-stages"))?;
+            micro.set_frame_pool(&self.frame_pool);
             self.accumulated_stages
                 .borrow_mut()
                 .push(PipelineStage::Processor(Box::new(micro.preprocess)));
@@ -583,12 +593,15 @@ impl VideoCompileContext {
                         lane_index + 1
                     );
                 }
-                let worker_micro = worker.into_micro_stages().ok_or_else(|| {
+                let mut worker_micro = worker.into_micro_stages().ok_or_else(|| {
                     anyhow!(
                         "failed to build FrameInterpolation inference lane {}",
                         lane_index + 1
                     )
                 })?;
+                worker_micro
+                    .inference
+                    .set_frame_pool(Arc::clone(&self.frame_pool));
                 inference_lanes.push(Box::new(worker_micro.inference));
             }
             self.accumulated_stages
@@ -687,8 +700,9 @@ impl CompileContext for VideoCompileContext {
         let (fps_num, fps_den) = fps_to_rational(video_info.fps);
         let total_frames = estimate_total_frames(&source_path, video_info.fps);
 
-        let decoder = VideoDecoder::new(&source_path, &video_info, Some("none"))
+        let mut decoder = VideoDecoder::new(&source_path, &video_info, Some("none"))
             .context("failed to create video decoder")?;
+        decoder.set_frame_pool(Arc::clone(&self.frame_pool));
 
         self.source_path.replace(Some(source_path));
         self.output_width.set(video_info.width);
@@ -734,7 +748,8 @@ impl CompileContext for VideoCompileContext {
 
         let config = self.encoder_config(inputs, outputs)?;
 
-        let encoder = VideoEncoder::new(&config).context("failed to create video encoder")?;
+        let mut encoder = VideoEncoder::new(&config).context("failed to create video encoder")?;
+        encoder.set_frame_pool(Arc::clone(&self.frame_pool));
         Ok(Box::new(encoder))
     }
 

@@ -21,6 +21,10 @@ impl FrameSink for Box<dyn FrameSink> {
     fn finish(&mut self) -> Result<()> {
         (**self).finish()
     }
+
+    fn release_frame(&mut self, frame: Frame) {
+        (**self).release_frame(frame)
+    }
 }
 
 pub struct SequentialExecutor;

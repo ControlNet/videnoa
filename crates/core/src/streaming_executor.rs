@@ -60,6 +60,10 @@ impl IndexedFrame {
 pub trait FrameSink: Send + 'static {
     fn write_frame(&mut self, frame: &Frame) -> Result<()>;
     fn finish(&mut self) -> Result<()>;
+
+    /// Takes back a frame after [`write_frame`](Self::write_frame) so the sink
+    /// can recycle its buffer.
+    fn release_frame(&mut self, _frame: Frame) {}
 }
 
 pub trait FrameInterpolator: Send + 'static {
@@ -335,14 +339,14 @@ where
     D: Iterator<Item = Result<Frame>> + Send + 'static,
 {
     tokio::task::spawn_blocking(move || {
-        let result = run_decoder_loop(&mut decoder, output, cancel_state.clone());
-        if let Err(error) = result {
-            report_task_error(
+        match run_decoder_loop(&mut decoder, output, cancel_state.clone()) {
+            Ok(stats) => stats.log(),
+            Err(error) => report_task_error(
                 &error_tx,
                 &cancel_state,
                 &cancel_tx,
                 error.context("decoder stage failed"),
-            );
+            ),
         }
     })
 }
@@ -496,11 +500,36 @@ where
     })
 }
 
+/// Decoder stage timings.
+#[derive(Debug)]
+struct DecoderStats {
+    frames: u64,
+    total_decode_ms: f64,
+    total_send_ms: f64,
+}
+
+impl DecoderStats {
+    fn log(&self) {
+        if self.frames == 0 {
+            return;
+        }
+        let frames = self.frames as f64;
+        tracing::info!(
+            frames = self.frames,
+            avg_decode_ms = format!("{:.1}", self.total_decode_ms / frames),
+            avg_send_wait_ms = format!("{:.1}", self.total_send_ms / frames),
+            total_decode_ms = format!("{:.0}", self.total_decode_ms),
+            total_send_wait_ms = format!("{:.0}", self.total_send_ms),
+            "Decoder stage summary"
+        );
+    }
+}
+
 fn run_decoder_loop<D>(
     decoder: &mut D,
     output: mpsc::Sender<IndexedFrame>,
     cancel_state: Arc<AtomicBool>,
-) -> Result<()>
+) -> Result<DecoderStats>
 where
     D: Iterator<Item = Result<Frame>>,
 {
@@ -508,12 +537,16 @@ where
     let mut total_decode_ms = 0.0_f64;
     let mut total_send_ms = 0.0_f64;
 
-    for frame_result in decoder {
+    loop {
         if cancel_state.load(Ordering::SeqCst) {
             break;
         }
 
+        // Decoding happens inside `next()`, so time the call itself.
         let t_decode = std::time::Instant::now();
+        let Some(frame_result) = decoder.next() else {
+            break;
+        };
         let frame = frame_result.with_context(|| format!("failed to decode frame {index}"))?;
         total_decode_ms += t_decode.elapsed().as_secs_f64() * 1000.0;
 
@@ -528,18 +561,11 @@ where
         index = index.saturating_add(1);
     }
 
-    if index > 0 {
-        tracing::info!(
-            frames = index,
-            avg_decode_ms = format!("{:.1}", total_decode_ms / index as f64),
-            avg_send_wait_ms = format!("{:.1}", total_send_ms / index as f64),
-            total_decode_ms = format!("{:.0}", total_decode_ms),
-            total_send_wait_ms = format!("{:.0}", total_send_ms),
-            "Decoder stage summary"
-        );
-    }
-
-    Ok(())
+    Ok(DecoderStats {
+        frames: index,
+        total_decode_ms,
+        total_send_ms,
+    })
 }
 
 fn run_processor_loop(
@@ -761,6 +787,7 @@ where
             .write_frame(&indexed_frame.frame)
             .with_context(|| format!("failed to encode frame {}", indexed_frame.index))?;
         total_encode_ms += t_enc.elapsed().as_secs_f64() * 1000.0;
+        encoder.release_frame(indexed_frame.frame);
 
         written = written.saturating_add(1);
 
@@ -1223,6 +1250,78 @@ mod tests {
             state.written_count() < 10_000,
             "cancel should stop processing before completion"
         );
+    }
+
+    struct ReleaseCountingSink {
+        written: Arc<AtomicUsize>,
+        released: Arc<AtomicUsize>,
+    }
+
+    impl FrameSink for ReleaseCountingSink {
+        fn write_frame(&mut self, _frame: &Frame) -> Result<()> {
+            self.written.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn finish(&mut self) -> Result<()> {
+            Ok(())
+        }
+
+        fn release_frame(&mut self, _frame: Frame) {
+            assert_eq!(
+                self.released.fetch_add(1, Ordering::SeqCst) + 1,
+                self.written.load(Ordering::SeqCst),
+                "a frame must be released after it was written"
+            );
+        }
+    }
+
+    #[test]
+    fn decoder_loop_times_frame_decoding() {
+        // Given: a source that takes 20 ms to produce each frame.
+        let mut decoder = (0_u8..3).map(|value| {
+            std::thread::sleep(Duration::from_millis(20));
+            Ok(sample_frame(value))
+        });
+        let (tx, _rx) = mpsc::channel(8);
+
+        // When
+        let stats = run_decoder_loop(&mut decoder, tx, Arc::new(AtomicBool::new(false)))
+            .expect("decoder loop should finish");
+
+        // Then: the time spent inside the source is attributed to decoding.
+        assert_eq!(stats.frames, 3);
+        assert!(
+            stats.total_decode_ms >= 55.0,
+            "decode time {} ms should cover the 60 ms spent producing frames",
+            stats.total_decode_ms
+        );
+    }
+
+    #[tokio::test]
+    async fn encoder_loop_releases_every_written_frame_to_the_sink() {
+        let written = Arc::new(AtomicUsize::new(0));
+        let released = Arc::new(AtomicUsize::new(0));
+        let sink: Box<dyn FrameSink> = Box::new(ReleaseCountingSink {
+            written: Arc::clone(&written),
+            released: Arc::clone(&released),
+        });
+        let (_cancel_tx, cancel_rx) = watch::channel(false);
+
+        StreamingExecutor::new(4)
+            .execute_pipeline_stages(
+                (0_u8..5).map(sample_frame).map(Ok),
+                Vec::new(),
+                sink,
+                PipelineFrameCounts::new(Some(5), Some(5)),
+                cancel_rx,
+                None,
+            )
+            .await
+            .expect("pipeline should complete");
+
+        assert_eq!(written.load(Ordering::SeqCst), 5);
+        assert_eq!(released.load(Ordering::SeqCst), 5);
     }
 
     #[tokio::test]
