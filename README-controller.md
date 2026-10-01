@@ -186,6 +186,11 @@ through an untrusted network. Browser sessions use an HttpOnly,
 SameSite=Strict cookie plus CSRF proof. Never put passwords, Authorization
 headers, cookies, or CSRF values in URLs, configuration, logs, or source control.
 
+The listener closes an HTTP/1.1 connection whose request head (request line and
+headers) does not arrive within 30 seconds, including the next request on an
+idle keep-alive connection. Request bodies, uploads, and SSE streams are not
+limited by this timeout.
+
 After setup, `POST /api/auth/login` accepts the administrator password. API
 clients may use the same password as a Bearer credential, but should read it
 through protected interactive input rather than a command argument or reusable

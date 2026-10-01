@@ -15,6 +15,7 @@ use axum::Router;
 use percent_encoding::percent_decode_str;
 
 include!("module_topology.rs");
+pub mod http_server;
 pub mod logging;
 use asset_path::ExactAssetPath;
 pub use auth::{
@@ -276,7 +277,8 @@ pub async fn serve(address: SocketAddr, assets: &FrontendAssets) -> Result<(), S
         .await
         .map_err(|source| StartupError::Bind { address, source })?;
 
-    axum::serve(listener, app_router(assets))
+    http_server::HttpServer::new(listener, app_router(assets))
+        .serve()
         .await
         .map_err(StartupError::Serve)
 }

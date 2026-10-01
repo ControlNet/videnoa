@@ -7709,6 +7709,8 @@ dependencies = [
  "dunce",
  "futures-util",
  "half",
+ "hyper",
+ "hyper-util",
  "libc",
  "libloading 0.9.0",
  "mime_guess",

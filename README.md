@@ -113,6 +113,11 @@ server port the precedence is `--port`, then the `PORT` environment variable,
 then `server.port` from the config. `videnoa run` (CLI) reads the same config
 and stores TensorRT engines in `paths.trt_cache_dir`.
 
+The HTTP server closes an HTTP/1.1 connection whose request head (request line
+and headers) does not arrive within 30 seconds, including the next request on an
+idle keep-alive connection. Request bodies, uploads, event streams, and
+WebSockets are not limited by this timeout.
+
 ## Video processing notes
 
 ### Colour handling
