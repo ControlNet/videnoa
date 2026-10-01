@@ -7644,7 +7644,6 @@ name = "videnoa-app"
 version = "0.1.7"
 dependencies = [
  "anyhow",
- "axum",
  "clap",
  "serde_json",
  "tokio",
@@ -7747,7 +7746,6 @@ dependencies = [
 name = "videnoa-desktop"
 version = "0.1.7"
 dependencies = [
- "axum",
  "sys-locale",
  "tauri",
  "tauri-build",
