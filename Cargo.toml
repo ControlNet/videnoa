@@ -8,7 +8,7 @@ rust-version = "1.98.0"
 
 [workspace.dependencies]
 videnoa-transport = { path = "crates/transport" }
-ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "cuda", "tensorrt", "ndarray", "load-dynamic", "half", "api-23"] }
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "cuda", "tensorrt", "ndarray", "load-dynamic", "half", "api-23"] }
 half = "2"
 ndarray = "0.17"
 tokio = { version = "1", features = ["full"] }
@@ -38,9 +38,9 @@ reqwest = { version = "0.12", features = ["json", "blocking"] }
 rustix = { version = "=0.38.44", features = ["fs"] }
 rand_core = { version = "0.6.4", features = ["getrandom"] }
 rayon = "1"
-rpassword = "=7.3.1"
+rpassword = "=7.5.4"
 url = { version = "2", features = ["serde"] }
-rust-embed = "=8.11.0"
+rust-embed = "=8.12.0"
 mime_guess = "2"
 percent-encoding = "2"
 figment = { version = "0.10", features = ["env", "toml"] }

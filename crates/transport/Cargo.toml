@@ -6,7 +6,7 @@ edition = "2021"
 
 [dependencies]
 anyhow.workspace = true
-iroh = "=1.1.0"
+iroh = "=1.2.0"
 iroh-proxy-utils = "=0.3.0"
 tokio.workspace = true
 tokio-util = { workspace = true, features = ["rt"] }
