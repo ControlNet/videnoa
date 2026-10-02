@@ -116,14 +116,32 @@ type CheckFieldProps = {
   readonly label: string
   readonly checked: boolean
   readonly disabled?: boolean
+  readonly hint?: ReactNode
   readonly onChange: (checked: boolean) => void
 }
 
-export function CheckField({ id, name, label, checked, disabled, onChange }: CheckFieldProps) {
-  return (
+export function CheckField({ id, name, label, checked, disabled, hint, onChange }: CheckFieldProps) {
+  const hintId = `${id}-hint`
+  const field = (
     <label className="field field--check" htmlFor={id}>
-      <input id={id} name={name} type="checkbox" checked={checked} disabled={disabled} onChange={(event) => onChange(event.currentTarget.checked)} />
+      <input
+        id={id}
+        name={name}
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        aria-describedby={hint === undefined ? undefined : hintId}
+        onChange={(event) => onChange(event.currentTarget.checked)}
+      />
       <span>{label}</span>
     </label>
+  )
+  if (hint === undefined) return field
+  // The hint sits under the label text, indented past the box, so it reads as the option's own note.
+  return (
+    <div className="field-check-group">
+      {field}
+      <small id={hintId} className="field-check-hint">{hint}</small>
+    </div>
   )
 }
