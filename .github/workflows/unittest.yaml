@@ -91,6 +91,14 @@ jobs:
       - name: Install web dependencies
         working-directory: web
         run: npm ci --no-fund
+      - name: Lint web sources
+        if: runner.os == 'Linux'
+        working-directory: web
+        run: npm run lint
+      - name: Run web tests
+        if: runner.os == 'Linux'
+        working-directory: web
+        run: npm test
       - name: Build web assets
         working-directory: web
         run: npm run build

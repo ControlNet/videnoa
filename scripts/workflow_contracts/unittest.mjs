@@ -21,6 +21,8 @@ export function validateUnitWorkflow(workflow) {
 		"web-build-check": [
 			'working-directory":"web',
 			"npm ci --no-fund",
+			"npm run lint",
+			"npm test",
 			"npm run build",
 		],
 		"package-linux64-smoke": [
