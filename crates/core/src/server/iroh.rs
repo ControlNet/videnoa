@@ -93,16 +93,14 @@ impl AppState {
     /// Reconciles the internal API listener and iroh endpoint with stored settings.
     /// Call while serializing settings/password changes, or before accepting requests.
     pub async fn reconcile_iroh(&self) -> anyhow::Result<()> {
-        let (enabled, relays) = {
-            let config = self.inner.config.read().await;
-            (config.iroh.enabled, config.iroh.relay_urls.clone())
-        };
+        let iroh = self.inner.config.read().await.iroh.clone();
+        let enabled = iroh.enabled;
         let mut runtime = self.inner.iroh.inner.lock().await;
         if !enabled {
             runtime.shutdown().await;
             return Ok(());
         }
-        let network = match Network::with_relays(&relays) {
+        let network = match iroh.network() {
             Ok(network) => network,
             Err(error) => {
                 runtime.error = Some(error.to_string());

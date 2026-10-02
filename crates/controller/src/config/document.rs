@@ -198,6 +198,7 @@ impl From<&ControllerConfig> for RawControllerConfig {
             },
             iroh: raw::RawIrohConfig {
                 relay_urls: config.iroh.relay_urls.clone(),
+                use_public_relays: config.iroh.use_public_relays,
             },
         }
     }

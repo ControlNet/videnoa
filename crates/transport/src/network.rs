@@ -46,6 +46,25 @@ impl Network {
         })
     }
 
+    /// Adds N0's public relays next to self-hosted ones when `include` is set.
+    ///
+    /// An endpoint homes on whichever listed relay has the lowest latency, so
+    /// the public relays are peers of the self-hosted ones, not a standby.
+    /// Address lookup stays off. Without self-hosted relays this changes
+    /// nothing: the endpoint already uses the full public network.
+    #[must_use]
+    pub fn including_public_relays(mut self, include: bool) -> Self {
+        if include && !self.relays.is_empty() {
+            let public: Vec<RelayUrl> = iroh::defaults::prod::default_relay_map().urls();
+            for relay in public {
+                if !self.relays.contains(&relay) {
+                    self.relays.push(relay);
+                }
+            }
+        }
+        self
+    }
+
     /// The configured relays; empty when the public N0 relays are used.
     #[must_use]
     pub fn relays(&self) -> &[RelayUrl] {
@@ -104,6 +123,26 @@ mod tests {
         assert!(Network::with_relays(Vec::<String>::new())?
             .relays()
             .is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn public_relays_join_self_hosted_ones_without_changing_public_mode() -> Result<()> {
+        let own = Network::with_relays(["https://relay.example.test"])?;
+        let mixed = own.clone().including_public_relays(true);
+        let public: Vec<RelayUrl> = iroh::defaults::prod::default_relay_map().urls();
+        assert!(!public.is_empty());
+        assert_eq!(mixed.relays()[0], own.relays()[0]);
+        assert_eq!(mixed.relays().len(), 1 + public.len());
+        assert!(public.iter().all(|relay| mixed.relays().contains(relay)));
+        // Repeating or unsetting the option is a no-op.
+        assert_eq!(mixed.clone().including_public_relays(true), mixed);
+        assert_eq!(own.clone().including_public_relays(false), own);
+        // An empty list already means the full public network.
+        assert_eq!(
+            Network::default().including_public_relays(true),
+            Network::default()
+        );
         Ok(())
     }
 

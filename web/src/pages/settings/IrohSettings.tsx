@@ -16,13 +16,15 @@ interface IrohSettingsProps {
   relayUrls: readonly string[];
   savedRelayUrls: readonly string[];
   onRelayUrlsChange: (relayUrls: string[]) => void;
+  usePublicRelays: boolean;
+  onUsePublicRelaysChange: (usePublicRelays: boolean) => void;
 }
 
 function relayLines(text: string): string[] {
   return text.split('\n').map((line) => line.trim()).filter((line) => line !== '');
 }
 
-export function IrohSettings({ enabled, savedEnabled, onChange, relayUrls, savedRelayUrls, onRelayUrlsChange }: IrohSettingsProps) {
+export function IrohSettings({ enabled, savedEnabled, onChange, relayUrls, savedRelayUrls, onRelayUrlsChange, usePublicRelays, onUsePublicRelaysChange }: IrohSettingsProps) {
   const { t } = useTranslation('settings');
   // The draft keeps the line breaks being typed; it follows the form on save or reset.
   const [relayDraft, setRelayDraft] = useState(() => relayUrls.join('\n'));
@@ -123,6 +125,14 @@ export function IrohSettings({ enabled, savedEnabled, onChange, relayUrls, saved
         />
         <p id="settings-iroh-relays-hint" className="text-[11px] leading-4 text-muted-foreground">{t('iroh.relaysHint')}</p>
       </Field>
+      <CheckRow
+        id="settings-iroh-public-relays"
+        className="sm:col-span-6"
+        label={t('iroh.usePublicRelays')}
+        checked={usePublicRelays}
+        disabled={relayUrls.length === 0}
+        onChange={(event) => { onUsePublicRelaysChange(event.target.checked); }}
+      />
     </SettingsGrid>
     {copyFailed && <p role="alert" className="text-[11px] text-destructive">{t('iroh.copyFailed')}</p>}
   </SettingsSection>;

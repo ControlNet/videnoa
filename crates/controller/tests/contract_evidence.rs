@@ -132,7 +132,11 @@ fn settings() -> Value {
         },
         "timeouts": {"health_seconds": 10, "poll_seconds": 5, "transfer_seconds": 300},
         "retry": {"initial_seconds": 1, "maximum_seconds": 60, "max_attempts": 5},
-        "iroh": {"relay_urls": ["https://relay.example.test/"], "restart_required": true}
+        "iroh": {
+            "relay_urls": ["https://relay.example.test/"],
+            "use_public_relays": true,
+            "restart_required": true
+        }
     })
 }
 
@@ -214,7 +218,7 @@ fn all_public_http_contracts_roundtrip_and_can_write_evidence() -> TestResult {
             "scheduler": settings_value["scheduler"],
             "timeouts": settings_value["timeouts"],
             "retry": settings_value["retry"],
-            "iroh": {"relay_urls": settings_value["iroh"]["relay_urls"]}
+            "iroh": {"relay_urls": settings_value["iroh"]["relay_urls"], "use_public_relays": true}
         }))?,
         "setup_status": roundtrip::<SetupResponse>(json!({"initialized": false}))?,
         "login": roundtrip::<LoginResponse>(json!({"session": session.clone()}))?,

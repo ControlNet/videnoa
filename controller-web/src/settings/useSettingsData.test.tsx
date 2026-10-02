@@ -15,7 +15,7 @@ const testOnlySettings = {
   scheduler: { paused: false, default_compute_slots: 2, prefetch_per_worker: 1, max_concurrent_uploads: 2, max_concurrent_downloads: 3 },
   timeouts: { health_seconds: 15, poll_seconds: 5, transfer_seconds: 300 },
   retry: { initial_seconds: 2, maximum_seconds: 30, max_attempts: 4 },
-  iroh: { relay_urls: [], restart_required: false },
+  iroh: { relay_urls: [], use_public_relays: false, restart_required: false },
 } as const
 
 describe("settings data requests", () => {

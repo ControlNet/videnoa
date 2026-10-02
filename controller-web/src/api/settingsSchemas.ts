@@ -72,7 +72,7 @@ export const settingsUpdateRequestSchema = z
     scheduler: schedulerStatusSchema,
     timeouts: timeoutSettingsSchema,
     retry: retrySettingsSchema,
-    iroh: z.object({ relay_urls: z.array(relayUrlSchema) }).strict().optional(),
+    iroh: z.object({ relay_urls: z.array(relayUrlSchema), use_public_relays: z.boolean() }).strict().optional(),
   })
   .strict()
 
@@ -93,7 +93,7 @@ export const settingsResponseSchema = z
     scheduler: schedulerStatusSchema,
     timeouts: timeoutSettingsSchema,
     retry: retrySettingsSchema,
-    iroh: z.object({ relay_urls: z.array(z.string()), restart_required: z.boolean() }).strict(),
+    iroh: z.object({ relay_urls: z.array(z.string()), use_public_relays: z.boolean(), restart_required: z.boolean() }).strict(),
   })
   .strict()
 

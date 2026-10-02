@@ -31,6 +31,7 @@ type SettingsFields = {
   readonly retryMaximum: string
   readonly retryAttempts: string
   readonly relayUrls: string
+  readonly usePublicRelays: boolean
 }
 
 const settingsFieldOrder = [
@@ -57,7 +58,7 @@ const settingsFieldNames = {
   serverHost: "host", serverPort: "port", secureCookie: "secure_cookie", sessionAbsolute: "session_absolute_seconds", sessionIdle: "session_idle_seconds",
   defaultSlots: "default_compute_slots", prefetch: "prefetch_per_worker", uploads: "max_concurrent_uploads", downloads: "max_concurrent_downloads",
   health: "health_seconds", poll: "poll_seconds", transfer: "transfer_seconds", retryInitial: "initial_seconds", retryMaximum: "maximum_seconds", retryAttempts: "max_attempts",
-  relayUrls: "relay_urls",
+  relayUrls: "relay_urls", usePublicRelays: "use_public_relays",
 } as const satisfies Record<keyof SettingsFields, string>
 
 export const settingsFormId = "settings-editor-form"
@@ -128,7 +129,11 @@ export function SettingsEditor({ settings, actionError, onSave }: SettingsEditor
         maximum_seconds: Number(fields.retryMaximum),
         max_attempts: Number(fields.retryAttempts),
       },
-      iroh: { relay_urls: relayLines(fields.relayUrls) },
+      iroh: {
+        relay_urls: relayLines(fields.relayUrls),
+        // Ignored without self-hosted relays; keep the saved file free of it.
+        use_public_relays: fields.usePublicRelays && relayLines(fields.relayUrls).length > 0,
+      },
     })
     if (!parsed.success) {
       const errors: Partial<Record<keyof SettingsFields, string>> = {}
@@ -205,9 +210,17 @@ export function SettingsEditor({ settings, actionError, onSave }: SettingsEditor
             rows={3}
             spellCheck={false}
             value={fields.relayUrls}
-            hint="One URL per line. Leave empty to use the public iroh relays. Workers must list the same relays. Applies after the Controller restarts."
+            hint="One URL per line. Leave empty to use the public iroh relays. Workers must use the same relays and the same public-relay choice. Applies after the Controller restarts."
             error={fieldErrors.relayUrls ?? serverErrors.relayUrls}
             onChange={(event) => setFields({ ...fields, relayUrls: event.currentTarget.value })}
+          />
+          <CheckField
+            id="settings-use_public_relays"
+            name="use_public_relays"
+            label="Also use the public iroh relays, chosen by latency alongside yours"
+            checked={fields.usePublicRelays}
+            disabled={relayLines(fields.relayUrls).length === 0}
+            onChange={(usePublicRelays) => setFields({ ...fields, usePublicRelays })}
           />
         </SettingsSection>
       </div>
@@ -291,7 +304,7 @@ function fieldsFrom(settings: SettingsResponse): SettingsFields {
     uploads: String(settings.scheduler.max_concurrent_uploads), downloads: String(settings.scheduler.max_concurrent_downloads),
     health: String(settings.timeouts.health_seconds), poll: String(settings.timeouts.poll_seconds), transfer: String(settings.timeouts.transfer_seconds),
     retryInitial: String(settings.retry.initial_seconds), retryMaximum: String(settings.retry.maximum_seconds), retryAttempts: String(settings.retry.max_attempts),
-    relayUrls: settings.iroh.relay_urls.join("\n"),
+    relayUrls: settings.iroh.relay_urls.join("\n"), usePublicRelays: settings.iroh.use_public_relays,
   }
 }
 

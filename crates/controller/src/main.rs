@@ -182,7 +182,7 @@ fn open_path_capabilities(
 
 async fn open_store(config: &ControllerConfig) -> anyhow::Result<Store> {
     let data_root = &config.paths.data_root;
-    videnoa_controller::remote::configure_iroh(data_root, &config.iroh.relay_urls)?;
+    videnoa_controller::remote::configure_iroh(data_root, &config.iroh)?;
     let database =
         Database::open(DatabaseOptions::new(data_root.join("controller.sqlite3"))).await?;
     Ok(Store::new(database))

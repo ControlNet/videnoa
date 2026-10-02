@@ -206,6 +206,7 @@ fn response(state: &OperationsState, record: SettingsRecord) -> SettingsResponse
         retry: record.retry,
         iroh: IrohSettingsResponse {
             relay_urls: configured.iroh.relay_urls,
+            use_public_relays: configured.iroh.use_public_relays,
             restart_required: iroh_restart_required,
         },
     }

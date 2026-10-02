@@ -104,7 +104,7 @@ file (restart after manual edits). Log in again to receive the longer absolute
 lifetime; increasing the policy does not extend an existing session's deadline.
 
 `<DATA ROOT>/controller.toml` is the sole persisted Controller configuration source.
-Its optional `[iroh]` section (`relay_urls`) is edited in Web Settings or the
+Its optional `[iroh]` section (`relay_urls`, `use_public_relays`) is edited in Web Settings or the
 file and read at startup, so a change applies after the next Controller start.
 See [self-hosted relays](iroh.md#self-hosted-relays).
 The in-memory `ControllerConfig` is the active runtime configuration.
@@ -585,8 +585,8 @@ including zero counts.
 | `GET` | `/api/workers` | Worker list, capabilities, and capacity |
 | `POST` | `/api/workers` | Create `name`, `api_url` (or `transport`=`iroh` plus `endpoint_id`), `enabled`, `compute_slots`, optional `password` |
 | `PUT` | `/api/workers/{id}` | Current version plus all mutable fields |
-| `GET` | `/api/settings` | Version, editable paths, restart state, server, auth policy, scheduler, timeouts, retry, `iroh` (`relay_urls`, `restart_required`) |
-| `PUT` | `/api/settings` | Current `version` plus complete `paths`, `server`, `auth`, `scheduler`, `timeouts`, `retry`; optional `iroh` (`relay_urls`), omitted to keep the saved relays |
+| `GET` | `/api/settings` | Version, editable paths, restart state, server, auth policy, scheduler, timeouts, retry, `iroh` (`relay_urls`, `use_public_relays`, `restart_required`) |
+| `PUT` | `/api/settings` | Current `version` plus complete `paths`, `server`, `auth`, `scheduler`, `timeouts`, `retry`; optional `iroh` (`relay_urls`, `use_public_relays`), omitted to keep the saved relays |
 | `POST` | `/api/scheduler/pause` | `{"version":N}` |
 | `POST` | `/api/scheduler/resume` | `{"version":N}` |
 

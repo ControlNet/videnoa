@@ -233,12 +233,27 @@ export function SettingsPage() {
 						relayUrls={formState.iroh?.relay_urls ?? []}
 						savedRelayUrls={config?.iroh?.relay_urls ?? []}
 						onRelayUrlsChange={(urls) => {
-							// The Worker omits an empty list; matching that keeps the form clean.
+							// The Worker omits an empty list and an unset flag; matching that
+							// keeps the form clean. Public relays are ignored without relays.
 							setFormState({
 								...formState,
 								iroh: {
+									...formState.iroh,
 									enabled: formState.iroh?.enabled ?? false,
 									relay_urls: urls.length === 0 ? undefined : urls,
+									use_public_relays:
+										urls.length === 0 ? undefined : formState.iroh?.use_public_relays,
+								},
+							});
+						}}
+						usePublicRelays={formState.iroh?.use_public_relays ?? false}
+						onUsePublicRelaysChange={(usePublic) => {
+							setFormState({
+								...formState,
+								iroh: {
+									...formState.iroh,
+									enabled: formState.iroh?.enabled ?? false,
+									use_public_relays: usePublic ? true : undefined,
 								},
 							});
 						}}
