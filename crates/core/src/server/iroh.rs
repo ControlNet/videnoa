@@ -5,7 +5,7 @@ use axum::{extract::State, Json};
 use serde::Serialize;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
-use videnoa_transport::{Authorizer, Identity, PeerMap, Server};
+use videnoa_transport::{Authorizer, Identity, Network, PeerMap, Server};
 
 use super::{api_router, AppError, AppState};
 
@@ -18,6 +18,8 @@ pub(super) struct Runtime {
 struct RuntimeInner {
     identity: Option<Identity>,
     server: Option<Server>,
+    /// The relays `server` was started with.
+    network: Option<Network>,
     api_stop: Option<CancellationToken>,
     api_task: Option<tokio::task::JoinHandle<()>>,
     error: Option<String>,
@@ -30,6 +32,7 @@ impl RuntimeInner {
         if let Some(server) = self.server.take() {
             server.shutdown().await;
         }
+        self.network = None;
         if let Some(task) = self.api_task.take() {
             let _ = task.await;
         }
@@ -66,6 +69,18 @@ impl AppState {
             .map(Server::addr)
     }
 
+    #[cfg(test)]
+    pub(super) async fn iroh_relays(&self) -> Option<Vec<String>> {
+        self.inner
+            .iroh
+            .inner
+            .lock()
+            .await
+            .network
+            .as_ref()
+            .map(|network| network.relays().iter().map(ToString::to_string).collect())
+    }
+
     pub(super) fn iroh_password_enabled(&self) -> Result<bool, AppError> {
         self.inner
             .auth
@@ -78,12 +93,22 @@ impl AppState {
     /// Reconciles the internal API listener and iroh endpoint with stored settings.
     /// Call while serializing settings/password changes, or before accepting requests.
     pub async fn reconcile_iroh(&self) -> anyhow::Result<()> {
-        let enabled = self.inner.config.read().await.iroh.enabled;
+        let (enabled, relays) = {
+            let config = self.inner.config.read().await;
+            (config.iroh.enabled, config.iroh.relay_urls.clone())
+        };
         let mut runtime = self.inner.iroh.inner.lock().await;
         if !enabled {
             runtime.shutdown().await;
             return Ok(());
         }
+        let network = match Network::with_relays(&relays) {
+            Ok(network) => network,
+            Err(error) => {
+                runtime.error = Some(error.to_string());
+                return Err(error);
+            }
+        };
         let auth = self
             .inner
             .auth
@@ -95,7 +120,11 @@ impl AppState {
             anyhow::bail!("Set a worker password before enabling iroh");
         }
         if runtime.server.is_some() {
-            return Ok(());
+            if runtime.network.as_ref() == Some(&network) {
+                return Ok(());
+            }
+            // Relays changed: restart the endpoint with the same identity.
+            runtime.shutdown().await;
         }
         let result = async {
             if runtime.identity.is_none() {
@@ -108,7 +137,14 @@ impl AppState {
                 Box::pin(async move { auth.verify_tunnel(peer, password).await })
             });
             let identity = runtime.identity.as_ref().expect("identity was initialized");
-            let server = Server::start(identity, target, authorize, self.inner.iroh.peers.clone()).await?;
+            let server = Server::start(
+                identity,
+                target,
+                authorize,
+                self.inner.iroh.peers.clone(),
+                &network,
+            )
+            .await?;
             let stop = CancellationToken::new();
             let stopped = stop.clone();
             let router = api_router(self.clone());
@@ -118,8 +154,13 @@ impl AppState {
                     _ = axum::serve(listener, router.into_make_service_with_connect_info::<std::net::SocketAddr>()) => {},
                 }
             });
-            tracing::info!(endpoint_id = %server.id(), "iroh enabled");
+            tracing::info!(
+                endpoint_id = %server.id(),
+                self_hosted_relays = network.relays().len(),
+                "iroh enabled"
+            );
             runtime.server = Some(server);
+            runtime.network = Some(network);
             runtime.api_stop = Some(stop);
             runtime.api_task = Some(task);
             anyhow::Ok(())

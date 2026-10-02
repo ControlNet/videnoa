@@ -93,7 +93,7 @@ async fn apply(
         ));
     }
     validate_path_transition(state, &request).await?;
-    let config = validate_request::build_config(&state.config.paths, &request)?;
+    let config = validate_request::build_config(&state.config, &request)?;
     let prepared = prepare_listener(&record, &request, state.listener.is_some()).await?;
     let handoff = match (prepared, &state.listener) {
         (Some(prepared), Some(listener)) => Some(

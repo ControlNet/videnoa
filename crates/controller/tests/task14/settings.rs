@@ -240,3 +240,35 @@ async fn session_settings_have_no_fixed_day_limit() -> TestResult {
     assert!(document.contains("session_idle_seconds = 2592000"));
     Ok(())
 }
+
+#[tokio::test]
+async fn settings_updates_keep_iroh_relays_from_the_config_file() -> TestResult {
+    // Given: a Controller whose controller.toml lists a self-hosted relay.
+    let fixture = Fixture::with_iroh_relays(&["https://relay.example.test"]).await?;
+    let response = fixture
+        .router
+        .clone()
+        .oneshot(Fixture::request("GET", "/api/settings", None)?)
+        .await?;
+    let settings = json_body(response).await?;
+
+    // When: runtime settings are saved through the API, which rewrites the file.
+    let response = fixture
+        .router
+        .clone()
+        .oneshot(Fixture::request(
+            "PUT",
+            "/api/settings",
+            Some(&settings_update(&settings, 12, 302)),
+        )?)
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Then: the relay section the API does not manage is kept.
+    let document = fs::read_to_string(&fixture.config_file)?;
+    assert!(document.contains("health_seconds = 12"), "{document}");
+    let reloaded =
+        videnoa_controller::config::ControllerConfig::from_toml_in(&document, &fixture.workspace)?;
+    assert_eq!(reloaded.iroh.relay_urls, ["https://relay.example.test"]);
+    Ok(())
+}

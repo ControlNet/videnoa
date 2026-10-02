@@ -24,6 +24,9 @@ pub struct AppConfig {
 #[serde(default)]
 pub struct IrohConfig {
     pub enabled: bool,
+    /// Self-hosted relays; empty uses the public N0 relays and discovery.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub relay_urls: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -254,6 +257,27 @@ mod tests {
         let encoded = toml::to_string_pretty(&original).expect("serialize config");
         let decoded: AppConfig = toml::from_str(&encoded).expect("deserialize config");
         assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn iroh_relay_urls_are_optional_in_the_config_file() {
+        // Existing files without relays keep the public N0 infrastructure.
+        let legacy: AppConfig = toml::from_str("[iroh]\nenabled = true\n").expect("legacy iroh");
+        assert!(legacy.iroh.enabled);
+        assert!(legacy.iroh.relay_urls.is_empty());
+        let encoded = toml::to_string_pretty(&legacy).expect("serialize config");
+        assert!(!encoded.contains("relay_urls"), "{encoded}");
+
+        let relays: AppConfig = toml::from_str(
+            "[iroh]\nenabled = true\nrelay_urls = [\"https://relay.example.test\"]\n",
+        )
+        .expect("self-hosted relays");
+        assert_eq!(relays.iroh.relay_urls, ["https://relay.example.test"]);
+        let encoded = toml::to_string_pretty(&relays).expect("serialize config");
+        assert_eq!(
+            toml::from_str::<AppConfig>(&encoded).expect("roundtrip"),
+            relays
+        );
     }
 
     #[test]

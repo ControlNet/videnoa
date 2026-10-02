@@ -53,6 +53,14 @@ pub struct ControllerConfig {
     pub scheduler: SchedulerConfig,
     pub timeouts: TimeoutConfig,
     pub retry: RetryConfig,
+    pub iroh: IrohConfig,
+}
+
+/// iroh transport settings, read from `controller.toml` only.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct IrohConfig {
+    /// Self-hosted relays; empty uses the public N0 relays and discovery.
+    pub relay_urls: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -176,6 +184,7 @@ impl Default for ControllerConfig {
                 maximum: Duration::from_secs(RETRY_MAXIMUM_SECONDS),
                 max_attempts: DEFAULT_MAX_ATTEMPTS,
             },
+            iroh: IrohConfig::default(),
         }
     }
 }

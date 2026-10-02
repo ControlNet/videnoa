@@ -79,6 +79,33 @@ describe("SettingsPage profiling toggle", () => {
 		);
 	});
 
+	it("keeps file-only iroh relays when the iroh toggle changes", async () => {
+		const iroh = { enabled: true, relay_urls: ["https://relay.example.test"] };
+		vi.mocked(getConfig).mockResolvedValue(makeConfig({ iroh }));
+		vi.mocked(updateConfig).mockResolvedValue(makeConfig({ iroh: { ...iroh, enabled: false } }));
+
+		render(
+			<MemoryRouter>
+				<SettingsPage />
+			</MemoryRouter>,
+		);
+		await waitFor(() => {
+			expect(getConfig).toHaveBeenCalledTimes(1);
+		});
+
+		fireEvent.click(screen.getByLabelText("Enable iroh"));
+		fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+		await waitFor(() => {
+			expect(updateConfig).toHaveBeenCalledTimes(1);
+		});
+		expect(updateConfig).toHaveBeenCalledWith(
+			expect.objectContaining({
+				iroh: { enabled: false, relay_urls: ["https://relay.example.test"] },
+			}),
+		);
+	});
+
 	it("normalizes legacy config responses that omit performance section", async () => {
 		const legacyConfig = {
 			paths: {

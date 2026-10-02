@@ -70,7 +70,7 @@ async fn main() -> anyhow::Result<()> {
 async fn run_controller(cli: Cli) -> anyhow::Result<()> {
     let workspace = std::env::current_dir()?.canonicalize()?;
     let bootstrap = ConfigBootstrap::open(&workspace)?;
-    let store = open_store(&bootstrap.config().paths.data_root).await?;
+    let store = open_store(bootstrap.config()).await?;
     let config = load_configuration(&bootstrap, &store, &cli)?;
     let address = SocketAddr::new(config.server.host, config.server.port);
     let paths = open_path_capabilities(&bootstrap, &config)?;
@@ -180,8 +180,9 @@ fn open_path_capabilities(
     )
 }
 
-async fn open_store(data_root: &Path) -> anyhow::Result<Store> {
-    videnoa_controller::remote::configure_iroh(data_root)?;
+async fn open_store(config: &ControllerConfig) -> anyhow::Result<Store> {
+    let data_root = &config.paths.data_root;
+    videnoa_controller::remote::configure_iroh(data_root, &config.iroh.relay_urls)?;
     let database =
         Database::open(DatabaseOptions::new(data_root.join("controller.sqlite3"))).await?;
     Ok(Store::new(database))

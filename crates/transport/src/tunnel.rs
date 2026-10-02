@@ -13,7 +13,7 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
-use crate::Identity;
+use crate::{Identity, Network};
 
 const ALPN: &[u8] = iroh_proxy_utils::ALPN;
 const TARGET: &str = "videnoa.internal:80";
@@ -73,8 +73,10 @@ impl Server {
         target: SocketAddr,
         auth: Authorizer,
         peers: PeerMap,
+        network: &Network,
     ) -> Result<Self> {
-        let endpoint = Endpoint::builder(iroh::endpoint::presets::N0)
+        let endpoint = network
+            .builder()
             .secret_key(identity.key.clone())
             .alpns(vec![ALPN.to_vec()])
             .bind()
@@ -258,18 +260,21 @@ type ConnectionSlot = Arc<tokio::sync::Mutex<Option<Connection>>>;
 pub struct Client {
     endpoint: Endpoint,
     connections: tokio::sync::Mutex<HashMap<EndpointId, ConnectionSlot>>,
+    network: Network,
     _identity: Identity,
 }
 impl Client {
-    pub async fn open(root: &std::path::Path) -> Result<Self> {
+    pub async fn open(root: &std::path::Path, network: &Network) -> Result<Self> {
         let identity = Identity::open(root)?;
-        let endpoint = Endpoint::builder(iroh::endpoint::presets::N0)
+        let endpoint = network
+            .builder()
             .secret_key(identity.key.clone())
             .bind()
             .await?;
         Ok(Self {
             endpoint,
             connections: Default::default(),
+            network: network.clone(),
             _identity: identity,
         })
     }
@@ -281,7 +286,7 @@ impl Client {
         peer: impl Into<EndpointAddr>,
         password: &str,
     ) -> Result<impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static> {
-        let peer = peer.into();
+        let peer = self.network.dial_address(peer.into());
         let slot = {
             let mut connections = self.connections.lock().await;
             connections.entry(peer.id).or_default().clone()
@@ -401,6 +406,7 @@ mod tests {
         let client = Client {
             endpoint: Endpoint::bind(iroh::endpoint::presets::Minimal).await?,
             connections: Default::default(),
+            network: Network::default(),
             _identity: identity,
         };
         let address = server.addr();
@@ -476,6 +482,7 @@ mod streaming_tests {
         let client = Client {
             endpoint: Endpoint::bind(iroh::endpoint::presets::Minimal).await?,
             connections: Default::default(),
+            network: Network::default(),
             _identity: Identity::open(root.path())?,
         };
         let conn = client.endpoint.connect(server.addr(), ALPN).await?;
@@ -540,9 +547,16 @@ mod public_network_tests {
                 }
             })
         });
-        let server = Server::start(&identity, target, auth, PeerMap::default()).await?;
+        let server = Server::start(
+            &identity,
+            target,
+            auth,
+            PeerMap::default(),
+            &Network::default(),
+        )
+        .await?;
         tokio::time::timeout(Duration::from_secs(30), server.endpoint.online()).await?;
-        let client = Client::open(controller_root.path()).await?;
+        let client = Client::open(controller_root.path(), &Network::default()).await?;
         let origin = tokio::spawn(async move {
             let (mut tcp, _) = listener.accept().await?;
             tcp.write_all(b"n0-test").await?;
@@ -555,6 +569,59 @@ mod public_network_tests {
         let mut value = [0; 7];
         stream.read_exact(&mut value).await?;
         assert_eq!(&value, b"n0-test");
+        origin.await??;
+        client.shutdown().await;
+        server.shutdown().await;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod relay_tests {
+    use super::*;
+    use tokio::io::AsyncWriteExt;
+
+    #[tokio::test]
+    async fn self_hosted_relay_connects_by_endpoint_id_without_public_services() -> Result<()> {
+        // Given: a local relay with a self-signed test certificate, and
+        // ephemeral test identities that know only that relay.
+        let (_relay_map, relay_url, _relay) = iroh::test_utils::run_relay_server().await?;
+        let network = Network::with_relays([relay_url.to_string()])?.with_insecure_test_relay_tls();
+        let worker_root = tempfile::tempdir()?;
+        let controller_root = tempfile::tempdir()?;
+        let identity = Identity::open(worker_root.path())?;
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let target = listener.local_addr()?;
+        let auth: Authorizer = Arc::new(|_, value| {
+            Box::pin(async move {
+                if value == "relay test credential" {
+                    Ok(())
+                } else {
+                    Err(TunnelError::Unauthorized)
+                }
+            })
+        });
+        let server = Server::start(&identity, target, auth, PeerMap::default(), &network).await?;
+        tokio::time::timeout(Duration::from_secs(10), server.endpoint.online()).await?;
+        assert!(server
+            .addr()
+            .relay_urls()
+            .all(|url| network.relays().contains(url)));
+        let client = Client::open(controller_root.path(), &network).await?;
+        let origin = tokio::spawn(async move {
+            let (mut tcp, _) = listener.accept().await?;
+            tcp.write_all(b"relayed").await?;
+            anyhow::Ok(())
+        });
+
+        // When: the Controller side dials by Endpoint ID alone, with no
+        // address lookup configured.
+        let mut stream = client.tunnel(server.id(), "relay test credential").await?;
+
+        // Then: the tunnel reaches the worker through the configured relay.
+        let mut value = [0; 7];
+        stream.read_exact(&mut value).await?;
+        assert_eq!(&value, b"relayed");
         origin.await??;
         client.shutdown().await;
         server.shutdown().await;
