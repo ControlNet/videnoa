@@ -2388,25 +2388,32 @@ async fn extract_frames(
     let deadline = tokio::time::Instant::now() + preview_cache::EXTRACTION_TIMEOUT;
 
     let probe = parse_preview_probe(&probe);
-    let interval = (probe.total_frames / payload.count as u64).max(1);
-
-    let output_pattern = session.path().join("frame_%04d.png");
-    let mut command = crate::runtime::command_for("ffmpeg");
-    command
-        .args(preview_extraction_args(
-            &payload.video_path,
-            probe.stream_index,
-            interval,
-            probe.color_matrix,
-            payload.count,
-        ))
-        .arg(output_pattern);
-    preview_cache::run_command(
-        command,
-        &session,
-        deadline.saturating_duration_since(tokio::time::Instant::now()),
-    )
-    .await?;
+    if let Some(duration) = probe.duration_seconds {
+        // One input seek per sample: a single pass with `select` decodes every
+        // frame up to the last sample, which on long 4K sources exceeds the
+        // extraction budget.
+        let times = preview_sample_times(duration, payload.count);
+        extract_seeked_frames(&session, &payload.video_path, &probe, times, deadline).await?;
+    } else {
+        let interval = (probe.total_frames / payload.count as u64).max(1);
+        let output_pattern = session.path().join("frame_%04d.png");
+        let mut command = crate::runtime::command_for("ffmpeg");
+        command
+            .args(preview_extraction_args(
+                &payload.video_path,
+                probe.stream_index,
+                interval,
+                probe.color_matrix,
+                payload.count,
+            ))
+            .arg(output_pattern);
+        preview_cache::run_command(
+            command,
+            &session,
+            deadline.saturating_duration_since(tokio::time::Instant::now()),
+        )
+        .await?;
+    }
 
     let mut frames = Vec::new();
     for i in 1..=payload.count {
@@ -2465,6 +2472,8 @@ struct PreviewProbe {
     stream_index: Option<usize>,
     total_frames: u64,
     color_matrix: &'static str,
+    /// Stream (or container) duration; `None` when unknown.
+    duration_seconds: Option<f64>,
 }
 
 impl PreviewProbe {
@@ -2473,6 +2482,7 @@ impl PreviewProbe {
             stream_index: None,
             total_frames: PREVIEW_FALLBACK_FRAMES,
             color_matrix: crate::nodes::video_input::source_color_matrix(None),
+            duration_seconds: None,
         }
     }
 
@@ -2533,11 +2543,12 @@ fn parse_preview_probe(probe: &[u8]) -> PreviewProbe {
         .as_deref()
         .and_then(|frames| frames.trim().parse::<u64>().ok())
         .filter(|&frames| frames > 0);
+    let duration_seconds = [stream.duration.as_deref(), format_duration.as_deref()]
+        .into_iter()
+        .flatten()
+        .find_map(|duration| duration.trim().parse::<f64>().ok().and_then(positive));
     let estimated = || {
-        let duration = [stream.duration.as_deref(), format_duration.as_deref()]
-            .into_iter()
-            .flatten()
-            .find_map(|duration| duration.trim().parse::<f64>().ok().and_then(positive))?;
+        let duration = duration_seconds?;
         let rate = stream
             .r_frame_rate
             .as_deref()
@@ -2552,6 +2563,7 @@ fn parse_preview_probe(probe: &[u8]) -> PreviewProbe {
         stream_index: stream.index,
         total_frames,
         color_matrix: crate::nodes::video_input::source_color_matrix(stream.color_space.as_deref()),
+        duration_seconds,
     }
 }
 
@@ -2589,9 +2601,113 @@ fn preview_extraction_args(
 /// matching how video jobs decode.
 fn preview_extraction_filter(interval: u64, color_matrix: &str) -> String {
     format!(
-        "select='not(mod(n\\,{interval}))',scale=in_color_matrix={color_matrix}:flags={}",
+        "select='not(mod(n\\,{interval}))',{}",
+        preview_scale_filter(color_matrix)
+    )
+}
+
+/// Converts to RGB with the source matrix, matching how video jobs decode.
+fn preview_scale_filter(color_matrix: &str) -> String {
+    format!(
+        "scale=in_color_matrix={color_matrix}:flags={}",
         crate::nodes::video_input::RGB_DECODE_SCALE_FLAGS
     )
+}
+
+/// How many single-frame seeks run at once.
+const PREVIEW_SEEK_CONCURRENCY: usize = 4;
+
+/// Seconds of `count` evenly spaced samples: sample `k` sits at `k / count`
+/// of the duration, the spacing frame selection gives.
+fn preview_sample_times(duration_seconds: f64, count: u32) -> Vec<f64> {
+    (0..count)
+        .map(|k| duration_seconds * f64::from(k) / f64::from(count))
+        .collect()
+}
+
+/// FFmpeg arguments (before the output file) that write the one frame at
+/// `seconds`. The input seek jumps to the nearest earlier keyframe and decodes
+/// only from there, so the cost does not grow with the sample's position.
+fn preview_seek_args(
+    video_path: &str,
+    stream_index: Option<usize>,
+    seconds: f64,
+    color_matrix: &str,
+) -> Vec<String> {
+    let stream = stream_index.map_or_else(|| "0:v:0".to_owned(), |index| format!("0:{index}"));
+    [
+        "-nostdin",
+        "-v",
+        "error",
+        "-ss",
+        &format!("{seconds:.3}"),
+        "-i",
+        video_path,
+        "-map",
+        &stream,
+        "-vf",
+        &preview_scale_filter(color_matrix),
+        "-frames:v",
+        "1",
+        "-update",
+        "1",
+    ]
+    .map(str::to_owned)
+    .to_vec()
+}
+
+/// Writes `frame_{k+1:04}.png` for each sample time with bounded concurrency.
+/// A sample that fails is skipped; the error is returned only when no frame
+/// was written at all.
+async fn extract_seeked_frames(
+    session: &preview_cache::PreviewSession,
+    video_path: &str,
+    probe: &PreviewProbe,
+    times: Vec<f64>,
+    deadline: tokio::time::Instant,
+) -> anyhow::Result<()> {
+    use futures_util::StreamExt as _;
+
+    let results: Vec<anyhow::Result<()>> =
+        futures_util::stream::iter(times.into_iter().enumerate())
+            .map(|(k, seconds)| async move {
+                let output = session.path().join(format!("frame_{:04}.png", k + 1));
+                let mut command = crate::runtime::command_for("ffmpeg");
+                command
+                    .args(preview_seek_args(
+                        video_path,
+                        probe.stream_index,
+                        seconds,
+                        probe.color_matrix,
+                    ))
+                    .arg(&output);
+                let result = preview_cache::run_command(
+                    command,
+                    session,
+                    deadline.saturating_duration_since(tokio::time::Instant::now()),
+                )
+                .await;
+                if result.is_err() {
+                    // A killed or failed run may leave a partial image behind.
+                    let _ = std::fs::remove_file(&output);
+                }
+                result.map(drop)
+            })
+            .buffer_unordered(PREVIEW_SEEK_CONCURRENCY)
+            .collect()
+            .await;
+    let failures: Vec<_> = results.into_iter().filter_map(Result::err).collect();
+    let written = std::fs::read_dir(session.path())
+        .map(|mut entries| entries.any(|entry| entry.is_ok()))
+        .unwrap_or(false);
+    match failures.into_iter().next() {
+        Some(error) if !written => Err(error),
+        Some(error) => {
+            warn!(video_path, error = %format!("{error:#}"), "some preview samples failed; returning the rest");
+            Ok(())
+        }
+        None => Ok(()),
+    }
 }
 
 async fn serve_preview_frame(
@@ -3220,6 +3336,63 @@ mod tests {
     }
 
     #[test]
+    fn preview_probe_reports_the_duration_to_seek_in() {
+        // The stream duration wins over the container's.
+        let both = br#"{"streams":[{"duration":"10.5","r_frame_rate":"24/1"}],"format":{"duration":"12.0"}}"#;
+        assert_eq!(parse_preview_probe(both).duration_seconds, Some(10.5));
+        let container = br#"{"streams":[{"nb_frames":"240"}],"format":{"duration":"1440.000000"}}"#;
+        assert_eq!(
+            parse_preview_probe(container).duration_seconds,
+            Some(1440.0)
+        );
+        // Without a usable duration there is nothing to seek in.
+        for probe in [
+            &br#"{"streams":[{"nb_frames":"240","duration":"N/A"}],"format":{}}"#[..],
+            br#"{"streams":[{"duration":"0"}]}"#,
+            br#"garbage"#,
+        ] {
+            assert_eq!(
+                parse_preview_probe(probe).duration_seconds,
+                None,
+                "{}",
+                String::from_utf8_lossy(probe)
+            );
+        }
+    }
+
+    #[test]
+    fn preview_samples_are_spaced_like_frame_selection() {
+        // Sample k sits at k/count of the duration, as frame k*total/count does.
+        assert_eq!(preview_sample_times(100.0, 4), [0.0, 25.0, 50.0, 75.0]);
+        assert_eq!(preview_sample_times(7.5, 1), [0.0]);
+    }
+
+    #[test]
+    fn preview_seek_reads_one_frame_after_an_input_seek() {
+        let args = preview_seek_args("/media/input.mkv", Some(2), 1234.5678, "bt709");
+        // `-ss` before `-i` seeks the demuxer instead of decoding up to the
+        // sample, which is what keeps long 4K sources inside the budget.
+        let seek = args.iter().position(|arg| arg == "-ss").unwrap();
+        let input = args.iter().position(|arg| arg == "-i").unwrap();
+        assert!(seek < input, "{args:?}");
+        assert_eq!(args[seek + 1], "1234.568");
+        assert_eq!(args[input + 1], "/media/input.mkv");
+        let map = args.iter().position(|arg| arg == "-map").unwrap();
+        assert!(map > input, "-map must be an output option: {args:?}");
+        assert_eq!(args[map + 1], "0:2");
+        // The same RGB conversion as the sampled path, without frame selection.
+        assert!(args
+            .windows(2)
+            .any(|pair| pair[0] == "-vf" && pair[1] == preview_scale_filter("bt709")));
+        assert!(args.windows(2).any(|pair| pair == ["-frames:v", "1"]));
+        assert!(args.windows(2).any(|pair| pair == ["-update", "1"]));
+
+        let args = preview_seek_args("/media/input.mkv", None, 0.0, "bt709");
+        let map = args.iter().position(|arg| arg == "-map").unwrap();
+        assert_eq!(args[map + 1], "0:v:0");
+    }
+
+    #[test]
     fn preview_probe_falls_back_to_1000_frames() {
         for probe in [
             &br#"garbage"#[..],
@@ -3351,6 +3524,94 @@ mod tests {
             let height = u32::from_be_bytes(png[20..24].try_into().unwrap());
             assert_eq!((width, height), (320, 180), "{filename}");
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires ffmpeg with libx264"]
+    async fn preview_extraction_seeks_to_evenly_spaced_samples() {
+        // Given: a clip that is red for 4 s and then blue for 4 s, with one
+        // keyframe every 2 s.
+        let state = test_state();
+        let video_path = state.inner.data_dir.join("red-then-blue.mkv");
+        let status = crate::runtime::command_for("ffmpeg")
+            .args(["-v", "error", "-y"])
+            .args([
+                "-f",
+                "lavfi",
+                "-i",
+                "color=red:size=64x36:rate=24:duration=4",
+            ])
+            .args([
+                "-f",
+                "lavfi",
+                "-i",
+                "color=blue:size=64x36:rate=24:duration=4",
+            ])
+            .args([
+                "-filter_complex",
+                "[0:v][1:v]concat=n=2:v=1[v]",
+                "-map",
+                "[v]",
+            ])
+            .args(["-c:v", "libx264", "-g", "48", "-pix_fmt", "yuv420p"])
+            .arg(&video_path)
+            .status()
+            .unwrap();
+        assert!(status.success(), "failed to write the fixture");
+
+        // When: four preview frames are extracted.
+        let Json(response) = extract_frames(
+            State(state.clone()),
+            Json(ExtractFramesRequest {
+                video_path: video_path.to_string_lossy().into_owned(),
+                count: 4,
+            }),
+        )
+        .await
+        .map(|(_, json)| json)
+        .map_err(|error| error.into_response().status())
+        .unwrap();
+
+        // Then: samples at 0, 2, 4 and 6 s are red, red, blue, blue, and keep
+        // the index-to-file mapping frame processing relies on.
+        assert_eq!(
+            response
+                .frames
+                .iter()
+                .map(|frame| frame.index)
+                .collect::<Vec<_>>(),
+            [0, 1, 2, 3]
+        );
+        let session = state
+            .preview_cache()
+            .unwrap()
+            .get(&response.preview_id)
+            .unwrap();
+        let mut colors = Vec::new();
+        for frame in &response.frames {
+            let filename = frame.url.rsplit('/').next().unwrap();
+            assert_eq!(filename, format!("frame_{:04}.png", frame.index + 1));
+            let output = crate::runtime::command_for("ffmpeg")
+                .args(["-v", "error", "-i"])
+                .arg(session.path().join(filename))
+                .args([
+                    "-vf",
+                    "scale=1:1",
+                    "-f",
+                    "rawvideo",
+                    "-pix_fmt",
+                    "rgb24",
+                    "-",
+                ])
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "failed to read {filename}");
+            let [red, _, blue] = output.stdout[..3] else {
+                unreachable!()
+            };
+            colors.push(if red > blue { "red" } else { "blue" });
+        }
+        assert_eq!(colors, ["red", "red", "blue", "blue"]);
     }
 
     #[test]
