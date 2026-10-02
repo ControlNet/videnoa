@@ -21,13 +21,33 @@
 - Worker WebUI bug fixed on the way: the iroh toggle rebuilt
   `iroh: { enabled }` and would have dropped `relay_urls` on save; now it
   spreads the existing object.
-- Controller: `[iroh] relay_urls` in `controller.toml`, file-only and read at
-  startup (`configure_iroh(root, relay_urls)` sets a process-wide
+- Controller: `[iroh] relay_urls` in `controller.toml`, read at startup (`configure_iroh(root, relay_urls)` sets a process-wide
   `OnceLock<Network>`). `RawIrohConfig` is `deny_unknown_fields`, skipped on
   write when empty, validated through `Network::with_relays` (Schema error).
   Web Settings rebuilds `ControllerConfig` from the request: `build_config`
   now takes the current config and carries `iroh` (like the workspace roots),
   so rewriting `controller.toml` keeps the section.
+
+## GUI editing (branch `feat/iroh-relay-settings-ui`)
+
+- Controller API: `SettingsUpdateRequest.iroh: Option<IrohSettingsDto>`
+  (omitted keeps the saved relays; `set_paused` sends `None`), response
+  `iroh: IrohSettingsResponse { relay_urls, restart_required }`.
+  `apply()` builds from the *committed* config (`config_manager().config()`),
+  not the startup one, or an omitted `iroh` would revert a saved change.
+- `iroh.restart_required` is deliberately separate from the top-level
+  `restart_required`: controller-web disables the scheduler pause/resume
+  button while the top-level flag is set (paths need a paused scheduler), and
+  a relay change must not lock it. The page's "Restart required" pill and the
+  save receipt use either flag.
+- Validation: `Network::with_relays` -> `InvalidField("iroh", ...)` (400);
+  controller-web mirrors it with a `new URL()` http/https refine.
+- Worker WebUI: textarea in `IrohSettings.tsx` keeps a raw draft (so typing a
+  newline is not swallowed) and re-syncs when the saved list or the form list
+  changes (save / reset). An empty list is stored as an omitted `relay_urls`
+  so the dirty check matches the Worker's `skip_serializing_if`.
+- Testing-library: a `Field` whose label also holds a hint or error needs a
+  regex label query (`/^Relay URLs/`).
 
 ## Testing
 

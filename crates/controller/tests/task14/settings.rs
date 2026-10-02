@@ -272,3 +272,71 @@ async fn settings_updates_keep_iroh_relays_from_the_config_file() -> TestResult 
     assert_eq!(reloaded.iroh.relay_urls, ["https://relay.example.test"]);
     Ok(())
 }
+
+#[tokio::test]
+async fn iroh_relays_are_edited_through_settings_and_apply_after_restart() -> TestResult {
+    // Given: a Controller started on the public N0 network.
+    let fixture = Fixture::new().await?;
+    let router = &fixture.router;
+    let get = || {
+        let router = router.clone();
+        async move {
+            let response = router
+                .oneshot(Fixture::request("GET", "/api/settings", None)?)
+                .await?;
+            json_body(response).await
+        }
+    };
+    let put = |body: Value| {
+        let router = router.clone();
+        async move {
+            let response = router
+                .oneshot(Fixture::request("PUT", "/api/settings", Some(&body))?)
+                .await?;
+            let status = response.status();
+            TestResult::Ok((status, json_body(response).await?))
+        }
+    };
+    let settings = get().await?;
+    assert_eq!(
+        settings["iroh"],
+        json!({"relay_urls": [], "restart_required": false})
+    );
+
+    // When: relays are saved.
+    let mut update = settings_update(&settings, 10, 300);
+    update["iroh"] = json!({"relay_urls": ["https://relay.example.test"]});
+    let (status, saved) = put(update).await?;
+
+    // Then: they are durable and reported as pending until the next start.
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_eq!(
+        saved["iroh"],
+        json!({"relay_urls": ["https://relay.example.test"], "restart_required": true})
+    );
+    // The scheduler stays controllable: only the path restart locks it.
+    assert_eq!(saved["restart_required"], false);
+    let document = fs::read_to_string(&fixture.config_file)?;
+    let reloaded =
+        videnoa_controller::config::ControllerConfig::from_toml_in(&document, &fixture.workspace)?;
+    assert_eq!(reloaded.iroh.relay_urls, ["https://relay.example.test"]);
+
+    // An invalid URL is a field error and changes nothing.
+    let mut invalid = settings_update(&saved, 10, 300);
+    invalid["iroh"] = json!({"relay_urls": ["ftp://relay.example.test"]});
+    let (status, body) = put(invalid).await?;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["field_errors"][0]["field"], "iroh");
+    assert_eq!(
+        get().await?["iroh"]["relay_urls"],
+        json!(["https://relay.example.test"])
+    );
+
+    // Clearing them matches the running configuration again.
+    let mut cleared = settings_update(&saved, 10, 300);
+    cleared["iroh"] = json!({"relay_urls": []});
+    let (status, body) = put(cleared).await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["iroh"]["restart_required"], false);
+    Ok(())
+}

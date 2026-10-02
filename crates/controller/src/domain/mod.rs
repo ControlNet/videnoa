@@ -31,8 +31,8 @@ pub use execution_nodes::{
 pub use ids::{AttemptId, RemoteJobId, SessionId, SseEventId, SubmissionKey, TaskId, WorkerId};
 pub use pagination::{PageLimit, PageOffset, PageRequest, PagingError};
 pub use runtime_policy::{
-    AuthSettingsDto, RetrySettingsDto, SchedulerStatus, ServerSettingsDto, SettingsPaths,
-    SettingsResponse, SettingsUpdateRequest, TimeoutSettingsDto,
+    AuthSettingsDto, IrohSettingsDto, IrohSettingsResponse, RetrySettingsDto, SchedulerStatus,
+    ServerSettingsDto, SettingsPaths, SettingsResponse, SettingsUpdateRequest, TimeoutSettingsDto,
 };
 pub use system::{
     AboutResponse, HealthResponse, ReadinessCheck, ReadinessResponse, SseEvent, TaskStatusCount,

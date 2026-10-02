@@ -252,6 +252,8 @@ export const enResources: NamespaceResources = {
     "iroh.error": "Iroh status unavailable or startup failed.",
     "iroh.running": "Iroh is running",
     "iroh.stopped": "Iroh is stopped",
+    "iroh.relays": "Relay URLs",
+    "iroh.relaysHint": "Self-hosted relays, one http(s) URL per line. Leave empty to use the public iroh relays. The Controller must list the same relays. Save settings to apply.",
         "errors.invalidSessionLifetime": "Session lifetimes must be positive integers, with idle no greater than maximum.",
 		"actions.reset": "Reset",
 		"actions.save": "Save",

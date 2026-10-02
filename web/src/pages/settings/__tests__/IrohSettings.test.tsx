@@ -10,7 +10,7 @@ it('shows no identity while disabled and requires a worker password before enabl
   await i18n.changeLanguage('en');
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ enabled: false, running: false, endpoint_id: null, error: null }))));
   const onChange = vi.fn();
-  render(<IrohSettings enabled={false} savedEnabled={false} onChange={onChange} />);
+  render(<IrohSettings enabled={false} savedEnabled={false} onChange={onChange} relayUrls={[]} savedRelayUrls={[]} onRelayUrlsChange={vi.fn()} />);
   expect(screen.getByRole('checkbox')).toBeDisabled();
   await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Iroh is stopped'));
   expect(screen.getByLabelText('Endpoint ID')).toHaveValue('');
@@ -24,7 +24,7 @@ it('shows the initialized public identity when enabled', async () => {
   // Test-only public identity and status response; no production endpoint is used.
   const id = 'a'.repeat(64);
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ enabled: true, running: true, endpoint_id: id, error: null }))));
-  render(<IrohSettings enabled={true} savedEnabled={true} onChange={vi.fn()} />);
+  render(<IrohSettings enabled={true} savedEnabled={true} onChange={vi.fn()} relayUrls={[]} savedRelayUrls={[]} onRelayUrlsChange={vi.fn()} />);
   await waitFor(() => expect(screen.getByLabelText('Endpoint ID')).toHaveValue(id));
   expect(screen.getByRole('button', { name: 'Copy Endpoint ID' })).toBeEnabled();
 });
@@ -34,7 +34,7 @@ it('uses the existing settings save flow when enabling', async () => {
   useAuthStore.setState({ session: { password_enabled: true, authenticated: true } });
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ enabled: false, running: false, endpoint_id: null, error: null }))));
   const onChange = vi.fn();
-  render(<IrohSettings enabled={false} savedEnabled={false} onChange={onChange} />);
+  render(<IrohSettings enabled={false} savedEnabled={false} onChange={onChange} relayUrls={[]} savedRelayUrls={[]} onRelayUrlsChange={vi.fn()} />);
   await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
   fireEvent.click(screen.getByRole('checkbox'));
   expect(onChange).toHaveBeenCalledWith(true);

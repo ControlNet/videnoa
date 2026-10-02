@@ -35,6 +35,7 @@ const testOnlySettings = {
     maximum_seconds: 30,
     max_attempts: 4,
   },
+  iroh: { relay_urls: [], restart_required: false },
 } as const
 
 describe("settings API schemas", () => {
@@ -91,7 +92,28 @@ describe("settings API schemas", () => {
     expect(parsed.success).toBe(true)
   })
 
-  type SettingsPatch = Partial<Pick<SettingsUpdateRequest, "paths" | "scheduler" | "timeouts" | "retry" | "server" | "auth">>
+  it("accepts http and https iroh relays and an omitted relay section", () => {
+    // Given: updates that set self-hosted relays or leave them untouched.
+    const base = {
+      version: testOnlySettings.version,
+      paths: testOnlySettings.paths,
+      scheduler: testOnlySettings.scheduler,
+      timeouts: testOnlySettings.timeouts,
+      retry: testOnlySettings.retry,
+      server: testOnlySettings.server,
+      auth: { secure_cookie: true, session_absolute_seconds: 60, session_idle_seconds: 60 },
+    }
+
+    // When: both shapes are parsed.
+    const relays = settingsUpdateRequestSchema.safeParse({ ...base, iroh: { relay_urls: ["https://relay.example.test", "http://10.0.0.5:3340"] } })
+    const omitted = settingsUpdateRequestSchema.safeParse(base)
+
+    // Then: both are submit-capable.
+    expect(relays.success).toBe(true)
+    expect(omitted.success).toBe(true)
+  })
+
+  type SettingsPatch = Partial<Pick<SettingsUpdateRequest, "paths" | "scheduler" | "timeouts" | "retry" | "server" | "auth" | "iroh">>
   const invalidCases: readonly (readonly [string, SettingsPatch])[] = [
     ["zero upload limit", { scheduler: { ...testOnlySettings.scheduler, max_concurrent_uploads: 0 } }],
     ["excess prefetch", { scheduler: { ...testOnlySettings.scheduler, prefetch_per_worker: 65_536 } }],
@@ -108,6 +130,8 @@ describe("settings API schemas", () => {
     ["zero absolute session", { auth: { secure_cookie: true, session_absolute_seconds: 0, session_idle_seconds: 1 } }],
     ["excess idle session", { auth: { secure_cookie: true, session_absolute_seconds: 604_800, session_idle_seconds: 604_801 } }],
     ["idle session above absolute", { auth: { secure_cookie: true, session_absolute_seconds: 60, session_idle_seconds: 61 } }],
+    ["non-http relay", { iroh: { relay_urls: ["ftp://relay.example.test"] } }],
+    ["unparseable relay", { iroh: { relay_urls: ["relay.example.test"] } }],
   ]
 
   it.each(invalidCases)("rejects %s", (_case, patch) => {
@@ -124,6 +148,7 @@ describe("settings API schemas", () => {
         session_absolute_seconds: testOnlySettings.session_absolute_seconds,
         session_idle_seconds: testOnlySettings.session_idle_seconds,
       },
+      iroh: patch.iroh,
     }
 
     // When: the request is checked before submission.

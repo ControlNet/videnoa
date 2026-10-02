@@ -6,7 +6,8 @@ use std::net::SocketAddr;
 
 use crate::config::PreparedListener;
 use crate::domain::{
-    SettingsPaths, SettingsResponse, SettingsUpdateRequest, TaskActionRequest, TaskStatus,
+    IrohSettingsResponse, SettingsPaths, SettingsResponse, SettingsUpdateRequest,
+    TaskActionRequest, TaskStatus,
 };
 use crate::persistence::{CasOutcome, SettingsRecord};
 
@@ -72,6 +73,7 @@ async fn set_paused(
             scheduler,
             timeouts: record.timeouts,
             retry: record.retry,
+            iroh: None,
         },
     )
     .await
@@ -93,7 +95,9 @@ async fn apply(
         ));
     }
     validate_path_transition(state, &request).await?;
-    let config = validate_request::build_config(&state.config, &request)?;
+    // Fields the request omits keep their saved values, not the startup ones.
+    let saved = state.store.config_manager().config();
+    let config = validate_request::build_config(&saved, &request)?;
     let prepared = prepare_listener(&record, &request, state.listener.is_some()).await?;
     let handoff = match (prepared, &state.listener) {
         (Some(prepared), Some(listener)) => Some(
@@ -185,6 +189,7 @@ fn response(state: &OperationsState, record: SettingsRecord) -> SettingsResponse
     let configured = state.store.config_manager().config();
     let restart_required = configured.paths.data_root != state.config.paths.data_root
         || configured.paths.temp_root != state.config.paths.temp_root;
+    let iroh_restart_required = configured.iroh != state.config.iroh;
     SettingsResponse {
         version: record.version,
         paths: SettingsPaths {
@@ -199,6 +204,10 @@ fn response(state: &OperationsState, record: SettingsRecord) -> SettingsResponse
         scheduler: record.scheduler,
         timeouts: record.timeouts,
         retry: record.retry,
+        iroh: IrohSettingsResponse {
+            relay_urls: configured.iroh.relay_urls,
+            restart_required: iroh_restart_required,
+        },
     }
 }
 

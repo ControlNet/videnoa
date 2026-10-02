@@ -37,6 +37,11 @@ and no public address lookup: it publishes nothing to `dns.iroh.link`, and the
 Controller dials a worker's Endpoint ID through the configured relays. A
 direct path is still attempted once the relay connects the two peers.
 
+Both WebUIs edit the list under **Settings**, one URL per line. Saving on the
+Worker restarts its endpoint with the same Endpoint ID; saving on the
+Controller writes `controller.toml` and shows *Restart required* until the
+Controller is restarted. The equivalent files:
+
 Worker, in its `config.toml` (restart after editing, or save Settings in the
 WebUI to apply it):
 
@@ -46,7 +51,8 @@ enabled = true
 relay_urls = ["https://relay.example.com"]
 ```
 
-Controller, in `<DATA ROOT>/controller.toml` (restart after editing):
+Controller, in `<DATA ROOT>/controller.toml` (restart after editing or saving
+Settings):
 
 ```toml
 [iroh]

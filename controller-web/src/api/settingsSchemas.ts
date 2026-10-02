@@ -54,6 +54,15 @@ export const retrySettingsSchema = z
     path: ["initial_seconds"],
   })
 
+// Mirrors the Controller check: each relay is an absolute http or https URL.
+const relayUrlSchema = z.string().refine((value) => {
+  try {
+    return ["http:", "https:"].includes(new URL(value).protocol)
+  } catch {
+    return false
+  }
+}, { message: "Relay URLs must be valid http or https URLs." })
+
 export const settingsUpdateRequestSchema = z
   .object({
     version: unsignedIntegerSchema,
@@ -63,6 +72,7 @@ export const settingsUpdateRequestSchema = z
     scheduler: schedulerStatusSchema,
     timeouts: timeoutSettingsSchema,
     retry: retrySettingsSchema,
+    iroh: z.object({ relay_urls: z.array(relayUrlSchema) }).strict().optional(),
   })
   .strict()
 
@@ -83,6 +93,7 @@ export const settingsResponseSchema = z
     scheduler: schedulerStatusSchema,
     timeouts: timeoutSettingsSchema,
     retry: retrySettingsSchema,
+    iroh: z.object({ relay_urls: z.array(z.string()), restart_required: z.boolean() }).strict(),
   })
   .strict()
 

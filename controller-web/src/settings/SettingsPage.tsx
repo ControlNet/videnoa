@@ -48,7 +48,7 @@ export function SettingsPage({ apiClient }: SettingsPageProps) {
       || previousSettings.server.port !== nextSettings.server.port
     setDegradedReconnect(null)
     setSaveReceipt({
-      restartRequired: nextSettings.restart_required,
+      restartRequired: nextSettings.restart_required || nextSettings.iroh.restart_required,
       reconnectHref: endpointChanged ? reconnectHref(nextSettings.server) : null,
     })
     return true
@@ -62,8 +62,8 @@ export function SettingsPage({ apiClient }: SettingsPageProps) {
         <h1>Settings</h1>
         <span className="spacer" />
         {settings === null ? null : <>
-          {/* A pending restart is page state, not a Paths detail: it is what disables the control beside it. */}
-          {!settings.restart_required ? null : (
+          {/* A pending restart is page state, not a Paths detail. Only the path restart disables the control beside it. */}
+          {!settings.restart_required && !settings.iroh.restart_required ? null : (
             <span className="restart-pill"><RotateCcw size={12} aria-hidden="true" />Restart required</span>
           )}
           <span
