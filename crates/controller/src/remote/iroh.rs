@@ -4,22 +4,33 @@ use std::sync::{Arc, OnceLock};
 
 use tokio::sync::OnceCell;
 use tokio_util::sync::CancellationToken;
-use videnoa_transport::{Client, EndpointId, TunnelError};
+use videnoa_transport::{Client, EndpointId, Network, TunnelError};
 
 use super::{ClientConfigError, VidenoaClientError};
 
 static ROOT: OnceLock<PathBuf> = OnceLock::new();
+static NETWORK: OnceLock<Network> = OnceLock::new();
 static CLIENT: OnceCell<Arc<Client>> = OnceCell::const_new();
 
-/// Selects the existing persistent Controller root before background services start.
+/// Selects the existing persistent Controller root and the relays (empty for
+/// the public N0 network) before background services start.
 /// # Errors
-/// Fails if another root was already configured in this process.
-pub fn configure_iroh(root: &Path) -> anyhow::Result<()> {
+/// Fails if a relay URL is invalid, or if another root or relay set was
+/// already configured in this process.
+pub fn configure_iroh(root: &Path, relay_urls: &[String]) -> anyhow::Result<()> {
+    let network = Network::with_relays(relay_urls)?;
     if let Some(existing) = ROOT.get() {
         anyhow::ensure!(existing == root, "iroh runtime root is already configured");
     } else {
         ROOT.set(root.to_path_buf())
             .map_err(|_| anyhow::anyhow!("iroh root initialization raced"))?;
+    }
+    if let Some(existing) = NETWORK.get() {
+        anyhow::ensure!(*existing == network, "iroh relays are already configured");
+    } else {
+        NETWORK
+            .set(network)
+            .map_err(|_| anyhow::anyhow!("iroh relay initialization raced"))?;
     }
     Ok(())
 }
@@ -28,7 +39,8 @@ async fn client() -> Result<Arc<Client>, VidenoaClientError> {
     CLIENT
         .get_or_try_init(|| async {
             let root = ROOT.get().ok_or(VidenoaClientError::Network)?;
-            Client::open(root)
+            let network = NETWORK.get().ok_or(VidenoaClientError::Network)?;
+            Client::open(root, network)
                 .await
                 .map(Arc::new)
                 .map_err(|_| VidenoaClientError::Network)
@@ -209,10 +221,11 @@ mod tests {
             target,
             auth,
             videnoa_transport::PeerMap::default(),
+            &videnoa_transport::Network::default(),
         )
         .await?;
         let controller_root = tempfile::tempdir()?;
-        configure_iroh(controller_root.path())?;
+        configure_iroh(controller_root.path(), &[])?;
         // Prime the shared real connection with explicit local addresses: deterministic CI,
         // independent of N0 DNS. The separate opt-in test covers ID-only discovery.
         drop(client().await?.tunnel(server.addr(), PASSWORD).await?);

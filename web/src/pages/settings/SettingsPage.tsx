@@ -228,7 +228,7 @@ export function SettingsPage() {
 						enabled={formState.iroh?.enabled ?? false}
 						savedEnabled={config?.iroh?.enabled ?? false}
 						onChange={(enabled) => {
-							setFormState({ ...formState, iroh: { enabled } });
+							setFormState({ ...formState, iroh: { ...formState.iroh, enabled } });
 						}}
 					/>
 

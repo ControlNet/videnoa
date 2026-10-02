@@ -37,6 +37,11 @@ pub struct Fixture {
 
 impl Fixture {
     pub async fn new() -> TestResult<Self> {
+        Self::with_iroh_relays(&[]).await
+    }
+
+    /// A fixture whose `controller.toml` lists these iroh relays.
+    pub async fn with_iroh_relays(relay_urls: &[&str]) -> TestResult<Self> {
         let directory = TempDir::new()?;
         let workspace = directory.path().canonicalize()?;
         let input = workspace.join("input/source.mkv");
@@ -44,6 +49,13 @@ impl Fixture {
         fs::create_dir(workspace.join("input"))?;
         fs::create_dir(workspace.join("output"))?;
         fs::write(&input, b"synthetic video fixture")?;
+        if !relay_urls.is_empty() {
+            let data_root = ConfigBootstrap::prepare_data_root(&workspace)?;
+            let mut config =
+                videnoa_controller::config::ControllerConfig::for_workspace(&workspace)?;
+            config.iroh.relay_urls = relay_urls.iter().map(|url| (*url).to_owned()).collect();
+            fs::write(data_root.join("controller.toml"), config.to_toml()?)?;
+        }
 
         let bootstrap = ConfigBootstrap::open(&workspace)?;
         let database = Database::open(DatabaseOptions::new(

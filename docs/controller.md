@@ -104,6 +104,9 @@ file (restart after manual edits). Log in again to receive the longer absolute
 lifetime; increasing the policy does not extend an existing session's deadline.
 
 `<DATA ROOT>/controller.toml` is the sole persisted Controller configuration source.
+Its optional `[iroh]` section (`relay_urls`) is edited in the file only and
+read at startup; Web Settings keeps it when it rewrites the file. See
+[self-hosted relays](iroh.md#self-hosted-relays).
 The in-memory `ControllerConfig` is the active runtime configuration.
 `controller.sqlite3` holds durable operational/application state: tasks, attempts,
 workers, recovery evidence, idempotency, administrator credential, and sessions.

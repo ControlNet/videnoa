@@ -196,6 +196,9 @@ impl From<&ControllerConfig> for RawControllerConfig {
                 maximum_seconds: config.retry.maximum.as_secs(),
                 max_attempts: u64::from(config.retry.max_attempts.get()),
             },
+            iroh: raw::RawIrohConfig {
+                relay_urls: config.iroh.relay_urls.clone(),
+            },
         }
     }
 }

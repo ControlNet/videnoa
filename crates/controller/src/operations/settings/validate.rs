@@ -12,10 +12,13 @@ use super::OperationsError;
 const MAX_DURATION_SECONDS: u64 = 7 * 24 * 60 * 60;
 const MAX_RETRY_ATTEMPTS: u32 = 100;
 
+/// Applies a settings request to `current`. Settings outside the API, such as
+/// workspace roots and iroh relays, are kept.
 pub(super) fn build_config(
-    paths: &PathConfig,
+    current: &ControllerConfig,
     request: &SettingsUpdateRequest,
 ) -> Result<ControllerConfig, OperationsError> {
+    let paths = &current.paths;
     Ok(ControllerConfig {
         server: ServerConfig {
             host: request.server.host,
@@ -52,6 +55,7 @@ pub(super) fn build_config(
             max_attempts: std::num::NonZeroU32::new(request.retry.max_attempts)
                 .ok_or(OperationsError::InvalidRequest)?,
         },
+        iroh: current.iroh.clone(),
     })
 }
 
