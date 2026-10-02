@@ -230,6 +230,18 @@ export function SettingsPage() {
 						onChange={(enabled) => {
 							setFormState({ ...formState, iroh: { ...formState.iroh, enabled } });
 						}}
+						relayUrls={formState.iroh?.relay_urls ?? []}
+						savedRelayUrls={config?.iroh?.relay_urls ?? []}
+						onRelayUrlsChange={(urls) => {
+							// The Worker omits an empty list; matching that keeps the form clean.
+							setFormState({
+								...formState,
+								iroh: {
+									enabled: formState.iroh?.enabled ?? false,
+									relay_urls: urls.length === 0 ? undefined : urls,
+								},
+							});
+						}}
 					/>
 
 					<SettingsSection

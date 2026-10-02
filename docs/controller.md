@@ -104,9 +104,9 @@ file (restart after manual edits). Log in again to receive the longer absolute
 lifetime; increasing the policy does not extend an existing session's deadline.
 
 `<DATA ROOT>/controller.toml` is the sole persisted Controller configuration source.
-Its optional `[iroh]` section (`relay_urls`) is edited in the file only and
-read at startup; Web Settings keeps it when it rewrites the file. See
-[self-hosted relays](iroh.md#self-hosted-relays).
+Its optional `[iroh]` section (`relay_urls`) is edited in Web Settings or the
+file and read at startup, so a change applies after the next Controller start.
+See [self-hosted relays](iroh.md#self-hosted-relays).
 The in-memory `ControllerConfig` is the active runtime configuration.
 `controller.sqlite3` holds durable operational/application state: tasks, attempts,
 workers, recovery evidence, idempotency, administrator credential, and sessions.
@@ -585,8 +585,8 @@ including zero counts.
 | `GET` | `/api/workers` | Worker list, capabilities, and capacity |
 | `POST` | `/api/workers` | Create `name`, `api_url` (or `transport`=`iroh` plus `endpoint_id`), `enabled`, `compute_slots`, optional `password` |
 | `PUT` | `/api/workers/{id}` | Current version plus all mutable fields |
-| `GET` | `/api/settings` | Version, editable paths, restart state, server, auth policy, scheduler, timeouts, retry |
-| `PUT` | `/api/settings` | Current `version` plus complete `paths`, `server`, `auth`, `scheduler`, `timeouts`, `retry` |
+| `GET` | `/api/settings` | Version, editable paths, restart state, server, auth policy, scheduler, timeouts, retry, `iroh` (`relay_urls`, `restart_required`) |
+| `PUT` | `/api/settings` | Current `version` plus complete `paths`, `server`, `auth`, `scheduler`, `timeouts`, `retry`; optional `iroh` (`relay_urls`), omitted to keep the saved relays |
 | `POST` | `/api/scheduler/pause` | `{"version":N}` |
 | `POST` | `/api/scheduler/resume` | `{"version":N}` |
 
@@ -597,6 +597,11 @@ They are persisted immediately and reported with `restart_required=true`, then
 activated during the next Controller start. Startup copies durable state into a
 new empty DATA ROOT before opening SQLite and keeps the original root as rollback
 evidence. The configuration file is always `<DATA ROOT>/controller.toml`.
+
+Saved iroh relays are likewise persisted immediately and applied at the next
+start; `iroh.restart_required` reports the pending change separately from the
+path restart, so it does not lock the scheduler controls. Invalid relay URLs
+return a `400` field error for `iroh`.
 
 Other mutable fields are persisted and hot-applied, including listener and
 authentication policy. A listener update is rejected before persistence when

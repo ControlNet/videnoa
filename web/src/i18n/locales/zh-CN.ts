@@ -246,6 +246,8 @@ export const zhCNResources: NamespaceResources = {
     "iroh.error": "无法获取 iroh 状态或启动失败。",
     "iroh.running": "Iroh 正在运行",
     "iroh.stopped": "Iroh 已停止",
+    "iroh.relays": "Relay URL",
+    "iroh.relaysHint": "自托管 relay，每行一个 http(s) URL。留空则使用公共 iroh relay。Controller 必须配置相同的 relay。保存配置后生效。",
         "errors.invalidSessionLifetime": "会话时长必须为正整数，闲置期限不能超过最长有效期。",
 		"actions.reset": "重置",
 		"actions.save": "保存",

@@ -42,6 +42,23 @@ pub struct RetrySettingsDto {
     pub max_attempts: u32,
 }
 
+/// Self-hosted iroh relays; empty uses the public N0 relays and discovery.
+/// Saved values take effect when the Controller restarts.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct IrohSettingsDto {
+    pub relay_urls: Vec<String>,
+}
+
+/// Saved iroh relays and whether the running endpoint still uses others.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct IrohSettingsResponse {
+    pub relay_urls: Vec<String>,
+    /// Kept apart from the path restart, which also locks the scheduler.
+    pub restart_required: bool,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SchedulerStatus {
@@ -65,6 +82,7 @@ pub struct SettingsResponse {
     pub scheduler: SchedulerStatus,
     pub timeouts: TimeoutSettingsDto,
     pub retry: RetrySettingsDto,
+    pub iroh: IrohSettingsResponse,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -77,4 +95,7 @@ pub struct SettingsUpdateRequest {
     pub scheduler: SchedulerStatus,
     pub timeouts: TimeoutSettingsDto,
     pub retry: RetrySettingsDto,
+    /// Omitted keeps the saved relays.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iroh: Option<IrohSettingsDto>,
 }

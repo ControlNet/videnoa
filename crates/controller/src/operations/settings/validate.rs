@@ -2,8 +2,8 @@ use std::path::{Component, Path};
 use std::time::Duration;
 
 use crate::config::{
-    AuthConfig, ControllerConfig, PathConfig, RetryConfig, SchedulerConfig, ServerConfig,
-    TimeoutConfig,
+    AuthConfig, ControllerConfig, IrohConfig, PathConfig, RetryConfig, SchedulerConfig,
+    ServerConfig, TimeoutConfig,
 };
 use crate::domain::SettingsUpdateRequest;
 
@@ -19,6 +19,12 @@ pub(super) fn build_config(
     request: &SettingsUpdateRequest,
 ) -> Result<ControllerConfig, OperationsError> {
     let paths = &current.paths;
+    let iroh = request.iroh.as_ref().map_or_else(
+        || current.iroh.clone(),
+        |iroh| IrohConfig {
+            relay_urls: iroh.relay_urls.clone(),
+        },
+    );
     Ok(ControllerConfig {
         server: ServerConfig {
             host: request.server.host,
@@ -55,11 +61,16 @@ pub(super) fn build_config(
             max_attempts: std::num::NonZeroU32::new(request.retry.max_attempts)
                 .ok_or(OperationsError::InvalidRequest)?,
         },
-        iroh: current.iroh.clone(),
+        iroh,
     })
 }
 
 pub(super) fn validate(request: &SettingsUpdateRequest) -> Result<(), OperationsError> {
+    if let Some(iroh) = &request.iroh {
+        videnoa_transport::Network::with_relays(&iroh.relay_urls).map_err(|_| {
+            OperationsError::InvalidField("iroh", "relay URLs must be valid http or https URLs")
+        })?;
+    }
     validate_path("paths.data_root", &request.paths.data_root)?;
     validate_path("paths.cache_root", &request.paths.cache_root)?;
     if request.server.port == 0 {

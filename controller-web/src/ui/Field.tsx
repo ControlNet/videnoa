@@ -1,4 +1,4 @@
-import type { InputHTMLAttributes, ReactNode, Ref } from "react"
+import type { InputHTMLAttributes, ReactNode, Ref, TextareaHTMLAttributes } from "react"
 
 type BaseFieldProps = {
   readonly id: string
@@ -28,6 +28,30 @@ export function Field({ id, label, error, hint, ...input }: InputFieldProps) {
       <span>{label}</span>
       <input
         {...input}
+        id={id}
+        aria-invalid={error === undefined ? undefined : true}
+        aria-describedby={describedBy === "" ? undefined : describedBy}
+      />
+      {hint === undefined ? null : <small id={hintId} className="field-hint">{hint}</small>}
+      {error === undefined ? null : <small id={errorId} role="alert">{error}</small>}
+    </label>
+  )
+}
+
+type TextAreaFieldProps = BaseFieldProps & Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, "id" | "className">
+
+/** A multi-line `Field`, for lists entered one item per line. */
+export function TextAreaField({ id, label, error, hint, ...textarea }: TextAreaFieldProps) {
+  const errorId = `${id}-error`
+  const hintId = `${id}-hint`
+  const describedBy = [error === undefined ? null : errorId, hint === undefined ? null : hintId]
+    .filter((value) => value !== null)
+    .join(" ")
+  return (
+    <label className="field" htmlFor={id}>
+      <span>{label}</span>
+      <textarea
+        {...textarea}
         id={id}
         aria-invalid={error === undefined ? undefined : true}
         aria-describedby={describedBy === "" ? undefined : describedBy}

@@ -120,12 +120,23 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* One entry per line: the height follows the rows instead of the single-line control. */
+.field textarea {
+  block-size: auto;
+  min-block-size: var(--control-field);
+  padding-block: var(--space-2);
+  line-height: 1.5;
+  resize: vertical;
+}
+
 .field input:hover:not(:disabled),
-.field select:hover:not(:disabled) {
+.field select:hover:not(:disabled),
+.field textarea:hover:not(:disabled) {
   border-color: var(--color-text-quiet);
 }
 
-.field input[aria-invalid="true"] {
+.field input[aria-invalid="true"],
+.field textarea[aria-invalid="true"] {
   border-color: var(--color-danger);
 }
 

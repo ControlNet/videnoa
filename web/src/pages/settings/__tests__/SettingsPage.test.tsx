@@ -79,7 +79,7 @@ describe("SettingsPage profiling toggle", () => {
 		);
 	});
 
-	it("keeps file-only iroh relays when the iroh toggle changes", async () => {
+	it("keeps iroh relays when the iroh toggle changes", async () => {
 		const iroh = { enabled: true, relay_urls: ["https://relay.example.test"] };
 		vi.mocked(getConfig).mockResolvedValue(makeConfig({ iroh }));
 		vi.mocked(updateConfig).mockResolvedValue(makeConfig({ iroh: { ...iroh, enabled: false } }));
@@ -104,6 +104,45 @@ describe("SettingsPage profiling toggle", () => {
 				iroh: { enabled: false, relay_urls: ["https://relay.example.test"] },
 			}),
 		);
+	});
+
+	it("edits iroh relays one per line and drops the key when cleared", async () => {
+		const iroh = { enabled: true, relay_urls: ["https://relay.example.test"] };
+		vi.mocked(getConfig).mockResolvedValue(makeConfig({ iroh }));
+		vi.mocked(updateConfig).mockImplementation(async (config) => config);
+
+		render(
+			<MemoryRouter>
+				<SettingsPage />
+			</MemoryRouter>,
+		);
+		const relays = await screen.findByLabelText(/^Relay URLs/);
+		expect(relays).toHaveValue("https://relay.example.test");
+
+		// Blank lines and surrounding spaces are not part of the saved list.
+		fireEvent.change(relays, {
+			target: { value: " https://relay.example.test\n\nhttp://10.0.0.5:3340 \n" },
+		});
+		expect(relays).toHaveValue(" https://relay.example.test\n\nhttp://10.0.0.5:3340 \n");
+		fireEvent.click(screen.getByRole("button", { name: "Save" }));
+		await waitFor(() => {
+			expect(updateConfig).toHaveBeenCalledTimes(1);
+		});
+		expect(vi.mocked(updateConfig).mock.calls[0]?.[0].iroh).toEqual({
+			enabled: true,
+			relay_urls: ["https://relay.example.test", "http://10.0.0.5:3340"],
+		});
+		await waitFor(() => {
+			expect(relays).toHaveValue("https://relay.example.test\nhttp://10.0.0.5:3340");
+		});
+
+		// An empty list returns to the public relays, as an omitted key.
+		fireEvent.change(relays, { target: { value: "" } });
+		fireEvent.click(screen.getByRole("button", { name: "Save" }));
+		await waitFor(() => {
+			expect(updateConfig).toHaveBeenCalledTimes(2);
+		});
+		expect(vi.mocked(updateConfig).mock.calls[1]?.[0].iroh).toEqual({ enabled: true });
 	});
 
 	it("normalizes legacy config responses that omit performance section", async () => {

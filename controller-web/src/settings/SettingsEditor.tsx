@@ -1,7 +1,7 @@
 import { RotateCcw } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 
-import { CheckField, Field } from "../ui/Field"
+import { CheckField, Field, TextAreaField } from "../ui/Field"
 
 import type { ApiClientError } from "../api/client"
 import { type SettingsResponse, type SettingsUpdateRequest, settingsUpdateRequestSchema } from "../api/settingsSchemas"
@@ -30,6 +30,7 @@ type SettingsFields = {
   readonly retryInitial: string
   readonly retryMaximum: string
   readonly retryAttempts: string
+  readonly relayUrls: string
 }
 
 const settingsFieldOrder = [
@@ -49,12 +50,14 @@ const settingsFieldOrder = [
   "retryInitial",
   "retryMaximum",
   "retryAttempts",
+  "relayUrls",
 ] as const satisfies readonly (keyof SettingsFields)[]
 const settingsFieldNames = {
   dataRoot: "data_root", cacheRoot: "cache_root",
   serverHost: "host", serverPort: "port", secureCookie: "secure_cookie", sessionAbsolute: "session_absolute_seconds", sessionIdle: "session_idle_seconds",
   defaultSlots: "default_compute_slots", prefetch: "prefetch_per_worker", uploads: "max_concurrent_uploads", downloads: "max_concurrent_downloads",
   health: "health_seconds", poll: "poll_seconds", transfer: "transfer_seconds", retryInitial: "initial_seconds", retryMaximum: "maximum_seconds", retryAttempts: "max_attempts",
+  relayUrls: "relay_urls",
 } as const satisfies Record<keyof SettingsFields, string>
 
 export const settingsFormId = "settings-editor-form"
@@ -81,7 +84,7 @@ export function SettingsEditor({ settings, actionError, onSave }: SettingsEditor
     const firstInvalidField = settingsFieldOrder.find((field) => errors[field] !== undefined)
     if (firstInvalidField === undefined) return
     const input = formRef.current?.elements.namedItem(settingsFieldNames[firstInvalidField])
-    if (input instanceof HTMLInputElement) input.focus()
+    if (input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement) input.focus()
   }
 
   useEffect(() => {
@@ -89,7 +92,7 @@ export function SettingsEditor({ settings, actionError, onSave }: SettingsEditor
     const firstInvalidField = settingsFieldOrder.find((field) => errors[field] !== undefined)
     if (firstInvalidField === undefined) return
     const input = formRef.current?.elements.namedItem(settingsFieldNames[firstInvalidField])
-    if (input instanceof HTMLInputElement) input.focus()
+    if (input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement) input.focus()
   }, [actionError])
 
   async function submit(): Promise<void> {
@@ -125,6 +128,7 @@ export function SettingsEditor({ settings, actionError, onSave }: SettingsEditor
         maximum_seconds: Number(fields.retryMaximum),
         max_attempts: Number(fields.retryAttempts),
       },
+      iroh: { relay_urls: relayLines(fields.relayUrls) },
     })
     if (!parsed.success) {
       const errors: Partial<Record<keyof SettingsFields, string>> = {}
@@ -187,6 +191,25 @@ export function SettingsEditor({ settings, actionError, onSave }: SettingsEditor
           <NumberField label="Maximum retry seconds" name="maximum_seconds" value={fields.retryMaximum} min={1} max={604_800} error={fieldErrors.retryMaximum ?? serverErrors.retryMaximum} onChange={(retryMaximum) => setFields({ ...fields, retryMaximum })} />
           <NumberField label="Maximum retry attempts" name="max_attempts" value={fields.retryAttempts} min={1} max={100} error={fieldErrors.retryAttempts ?? serverErrors.retryAttempts} onChange={(retryAttempts) => setFields({ ...fields, retryAttempts })} />
         </SettingsSection>
+        <SettingsSection id="settings-iroh" title="iroh relays" layout="stack">
+          {!settings.iroh.restart_required ? null : (
+            <p className="settings-notice">
+              <RotateCcw size={13} aria-hidden="true" />
+              <span>Restart the Controller to connect through the saved relays. Workers keep their current connections until then.</span>
+            </p>
+          )}
+          <TextAreaField
+            id="settings-relay_urls"
+            label="Relay URLs"
+            name="relay_urls"
+            rows={3}
+            spellCheck={false}
+            value={fields.relayUrls}
+            hint="One URL per line. Leave empty to use the public iroh relays. Workers must list the same relays. Applies after the Controller restarts."
+            error={fieldErrors.relayUrls ?? serverErrors.relayUrls}
+            onChange={(event) => setFields({ ...fields, relayUrls: event.currentTarget.value })}
+          />
+        </SettingsSection>
       </div>
 
     </form>
@@ -200,6 +223,7 @@ const sectionIndex = [
   { id: "settings-scheduler", title: "Scheduler" },
   { id: "settings-timeouts", title: "Timeouts" },
   { id: "settings-retry", title: "Retry policy" },
+  { id: "settings-iroh", title: "iroh relays" },
 ] as const
 
 type NumberFieldProps = { readonly label: string; readonly name: string; readonly value: string; readonly min: number; readonly max?: number; readonly error: string | undefined; readonly onChange: (value: string) => void }
@@ -267,11 +291,17 @@ function fieldsFrom(settings: SettingsResponse): SettingsFields {
     uploads: String(settings.scheduler.max_concurrent_uploads), downloads: String(settings.scheduler.max_concurrent_downloads),
     health: String(settings.timeouts.health_seconds), poll: String(settings.timeouts.poll_seconds), transfer: String(settings.timeouts.transfer_seconds),
     retryInitial: String(settings.retry.initial_seconds), retryMaximum: String(settings.retry.maximum_seconds), retryAttempts: String(settings.retry.max_attempts),
+    relayUrls: settings.iroh.relay_urls.join("\n"),
   }
 }
 
+function relayLines(text: string): string[] {
+  return text.split("\n").map((line) => line.trim()).filter((line) => line !== "")
+}
+
 function fieldForPath(path: readonly string[]): keyof SettingsFields | null {
-  const field = path.at(-1)
+  // List items report their index last; the list names the field.
+  const field = path.filter((segment) => !/^\d+$/.test(segment)).at(-1)
   if (field === "data_root" || field === "paths") return "dataRoot"
   if (field === "cache_root") return "cacheRoot"
   if (field === "host" || field === "server") return "serverHost"
@@ -288,6 +318,7 @@ function fieldForPath(path: readonly string[]): keyof SettingsFields | null {
   if (field === "initial_seconds") return "retryInitial"
   if (field === "maximum_seconds") return "retryMaximum"
   if (field === "max_attempts") return "retryAttempts"
+  if (field === "iroh" || field === "relay_urls") return "relayUrls"
   return null
 }
 
