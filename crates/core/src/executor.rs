@@ -220,6 +220,7 @@ impl SequentialExecutor {
             executing_workflows: outer_ctx.executing_workflows.clone(),
             nesting_depth: outer_ctx.nesting_depth,
             cancellation: outer_ctx.cancellation.clone(),
+            scratch: outer_ctx.scratch.clone(),
             ..Default::default()
         };
 

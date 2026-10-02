@@ -293,6 +293,7 @@ impl Node for WorkflowNode {
             executing_workflows: ctx.executing_workflows.clone(),
             nesting_depth: ctx.nesting_depth + 1,
             cancellation: ctx.cancellation.clone(),
+            scratch: ctx.scratch.clone(),
             ..ExecutionContext::default()
         };
         inner_ctx.executing_workflows.insert(path);

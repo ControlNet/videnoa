@@ -1,7 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::types::{Frame, PortData, PortType};
 
@@ -20,6 +22,64 @@ pub struct ExecutionContext {
     pub executing_workflows: HashSet<PathBuf>,
     pub nesting_depth: u32,
     pub cancellation: Option<tokio::sync::watch::Receiver<bool>>,
+    /// Files this execution creates for itself. A nested execution must share
+    /// the outer context's scratch so its files outlive the inner run.
+    pub scratch: ExecutionScratch,
+}
+
+/// Per-execution directory for files nodes create, such as downloads.
+///
+/// The directory (`temp_dir()/videnoa/downloads/<uuid>`) is created on first
+/// use and removed when the last clone is dropped, i.e. when the top-level
+/// execution (one job, CLI run or preview) ends.
+#[derive(Clone, Default)]
+pub struct ExecutionScratch(Arc<ScratchState>);
+
+#[derive(Default)]
+struct ScratchState {
+    root: OnceLock<PathBuf>,
+    next_dir: AtomicU64,
+}
+
+impl ExecutionScratch {
+    /// Creates a fresh, empty directory inside this execution's scratch space.
+    pub fn allocate_dir(&self) -> Result<PathBuf> {
+        let root = self.0.root.get_or_init(|| {
+            std::env::temp_dir()
+                .join("videnoa")
+                .join("downloads")
+                .join(uuid::Uuid::new_v4().to_string())
+        });
+        let dir = root.join(self.0.next_dir.fetch_add(1, Ordering::Relaxed).to_string());
+        std::fs::create_dir_all(&dir)
+            .with_context(|| format!("failed to create scratch dir: {}", dir.display()))?;
+        Ok(dir)
+    }
+}
+
+impl ExecutionScratch {
+    /// The scratch root, if anything has been allocated yet.
+    #[cfg(test)]
+    pub(crate) fn root(&self) -> Option<&std::path::Path> {
+        self.0.root.get().map(PathBuf::as_path)
+    }
+}
+
+impl Drop for ScratchState {
+    fn drop(&mut self) {
+        let Some(root) = self.root.get() else {
+            return;
+        };
+        if let Err(error) = std::fs::remove_dir_all(root) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(
+                    path = %root.display(),
+                    error = %error,
+                    "failed to remove execution scratch dir"
+                );
+            }
+        }
+    }
 }
 
 impl ExecutionContext {

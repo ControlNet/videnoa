@@ -130,6 +130,11 @@ The server speaks HTTP/1.1 only; cleartext HTTP/2 (h2c) is not accepted.
   they must be the last processing nodes before `VideoOutput`; placing
   `SuperResolution` or `FrameInterpolation` after them is rejected when the
   workflow is validated.
+- `Downloader` saves each file under its original name in a directory private
+  to the job, so downloads of different jobs or URLs never overwrite each other.
+  The directory is deleted when the job ends: process the file within the same
+  workflow (for example into `VideoOutput`) rather than relying on its path
+  afterwards.
 
 ## Development setup
 
