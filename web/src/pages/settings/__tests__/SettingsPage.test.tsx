@@ -106,7 +106,7 @@ describe("SettingsPage profiling toggle", () => {
 		);
 	});
 
-	it("edits iroh relays one per line and drops the key when cleared", async () => {
+	it("edits iroh relays one per line, opts into public relays, and drops both when cleared", async () => {
 		const iroh = { enabled: true, relay_urls: ["https://relay.example.test"] };
 		vi.mocked(getConfig).mockResolvedValue(makeConfig({ iroh }));
 		vi.mocked(updateConfig).mockImplementation(async (config) => config);
@@ -124,6 +124,9 @@ describe("SettingsPage profiling toggle", () => {
 			target: { value: " https://relay.example.test\n\nhttp://10.0.0.5:3340 \n" },
 		});
 		expect(relays).toHaveValue(" https://relay.example.test\n\nhttp://10.0.0.5:3340 \n");
+		const usePublic = screen.getByLabelText(/Also use the public iroh relays/);
+		expect(usePublic).not.toBeChecked();
+		fireEvent.click(usePublic);
 		fireEvent.click(screen.getByRole("button", { name: "Save" }));
 		await waitFor(() => {
 			expect(updateConfig).toHaveBeenCalledTimes(1);
@@ -131,13 +134,15 @@ describe("SettingsPage profiling toggle", () => {
 		expect(vi.mocked(updateConfig).mock.calls[0]?.[0].iroh).toEqual({
 			enabled: true,
 			relay_urls: ["https://relay.example.test", "http://10.0.0.5:3340"],
+			use_public_relays: true,
 		});
 		await waitFor(() => {
 			expect(relays).toHaveValue("https://relay.example.test\nhttp://10.0.0.5:3340");
 		});
 
-		// An empty list returns to the public relays, as an omitted key.
+		// An empty list returns to the public relays, as omitted keys.
 		fireEvent.change(relays, { target: { value: "" } });
+		expect(usePublic).toBeDisabled();
 		fireEvent.click(screen.getByRole("button", { name: "Save" }));
 		await waitFor(() => {
 			expect(updateConfig).toHaveBeenCalledTimes(2);

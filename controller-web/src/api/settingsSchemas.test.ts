@@ -35,7 +35,7 @@ const testOnlySettings = {
     maximum_seconds: 30,
     max_attempts: 4,
   },
-  iroh: { relay_urls: [], restart_required: false },
+  iroh: { relay_urls: [], use_public_relays: false, restart_required: false },
 } as const
 
 describe("settings API schemas", () => {
@@ -105,7 +105,7 @@ describe("settings API schemas", () => {
     }
 
     // When: both shapes are parsed.
-    const relays = settingsUpdateRequestSchema.safeParse({ ...base, iroh: { relay_urls: ["https://relay.example.test", "http://10.0.0.5:3340"] } })
+    const relays = settingsUpdateRequestSchema.safeParse({ ...base, iroh: { relay_urls: ["https://relay.example.test", "http://10.0.0.5:3340"], use_public_relays: true } })
     const omitted = settingsUpdateRequestSchema.safeParse(base)
 
     // Then: both are submit-capable.
@@ -130,8 +130,8 @@ describe("settings API schemas", () => {
     ["zero absolute session", { auth: { secure_cookie: true, session_absolute_seconds: 0, session_idle_seconds: 1 } }],
     ["excess idle session", { auth: { secure_cookie: true, session_absolute_seconds: 604_800, session_idle_seconds: 604_801 } }],
     ["idle session above absolute", { auth: { secure_cookie: true, session_absolute_seconds: 60, session_idle_seconds: 61 } }],
-    ["non-http relay", { iroh: { relay_urls: ["ftp://relay.example.test"] } }],
-    ["unparseable relay", { iroh: { relay_urls: ["relay.example.test"] } }],
+    ["non-http relay", { iroh: { relay_urls: ["ftp://relay.example.test"], use_public_relays: false } }],
+    ["unparseable relay", { iroh: { relay_urls: ["relay.example.test"], use_public_relays: false } }],
   ]
 
   it.each(invalidCases)("rejects %s", (_case, patch) => {

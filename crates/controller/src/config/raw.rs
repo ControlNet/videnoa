@@ -20,11 +20,13 @@ pub(super) struct RawControllerConfig {
 pub(super) struct RawIrohConfig {
     #[serde(default)]
     pub relay_urls: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub use_public_relays: bool,
 }
 
 impl RawIrohConfig {
     fn is_empty(&self) -> bool {
-        self.relay_urls.is_empty()
+        self.relay_urls.is_empty() && !self.use_public_relays
     }
 }
 

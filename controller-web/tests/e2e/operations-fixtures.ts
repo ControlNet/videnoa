@@ -61,7 +61,7 @@ export const settingsTemplate: SettingsResponse = {
   },
   timeouts: { health_seconds: 15, poll_seconds: 5, transfer_seconds: 300 },
   retry: { initial_seconds: 2, maximum_seconds: 30, max_attempts: 4 },
-  iroh: { relay_urls: [], restart_required: false },
+  iroh: { relay_urls: [], use_public_relays: false, restart_required: false },
 }
 
 const readiness = {
@@ -237,7 +237,7 @@ export async function installOperationalApi(page: Page): Promise<OperationalApi>
       retry: request.retry,
       iroh: request.iroh === undefined
         ? settings.iroh
-        : { relay_urls: request.iroh.relay_urls, restart_required: request.iroh.relay_urls.length > 0 },
+        : { ...request.iroh, restart_required: request.iroh.relay_urls.length > 0 },
     }
     if (settingsSaveIsDegraded) {
       settingsSaveIsDegraded = false

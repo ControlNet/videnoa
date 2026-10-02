@@ -61,6 +61,18 @@
   iroh's net_report behaviour and is not covered by a Videnoa test.
 - N0 relay URLs (iroh 1.1.0 `defaults::prod`): use1-1 / usw1-1 / euc1-1 /
   aps1-1 `.relay.n0.iroh.link`.
+- Home relay choice (iroh `net_report::add_report_history_and_set_preferred_relay`):
+  lowest recent latency among reachable relays, sticky unless the new one is
+  better than 2/3 of the current latency. List order is NOT a priority, so
+  "own relay first, public as standby" is not possible without custom logic.
+- `use_public_relays` (Worker `config.toml`, Controller `controller.toml`,
+  Settings API `iroh.use_public_relays`, a checkbox in both WebUIs):
+  `Network::including_public_relays(bool)` appends
+  `iroh::defaults::prod::default_relay_map().urls()`; no-op without
+  self-hosted relays. Both configs expose `IrohConfig::network()` so startup,
+  validation and the Worker reconcile build the same `Network`. The UIs send
+  `false`/omit the flag when the list is empty (it is ignored then) so an
+  unused flag does not cause a spurious restart_required or dirty form.
 
 ## Testing
 

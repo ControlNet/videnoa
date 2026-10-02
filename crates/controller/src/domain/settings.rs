@@ -48,6 +48,9 @@ pub struct RetrySettingsDto {
 #[serde(deny_unknown_fields)]
 pub struct IrohSettingsDto {
     pub relay_urls: Vec<String>,
+    /// Also use N0's public relays next to `relay_urls`; ignored without them.
+    #[serde(default)]
+    pub use_public_relays: bool,
 }
 
 /// Saved iroh relays and whether the running endpoint still uses others.
@@ -55,6 +58,7 @@ pub struct IrohSettingsDto {
 #[serde(deny_unknown_fields)]
 pub struct IrohSettingsResponse {
     pub relay_urls: Vec<String>,
+    pub use_public_relays: bool,
     /// Kept apart from the path restart, which also locks the scheduler.
     pub restart_required: bool,
 }

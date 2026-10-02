@@ -173,7 +173,7 @@ export interface AuthConfig {
 export const DEFAULT_AUTH_CONFIG: AuthConfig = { session_absolute_seconds: 2592000, session_idle_seconds: 604800, secure_cookie: false };
 export interface AppConfig {
   /** `relay_urls` is set in config.toml only; the page sends it back unchanged. */
-  iroh?: { enabled: boolean; relay_urls?: string[] };
+  iroh?: { enabled: boolean; relay_urls?: string[]; use_public_relays?: boolean };
   auth?: AuthConfig;
   paths: {
     models_dir: string;

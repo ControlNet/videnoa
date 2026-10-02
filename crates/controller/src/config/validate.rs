@@ -2,7 +2,7 @@ use std::num::{NonZeroU16, NonZeroU32};
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
-use super::raw::RawControllerConfig;
+use super::raw::{RawControllerConfig, RawIrohConfig};
 use super::{
     AuthConfig, ConfigError, ControllerConfig, IrohConfig, PathConfig, RetryConfig,
     SchedulerConfig, ServerConfig, TimeoutConfig,
@@ -74,18 +74,20 @@ pub(super) fn build_config(
             maximum,
             max_attempts: positive_nonzero_u32("retry.max_attempts", raw.retry.max_attempts)?,
         },
-        iroh: IrohConfig {
-            relay_urls: relay_urls(&raw.iroh.relay_urls)?,
-        },
+        iroh: iroh(&raw.iroh)?,
     })
 }
 
 /// The configured relays, checked the way the transport will parse them.
-fn relay_urls(configured: &[String]) -> Result<Vec<String>, ConfigError> {
-    videnoa_transport::Network::with_relays(configured).map_err(|error| ConfigError::Schema {
+fn iroh(raw: &RawIrohConfig) -> Result<IrohConfig, ConfigError> {
+    let iroh = IrohConfig {
+        relay_urls: raw.relay_urls.clone(),
+        use_public_relays: raw.use_public_relays,
+    };
+    iroh.network().map_err(|error| ConfigError::Schema {
         detail: format!("iroh.relay_urls: {error:#}"),
     })?;
-    Ok(configured.to_vec())
+    Ok(iroh)
 }
 
 fn configured_root(

@@ -115,13 +115,14 @@ type CheckFieldProps = {
   readonly name: string
   readonly label: string
   readonly checked: boolean
+  readonly disabled?: boolean
   readonly onChange: (checked: boolean) => void
 }
 
-export function CheckField({ id, name, label, checked, onChange }: CheckFieldProps) {
+export function CheckField({ id, name, label, checked, disabled, onChange }: CheckFieldProps) {
   return (
     <label className="field field--check" htmlFor={id}>
-      <input id={id} name={name} type="checkbox" checked={checked} onChange={(event) => onChange(event.currentTarget.checked)} />
+      <input id={id} name={name} type="checkbox" checked={checked} disabled={disabled} onChange={(event) => onChange(event.currentTarget.checked)} />
       <span>{label}</span>
     </label>
   )

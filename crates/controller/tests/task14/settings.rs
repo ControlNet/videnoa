@@ -300,19 +300,26 @@ async fn iroh_relays_are_edited_through_settings_and_apply_after_restart() -> Te
     let settings = get().await?;
     assert_eq!(
         settings["iroh"],
-        json!({"relay_urls": [], "restart_required": false})
+        json!({"relay_urls": [], "use_public_relays": false, "restart_required": false})
     );
 
     // When: relays are saved.
     let mut update = settings_update(&settings, 10, 300);
-    update["iroh"] = json!({"relay_urls": ["https://relay.example.test"]});
+    update["iroh"] = json!({
+        "relay_urls": ["https://relay.example.test"],
+        "use_public_relays": true
+    });
     let (status, saved) = put(update).await?;
 
     // Then: they are durable and reported as pending until the next start.
     assert_eq!(status, StatusCode::OK, "{saved}");
     assert_eq!(
         saved["iroh"],
-        json!({"relay_urls": ["https://relay.example.test"], "restart_required": true})
+        json!({
+            "relay_urls": ["https://relay.example.test"],
+            "use_public_relays": true,
+            "restart_required": true
+        })
     );
     // The scheduler stays controllable: only the path restart locks it.
     assert_eq!(saved["restart_required"], false);
@@ -320,6 +327,7 @@ async fn iroh_relays_are_edited_through_settings_and_apply_after_restart() -> Te
     let reloaded =
         videnoa_controller::config::ControllerConfig::from_toml_in(&document, &fixture.workspace)?;
     assert_eq!(reloaded.iroh.relay_urls, ["https://relay.example.test"]);
+    assert!(reloaded.iroh.use_public_relays);
 
     // An invalid URL is a field error and changes nothing.
     let mut invalid = settings_update(&saved, 10, 300);

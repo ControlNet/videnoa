@@ -1304,7 +1304,9 @@ async fn update_config(
             "Set a worker password before enabling iroh".into(),
         ));
     }
-    videnoa_transport::Network::with_relays(&payload.iroh.relay_urls)
+    payload
+        .iroh
+        .network()
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
     payload
         .auth

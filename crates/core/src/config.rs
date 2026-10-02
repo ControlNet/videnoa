@@ -27,6 +27,20 @@ pub struct IrohConfig {
     /// Self-hosted relays; empty uses the public N0 relays and discovery.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub relay_urls: Vec<String>,
+    /// Also use N0's public relays next to `relay_urls`; ignored without them.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub use_public_relays: bool,
+}
+
+impl IrohConfig {
+    /// The relay network these settings select.
+    ///
+    /// # Errors
+    /// Returns an error when a relay URL is invalid.
+    pub fn network(&self) -> anyhow::Result<videnoa_transport::Network> {
+        Ok(videnoa_transport::Network::with_relays(&self.relay_urls)?
+            .including_public_relays(self.use_public_relays))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -267,12 +281,15 @@ mod tests {
         assert!(legacy.iroh.relay_urls.is_empty());
         let encoded = toml::to_string_pretty(&legacy).expect("serialize config");
         assert!(!encoded.contains("relay_urls"), "{encoded}");
+        assert!(!legacy.iroh.use_public_relays);
+        assert!(!encoded.contains("use_public_relays"), "{encoded}");
 
         let relays: AppConfig = toml::from_str(
-            "[iroh]\nenabled = true\nrelay_urls = [\"https://relay.example.test\"]\n",
+            "[iroh]\nenabled = true\nrelay_urls = [\"https://relay.example.test\"]\nuse_public_relays = true\n",
         )
         .expect("self-hosted relays");
         assert_eq!(relays.iroh.relay_urls, ["https://relay.example.test"]);
+        assert!(relays.iroh.use_public_relays);
         let encoded = toml::to_string_pretty(&relays).expect("serialize config");
         assert_eq!(
             toml::from_str::<AppConfig>(&encoded).expect("roundtrip"),

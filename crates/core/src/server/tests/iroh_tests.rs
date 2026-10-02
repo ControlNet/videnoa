@@ -304,6 +304,23 @@ async fn iroh_relay_settings_are_validated_and_restart_the_endpoint() -> anyhow:
         identity
     );
 
+    // Public relays join the self-hosted one, again without a new identity.
+    config.iroh.use_public_relays = true;
+    assert!(put(config.clone()).await?.is_success());
+    let mixed = state.iroh_relays().await.expect("endpoint running");
+    assert_eq!(mixed[0], "http://127.0.0.1:10/");
+    assert!(
+        mixed[1..]
+            .iter()
+            .all(|relay| relay.contains(".relay.n0.iroh.link")),
+        "{mixed:?}"
+    );
+    assert!(mixed.len() > 1, "{mixed:?}");
+    assert_eq!(
+        state.iroh_addr().await.expect("endpoint running").id,
+        identity
+    );
+
     // Clearing them returns to the public network.
     config.iroh.relay_urls.clear();
     assert!(put(config).await?.is_success());

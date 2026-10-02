@@ -7,18 +7,19 @@ use tokio_util::sync::CancellationToken;
 use videnoa_transport::{Client, EndpointId, Network, TunnelError};
 
 use super::{ClientConfigError, VidenoaClientError};
+use crate::config::IrohConfig;
 
 static ROOT: OnceLock<PathBuf> = OnceLock::new();
 static NETWORK: OnceLock<Network> = OnceLock::new();
 static CLIENT: OnceCell<Arc<Client>> = OnceCell::const_new();
 
-/// Selects the existing persistent Controller root and the relays (empty for
-/// the public N0 network) before background services start.
+/// Selects the existing persistent Controller root and the relay network
+/// before background services start.
 /// # Errors
 /// Fails if a relay URL is invalid, or if another root or relay set was
 /// already configured in this process.
-pub fn configure_iroh(root: &Path, relay_urls: &[String]) -> anyhow::Result<()> {
-    let network = Network::with_relays(relay_urls)?;
+pub fn configure_iroh(root: &Path, iroh: &IrohConfig) -> anyhow::Result<()> {
+    let network = iroh.network()?;
     if let Some(existing) = ROOT.get() {
         anyhow::ensure!(existing == root, "iroh runtime root is already configured");
     } else {
@@ -225,7 +226,7 @@ mod tests {
         )
         .await?;
         let controller_root = tempfile::tempdir()?;
-        configure_iroh(controller_root.path(), &[])?;
+        configure_iroh(controller_root.path(), &IrohConfig::default())?;
         // Prime the shared real connection with explicit local addresses: deterministic CI,
         // independent of N0 DNS. The separate opt-in test covers ID-only discovery.
         drop(client().await?.tunnel(server.addr(), PASSWORD).await?);
