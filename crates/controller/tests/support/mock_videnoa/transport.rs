@@ -23,9 +23,12 @@ pub(super) struct ServerRuntime {
 impl ServerRuntime {
     pub(super) async fn stop(self) -> Result<(), HarnessError> {
         let _ = self.shutdown.send(());
-        let joined = tokio::time::timeout(Duration::from_secs(5), self.task)
-            .await
-            .map_err(|_| HarnessError::ShutdownTimeout)?;
+        let joined = tokio::time::timeout(
+            crate::mock_videnoa::deadline::eventually(Duration::from_secs(5)),
+            self.task,
+        )
+        .await
+        .map_err(|_| HarnessError::ShutdownTimeout)?;
         joined??;
         Ok(())
     }

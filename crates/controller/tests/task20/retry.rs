@@ -85,11 +85,14 @@ async fn explicit_processing_retry_creates_replacement_attempt_and_converges() -
 }
 
 async fn wait_for_job_count(worker: &MockVidenoa, expected: usize) -> TestResult {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while worker.job_count().await != expected {
-            tokio::task::yield_now().await;
-        }
-    })
+    tokio::time::timeout(
+        crate::mock_videnoa::deadline::eventually(Duration::from_secs(10)),
+        async {
+            while worker.job_count().await != expected {
+                tokio::task::yield_now().await;
+            }
+        },
+    )
     .await
     .map_err(|_| std::io::Error::other("remote job count did not converge"))?;
     Ok(())
@@ -100,15 +103,18 @@ async fn wait_for_status(
     task: &Task,
     status: TaskStatus,
 ) -> TestResult<TaskDetailResponse> {
-    tokio::time::timeout(Duration::from_secs(15), async {
-        loop {
-            let detail = fixture.task(task).await?;
-            if detail.task.status == status {
-                return Ok::<_, Box<dyn std::error::Error + Send + Sync>>(detail);
+    tokio::time::timeout(
+        crate::mock_videnoa::deadline::eventually(Duration::from_secs(15)),
+        async {
+            loop {
+                let detail = fixture.task(task).await?;
+                if detail.task.status == status {
+                    return Ok::<_, Box<dyn std::error::Error + Send + Sync>>(detail);
+                }
+                tokio::task::yield_now().await;
             }
-            tokio::task::yield_now().await;
-        }
-    })
+        },
+    )
     .await
     .map_err(|_| std::io::Error::other("task did not reach retry status"))?
 }

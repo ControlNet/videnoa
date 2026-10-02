@@ -32,11 +32,14 @@ pub(crate) async fn restart_mid_upload() -> TestResult {
 }
 
 async fn wait_for_remote_job(worker: &MockVidenoa) -> TestResult {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while worker.job_count().await == 0 {
-            tokio::task::yield_now().await;
-        }
-    })
+    tokio::time::timeout(
+        crate::mock_videnoa::deadline::eventually(Duration::from_secs(10)),
+        async {
+            while worker.job_count().await == 0 {
+                tokio::task::yield_now().await;
+            }
+        },
+    )
     .await
     .map_err(|_| std::io::Error::other("remote job was not created after upload restart"))?;
     Ok(())
