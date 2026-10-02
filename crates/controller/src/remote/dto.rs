@@ -142,7 +142,9 @@ pub struct DownloadReceipt {
 pub enum RunValidation {
     Valid,
     /// The Worker would reject `POST /api/run` with this bounded reason.
-    Invalid { reason: String },
+    Invalid {
+        reason: String,
+    },
     /// The Worker predates `POST /api/run/validate` or does not know the name.
     Unknown,
 }
@@ -172,7 +174,10 @@ mod tests {
         value
             .as_object_mut()
             .expect("fixtures are JSON objects")
-            .insert("added_by_a_newer_worker".to_owned(), json!({"nested": [1, 2]}));
+            .insert(
+                "added_by_a_newer_worker".to_owned(),
+                json!({"nested": [1, 2]}),
+            );
         value
     }
 
@@ -237,7 +242,10 @@ mod tests {
 
     #[test]
     fn worker_responses_still_require_known_fields_and_statuses() {
-        assert!(serde_json::from_value::<RunReceipt>(json!({"id": JOB_ID, "status": "queued"})).is_err());
+        assert!(
+            serde_json::from_value::<RunReceipt>(json!({"id": JOB_ID, "status": "queued"}))
+                .is_err()
+        );
         assert!(serde_json::from_value::<RunReceipt>(
             json!({"id": JOB_ID, "status": "paused", "created_at": CREATED_AT})
         )

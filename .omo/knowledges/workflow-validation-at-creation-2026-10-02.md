@@ -58,3 +58,14 @@ rule and tests submit `eligible-workflow` (stem).
 fails when `TMPDIR=/dev/shm/...`: it needs `/dev/shm` to be a different
 filesystem from the temp dir. Use `--no-fail-fast` or the default TMPDIR when
 running the whole controller suite.
+
+## CI gotcha: `cargo fmt` misses include!-ed Controller modules
+
+Most Controller modules are wired with `include!` (`module_topology.rs`), which
+`cargo fmt --all` does not follow. CI's quality gate also runs rustfmt on every
+tracked file and stopped the item 6 and 7 merges at that step (so their clippy
+and tests never ran in CI). Run the CI command locally before pushing:
+
+```bash
+git ls-files -z '*.rs' | xargs -0 -n1 rustfmt --edition 2021 --check
+```
