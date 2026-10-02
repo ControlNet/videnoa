@@ -29,7 +29,7 @@ jobs:
       publish: ${{ steps.gate.outputs.publish }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -158,7 +158,7 @@ jobs:
       ARCHIVE_NAME: videnoa-linux64-${{ needs.version-gate.outputs.version }}.7z
     steps:
       - name: Checkout repository
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
@@ -166,7 +166,7 @@ jobs:
           toolchain: 1.98.0
 
       - name: Set up Node.js
-        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
 
@@ -207,7 +207,7 @@ jobs:
         run: bash scripts/package_dist_archive.sh verify "$RUNNER_TEMP/${{ env.ARCHIVE_NAME }}"
 
       - name: Upload Linux artifact
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: videnoa-linux64-${{ env.DIST_VERSION }}
           path: ${{ runner.temp }}/${{ env.ARCHIVE_NAME }}*
@@ -223,7 +223,7 @@ jobs:
       ARCHIVE_NAME: videnoa-win64-${{ needs.version-gate.outputs.version }}.7z
     steps:
       - name: Checkout repository
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
@@ -231,7 +231,7 @@ jobs:
           toolchain: 1.98.0
 
       - name: Set up Node.js
-        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
 
@@ -312,7 +312,7 @@ jobs:
           }
 
       - name: Upload Windows artifact
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: videnoa-win64-${{ env.DIST_VERSION }}
           path: ${{ runner.temp }}/${{ env.ARCHIVE_NAME }}*
@@ -327,13 +327,13 @@ jobs:
       ARCHIVE_NAME: videnoa-controller-v${{ needs.version-gate.outputs.version }}-linux-x86_64.tar.gz
     steps:
       - name: Checkout repository
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Set up Rust 1.98.0
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           toolchain: 1.98.0
       - name: Set up Node.js
-        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
       - name: Package Linux Controller archive
@@ -341,7 +341,7 @@ jobs:
       - name: Verify Linux Controller archive
         run: bash scripts/package_controller.sh --verify-archive "$RUNNER_TEMP/controller-linux/${{ env.ARCHIVE_NAME }}"
       - name: Upload Linux Controller artifact
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: videnoa-controller-linux-${{ needs.version-gate.outputs.version }}
           path: ${{ runner.temp }}/controller-linux/${{ env.ARCHIVE_NAME }}
@@ -357,13 +357,13 @@ jobs:
       ARCHIVE_NAME: videnoa-controller-v${{ needs.version-gate.outputs.version }}-windows-x86_64.zip
     steps:
       - name: Checkout repository
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Set up Rust 1.98.0
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           toolchain: 1.98.0
       - name: Set up Node.js
-        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
       - name: Package Windows Controller archive
@@ -373,7 +373,7 @@ jobs:
         shell: pwsh
         run: pwsh -File scripts/package_controller.ps1 -VerifyArchive (Join-Path $env:RUNNER_TEMP "controller-windows\$env:ARCHIVE_NAME")
       - name: Upload Windows Controller artifact
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: videnoa-controller-windows-${{ needs.version-gate.outputs.version }}
           path: ${{ runner.temp }}/controller-windows/${{ env.ARCHIVE_NAME }}
@@ -390,7 +390,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Checkout repository
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Preflight DockerHub credentials
         env:
@@ -432,7 +432,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Checkout repository
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Preflight DockerHub credentials
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -476,30 +476,30 @@ jobs:
       RELEASE_TAG: ${{ needs.version-gate.outputs.tag }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
       - name: Download Linux release artifact
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: videnoa-linux64-${{ env.DIST_VERSION }}
           path: ${{ runner.temp }}/release/linux64
 
       - name: Download Windows release artifact
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: videnoa-win64-${{ env.DIST_VERSION }}
           path: ${{ runner.temp }}/release/win64
 
       - name: Download Linux Controller release artifact
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: videnoa-controller-linux-${{ env.DIST_VERSION }}
           path: ${{ runner.temp }}/release/controller-linux
 
       - name: Download Windows Controller release artifact
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: videnoa-controller-windows-${{ env.DIST_VERSION }}
           path: ${{ runner.temp }}/release/controller-windows
