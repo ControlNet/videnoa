@@ -210,14 +210,15 @@ export function SettingsEditor({ settings, actionError, onSave }: SettingsEditor
             rows={3}
             spellCheck={false}
             value={fields.relayUrls}
-            hint="One URL per line. Leave empty to use the public iroh relays. Workers must use the same relays and the same public-relay choice. Applies after the Controller restarts."
+            hint="One URL per line. Leave empty to use the public iroh relays. Workers must list the same relays. Applies after the Controller restarts."
             error={fieldErrors.relayUrls ?? serverErrors.relayUrls}
             onChange={(event) => setFields({ ...fields, relayUrls: event.currentTarget.value })}
           />
           <CheckField
             id="settings-use_public_relays"
             name="use_public_relays"
-            label="Also use the public iroh relays, chosen by latency alongside yours"
+            label="Also use the public iroh relays"
+            hint="Chosen by latency alongside your relays, not kept as a standby. Workers must make the same choice."
             checked={fields.usePublicRelays}
             disabled={relayLines(fields.relayUrls).length === 0}
             onChange={(usePublicRelays) => setFields({ ...fields, usePublicRelays })}

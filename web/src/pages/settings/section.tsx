@@ -106,14 +106,19 @@ export function CheckRow({
 	children?: ReactNode;
 } & React.InputHTMLAttributes<HTMLInputElement>) {
 	return (
-		<div className={cn("flex h-8 min-w-0 items-center gap-2", className)}>
+		// A minimum height, so a label that wraps on a narrow screen stays inside the row.
+		<div className={cn("flex min-h-8 min-w-0 items-center gap-2", className)}>
 			<input
 				{...input}
 				id={id}
 				type="checkbox"
-				className={settingsCheckboxClass}
+				className={cn(settingsCheckboxClass, "peer disabled:cursor-not-allowed")}
 			/>
-			<label htmlFor={id} className="cursor-pointer text-[12.5px]">
+			{/* An unavailable option must not read as one that is merely unchecked. */}
+			<label
+				htmlFor={id}
+				className="cursor-pointer text-[12.5px] peer-disabled:cursor-not-allowed peer-disabled:text-muted-foreground"
+			>
 				{label}
 			</label>
 			{children}

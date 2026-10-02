@@ -88,3 +88,21 @@
 - Local `cargo deny check` (0.20.2) reports licenses FAILED even on the
   baseline because `deny.toml` only configures advisories; CI runs only the
   advisories check, which passes.
+
+## Visual QA of the Settings pages (2026-10-03)
+
+- Controller: a temporary spec in `controller-web/tests/e2e/` (removed after
+  use) reuses `installOperationalReadRoutes` + an `/api/settings` override.
+  The page scrolls in an inner container and has a sticky save bar, so
+  element screenshots of the last section get covered; scroll every
+  scrollable element to its end and take a viewport screenshot instead.
+  Spec files there are type-checked by the `tsc -b` in the webServer build
+  (e.g. `NodeListOf` is not iterable with the project lib settings).
+- Worker: `npx vite --port 5179` in `web/` plus a Node Playwright script that
+  imports `controller-web/node_modules/playwright`. Mock with a predicate
+  `(url) => url.pathname.startsWith("/api/")`; the glob `**/api/**` also
+  matches Vite's `/src/api/*.ts` modules and blanks the page. The language
+  follows the browser context `locale` when no locale is stored.
+- Findings fixed: disabled checkboxes need a dimmed label (both UIs), check
+  rows need a minimum rather than fixed height so wrapped labels stay inside
+  on 375px, and the checkbox must not flex-shrink.

@@ -351,6 +351,7 @@
 }
 
 .settings-paths > .field,
+.settings-paths > .field-check-group,
 .settings-paths > .settings-notice {
   max-inline-size: var(--measure-path);
 }

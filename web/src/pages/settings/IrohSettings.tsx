@@ -125,14 +125,20 @@ export function IrohSettings({ enabled, savedEnabled, onChange, relayUrls, saved
         />
         <p id="settings-iroh-relays-hint" className="text-[11px] leading-4 text-muted-foreground">{t('iroh.relaysHint')}</p>
       </Field>
-      <CheckRow
-        id="settings-iroh-public-relays"
-        className="sm:col-span-6"
-        label={t('iroh.usePublicRelays')}
-        checked={usePublicRelays}
-        disabled={relayUrls.length === 0}
-        onChange={(event) => { onUsePublicRelaysChange(event.target.checked); }}
-      />
+      <div className="flex min-w-0 flex-col sm:col-span-6">
+        {/* The note belongs to the option, so the row gives up its full control height. */}
+        <CheckRow
+          id="settings-iroh-public-relays"
+          className="min-h-6"
+          label={t('iroh.usePublicRelays')}
+          checked={usePublicRelays}
+          disabled={relayUrls.length === 0}
+          aria-describedby="settings-iroh-public-relays-hint"
+          onChange={(event) => { onUsePublicRelaysChange(event.target.checked); }}
+        />
+        {/* Indented by the box and its gap so the note aligns with the label text. */}
+        <p id="settings-iroh-public-relays-hint" className="pl-6 text-[11px] leading-4 text-muted-foreground">{t('iroh.usePublicRelaysHint')}</p>
+      </div>
     </SettingsGrid>
     {copyFailed && <p role="alert" className="text-[11px] text-destructive">{t('iroh.copyFailed')}</p>}
   </SettingsSection>;
