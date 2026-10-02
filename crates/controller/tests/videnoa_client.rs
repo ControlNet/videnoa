@@ -28,11 +28,13 @@ use mock_videnoa::{
 };
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use videnoa_controller::domain::{SubmissionKey, WorkerApiUrl, WorkflowKind, WorkflowName};
+use videnoa_controller::domain::{
+    InvalidWorkflow, SubmissionKey, WorkerApiUrl, WorkflowKind, WorkflowName,
+};
 use videnoa_controller::remote::{
     sibling_output_path, CacheInvalidation, CapabilityCache, Compatibility, CompatibilityEntry,
     CompatibilityEvidence, FileApiPath, MonotonicClock, PayloadLimits, RemoteTimeouts, RunOutcome,
-    VidenoaClient, VidenoaClientError,
+    RunValidation, VidenoaClient, VidenoaClientError,
 };
 
 type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -193,6 +195,140 @@ async fn capabilities_load_when_a_newer_worker_adds_response_fields() -> TestRes
         capabilities.compatibility(&WorkflowName::new("eligible-workflow.json")),
         Some(Compatibility::Eligible)
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn run_validation_distinguishes_valid_invalid_and_unsupported() -> TestResult {
+    // Given: a Worker that knows the workflow, and one broken preset.
+    let server = MockVidenoa::start().await?;
+    let client = test_client(
+        &server,
+        Duration::from_secs(5),
+        Duration::from_secs(1),
+        JSON_LIMIT,
+    )?;
+    let workflow = WorkflowName::new("eligible-workflow.json");
+    let preset = WorkflowName::new("eligible-preset");
+    server
+        .set_fault(Fault::InvalidWorkflow {
+            name: "eligible-preset".to_owned(),
+            error: "workflow validation failed: unknown node type 'Blur'".to_owned(),
+        })
+        .await;
+
+    // When / Then: a valid saved workflow is checked by its run name.
+    assert_eq!(client.validate_run(&workflow).await?, RunValidation::Valid);
+    let request = server
+        .journal()
+        .await
+        .into_iter()
+        .find(|entry| entry.route == Route::RunValidate)
+        .expect("validation request is journaled");
+    assert_eq!(
+        serde_json::from_slice::<Value>(&request.body)?,
+        serde_json::json!({"workflow_name": "eligible-workflow"})
+    );
+    // The Worker's 400 reason is kept, bounded like a rejected run.
+    assert_eq!(
+        client.validate_run(&preset).await?,
+        RunValidation::Invalid {
+            reason: "workflow validation failed: unknown node type 'Blur'".to_owned()
+        }
+    );
+    // A Worker without the route answers 404: validity is unknown.
+    server
+        .set_fault(Fault::Response(ResponseFault {
+            route: Route::RunValidate,
+            status: 404,
+            body: br#"{"error":"api endpoint not found: /api/run/validate"}"#.to_vec(),
+        }))
+        .await;
+    assert_eq!(
+        client.validate_run(&workflow).await?,
+        RunValidation::Unknown
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn capabilities_exclude_workflows_the_worker_would_reject() -> TestResult {
+    // Given: a Worker whose eligible preset fails its own run validation.
+    let server = MockVidenoa::start().await?;
+    let client = test_client(
+        &server,
+        Duration::from_secs(5),
+        Duration::from_secs(1),
+        JSON_LIMIT,
+    )?;
+    server
+        .set_fault(Fault::InvalidWorkflow {
+            name: "eligible-preset".to_owned(),
+            error: "workflow validation failed: unknown node type 'Blur'".to_owned(),
+        })
+        .await;
+
+    // When: the catalog is refreshed.
+    let capabilities = client.capabilities().await?;
+
+    // Then: the broken preset is not schedulable and carries the Worker's reason.
+    assert_eq!(
+        capabilities.compatibility(&WorkflowName::new("eligible-preset")),
+        Some(Compatibility::Incompatible)
+    );
+    assert_eq!(
+        capabilities.invalid_workflows(),
+        vec![InvalidWorkflow {
+            name: WorkflowName::new("eligible-preset"),
+            kind: WorkflowKind::Preset,
+            reason: "workflow validation failed: unknown node type 'Blur'".to_owned(),
+        }]
+    );
+    assert_eq!(
+        capabilities.compatibility(&WorkflowName::new("eligible-workflow.json")),
+        Some(Compatibility::Eligible)
+    );
+    // Only interface-eligible entries are validated.
+    let validated = server
+        .journal()
+        .await
+        .into_iter()
+        .filter(|entry| entry.route == Route::RunValidate)
+        .count();
+    assert_eq!(validated, capabilities.eligible_workflows().len() + 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn capabilities_keep_workflows_eligible_when_validation_is_unavailable() -> TestResult {
+    // Given: an older Worker without the route, then a Worker whose
+    // validation fails for reasons unrelated to the workflow.
+    let server = MockVidenoa::start().await?;
+    let client = test_client(
+        &server,
+        Duration::from_secs(5),
+        Duration::from_secs(1),
+        JSON_LIMIT,
+    )?;
+    let eligible = client.capabilities().await?.eligible_workflows();
+    for status in [404, 500, 401] {
+        for _ in &eligible {
+            server
+                .set_fault(Fault::Response(ResponseFault {
+                    route: Route::RunValidate,
+                    status,
+                    body: br#"{"error":"unavailable"}"#.to_vec(),
+                }))
+                .await;
+        }
+
+        // When: the catalog is refreshed.
+        let capabilities = client.capabilities().await?;
+
+        // Then: nothing is excluded on missing evidence.
+        assert_eq!(capabilities.eligible_workflows(), eligible, "HTTP {status}");
+        assert!(capabilities.invalid_workflows().is_empty(), "HTTP {status}");
+    }
     Ok(())
 }
 

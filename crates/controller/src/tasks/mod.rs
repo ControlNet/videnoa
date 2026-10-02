@@ -5,6 +5,7 @@ mod fingerprint;
 mod intake;
 pub(crate) mod mapping;
 mod routes;
+mod workflow_validity;
 
 pub use intake::TaskService;
 

@@ -1,7 +1,8 @@
 use crate::domain::{WorkflowKind, WorkflowName};
 
 use super::{
-    CompatibilityCatalog, Preset, VidenoaClient, VidenoaClientError, Workflow, WorkflowInterface,
+    CompatibilityCatalog, Preset, RunValidation, VidenoaClient, VidenoaClientError, Workflow,
+    WorkflowInterface,
 };
 
 impl VidenoaClient {
@@ -46,10 +47,13 @@ impl VidenoaClient {
         self.json(response).await
     }
 
-    /// Fetches and merges saved workflows and presets with interface compatibility.
+    /// Fetches and merges saved workflows and presets with interface
+    /// compatibility, then excludes eligible entries the Worker's own run
+    /// validation rejects. Missing validation evidence keeps an entry eligible.
     ///
     /// # Errors
-    /// Returns [`VidenoaClientError`] for transport, status, bounds, or payload failures.
+    /// Returns [`VidenoaClientError`] for transport, status, bounds, or payload
+    /// failures of the workflow and preset listings.
     pub async fn capabilities(&self) -> Result<CompatibilityCatalog, VidenoaClientError> {
         let workflows = self.workflows().await?;
         let presets = self.presets().await?;
@@ -72,6 +76,17 @@ impl VidenoaClient {
                 WorkflowKind::Preset,
                 preset.workflow.interface.as_ref(),
             );
+        }
+        for name in catalog.eligible_names() {
+            match self.validate_run(&name).await {
+                Ok(RunValidation::Invalid { reason }) => catalog.mark_invalid(&name, reason),
+                Ok(RunValidation::Valid | RunValidation::Unknown) => {}
+                Err(error) => tracing::warn!(
+                    workflow = %name.as_str(),
+                    %error,
+                    "worker workflow validation unavailable; keeping it eligible"
+                ),
+            }
         }
         Ok(catalog)
     }

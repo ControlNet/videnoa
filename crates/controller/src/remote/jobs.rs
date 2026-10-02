@@ -5,9 +5,11 @@ use serde_json::Value;
 
 use crate::domain::{RemoteJobId, SubmissionKey, WorkflowName};
 
-use super::dto::RunRequest;
+use super::dto::{RunRequest, ValidateRunRequest};
 use super::transport::ensure_success;
-use super::{Job, RunOutcome, RunReceipt, RunSubmission, VidenoaClient, VidenoaClientError};
+use super::{
+    Job, RunOutcome, RunReceipt, RunSubmission, RunValidation, VidenoaClient, VidenoaClientError,
+};
 
 impl VidenoaClient {
     /// Submits a saved workflow with a durable idempotency key.
@@ -26,7 +28,7 @@ impl VidenoaClient {
                     .post(self.endpoint(&["api", "run"])?)
                     .header("idempotency-key", key.to_string())
                     .json(&RunRequest {
-                        workflow_name: workflow,
+                        workflow_name: workflow.run_name(),
                         params,
                     }),
             )
@@ -49,6 +51,42 @@ impl VidenoaClient {
         };
         let receipt: RunReceipt = self.json(response).await?;
         Ok(RunSubmission { outcome, receipt })
+    }
+
+    /// Asks the Worker whether `run` would accept this workflow, without
+    /// creating a job.
+    ///
+    /// # Errors
+    /// Returns [`VidenoaClientError`] for transport or unexpected status failures.
+    pub async fn validate_run(
+        &self,
+        workflow: &WorkflowName,
+    ) -> Result<RunValidation, VidenoaClientError> {
+        let response = self
+            .send_authenticated(
+                self.http
+                    .post(self.endpoint(&["api", "run", "validate"])?)
+                    .json(&ValidateRunRequest {
+                        workflow_name: workflow.run_name(),
+                    }),
+            )
+            .await?;
+        match response.status() {
+            StatusCode::NO_CONTENT => Ok(RunValidation::Valid),
+            StatusCode::BAD_REQUEST => Ok(RunValidation::Invalid {
+                reason: self
+                    .rejection_reason(response)
+                    .await
+                    .unwrap_or_else(|| "the worker rejected this workflow".to_owned()),
+            }),
+            StatusCode::NOT_FOUND => Ok(RunValidation::Unknown),
+            status => {
+                ensure_success(status)?;
+                Err(VidenoaClientError::UnexpectedStatus {
+                    status: status.as_u16(),
+                })
+            }
+        }
     }
 
     /// Polls one remote job by typed identifier.

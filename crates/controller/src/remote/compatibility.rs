@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::domain::{WorkflowKind, WorkflowName, WorkflowSummary};
+use crate::domain::{InvalidWorkflow, WorkflowKind, WorkflowName, WorkflowSummary};
 
 use super::WorkflowInterface;
 
@@ -19,6 +19,7 @@ pub struct CompatibilityEntry {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CompatibilityCatalog {
     entries: BTreeMap<WorkflowName, CompatibilityEntry>,
+    invalid: BTreeMap<WorkflowName, String>,
 }
 
 impl CompatibilityCatalog {
@@ -28,6 +29,7 @@ impl CompatibilityCatalog {
     ) -> Self {
         Self {
             entries: entries.into_iter().collect(),
+            invalid: BTreeMap::new(),
         }
     }
 
@@ -51,6 +53,38 @@ impl CompatibilityCatalog {
                 kind: entry.kind,
             })
             .collect()
+    }
+
+    /// Workflows whose interface fits but which the Worker rejects.
+    #[must_use]
+    pub fn invalid_workflows(&self) -> Vec<InvalidWorkflow> {
+        self.invalid
+            .iter()
+            .filter_map(|(name, reason)| {
+                self.entries.get(name).map(|entry| InvalidWorkflow {
+                    name: name.clone(),
+                    kind: entry.kind,
+                    reason: reason.clone(),
+                })
+            })
+            .collect()
+    }
+
+    /// Names of the entries that are currently eligible.
+    pub(crate) fn eligible_names(&self) -> Vec<WorkflowName> {
+        self.entries
+            .iter()
+            .filter(|(_, entry)| entry.compatibility == Compatibility::Eligible)
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
+    /// Excludes an entry the Worker would reject, keeping its reason.
+    pub(crate) fn mark_invalid(&mut self, name: &WorkflowName, reason: String) {
+        if let Some(entry) = self.entries.get_mut(name) {
+            entry.compatibility = Compatibility::Incompatible;
+            self.invalid.insert(name.clone(), reason);
+        }
     }
 
     pub(crate) fn insert(

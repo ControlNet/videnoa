@@ -20,11 +20,9 @@ async fn sequential_same_key_replays_one_remote_job() -> TestResult {
 
     // When: the same key and canonical body are submitted twice.
     let first = client
-        .run("eligible-workflow.json", "same-key", params.clone())
+        .run("eligible-workflow", "same-key", params.clone())
         .await?;
-    let replay = client
-        .run("eligible-workflow.json", "same-key", params)
-        .await?;
+    let replay = client.run("eligible-workflow", "same-key", params).await?;
 
     // Then: creation occurs once and replay returns the same durable job.
     assert_eq!(first.status, StatusCode::CREATED);
@@ -46,7 +44,7 @@ async fn concurrent_same_key_elects_exactly_one_creator() -> TestResult {
         submissions.spawn(async move {
             client
                 .run(
-                    "eligible-workflow.json",
+                    "eligible-workflow",
                     "concurrent-key",
                     json!({"number": 1.0, "nested": {"right": 2, "left": 1}}),
                 )
@@ -82,20 +80,12 @@ async fn changed_payload_for_same_key_returns_conflict() -> TestResult {
     let server = MockVidenoa::start().await?;
     let client = MockClient::new(server.base_url())?;
     client
-        .run(
-            "eligible-workflow.json",
-            "collision-key",
-            json!({"value": 1}),
-        )
+        .run("eligible-workflow", "collision-key", json!({"value": 1}))
         .await?;
 
     // When: the key is reused with changed content.
     let response = client
-        .run_raw(
-            "eligible-workflow.json",
-            "collision-key",
-            json!({"value": 2}),
-        )
+        .run_raw("eligible-workflow", "collision-key", json!({"value": 2}))
         .await?;
 
     // Then: the mock matches Videnoa's durable 409 contract without dispatching again.

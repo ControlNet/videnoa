@@ -24,7 +24,7 @@ pub use config::{PayloadLimits, RemoteTimeouts};
 pub use connector::VidenoaClient;
 pub use dto::{
     DownloadReceipt, FileStat, Health, Job, JobProgress, JobStatus, Preset, PresetWorkflow,
-    RunOutcome, RunReceipt, RunSubmission, UploadReceipt, Workflow, WorkflowInterface,
+    RunOutcome, RunReceipt, RunSubmission, RunValidation, UploadReceipt, Workflow, WorkflowInterface,
     WorkflowPort,
 };
 pub use paths::{sibling_output_path, FileApiPath};

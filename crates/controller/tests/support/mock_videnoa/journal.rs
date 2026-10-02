@@ -13,6 +13,7 @@ pub enum Route {
     Interface,
     Upload,
     Run,
+    RunValidate,
     JobPoll,
     JobCancel,
     Download,

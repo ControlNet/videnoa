@@ -69,7 +69,7 @@ export function WorkerTable(props: WorkerTableProps) {
                 <td className="date-cell" title={worker.last_seen_at === null ? undefined : new Date(worker.last_seen_at).toLocaleString()}>
                   {worker.last_seen_at === null ? "Never" : formatRelative(worker.last_seen_at)}
                 </td>
-                <td className={worker.last_error === null ? "worker-error" : "worker-error worker-error--present"} title={worker.last_error ?? undefined}>{worker.last_error ?? "None"}</td>
+                <WorkerProblemCell worker={worker} />
                 <td>
                   <div className="row-actions">
                     <Button variant="outline" size="sm" icon aria-label={`Edit ${worker.name}`} disabled={props.disabled} onClick={(event) => props.onEdit(worker, event.currentTarget)}>
@@ -104,5 +104,19 @@ function SlotPips({ used, total, online }: { readonly used: number; readonly tot
         <i key={index} className={index < used ? (online ? "filled" : "filled offline") : undefined} />
       ))}
     </span>
+  )
+}
+
+/**
+ * The health error, or else the workflows this worker rejects. Each rejected
+ * workflow's reason is listed in the title.
+ */
+function WorkerProblemCell({ worker }: { readonly worker: Worker }) {
+  const invalid = worker.capabilities.invalid_workflows
+  const reasons = invalid.map((workflow) => `${workflow.name}: ${workflow.reason}`)
+  const title = [worker.last_error, ...reasons].filter((line) => line !== null).join("\n")
+  const text = worker.last_error ?? (invalid.length === 0 ? "None" : `${invalid.length} invalid workflow${invalid.length === 1 ? "" : "s"}`)
+  return (
+    <td className={title === "" ? "worker-error" : "worker-error worker-error--present"} title={title === "" ? undefined : title}>{text}</td>
   )
 }

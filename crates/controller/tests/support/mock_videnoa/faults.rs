@@ -6,11 +6,21 @@ use super::journal::Route;
 pub enum Fault {
     DisconnectBeforeAccept,
     AcceptThenDropRunResponse,
-    TruncateDownload { delivered_bytes: usize },
-    CorruptOutput { bytes: Vec<u8> },
+    TruncateDownload {
+        delivered_bytes: usize,
+    },
+    CorruptOutput {
+        bytes: Vec<u8>,
+    },
     DeleteScript(Vec<DeleteOutcome>),
     Response(ResponseFault),
     StallDownload,
+    /// Makes the Worker reject a workflow, by run name, with this error on
+    /// both `POST /api/run/validate` and `POST /api/run` from then on.
+    InvalidWorkflow {
+        name: String,
+        error: String,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -67,6 +77,7 @@ pub(crate) struct FaultState {
         std::collections::BTreeMap<Route, std::collections::VecDeque<ResponseFault>>,
     pub stall_download: Option<()>,
     pub service_unavailable: bool,
+    pub invalid_workflows: std::collections::BTreeMap<String, String>,
 }
 
 impl FaultState {
@@ -85,6 +96,9 @@ impl FaultState {
                 .or_default()
                 .push_back(response),
             Fault::StallDownload => self.stall_download = Some(()),
+            Fault::InvalidWorkflow { name, error } => {
+                self.invalid_workflows.insert(name, error);
+            }
         }
     }
 }

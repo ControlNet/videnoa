@@ -15,7 +15,7 @@ const worker: Worker = {
   enabled: true,
   online: true,
   compute_slots: 4,
-  capabilities: { workflows: [{ name: "anime-2x", kind: "workflow" }], refreshed_at: "2030-01-01T00:00:00Z" },
+  capabilities: { workflows: [{ name: "anime-2x", kind: "workflow" }], invalid_workflows: [], refreshed_at: "2030-01-01T00:00:00Z" },
   capacity: {
     used_slots: 2,
     available_slots: 2,

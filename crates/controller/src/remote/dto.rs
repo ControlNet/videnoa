@@ -137,9 +137,24 @@ pub struct DownloadReceipt {
     pub bytes: u64,
 }
 
+/// What a Worker says about running a workflow, before any job is created.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RunValidation {
+    Valid,
+    /// The Worker would reject `POST /api/run` with this bounded reason.
+    Invalid { reason: String },
+    /// The Worker predates `POST /api/run/validate` or does not know the name.
+    Unknown,
+}
+
+#[derive(Serialize)]
+pub(crate) struct ValidateRunRequest<'a> {
+    pub workflow_name: &'a str,
+}
+
 #[derive(Serialize)]
 pub(crate) struct RunRequest<'a> {
-    pub workflow_name: &'a WorkflowName,
+    pub workflow_name: &'a str,
     pub params: &'a BTreeMap<String, Value>,
 }
 

@@ -647,6 +647,7 @@ pub fn api_router(state: AppState) -> Router {
         )
         .route("/api/jobs", post(create_job).get(list_jobs))
         .route("/api/run", post(run_workflow_by_name))
+        .route("/api/run/validate", post(validate_run_workflow))
         .route("/api/jobs/{id}", get(get_job).delete(delete_job_history))
         .route("/api/jobs/{id}/rerun", post(rerun_job))
         .route("/api/nodes", get(list_nodes))
@@ -1380,7 +1381,39 @@ async fn run_workflow_by_name(
             IdempotentJobLookup::Conflict => return Err(AppError::IdempotencyConflict),
         }
     }
-    let resolved = resolve_run_workflow_file(&state, &workflow_name).await?;
+    let (workflow, workflow_source) = load_run_workflow(&state, &workflow_name).await?;
+    let submission = JobSubmission {
+        workflow,
+        params: payload.params,
+        workflow_name,
+        workflow_source: workflow_source.to_string(),
+        rerun_of_job_id: None,
+    };
+    match idempotency_key {
+        Some(key) => create_idempotent_job(&state, submission, &key, &fingerprint),
+        None => create_and_spawn_job(&state, submission)
+            .map(|created| (StatusCode::CREATED, Json(created))),
+    }
+}
+
+/// Checks a saved workflow or preset exactly as `POST /api/run` would before
+/// creating a job, so a Controller can learn that a workflow will be rejected
+/// before it uploads any input. Workers that predate this route answer 404.
+async fn validate_run_workflow(
+    State(state): State<AppState>,
+    Json(payload): Json<RunWorkflowRequest>,
+) -> Result<StatusCode, AppError> {
+    let workflow_name = validate_run_workflow_name(payload.workflow_name.as_deref())?;
+    load_run_workflow(&state, &workflow_name).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Resolves, reads and validates the workflow `POST /api/run` would execute.
+async fn load_run_workflow(
+    state: &AppState,
+    workflow_name: &str,
+) -> Result<(PipelineGraph, &'static str), AppError> {
+    let resolved = resolve_run_workflow_file(state, workflow_name).await?;
 
     let workflow_document = std::fs::read_to_string(&resolved.path)
         .map_err(|e| AppError::Internal(format!("failed to read workflow: {e}")))?;
@@ -1391,19 +1424,8 @@ async fn run_workflow_by_name(
         .cloned()
         .unwrap_or(parsed_document);
 
-    let workflow = parse_and_validate_workflow(&state, workflow_value)?;
-    let submission = JobSubmission {
-        workflow,
-        params: payload.params,
-        workflow_name,
-        workflow_source: resolved.workflow_source.to_string(),
-        rerun_of_job_id: None,
-    };
-    match idempotency_key {
-        Some(key) => create_idempotent_job(&state, submission, &key, &fingerprint),
-        None => create_and_spawn_job(&state, submission)
-            .map(|created| (StatusCode::CREATED, Json(created))),
-    }
+    let workflow = parse_and_validate_workflow(state, workflow_value)?;
+    Ok((workflow, resolved.workflow_source))
 }
 
 fn parse_and_validate_workflow(
@@ -4478,6 +4500,96 @@ mod tests {
         assert_eq!(params_value["input"], "/tmp/input-video.mkv");
         assert_eq!(params_value["seed"], 42);
 
+        let _ = std::fs::remove_dir_all(&workflows_dir);
+        let _ = std::fs::remove_dir_all(&presets_dir);
+    }
+
+    async fn post_json(
+        app: &mut Router,
+        uri: &str,
+        body: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        let req = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let resp = send_request(app, req).await;
+        let status = resp.status();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json = if body.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::from_slice(&body).unwrap()
+        };
+        (status, json)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_validation_matches_run_without_creating_a_job() {
+        let state = test_state();
+        let mut app = app_router(state.clone());
+        let workflows_dir = unique_temp_dir("videnoa-validate-workflows");
+        let presets_dir = unique_temp_dir("videnoa-validate-presets");
+        std::fs::create_dir_all(&workflows_dir).expect("create workflows dir");
+        std::fs::create_dir_all(&presets_dir).expect("create presets dir");
+        set_workflow_lookup_dirs(&state, workflows_dir.clone(), presets_dir.clone()).await;
+        write_json_file(
+            &workflows_dir.join("valid.json"),
+            &serde_json::json!({"workflow": valid_workflow_json()}),
+        );
+        write_json_file(
+            &presets_dir.join("broken.json"),
+            &serde_json::json!({"workflow": {"invalid": true}}),
+        );
+
+        let (status, body) = post_json(
+            &mut app,
+            "/api/run/validate",
+            serde_json::json!({"workflow_name": "valid"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+
+        let (status, validate_body) = post_json(
+            &mut app,
+            "/api/run/validate",
+            serde_json::json!({"workflow_name": "broken"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (run_status, run_body) = post_json(
+            &mut app,
+            "/api/run",
+            serde_json::json!({"workflow_name": "broken"}),
+        )
+        .await;
+        assert_eq!(run_status, StatusCode::BAD_REQUEST);
+        assert_eq!(validate_body["error"], run_body["error"]);
+
+        let (status, _) = post_json(
+            &mut app,
+            "/api/run/validate",
+            serde_json::json!({"workflow_name": "missing"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, body) = post_json(
+            &mut app,
+            "/api/run/validate",
+            serde_json::json!({"workflow_name": "valid.json"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"], "workflow_name must not include .json suffix");
+
+        assert!(
+            state.inner.jobs.is_empty(),
+            "validation must not create jobs"
+        );
         let _ = std::fs::remove_dir_all(&workflows_dir);
         let _ = std::fs::remove_dir_all(&presets_dir);
     }

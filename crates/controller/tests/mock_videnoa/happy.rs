@@ -40,7 +40,7 @@ async fn complete_remote_lifecycle_preserves_contract_bytes_and_journal() -> Tes
     assert_eq!(uploaded.path, "../mock-worker/workspace/task-001/input.mkv");
     let created = client
         .run(
-            "eligible-workflow.json",
+            "eligible-workflow",
             "happy-key",
             json!({"input": uploaded.path, "output": "../mock-worker/workspace/task-001/output.mp4"}),
         )

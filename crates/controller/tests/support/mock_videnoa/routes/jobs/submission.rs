@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use axum::extract::{Request, State};
 use axum::http::{header::HeaderName, HeaderMap, HeaderValue, StatusCode};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use serde_json::Value;
 
 use super::super::catalog::{preset_entries, saved_workflows};
@@ -48,6 +48,18 @@ pub(crate) async fn run(State(state): State<Arc<SharedState>>, request: Request)
         Ok(prepared) => prepared,
         Err(error) => return error_response(error.status, error.code),
     };
+    if let Some(error) = invalid_workflow(&state, &prepared.workflow_name).await {
+        let sequence = state.inner.lock().await.begin(Route::Run);
+        let journal = journal_request(&parts, &body, Route::Run, sequence, BTreeMap::new());
+        record(
+            &state,
+            journal,
+            StatusCode::BAD_REQUEST,
+            JournalOutcome::Delivered,
+        )
+        .await;
+        return error_response(StatusCode::BAD_REQUEST, &error);
+    }
     let mut checkpoints = BTreeMap::new();
     state
         .checkpoint(Checkpoint::BeforeRunPersistence, &mut checkpoints)
@@ -85,6 +97,49 @@ pub(crate) async fn run(State(state): State<Arc<SharedState>>, request: Request)
     response(persisted)
 }
 
+/// `POST /api/run/validate`: answers as `POST /api/run` would, without
+/// creating a job.
+pub(crate) async fn validate(State(state): State<Arc<SharedState>>, request: Request) -> Response {
+    let Ok((parts, body)) = body_bytes(request, MAX_JSON_BYTES).await else {
+        return error_response(StatusCode::BAD_REQUEST, "invalid_body");
+    };
+    let sequence = state.inner.lock().await.begin(Route::RunValidate);
+    let journal = journal_request(&parts, &body, Route::RunValidate, sequence, BTreeMap::new());
+    let response = if let Some(fault) = state.take_response_fault(Route::RunValidate).await {
+        match StatusCode::from_u16(fault.status) {
+            Ok(status) => raw_json_response(status, fault.body),
+            Err(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "invalid_fault_status"),
+        }
+    } else {
+        match prepare_run(&parts.headers, &body) {
+            Err(error) => error_response(error.status, error.code),
+            Ok(prepared) => match invalid_workflow(&state, &prepared.workflow_name).await {
+                Some(error) => error_response(StatusCode::BAD_REQUEST, &error),
+                None => StatusCode::NO_CONTENT.into_response(),
+            },
+        }
+    };
+    let status = response.status();
+    let outcome = if status.is_success() {
+        JournalOutcome::Delivered
+    } else {
+        JournalOutcome::FaultStatus
+    };
+    record(&state, journal, status, outcome).await;
+    response
+}
+
+async fn invalid_workflow(state: &SharedState, name: &str) -> Option<String> {
+    state
+        .inner
+        .lock()
+        .await
+        .faults
+        .invalid_workflows
+        .get(name)
+        .cloned()
+}
+
 fn response(persisted: PersistedRun) -> Response {
     let mut response = match persisted.creation {
         Some(creation) => json_response(persisted.status, &creation),
@@ -115,6 +170,15 @@ fn prepare_run(headers: &HeaderMap, body: &[u8]) -> Result<PreparedRun, RunParse
         status: StatusCode::BAD_REQUEST,
         code: "workflow_name_required",
     })?;
+    // Like the real Worker, including its case-sensitive check: saved
+    // workflows are run by file stem.
+    #[allow(clippy::case_sensitive_file_extension_comparisons)]
+    if workflow_name.ends_with(".json") {
+        return Err(RunParseError {
+            status: StatusCode::BAD_REQUEST,
+            code: "workflow_name must not include .json suffix",
+        });
+    }
     let workflow_source = workflow_source(&workflow_name).ok_or(RunParseError {
         status: StatusCode::NOT_FOUND,
         code: "workflow_not_found",
@@ -231,7 +295,7 @@ fn idempotency_key(headers: &HeaderMap) -> Result<Option<String>, ()> {
 fn workflow_source(name: &str) -> Option<&'static str> {
     if saved_workflows()
         .iter()
-        .any(|workflow| workflow.filename == name)
+        .any(|workflow| workflow.filename == format!("{name}.json"))
     {
         Some("workflow")
     } else if preset_entries().iter().any(|preset| preset.id == name) {

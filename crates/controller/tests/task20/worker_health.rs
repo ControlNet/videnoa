@@ -70,6 +70,45 @@ async fn failed_probe_persists_backoff_and_recovers_without_losing_capabilities(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn probe_records_workflows_the_worker_would_reject() -> TestResult {
+    // Given: a worker whose saved workflow fails its own run validation.
+    let worker = MockVidenoa::start().await?;
+    worker
+        .set_fault(Fault::InvalidWorkflow {
+            name: "eligible-workflow".to_owned(),
+            error: "workflow validation failed: unknown node type 'Blur'".to_owned(),
+        })
+        .await;
+    let fixture = ControllerFixture::start().await?;
+
+    // When: the production health runtime probes it.
+    let registered = fixture.register_worker(&worker, "health-invalid").await?;
+    let durable = wait_for_worker(&fixture, registered.id, |record| record.online).await?;
+
+    // Then: the workflow is durable as invalid with its reason and is not schedulable.
+    let workflow = WorkflowName::new("eligible-workflow.json");
+    assert!(durable
+        .capabilities
+        .workflows
+        .iter()
+        .all(|summary| summary.name != workflow));
+    assert_eq!(
+        durable
+            .capabilities
+            .invalid_workflows
+            .iter()
+            .map(|invalid| (invalid.name.clone(), invalid.reason.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(
+            workflow,
+            "workflow validation failed: unknown node type 'Blur'"
+        )]
+    );
+    assert!(!durable.capabilities.workflows.is_empty());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn disabled_worker_is_not_probed_or_scheduled() -> TestResult {
     // Given: a healthy remote registered disabled and a compatible queued task.
     let worker = MockVidenoa::start().await?;

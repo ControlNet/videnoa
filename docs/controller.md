@@ -274,6 +274,19 @@ workflow and preset catalogs. A name is eligible only when its interface has
 `Path` inputs named exactly `input` and `output`. Controller does not deploy or
 synchronize workflows.
 
+Each health refresh also asks the worker to validate every eligible name with
+`POST /api/run/validate`, the same checks `POST /api/run` applies, without
+creating a job. A name the worker rejects is not scheduled there and is listed
+under `capabilities.invalid_workflows` with the worker's reason; the Workers
+page shows the count in the error column and the reasons in its tooltip.
+Workers older than v0.1.9 answer 404, and a validation request that fails for
+any other reason (timeout, 5xx) also leaves the name eligible.
+
+Task and batch creation, including batch preview, return 400 with a `workflow`
+field error when every worker that reports the workflow reports it invalid and
+none can run it. A workflow no worker has reported yet is still accepted and
+waits in the queue as before.
+
 Worker updates use `PUT /api/workers/{id}` with the current version and all
 mutable fields. Enable and disable use `POST /api/workers/{id}/enable` and
 `/disable`. Delete uses `DELETE /api/workers/{id}?version=N` and succeeds only
