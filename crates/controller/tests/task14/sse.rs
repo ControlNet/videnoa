@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use axum::body::BodyDataStream;
 use axum::http::StatusCode;
 use futures_util::StreamExt;
 use serde_json::json;
@@ -126,5 +127,67 @@ async fn direct_scheduler_update_publishes_live_delta() -> TestResult {
 
     let event = stream.next().await.ok_or("missing scheduler delta")??;
     assert!(String::from_utf8_lossy(&event).contains("event: scheduler_updated"));
+    Ok(())
+}
+
+async fn subscribe(fixture: &Fixture) -> TestResult<BodyDataStream> {
+    let response = fixture
+        .router
+        .clone()
+        .oneshot(Fixture::request("GET", "/api/events", None)?)
+        .await?;
+    let mut stream = response.into_body().into_data_stream();
+    let initial = stream.next().await.ok_or("missing initial refetch")??;
+    assert!(String::from_utf8_lossy(&initial).contains("event: refetch"));
+    Ok(stream)
+}
+
+async fn create_worker(fixture: &Fixture, name: &str) -> TestResult {
+    let worker = json!({
+        "name": name,
+        "api_url": format!("https://{name}.example/api/"),
+        "enabled": true,
+        "compute_slots": 1
+    });
+    let created = fixture
+        .router
+        .clone()
+        .oneshot(Fixture::request("POST", "/api/workers", Some(&worker))?)
+        .await?;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    Ok(())
+}
+
+#[tokio::test]
+async fn durable_change_is_read_once_and_shared_by_every_subscriber() -> TestResult {
+    let fixture = Fixture::new().await?;
+    let mut streams = Vec::new();
+    for _ in 0..3 {
+        streams.push(subscribe(&fixture).await?);
+    }
+    let reads = fixture.events.durable_change_reads();
+
+    create_worker(&fixture, "shared-worker").await?;
+
+    let mut deliveries = Vec::new();
+    for stream in &mut streams {
+        let event = tokio::time::timeout(Duration::from_secs(1), stream.next())
+            .await?
+            .ok_or("missing worker event")??;
+        deliveries.push(event);
+    }
+    assert!(String::from_utf8_lossy(&deliveries[0]).contains("event: worker_updated"));
+    assert!(deliveries.iter().all(|event| event == &deliveries[0]));
+    assert_eq!(fixture.events.durable_change_reads() - reads, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn durable_change_without_subscribers_is_not_read() -> TestResult {
+    let fixture = Fixture::new().await?;
+
+    create_worker(&fixture, "unobserved-worker").await?;
+
+    assert_eq!(fixture.events.durable_change_reads(), 0);
     Ok(())
 }

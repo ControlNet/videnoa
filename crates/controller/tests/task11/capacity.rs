@@ -267,3 +267,63 @@ async fn capacity_reduction_ignores_existing_stage_in() -> TestResult {
     assert_eq!(fixture.store.worker_used_slots(worker.id).await?, 0);
     Ok(())
 }
+
+#[tokio::test]
+async fn batched_capacities_match_per_worker_capacity_for_every_worker() -> TestResult {
+    // Given: a busy worker, an idle worker, and tasks spread across pipeline states.
+    let fixture = fixture().await?;
+    let busy = fixture
+        .registry
+        .create(
+            worker_request("worker-busy", "https://busy.example/api/", 8)?,
+            fixture.now,
+        )
+        .await?;
+    let idle = fixture
+        .registry
+        .create(
+            worker_request("worker-idle", "https://idle.example/api/", 2)?,
+            fixture.now,
+        )
+        .await?;
+    online(&fixture, busy.id, busy.version, &["anime-upscale"]).await?;
+    for (offset, status) in [
+        (0, TaskStatus::Processing),
+        (1, TaskStatus::Submitting),
+        (2, TaskStatus::Staged),
+        (3, TaskStatus::Uploading),
+        (4, TaskStatus::Downloading),
+        (5, TaskStatus::Completed),
+    ] {
+        let id = task_id(521 + offset);
+        fixture
+            .store
+            .insert_task(&task(id, "anime-upscale", 10, fixture.now))
+            .await?;
+        reserve(&fixture, id, busy.id).await?;
+        set_status(&fixture, id, status).await?;
+    }
+
+    // When: all capacities are loaded in one batched query.
+    let capacities = fixture.registry.capacities().await?;
+
+    // Then: each worker's entry is identical to its single-worker capacity.
+    assert_eq!(capacities.len(), 2);
+    for id in [busy.id, idle.id] {
+        assert_eq!(
+            capacities.get(&id),
+            Some(&fixture.registry.capacity(id).await?),
+            "worker={id}"
+        );
+    }
+    let busy_capacity = &capacities[&busy.id];
+    assert_eq!(busy_capacity.used_slots, 2);
+    assert_eq!(busy_capacity.available_slots, 6);
+    assert_eq!(busy_capacity.assigned_tasks, 5);
+    assert_eq!(busy_capacity.staged_tasks, 1);
+    assert_eq!(busy_capacity.processing_tasks, 1);
+    assert_eq!(busy_capacity.active_uploads, 1);
+    assert_eq!(busy_capacity.active_downloads, 1);
+    assert_eq!(capacities[&idle.id].available_slots, 2);
+    Ok(())
+}

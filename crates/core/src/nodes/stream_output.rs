@@ -1,13 +1,13 @@
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, Stdio};
-use std::thread::{self, JoinHandle};
+use std::io::Write;
+use std::process::{Child, ChildStdin, Command, Stdio};
 
 use anyhow::{bail, Context, Result};
 use tracing::{debug, info};
 
 use crate::node::{ExecutionContext, Node, PortDefinition};
-use crate::nodes::video_output::{BT709_LIMITED_OUTPUT, BT709_LIMITED_TAGS};
+use crate::nodes::video_output::{describe_encoder_exit, BT709_LIMITED_OUTPUT, BT709_LIMITED_TAGS};
+use crate::subprocess::{describe_stderr, StderrTail};
 use crate::types::{PortData, PortType};
 
 fn validate_stream_url(url: &str) -> Result<()> {
@@ -49,6 +49,12 @@ fn detect_format_from_url(url: &str) -> Option<&'static str> {
     }
 }
 
+/// Pixel format of every live stream. Without an explicit format the RGB
+/// pipe makes libx264 negotiate 4:4:4 (yuv444p, or yuv444p10le from a 10-bit
+/// pipe), which RTMP ingest services such as Twitch and YouTube reject;
+/// 8-bit 4:2:0 is what they accept.
+pub(crate) const STREAM_PIXEL_FORMAT: &str = "yuv420p";
+
 #[derive(Debug, Clone)]
 pub struct StreamEncoderConfig {
     pub url: String,
@@ -85,7 +91,12 @@ impl StreamEncoderConfig {
             "-i".into(),
             "pipe:0".into(),
             "-vf".into(),
-            format!("scale=flags=bicubic:{BT709_LIMITED_OUTPUT},{BT709_LIMITED_TAGS}"),
+            format!(
+                "scale=flags=bicubic:{BT709_LIMITED_OUTPUT},format={STREAM_PIXEL_FORMAT},\
+                 {BT709_LIMITED_TAGS}"
+            ),
+            "-pix_fmt".into(),
+            STREAM_PIXEL_FORMAT.into(),
             "-c:v".into(),
             self.codec.clone(),
             "-b:v".into(),
@@ -114,12 +125,18 @@ impl StreamEncoderConfig {
 pub struct StreamEncoder {
     child: Child,
     stdin: Option<ChildStdin>,
-    stderr_thread: Option<JoinHandle<()>>,
+    stderr: StderrTail,
     frame_size: usize,
 }
 
 impl StreamEncoder {
     pub fn new(config: &StreamEncoderConfig) -> Result<Self> {
+        Self::spawn_with(config, crate::runtime::command_for("ffmpeg"))
+    }
+
+    /// Starts the encoder from `command` (an FFmpeg executable) with the
+    /// arguments built from `config`.
+    fn spawn_with(config: &StreamEncoderConfig, mut command: Command) -> Result<Self> {
         let args = config.build_ffmpeg_args();
         let frame_size = config.frame_size();
 
@@ -128,7 +145,7 @@ impl StreamEncoder {
             "launching FFmpeg stream encoder"
         );
 
-        let mut child = crate::runtime::command_for("ffmpeg")
+        let mut child = command
             .args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
@@ -142,20 +159,8 @@ impl StreamEncoder {
             .ok_or_else(|| anyhow::anyhow!("failed to open ffmpeg stdin"))?;
 
         let stderr = child.stderr.take().expect("stderr should be piped");
-        let stderr_thread = thread::spawn(move || {
-            let reader = BufReader::new(stderr);
-            for line in reader.lines() {
-                match line {
-                    Ok(line) if !line.is_empty() => {
-                        debug!(target: "ffmpeg_stream_stderr", "{}", line);
-                    }
-                    Err(e) => {
-                        debug!(target: "ffmpeg_stream_stderr", "read error: {}", e);
-                        break;
-                    }
-                    _ => {}
-                }
-            }
+        let stderr = StderrTail::spawn(stderr, |line| {
+            debug!(target: "ffmpeg_stream_stderr", "{line}");
         });
 
         info!(
@@ -169,7 +174,7 @@ impl StreamEncoder {
         Ok(Self {
             child,
             stdin: Some(stdin),
-            stderr_thread: Some(stderr_thread),
+            stderr,
             frame_size,
         })
     }
@@ -188,9 +193,11 @@ impl StreamEncoder {
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("encoder stdin already closed"))?;
 
-        stdin
-            .write_all(data)
-            .context("failed to write frame to ffmpeg stdin")?;
+        if let Err(error) = stdin.write_all(data) {
+            // A broken pipe means FFmpeg already exited; its stderr says why.
+            let exit = describe_encoder_exit(&mut self.child, &mut self.stderr);
+            bail!("failed to write frame to ffmpeg stdin: {error}; {exit}");
+        }
 
         Ok(())
     }
@@ -199,13 +206,13 @@ impl StreamEncoder {
         drop(self.stdin.take());
 
         let status = self.child.wait().context("failed to wait for ffmpeg")?;
-
-        if let Some(handle) = self.stderr_thread.take() {
-            let _ = handle.join();
-        }
+        let stderr = self.stderr.join();
 
         if !status.success() {
-            bail!("ffmpeg stream encoder exited with status {}", status);
+            bail!(
+                "ffmpeg stream encoder exited with {status}; {}",
+                describe_stderr(&stderr)
+            );
         }
 
         info!("FFmpeg stream encoder finished successfully");
@@ -218,9 +225,7 @@ impl Drop for StreamEncoder {
         drop(self.stdin.take());
         let _ = self.child.kill();
         let _ = self.child.wait();
-        if let Some(handle) = self.stderr_thread.take() {
-            let _ = handle.join();
-        }
+        self.stderr.join();
     }
 }
 
@@ -546,15 +551,33 @@ mod tests {
         assert!(args.contains(&"no_duration_filesize".to_string()));
         assert_eq!(args.last().unwrap(), "rtmp://live.example.com/app/key");
 
-        // RGB -> YUV uses BT.709 and the stream is tagged to match.
+        // RGB -> YUV uses BT.709, the stream is 4:2:0 (RTMP ingest rejects
+        // the 4:4:4 that libx264 would otherwise pick) and tagged to match.
         let vf_idx = args.iter().position(|a| a == "-vf").unwrap();
         let input_idx = args.iter().position(|a| a == "pipe:0").unwrap();
         assert!(vf_idx > input_idx, "-vf must be an output option");
+        assert_eq!(STREAM_PIXEL_FORMAT, "yuv420p");
         assert_eq!(
             args[vf_idx + 1],
-            "scale=flags=bicubic:out_color_matrix=bt709:out_range=limited,\
+            "scale=flags=bicubic:out_color_matrix=bt709:out_range=limited,format=yuv420p,\
              setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=limited"
         );
+        let pix_fmt_idx = args.iter().rposition(|a| a == "-pix_fmt").unwrap();
+        assert!(
+            pix_fmt_idx > input_idx,
+            "output -pix_fmt must follow the input"
+        );
+        assert_eq!(args[pix_fmt_idx + 1], "yuv420p");
+    }
+
+    #[test]
+    fn stream_output_stays_8bit_420_for_10bit_frames() {
+        let mut config = rtmp_config();
+        config.bit_depth = 10;
+        let args = config.build_ffmpeg_args();
+        let vf_idx = args.iter().position(|a| a == "-vf").unwrap();
+        assert!(args[vf_idx + 1].contains(",format=yuv420p,"), "{args:?}");
+        assert!(!args.iter().any(|a| a.contains("yuv444p")), "{args:?}");
     }
 
     #[test]
@@ -634,5 +657,56 @@ mod tests {
     fn test_default_trait() {
         let node = StreamOutputNode;
         assert_eq!(node.node_type(), "stream_output");
+    }
+
+    fn rtmp_config() -> StreamEncoderConfig {
+        StreamEncoderConfig {
+            url: "rtmp://live.example.com/app/key".to_string(),
+            codec: "libx264".to_string(),
+            bitrate: "5M".to_string(),
+            format: "flv".to_string(),
+            width: 1920,
+            height: 1080,
+            fps: "30/1".to_string(),
+            bit_depth: 8,
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stream_encoder_exit_failure_quotes_ffmpeg_stderr() {
+        // Given: a stream encoder process rejected by the ingest server.
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            "printf 'rtmp://live.example.com/app/key: Connection refused\\n' >&2; exit 1",
+        ]);
+        let encoder = StreamEncoder::spawn_with(&rtmp_config(), command).unwrap();
+
+        // When: the stream is finished.
+        let message = encoder.finish().unwrap_err().to_string();
+
+        // Then: the job error carries the exit status and FFmpeg's message.
+        assert!(message.contains("exit status: 1"), "{message}");
+        assert!(message.contains("Connection refused"), "{message}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stream_encoder_write_failure_quotes_ffmpeg_stderr() {
+        // Given: a stream encoder process that dies without reading a frame.
+        let mut command = Command::new("sh");
+        command.args(["-c", "printf 'Server error: publish denied\\n' >&2; exit 2"]);
+        let config = rtmp_config();
+        let mut encoder = StreamEncoder::spawn_with(&config, command).unwrap();
+
+        // When: a frame larger than the pipe buffer is written.
+        let frame = vec![0_u8; config.frame_size()];
+        let message = encoder.write_frame(&frame).unwrap_err().to_string();
+
+        // Then: the broken pipe is explained by FFmpeg's own output.
+        assert!(message.contains("failed to write frame"), "{message}");
+        assert!(message.contains("exit status: 2"), "{message}");
+        assert!(message.contains("publish denied"), "{message}");
     }
 }

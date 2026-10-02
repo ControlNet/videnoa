@@ -103,7 +103,10 @@ pub(super) async fn probe(
 fn classify_error(error: &VidenoaClientError, fallback: ProbeFailure) -> ProbeFailure {
     if matches!(
         error,
-        VidenoaClientError::ClientStatus { status: 401 | 403 }
+        VidenoaClientError::ClientStatus {
+            status: 401 | 403,
+            ..
+        }
     ) {
         ProbeFailure::Authentication
     } else {
@@ -120,7 +123,13 @@ mod tests {
         for status in [401, 403] {
             for stage in [ProbeFailure::Health, ProbeFailure::Capabilities] {
                 assert_eq!(
-                    classify_error(&VidenoaClientError::ClientStatus { status }, stage),
+                    classify_error(
+                        &VidenoaClientError::ClientStatus {
+                            status,
+                            reason: None,
+                        },
+                        stage,
+                    ),
                     ProbeFailure::Authentication
                 );
             }
@@ -131,7 +140,10 @@ mod tests {
             VidenoaClientError::Stall,
             VidenoaClientError::MalformedPayload,
             VidenoaClientError::RateLimited,
-            VidenoaClientError::ClientStatus { status: 429 },
+            VidenoaClientError::ClientStatus {
+                status: 429,
+                reason: None,
+            },
             VidenoaClientError::ServerStatus { status: 503 },
         ] {
             assert_eq!(

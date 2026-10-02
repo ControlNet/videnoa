@@ -216,3 +216,33 @@ fn malformed_worker_credential_errors_are_redacted() -> TestResult {
     assert!(!format!("{error:?} {error}").contains(credential.trim()));
     Ok(())
 }
+
+#[test]
+fn worker_request_dtos_reject_unknown_fields_despite_flattened_endpoint() -> TestResult {
+    // Given: otherwise valid create and update payloads that each carry one unknown key.
+    let create = json!({"name":"w", "api_url":"http://127.0.0.1:13000/", "enabled":true, "compute_slots":1, "api_token":"x"});
+    let update = json!({"version":0, "name":"w", "api_url":"http://127.0.0.1:13000/", "enabled":true, "compute_slots":1, "unexpected":true});
+
+    // When: both DTOs are deserialized.
+    let create_error = serde_json::from_value::<WorkerCreateRequest>(create)
+        .err()
+        .ok_or("unknown create field was accepted")?;
+    let update_error = serde_json::from_value::<WorkerUpdateRequest>(update)
+        .err()
+        .ok_or("unknown update field was accepted")?;
+
+    // Then: the unknown key itself is named, not swallowed by the flattened endpoint.
+    assert!(
+        create_error
+            .to_string()
+            .contains("unknown field `api_token`"),
+        "{create_error}"
+    );
+    assert!(
+        update_error
+            .to_string()
+            .contains("unknown field `unexpected`"),
+        "{update_error}"
+    );
+    Ok(())
+}

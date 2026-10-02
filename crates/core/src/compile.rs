@@ -153,38 +153,11 @@ pub(crate) fn compile_graph_with_execution_context(
         bail!("compile_graph only handles VideoFrames pipelines");
     }
 
-    validate_linear_topology(graph, registry, &execution_order)?;
-
-    let mut source_idx: Option<NodeIndex> = None;
-    let mut sink_idx: Option<NodeIndex> = None;
-    let mut processing_order: Vec<NodeIndex> = Vec::new();
-
-    for &node_idx in &execution_order {
-        let incoming_vf = count_video_frames_edges(graph, node_idx, Direction::Incoming);
-        let outgoing_vf = count_video_frames_edges(graph, node_idx, Direction::Outgoing);
-
-        if incoming_vf == 0 && outgoing_vf > 0 {
-            if source_idx.is_some() {
-                bail!(
-                    "multiple source nodes detected — compile_graph only supports linear pipelines"
-                );
-            }
-            source_idx = Some(node_idx);
-        } else if incoming_vf > 0 && outgoing_vf == 0 {
-            if sink_idx.is_some() {
-                bail!(
-                    "multiple sink nodes detected — compile_graph only supports linear pipelines"
-                );
-            }
-            sink_idx = Some(node_idx);
-        } else if incoming_vf > 0 && outgoing_vf > 0 {
-            processing_order.push(node_idx);
-        }
-    }
-
-    let source_idx =
-        source_idx.ok_or_else(|| anyhow!("no source node found in VideoFrames pipeline"))?;
-    let sink_idx = sink_idx.ok_or_else(|| anyhow!("no sink node found in VideoFrames pipeline"))?;
+    let VideoTopology {
+        source: source_idx,
+        sink: sink_idx,
+        processing: processing_order,
+    } = resolve_video_topology(graph, &execution_order)?;
 
     let mut outputs_by_node: HashMap<String, HashMap<String, PortData>> = HashMap::new();
 
@@ -287,40 +260,18 @@ pub(crate) fn compile_graph_with_execution_context(
             )
         })?;
     let sink_inputs = resolve_inputs(graph, registry, sink_idx, &outputs_by_node)?;
-    let sink_outputs = match sink_node.execute(&sink_inputs, exec_ctx) {
-        Ok(outputs) => {
-            emit_print_debug_event(
-                &sink_instance.id,
-                &sink_instance.node_type,
-                &outputs,
-                &mut node_debug_callback,
-            );
-            outputs
-        }
-        Err(_) => {
-            let mut fallback = HashMap::new();
-            for (key, value) in &sink_instance.params {
-                if let Ok(pd) = port_data_from_json(&PortType::Path, value)
-                    .or_else(|_| port_data_from_json(&PortType::Str, value))
-                    .or_else(|_| port_data_from_json(&PortType::Int, value))
-                    .or_else(|_| port_data_from_json(&PortType::Bool, value))
-                {
-                    fallback.insert(key.clone(), pd);
-                }
-            }
-            for (source_idx, conn) in graph.connections_to(sink_idx) {
-                if conn.port_type == PortType::VideoFrames {
-                    continue;
-                }
-                if let Some(src_out) = outputs_by_node.get(&graph.node(source_idx).id) {
-                    if let Some(data) = src_out.get(&conn.source_port) {
-                        fallback.insert(conn.target_port.clone(), clone_port_data(data));
-                    }
-                }
-            }
-            fallback
-        }
-    };
+    // The sink's execute() validates its configuration (output path, source
+    // file, codec settings). Its error is the most specific diagnosis available,
+    // so surface it instead of guessing outputs from raw params.
+    let sink_outputs = sink_node
+        .execute(&sink_inputs, exec_ctx)
+        .with_context(|| format!("execution failed for sink node '{}'", sink_instance.id))?;
+    emit_print_debug_event(
+        &sink_instance.id,
+        &sink_instance.node_type,
+        &sink_outputs,
+        &mut node_debug_callback,
+    );
     exec_ctx.check_cancelled()?;
     let encoder = ctx.create_encoder(sink_node.as_mut(), &sink_inputs, &sink_outputs)?;
     outputs_by_node.insert(sink_instance.id.clone(), sink_outputs);
@@ -362,21 +313,58 @@ fn has_video_frames_ports(
     Ok(graph.has_video_frames_edges())
 }
 
-/// Node types of the processing nodes between the VideoFrames source and sink,
-/// in execution order. Empty when the graph has no VideoFrames edges.
-pub fn video_processing_node_types(graph: &PipelineGraph) -> Result<Vec<String>> {
-    if !graph.has_video_frames_edges() {
-        return Ok(Vec::new());
+/// The single source, processing nodes (in execution order) and single sink
+/// of a linear VideoFrames pipeline.
+pub struct VideoTopology {
+    pub source: NodeIndex,
+    pub sink: NodeIndex,
+    pub processing: Vec<NodeIndex>,
+}
+
+/// Classify the nodes on the VideoFrames chain, rejecting anything
+/// `compile_graph` cannot run: fan-in/fan-out, several sources or sinks, or
+/// a chain with no source or no sink.
+pub fn resolve_video_topology(
+    graph: &PipelineGraph,
+    execution_order: &[NodeIndex],
+) -> Result<VideoTopology> {
+    check_linear_topology(graph, execution_order)?;
+
+    let mut source: Option<NodeIndex> = None;
+    let mut sink: Option<NodeIndex> = None;
+    let mut processing: Vec<NodeIndex> = Vec::new();
+
+    for &node_idx in execution_order {
+        let incoming_vf = count_video_frames_edges(graph, node_idx, Direction::Incoming);
+        let outgoing_vf = count_video_frames_edges(graph, node_idx, Direction::Outgoing);
+
+        if incoming_vf == 0 && outgoing_vf > 0 {
+            if source.is_some() {
+                bail!(
+                    "multiple source nodes detected — compile_graph only supports linear pipelines"
+                );
+            }
+            source = Some(node_idx);
+        } else if incoming_vf > 0 && outgoing_vf == 0 {
+            if sink.is_some() {
+                bail!(
+                    "multiple sink nodes detected — compile_graph only supports linear pipelines"
+                );
+            }
+            sink = Some(node_idx);
+        } else if incoming_vf > 0 && outgoing_vf > 0 {
+            processing.push(node_idx);
+        }
     }
-    Ok(graph
-        .execution_order()?
-        .into_iter()
-        .filter(|&node_idx| {
-            count_video_frames_edges(graph, node_idx, Direction::Incoming) > 0
-                && count_video_frames_edges(graph, node_idx, Direction::Outgoing) > 0
-        })
-        .map(|node_idx| graph.node(node_idx).node_type.clone())
-        .collect())
+
+    let source = source.ok_or_else(|| anyhow!("no source node found in VideoFrames pipeline"))?;
+    let sink = sink.ok_or_else(|| anyhow!("no sink node found in VideoFrames pipeline"))?;
+
+    Ok(VideoTopology {
+        source,
+        sink,
+        processing,
+    })
 }
 
 /// Validate that the VideoFrames sub-graph is strictly linear: every node has
@@ -386,6 +374,10 @@ pub(crate) fn validate_linear_topology(
     _registry: &NodeRegistry,
     execution_order: &[NodeIndex],
 ) -> Result<()> {
+    check_linear_topology(graph, execution_order)
+}
+
+fn check_linear_topology(graph: &PipelineGraph, execution_order: &[NodeIndex]) -> Result<()> {
     for &node_idx in execution_order {
         let incoming_vf = count_video_frames_edges(graph, node_idx, Direction::Incoming);
         let outgoing_vf = count_video_frames_edges(graph, node_idx, Direction::Outgoing);
@@ -1458,6 +1450,69 @@ mod tests {
         assert_eq!(
             compile_ctx.encoder_settings.borrow().as_ref(),
             Some(&("libx264".to_string(), 27, "yuv444p".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_compile_reports_sink_execute_error_for_missing_source_file() {
+        let registry = build_video_registry();
+        let compile_ctx = MockCompileContext::new(1);
+        let missing_source = std::env::temp_dir().join(format!(
+            "videnoa-compile-missing-source-{}-{}.mkv",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        let mut graph = PipelineGraph::new();
+        graph
+            .add_node(NodeInstance {
+                id: "source".to_string(),
+                node_type: "mock_source".to_string(),
+                params: HashMap::new(),
+            })
+            .expect("source node should be added");
+        graph
+            .add_node(NodeInstance {
+                id: "sink".to_string(),
+                node_type: "VideoOutput".to_string(),
+                params: HashMap::from([
+                    ("source_path".to_string(), serde_json::json!(missing_source)),
+                    (
+                        "output_path".to_string(),
+                        serde_json::json!(missing_source.with_extension("out.mkv")),
+                    ),
+                ]),
+            })
+            .expect("sink node should be added");
+        graph
+            .add_connection(
+                "source",
+                PortConnection {
+                    source_port: "frames".to_string(),
+                    target_port: "frames".to_string(),
+                    port_type: PortType::VideoFrames,
+                },
+                "sink",
+            )
+            .expect("source -> sink frames connection should be added");
+
+        let err = compile_graph(&graph, &registry, &compile_ctx)
+            .expect_err("a missing source file must fail compilation");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("execution failed for sink node 'sink'"),
+            "error should name the sink node, got: {msg}"
+        );
+        assert!(
+            msg.contains("source file does not exist"),
+            "error should carry VideoOutput's own message, got: {msg}"
+        );
+        assert!(
+            compile_ctx.encoder_settings.borrow().is_none(),
+            "encoder must not be created when the sink failed to execute"
         );
     }
 

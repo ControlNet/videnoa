@@ -34,6 +34,14 @@ impl VidenoaClient {
         let outcome = match response.status() {
             StatusCode::CREATED => RunOutcome::Created,
             StatusCode::OK => RunOutcome::Replayed,
+            StatusCode::BAD_REQUEST => {
+                // The Worker validates the workflow on submission; keep its
+                // reason so the task failure says what to fix.
+                return Err(VidenoaClientError::ClientStatus {
+                    status: StatusCode::BAD_REQUEST.as_u16(),
+                    reason: self.rejection_reason(response).await,
+                });
+            }
             status => {
                 ensure_success(status)?;
                 return Err(VidenoaClientError::MalformedPayload);

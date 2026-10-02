@@ -1,6 +1,6 @@
 mod attempt;
 mod batch_idempotency;
-pub(crate) use batch_idempotency::{BatchAdmission, BatchReceipt, insert_batch_task, finish_batch};
+pub(crate) use batch_idempotency::{finish_batch, insert_batch_task, BatchAdmission, BatchReceipt};
 mod attempt_query;
 mod codec;
 mod credential;

@@ -239,7 +239,13 @@ async fn json_and_status_failures_are_bounded_typed_and_redacted() -> TestResult
         (404, VidenoaClientError::NotFound),
         (409, VidenoaClientError::Conflict),
         (429, VidenoaClientError::RateLimited),
-        (418, VidenoaClientError::ClientStatus { status: 418 }),
+        (
+            418,
+            VidenoaClientError::ClientStatus {
+                status: 418,
+                reason: None,
+            },
+        ),
         (503, VidenoaClientError::ServerStatus { status: 503 }),
     ];
 
@@ -354,6 +360,77 @@ async fn upload_response_headers_stall_after_body_eof() -> TestResult {
     let result = uploading.await?;
     server.release(ticket).await?;
     assert_eq!(result, Err(VidenoaClientError::Stall));
+    Ok(())
+}
+
+#[tokio::test]
+async fn rejected_run_carries_only_the_bounded_worker_reason() -> TestResult {
+    // Given: a Worker that rejects submissions with its JSON error envelope.
+    let server = MockVidenoa::start().await?;
+    let client = test_client(
+        &server,
+        Duration::from_secs(5),
+        Duration::from_secs(1),
+        JSON_LIMIT,
+    )?;
+    let params = BTreeMap::new();
+    let workflow = WorkflowName::new("eligible-workflow.json");
+    let long_reason = "x".repeat(5000);
+    let cases: [(u16, Vec<u8>, Option<String>); 6] = [
+        (
+            400,
+            br#"{"error":"workflow validation failed: node 'output' missing required input port 'output_path'"}"#.to_vec(),
+            Some(
+                "workflow validation failed: node 'output' missing required input port 'output_path'"
+                    .to_owned(),
+            ),
+        ),
+        (
+            400,
+            br#"{"error":"line one\nline two\u001b[31m","code":"x"}"#.to_vec(),
+            Some("line one line two [31m".to_owned()),
+        ),
+        (
+            400,
+            format!(r#"{{"error":"{long_reason}"}}"#).into_bytes(),
+            Some(format!("{}…", &long_reason[..1024])),
+        ),
+        (400, br#"{"error":"   "}"#.to_vec(), None),
+        (400, b"sensitive-marker".to_vec(), None),
+        (401, br#"{"error":"sensitive-marker"}"#.to_vec(), None),
+    ];
+
+    for (index, (status, body, reason)) in cases.into_iter().enumerate() {
+        server
+            .set_fault(Fault::Response(ResponseFault {
+                route: Route::Run,
+                status,
+                body,
+            }))
+            .await;
+        let key: SubmissionKey = format!("00000000-0000-4000-8000-0000000009{index:02}").parse()?;
+
+        // When: the Controller submits.
+        let error = client
+            .run(&workflow, key, &params)
+            .await
+            .expect_err("scripted rejection must fail");
+
+        // Then: only a 400's JSON `error` text survives, cleaned and bounded;
+        // raw bodies and other statuses stay redacted.
+        assert_eq!(
+            error,
+            VidenoaClientError::ClientStatus {
+                status,
+                reason: reason.clone(),
+            },
+            "case {index}"
+        );
+        match reason {
+            Some(reason) => assert!(error.to_string().ends_with(&format!(": {reason}"))),
+            None => assert!(!format!("{error:?} {error}").contains("sensitive-marker")),
+        }
+    }
     Ok(())
 }
 

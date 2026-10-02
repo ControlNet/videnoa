@@ -184,7 +184,7 @@ for (const [job, text, expected] of [
 
 for (const target of ["D:/actions/package-target", "/tmp/package-target", "${{ runner.temp }}/package-target"]) {
 	const workflow = structuredClone(loadWorkflow(unitPath));
-	const cache = workflow.jobs["package-win64-smoke"].steps.find((step) => step.uses === "Swatinem/rust-cache@v2");
+	const cache = workflow.jobs["package-win64-smoke"].steps.find((step) => step.uses?.startsWith("Swatinem/rust-cache@"));
 	cache.with.workspaces = `. -> ${target}`;
 	expectContractFailure("absolute cache mapping", () => validateUnitWorkflow(workflow), /cache target must be relative/);
 }
@@ -195,13 +195,60 @@ for (const target of ["D:/actions/package-target", "/tmp/package-target", "${{ r
 }
 {
 	const workflow = structuredClone(loadWorkflow(unitPath));
-	workflow.jobs["web-build-check"].steps = workflow.jobs["web-build-check"].steps.filter((step) => step.uses !== "actions/upload-artifact@v6");
+	workflow.jobs["web-build-check"].steps = workflow.jobs["web-build-check"].steps.filter((step) => !step.uses?.startsWith("actions/upload-artifact@"));
 	expectContractFailure("missing verified frontend artifact", () => validateUnitWorkflow(workflow), /upload-artifact/);
+}
+
+// Hygiene contracts: timeouts, SHA-pinned actions, and --locked cargo calls.
+{
+	const workflow = structuredClone(loadWorkflow(unitPath));
+	delete workflow.jobs["rust-tests"]["timeout-minutes"];
+	expectContractFailure("job without timeout", () => validateUnitWorkflow(workflow), /rust-tests must set timeout-minutes/);
+}
+{
+	const workflow = structuredClone(loadWorkflow(releasePath));
+	delete workflow.jobs["package-linux64"]["timeout-minutes"];
+	expectContractFailure("release job without timeout", () => validateReleaseWorkflow(workflow), /package-linux64 must set timeout-minutes/);
+}
+{
+	const workflow = structuredClone(loadWorkflow(unitPath));
+	workflow.jobs["web-build-check"].steps[0].uses = "actions/checkout@v5";
+	expectContractFailure("action pinned to a mutable tag", () => validateUnitWorkflow(workflow), /must pin actions\/checkout@v5 to a commit SHA/);
+}
+{
+	const workflow = structuredClone(loadWorkflow(releasePath));
+	const publish = workflow.jobs["github-release"].steps.at(-1);
+	publish.uses = publish.uses.replace(/@[0-9a-f]{40}$/, "@v3");
+	expectContractFailure("release action pinned to a mutable tag", () => validateReleaseWorkflow(workflow), /softprops\/action-gh-release@v3 to a commit SHA/);
+}
+{
+	const workflow = structuredClone(loadWorkflow(unitPath));
+	const cargoStep = workflow.jobs["rust-tests"].steps.find((step) => step.run?.includes("cargo test --locked -p videnoa-core"));
+	assert.ok(cargoStep, "rust-tests: missing Cargo test step");
+	cargoStep.run = cargoStep.run.replace("cargo test --locked -p videnoa-core", "cargo test -p videnoa-core");
+	expectContractFailure("cargo test without --locked", () => validateUnitWorkflow(workflow), /rust-tests must run cargo with --locked/);
+}
+{
+	const workflow = structuredClone(loadWorkflow(unitPath));
+	const clippy = workflow.jobs["workspace-quality"].steps.find((step) => step.run?.includes("cargo clippy --locked --workspace"));
+	assert.ok(clippy, "workspace-quality: missing workspace Clippy step");
+	clippy.run = "cargo clippy --locked --workspace -- -D warnings";
+	expectContractFailure("workspace Clippy skips test targets", () => validateUnitWorkflow(workflow), /workspace-quality.*--all-targets/);
+}
+{
+	const workflow = structuredClone(loadWorkflow(unitPath));
+	workflow.jobs["workspace-quality"].steps = workflow.jobs["workspace-quality"].steps.filter((step) => !step.uses?.startsWith("EmbarkStudios/cargo-deny-action@"));
+	expectContractFailure("advisory check omitted", () => validateUnitWorkflow(workflow), /workspace-quality.*cargo-deny-action/);
+}
+for (const name of ["dockerhub-publish", "controller-dockerhub-publish"]) {
+	const workflow = structuredClone(loadWorkflow(releasePath));
+	workflow.jobs[name].needs = ["version-gate", "quality-gate"];
+	expectContractFailure(`${name} publishes before packaging finishes`, () => validateReleaseWorkflow(workflow), new RegExp(`${name} must need package-linux64`));
 }
 
 {
 	const workflow = structuredClone(loadWorkflow(unitPath));
-	const cargoStep = workflow.jobs["rust-tests"].steps.find((step) => step.run?.includes("cargo test -p videnoa-core"));
+	const cargoStep = workflow.jobs["rust-tests"].steps.find((step) => step.run?.includes("cargo test --locked -p videnoa-core"));
 	assert.ok(cargoStep, "rust-tests: missing Cargo test step");
 	delete cargoStep.shell;
 	expectContractFailure("Windows pwsh hides earlier cargo failures", () => validateUnitWorkflow(workflow), /rust-tests.*shell: bash/);

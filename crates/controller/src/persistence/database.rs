@@ -10,12 +10,16 @@ use super::PersistenceError;
 
 static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 const DEFAULT_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+// Pool acquisition waits for a free connection, not for a SQLite lock, so it is
+// bounded independently of the busy timeout and tolerates loaded hosts.
+const DEFAULT_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_MAX_CONNECTIONS: u32 = 8;
 
 #[derive(Clone, Debug)]
 pub struct DatabaseOptions {
     path: PathBuf,
     busy_timeout: Duration,
+    acquire_timeout: Duration,
     max_connections: u32,
 }
 
@@ -25,6 +29,7 @@ impl DatabaseOptions {
         Self {
             path: path.as_ref().to_path_buf(),
             busy_timeout: DEFAULT_BUSY_TIMEOUT,
+            acquire_timeout: DEFAULT_ACQUIRE_TIMEOUT,
             max_connections: DEFAULT_MAX_CONNECTIONS,
         }
     }
@@ -33,6 +38,23 @@ impl DatabaseOptions {
     pub const fn with_busy_timeout(mut self, busy_timeout: Duration) -> Self {
         self.busy_timeout = busy_timeout;
         self
+    }
+
+    /// Bounds how long a caller waits for a free pooled connection.
+    #[must_use]
+    pub const fn with_acquire_timeout(mut self, acquire_timeout: Duration) -> Self {
+        self.acquire_timeout = acquire_timeout;
+        self
+    }
+
+    #[must_use]
+    pub const fn busy_timeout(&self) -> Duration {
+        self.busy_timeout
+    }
+
+    #[must_use]
+    pub const fn acquire_timeout(&self) -> Duration {
+        self.acquire_timeout
     }
 
     #[must_use]
@@ -76,7 +98,7 @@ impl Database {
             .busy_timeout(options.busy_timeout);
         let pool = SqlitePoolOptions::new()
             .max_connections(options.max_connections)
-            .acquire_timeout(options.busy_timeout)
+            .acquire_timeout(options.acquire_timeout)
             .connect_with(connect)
             .await?;
         MIGRATOR.run(&pool).await?;
@@ -90,5 +112,27 @@ impl Database {
 
     pub async fn close(self) {
         self.pool.close().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn busy_timeout_does_not_shorten_pool_acquisition() {
+        let options = DatabaseOptions::new("controller.sqlite3")
+            .with_busy_timeout(Duration::from_millis(100));
+        assert_eq!(options.busy_timeout(), Duration::from_millis(100));
+        assert_eq!(options.acquire_timeout(), DEFAULT_ACQUIRE_TIMEOUT);
+        assert_eq!(DEFAULT_ACQUIRE_TIMEOUT, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn acquire_timeout_is_configured_independently() {
+        let options = DatabaseOptions::new("controller.sqlite3")
+            .with_acquire_timeout(Duration::from_millis(100));
+        assert_eq!(options.acquire_timeout(), Duration::from_millis(100));
+        assert_eq!(options.busy_timeout(), DEFAULT_BUSY_TIMEOUT);
     }
 }

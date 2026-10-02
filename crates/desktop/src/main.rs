@@ -12,6 +12,7 @@ use videnoa_core::logging::{
     compose_logging_init_plan, install_panic_hook, FileSinkPlan, LoggingInitOptions,
     PanicHookInstallPlan, RuntimeLogMode, DEFAULT_LOG_FILTER,
 };
+use videnoa_core::server::http_server::HttpServer;
 use videnoa_core::server::{app_router_with_static, app_state_with_config};
 
 fn init_logging(data_dir: std::path::PathBuf) {
@@ -244,7 +245,7 @@ fn main() {
                     }
                 };
 
-                if let Err(err) = axum::serve(listener, router.into_make_service_with_connect_info::<std::net::SocketAddr>()).await {
+                if let Err(err) = HttpServer::new(listener, router).serve().await {
                     error!(error = %err, "Axum server stopped");
                 }
             });

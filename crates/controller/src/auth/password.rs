@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
@@ -17,6 +18,7 @@ const MAX_CONCURRENT_PASSWORD_TASKS: usize = 2;
 pub struct PasswordEngine {
     cache: Arc<RwLock<Option<Arc<LoadedPasswordHash>>>>,
     tasks: Arc<Semaphore>,
+    verifications: Arc<AtomicU64>,
 }
 
 pub struct LoadedPasswordHash {
@@ -29,6 +31,7 @@ impl Default for PasswordEngine {
         Self {
             cache: Arc::new(RwLock::new(None)),
             tasks: Arc::new(Semaphore::new(MAX_CONCURRENT_PASSWORD_TASKS)),
+            verifications: Arc::new(AtomicU64::new(0)),
         }
     }
 }
@@ -68,6 +71,7 @@ impl PasswordEngine {
         loaded: Arc<LoadedPasswordHash>,
         password: SecretString,
     ) -> Result<bool, AuthError> {
+        self.verifications.fetch_add(1, Ordering::Relaxed);
         let permit = Arc::clone(&self.tasks)
             .acquire_owned()
             .await
@@ -82,6 +86,11 @@ impl PasswordEngine {
 
     pub async fn cache(&self, loaded: Arc<LoadedPasswordHash>) {
         *self.cache.write().await = Some(loaded);
+    }
+
+    /// Number of Argon2 verifications started since the engine was created.
+    pub fn verification_count(&self) -> u64 {
+        self.verifications.load(Ordering::Relaxed)
     }
 }
 

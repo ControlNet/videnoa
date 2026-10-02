@@ -256,6 +256,13 @@ pub(super) async fn run_command(
     result
 }
 
+/// Whether a [`run_command`] error came from its timeout.
+pub(super) fn is_timeout(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<tokio::time::error::Elapsed>()
+        .is_some()
+}
+
 async fn read_limited(mut reader: impl tokio::io::AsyncRead + Unpin) -> std::io::Result<Vec<u8>> {
     let mut output = Vec::new();
     let mut chunk = [0_u8; 8192];
@@ -434,7 +441,12 @@ mod tests {
                 start.elapsed()
             }
         );
-        assert!(result.unwrap_err().to_string().contains("timed out"));
+        let error = result.unwrap_err();
+        assert!(error.to_string().contains("timed out"));
+        assert!(is_timeout(&error));
+        assert!(!is_timeout(&anyhow::anyhow!(
+            "preview subprocess exited with 1"
+        )));
         assert!(timer < Duration::from_secs(1));
         assert!(start.elapsed() < Duration::from_secs(2));
     }

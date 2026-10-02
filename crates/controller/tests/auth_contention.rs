@@ -48,7 +48,8 @@ async fn concurrent_bearer_verification_does_not_starve_async_executor() -> Test
     let database = Database::open(
         options
             .with_max_connections(1)
-            .with_busy_timeout(Duration::from_millis(100)),
+            .with_busy_timeout(Duration::from_millis(100))
+            .with_acquire_timeout(Duration::from_millis(100)),
     )
     .await?;
     let store = Store::new(database);

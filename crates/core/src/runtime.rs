@@ -309,6 +309,14 @@ fn preload_libs_from_dirs(dirs: &[PathBuf]) {
     libs.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
 
     for (_, _, lib_path) in &libs {
+        // SAFETY: `load_library` dlopens (or LoadLibrary's) a shared library
+        // by absolute path, which runs that library's static initializers in
+        // this process. The candidates are limited to the CUDA / cuDNN / TRT
+        // files matched by `load_priority` (ORT itself is excluded) inside the
+        // directories we explicitly chose, and they are loaded in dependency
+        // order so each library's own dependencies are already resident. The
+        // handle is leaked on purpose so the library stays mapped for ORT;
+        // nothing is ever unloaded, and no symbols are resolved or called here.
         unsafe { load_library(lib_path) };
     }
 }

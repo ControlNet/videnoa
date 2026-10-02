@@ -1,6 +1,7 @@
 use std::convert::Infallible;
 use std::future::{pending, ready};
 use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use axum::extract::connect_info::ConnectInfo;
@@ -8,7 +9,7 @@ use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use futures_util::stream::{self, Stream, StreamExt};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, OnceCell};
 use tokio::time::{interval, Duration, MissedTickBehavior};
 
 use crate::auth::authenticate_passive;
@@ -23,13 +24,21 @@ const AUTH_RECHECK_INTERVAL: Duration = Duration::from_secs(30);
 #[derive(Clone)]
 enum LiveEvent {
     Delta(Arc<SseEvent>),
-    DurableChange(DurableChange),
+    DurableChange(Arc<SharedChange>),
+}
+
+/// A durable change whose SSE event is read back from the store at most once,
+/// by the first subscriber that reaches it, and then shared by all of them.
+struct SharedChange {
+    change: DurableChange,
+    event: OnceCell<Event>,
 }
 
 #[derive(Clone)]
 pub struct EventHub {
     sender: broadcast::Sender<LiveEvent>,
     wakeups: broadcast::Sender<()>,
+    durable_change_reads: Arc<AtomicU64>,
 }
 
 impl EventHub {
@@ -37,7 +46,11 @@ impl EventHub {
     pub fn new() -> Self {
         let (sender, _) = broadcast::channel(EVENT_CAPACITY);
         let (wakeups, _) = broadcast::channel(EVENT_CAPACITY);
-        Self { sender, wakeups }
+        Self {
+            sender,
+            wakeups,
+            durable_change_reads: Arc::new(AtomicU64::new(0)),
+        }
     }
 
     pub(crate) fn publish(&self, event: SseEvent) {
@@ -46,8 +59,19 @@ impl EventHub {
     }
 
     pub(crate) fn publish_change(&self, change: DurableChange) {
-        let _ = self.sender.send(LiveEvent::DurableChange(change));
+        let shared = SharedChange {
+            change,
+            event: OnceCell::new(),
+        };
+        let _ = self.sender.send(LiveEvent::DurableChange(Arc::new(shared)));
         let _ = self.wakeups.send(());
+    }
+
+    /// Diagnostic count of durable changes turned into SSE events. Each costs
+    /// at most one store read, however many subscribers receive it.
+    #[must_use]
+    pub fn durable_change_reads(&self) -> u64 {
+        self.durable_change_reads.load(Ordering::Relaxed)
     }
 
     #[must_use]
@@ -101,9 +125,11 @@ pub(super) async fn stream(
                     received = receiver.recv() => {
                         let event = match received {
                             Ok(LiveEvent::Delta(event)) => delta_event(&event),
-                            Ok(LiveEvent::DurableChange(change)) => {
-                                durable_change_event(&state, change).await
-                            }
+                            Ok(LiveEvent::DurableChange(shared)) => shared
+                                .event
+                                .get_or_init(|| durable_change_event(&state, shared.change))
+                                .await
+                                .clone(),
                             Err(broadcast::error::RecvError::Lagged(_)) => refetch_event(),
                             Err(broadcast::error::RecvError::Closed) => return None,
                         };
@@ -122,6 +148,10 @@ pub(super) async fn stream(
 }
 
 async fn durable_change_event(state: &OperationsState, change: DurableChange) -> Event {
+    state
+        .events
+        .durable_change_reads
+        .fetch_add(1, Ordering::Relaxed);
     match change {
         DurableChange::Task(id) => match state.store.task(id).await {
             Ok(Some(task)) => delta_event(&SseEvent::TaskUpdated {

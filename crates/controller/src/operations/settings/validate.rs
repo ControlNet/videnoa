@@ -130,7 +130,10 @@ fn validate_duration(field: &'static str, value: u64) -> Result<(), OperationsEr
 
 fn validate_session_duration(field: &'static str, value: u64) -> Result<(), OperationsError> {
     if value == 0 {
-        return Err(OperationsError::InvalidField(field, "value must be greater than zero"));
+        return Err(OperationsError::InvalidField(
+            field,
+            "value must be greater than zero",
+        ));
     }
     Ok(())
 }

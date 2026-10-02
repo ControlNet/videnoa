@@ -1,7 +1,9 @@
-//! ColorSpace node: stores zscale conversion config and passes frames through unchanged.
+//! ColorSpace node: collects color space settings and passes frames through unchanged.
 //!
-//! The actual color space conversion happens in VideoOutput's zscale filter.
-//! This node captures the desired settings and exposes them as a JSON config string.
+//! The node exposes the settings as a JSON `config` string output. No stage
+//! consumes it any more (the zscale encoder stage was removed), so the type is
+//! kept only so that saved workflows still parse; `validate_video_processing_chain`
+//! rejects it in video jobs and the editor palette does not offer it.
 
 use std::collections::HashMap;
 
@@ -32,7 +34,7 @@ impl Default for ColorSpaceConfig {
 }
 
 impl ColorSpaceConfig {
-    /// Serialize to JSON string for downstream consumption by VideoOutput.
+    /// Serialize the settings to a JSON string for the `config` output port.
     pub fn to_json(&self) -> String {
         serde_json::json!({
             "matrix": self.matrix,
@@ -42,14 +44,6 @@ impl ColorSpaceConfig {
             "dither": self.dither,
         })
         .to_string()
-    }
-
-    /// Build the zscale filter string for FFmpeg.
-    pub fn to_zscale_filter(&self) -> String {
-        format!(
-            "zscale=matrix={}:range={}:transfer={}:primaries={}:dither={}",
-            self.matrix, self.range, self.transfer, self.primaries, self.dither
-        )
     }
 }
 
@@ -261,15 +255,6 @@ mod tests {
             }
             _ => panic!("Expected CpuRgb frame"),
         }
-    }
-
-    #[test]
-    fn test_color_space_zscale_filter() {
-        let config = ColorSpaceConfig::default();
-        assert_eq!(
-            config.to_zscale_filter(),
-            "zscale=matrix=bt709:range=limited:transfer=bt709:primaries=bt709:dither=error_diffusion"
-        );
     }
 
     #[test]

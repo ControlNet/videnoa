@@ -98,15 +98,48 @@ host = "0.0.0.0"
 profiling_enabled = false
 ```
 
-CLI flags override config values (`--host`, `--port`, `--data-dir`).
+CLI flags override config values (`--host`, `--port`, `--data-dir`). For the
+server port the precedence is `--port`, then the `PORT` environment variable,
+then `server.port` from the config. `videnoa run` (CLI) reads the same config
+and stores TensorRT engines in `paths.trt_cache_dir`.
+
+The HTTP server closes an HTTP/1.1 connection whose request head (request line
+and headers) does not arrive within 30 seconds, including the next request on an
+idle keep-alive connection. Request bodies, uploads, event streams, and
+WebSockets are not limited by this timeout.
+The server speaks HTTP/1.1 only; cleartext HTTP/2 (h2c) is not accepted.
+
+## Video processing notes
+
+### Colour handling
+
+- Output is always encoded as BT.709 limited range and tagged as such.
+- Sources tagged with a colour matrix are decoded with that matrix.
+- Untagged sources are decoded as BT.709 at every resolution (since v0.1.8;
+  v0.1.7 used BT.601 for frames narrower than 1280 and at most 576 high, and
+  earlier versions always used BT.601).
+- Wide-gamut primaries (BT.2020, DCI-P3, XYZ) are not converted: such a source
+  is processed and tagged as BT.709 without a colour-space conversion, and the
+  Worker logs a warning.
+
+### Workflow constraints
+
+- `VideoOutput` has no `fps` port: the output frame rate is the source frame
+  rate (multiplied by `FrameInterpolation` when present) and cannot be set.
+- `Resize` / `Rescale` are compiled into the encoder's FFmpeg scale filter, so
+  they must be the last processing nodes before `VideoOutput`; placing
+  `SuperResolution` or `FrameInterpolation` after them is rejected when the
+  workflow is validated.
 
 ## Development setup
 
 ### Requirements
 
 - Rust 1.98.0 (pinned in `rust-toolchain.toml`)
-- Node.js 18+
-- FFmpeg 4.4+
+- Node.js 24 (the version CI and the Docker build use)
+- FFmpeg, ffprobe and mkvpropedit from the release media tools bundle
+  (FFmpeg 8.1), installed into `bin/` by `scripts/setup_dev_media_tools.sh`
+  (see step 1); a system FFmpeg is only a fallback
 - NVIDIA GPU (required for CUDA or TensorRT acceleration)
 - External ONNX Runtime shared library (required), TensorRT shared library (optional, recommended for speed)
 - Dependency bundles are available in [misc files](https://github.com/ControlNet/videnoa/releases/tag/misc)
@@ -120,9 +153,22 @@ rustc --version
 
 The version output should start with `rustc 1.98.0`.
 
-### 1) Prepare runtime libraries and models
+### 1) Prepare runtime libraries, media tools and models
 
 Download from [misc files](https://github.com/ControlNet/videnoa/releases/tag/misc), then place shared libraries in `lib/` and models in `models/`.
+
+Install the release media tools bundle (FFmpeg 8.1, ffprobe, mkvpropedit) into
+`bin/` (gitignored):
+
+```bash
+bash scripts/setup_dev_media_tools.sh
+```
+
+Run Videnoa from the repository root afterwards: binaries are resolved from
+`<cwd>/bin` and next to the executable before `PATH`. Without this step the
+system FFmpeg is used; on Ubuntu 22.04 that is FFmpeg 4.4, whose
+single-threaded swscale distorts encoder benchmarks and does not match the
+FFmpeg 8.1 build shipped in the release archives and the Docker image.
 
 ### 2) Build
 

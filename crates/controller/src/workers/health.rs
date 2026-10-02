@@ -94,8 +94,10 @@ impl WorkerHealthService {
     ) -> Result<(), WorkerHealthError> {
         let now = Utc::now();
         let workers = self.store.workers().await?;
-        self.authentication_blocks.retain(|id, _| workers.iter().any(|worker| worker.id == *id));
-        let mut pending: VecDeque<_> = workers.into_iter()
+        self.authentication_blocks
+            .retain(|id, _| workers.iter().any(|worker| worker.id == *id));
+        let mut pending: VecDeque<_> = workers
+            .into_iter()
             .filter(|worker| match self.authentication_blocks.get(&worker.id) {
                 Some(version) => worker.enabled && *version != worker.version,
                 None => due(worker, now),
@@ -137,7 +139,13 @@ impl WorkerHealthService {
         cache: &mut CapabilityCache<SystemClock>,
         now: DateTime<Utc>,
     ) -> Result<(), WorkerHealthError> {
-        let authentication_failed = matches!(&outcome, ProbeOutcome::Failed { failure: ProbeFailure::Authentication, .. });
+        let authentication_failed = matches!(
+            &outcome,
+            ProbeOutcome::Failed {
+                failure: ProbeFailure::Authentication,
+                ..
+            }
+        );
         let was_online = match &outcome {
             ProbeOutcome::Healthy { worker, .. } | ProbeOutcome::Failed { worker, .. } => {
                 worker.record.online

@@ -5,13 +5,21 @@ import {
 	requireText,
 	requireValue,
 	validateGraph,
+	validateJobHygiene,
 } from "./common.mjs";
 
 const releaseVersion = `${String.fromCharCode(36)}{RELEASE_VERSION}`;
+const packagingJobs = [
+	"package-linux64",
+	"package-win64",
+	"package-controller-linux",
+	"package-controller-windows",
+];
 
 export function validateReleaseWorkflow(workflow) {
 	const jobs = workflow.jobs;
 	validateGraph(jobs, "release");
+	validateJobHygiene(jobs, "release");
 	requireText(requireJob(jobs, "version-gate"), "version-gate", [
 		"crates/controller/Cargo.toml",
 		"Version mismatch detected across crates",
@@ -28,11 +36,11 @@ export function validateReleaseWorkflow(workflow) {
 			"scripts/package_dist_archive.sh create",
 			"scripts/package_dist_archive.sh verify",
 			"$HOME/.cargo/registry",
-			"actions/upload-artifact@v6",
+			"actions/upload-artifact@",
 		],
 		"package-win64": [
 			`videnoa-win64-${expression("needs.version-gate.outputs.version")}.7z`,
-			"actions/upload-artifact@v6",
+			"actions/upload-artifact@",
 		],
 		"dockerhub-publish": [
 			`controlnet/videnoa:${expression("needs.version-gate.outputs.version")}`,
@@ -45,6 +53,10 @@ export function validateReleaseWorkflow(workflow) {
 		const job = requireJob(jobs, name);
 		requireNeeds(job, name, ["version-gate", "quality-gate"]);
 		requireText(job, name, contracts);
+	}
+	// Docker `latest` must not move unless every release archive was built.
+	for (const name of ["dockerhub-publish", "controller-dockerhub-publish"]) {
+		requireNeeds(requireJob(jobs, name), name, packagingJobs);
 	}
 	// Published archives must carry media tools with every encoder the UI offers (#6).
 	for (const name of ["package-linux64", "package-win64"]) {
@@ -63,7 +75,7 @@ export function validateReleaseWorkflow(workflow) {
 	requireText(linux, "package-controller-linux", [
 		"scripts/package_controller.sh",
 		`videnoa-controller-v${expression("needs.version-gate.outputs.version")}-linux-x86_64.tar.gz`,
-		"actions/upload-artifact@v6",
+		"actions/upload-artifact@",
 	]);
 	const windows = requireJob(jobs, "package-controller-windows");
 	requireNeeds(windows, "package-controller-windows", [
@@ -73,7 +85,7 @@ export function validateReleaseWorkflow(workflow) {
 	requireText(windows, "package-controller-windows", [
 		"scripts/package_controller.ps1",
 		`videnoa-controller-v${expression("needs.version-gate.outputs.version")}-windows-x86_64.zip`,
-		"actions/upload-artifact@v6",
+		"actions/upload-artifact@",
 	]);
 	const controllerDocker = requireJob(jobs, "controller-dockerhub-publish");
 	requireNeeds(controllerDocker, "controller-dockerhub-publish", [

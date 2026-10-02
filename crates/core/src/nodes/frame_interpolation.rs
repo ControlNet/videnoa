@@ -24,7 +24,7 @@ use ort::{
 };
 use rayon::prelude::*;
 use rayon::{ThreadPool, ThreadPoolBuilder};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::frame_pool::FramePool;
 use crate::node::{ExecutionContext, FrameProcessor, Node, PortDefinition};
@@ -644,10 +644,12 @@ impl FrameInterpolationInference {
             let session = self.session.lock().unwrap();
             let allocator = pinned_input_allocator(&session);
             drop(session);
-            let tensor = match &allocator {
-                Some(allocator) => Tensor::new(allocator, shape)?,
-                None => Tensor::new(&Allocator::default(), shape)?,
-            };
+            let (tensor, allocator) = allocate_preferring_pinned(
+                allocator,
+                |allocator| Ok(Tensor::new(allocator, shape)?),
+                || Ok(Tensor::new(&Allocator::default(), shape)?),
+            )
+            .with_context(|| format!("failed to allocate the RIFE input tensor {shape:?}"))?;
             debug!(
                 pinned = allocator.is_some(),
                 padded_h, padded_w, "allocated RIFE concatenated input"
@@ -659,6 +661,28 @@ impl FrameInterpolationInference {
         }
         Ok(&mut concat_input.as_mut().expect("input allocated above").tensor)
     }
+}
+
+/// Allocates with the `pinned` allocator when there is one, falling back to
+/// pageable host memory when that allocation fails (cudaHostAlloc can run out
+/// of pinned memory). Returns the value and the allocator that owns its
+/// memory: `None` for pageable memory, so a failed pinned allocator is
+/// released right away.
+fn allocate_preferring_pinned<A, T>(
+    pinned: Option<A>,
+    allocate_pinned: impl FnOnce(&A) -> Result<T>,
+    allocate_pageable: impl FnOnce() -> Result<T>,
+) -> Result<(T, Option<A>)> {
+    if let Some(allocator) = pinned {
+        match allocate_pinned(&allocator) {
+            Ok(value) => return Ok((value, Some(allocator))),
+            Err(error) => warn!(
+                error = %format!("{error:#}"),
+                "CUDA-pinned allocation of the RIFE input failed; using pageable host memory"
+            ),
+        }
+    }
+    Ok((allocate_pageable()?, None))
 }
 
 /// A model input tensor and the allocator that owns its memory.
@@ -724,14 +748,20 @@ impl FrameInterpolator for FrameInterpolationInference {
         let concat = self.concat_input(padded_h, padded_w)?;
         {
             // Channels: img0 RGB, img1 RGB, timestep.
-            let (_, values) = concat.extract_tensor_mut();
+            let (_, values) = concat
+                .try_extract_tensor_mut::<f32>()
+                .context("FrameInterpolationInference: failed to access the model input")?;
             values[..image_len].copy_from_slice(prev_data);
             values[image_len..2 * image_len].copy_from_slice(curr_data);
         }
 
         let mut results = Vec::with_capacity(steps.len());
         for &t in &steps {
-            concat.extract_tensor_mut().1[2 * image_len..].fill(t);
+            concat
+                .try_extract_tensor_mut::<f32>()
+                .context("FrameInterpolationInference: failed to access the model input")?
+                .1[2 * image_len..]
+                .fill(t);
 
             let mut cropped = pool.take_f32(3 * orig_h * orig_w);
             run_concatenated_with(&session, concat, use_iobinding, |shape, output| {
@@ -1536,6 +1566,55 @@ fn duplicate_first_frame(frame0: &Frame, count: usize) -> Result<Vec<Frame>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pinned_input_is_used_when_its_allocation_succeeds() {
+        let (value, allocator) = allocate_preferring_pinned(
+            Some("pinned"),
+            |allocator| Ok(format!("{allocator} tensor")),
+            || panic!("pageable memory must not be used"),
+        )
+        .unwrap();
+        assert_eq!(value, "pinned tensor");
+        assert_eq!(allocator, Some("pinned"));
+    }
+
+    #[test]
+    fn failed_pinned_allocation_falls_back_to_pageable_memory() {
+        // cudaHostAlloc can fail (233 MB per lane at 4K) without failing the job.
+        let (value, allocator) = allocate_preferring_pinned(
+            Some("pinned"),
+            |_| -> Result<String> { bail!("cudaHostAlloc failed: out of memory") },
+            || Ok("pageable tensor".to_string()),
+        )
+        .unwrap();
+        assert_eq!(value, "pageable tensor");
+        // The pinned allocator is released: it owns no tensor memory.
+        assert_eq!(allocator, None);
+    }
+
+    #[test]
+    fn missing_pinned_allocator_uses_pageable_memory() {
+        let (value, allocator) = allocate_preferring_pinned(
+            None::<&str>,
+            |_| panic!("no pinned allocator exists"),
+            || Ok("pageable tensor".to_string()),
+        )
+        .unwrap();
+        assert_eq!(value, "pageable tensor");
+        assert_eq!(allocator, None);
+    }
+
+    #[test]
+    fn pageable_allocation_failure_is_reported() {
+        let error = allocate_preferring_pinned(
+            Some("pinned"),
+            |_| -> Result<String> { bail!("cudaHostAlloc failed") },
+            || -> Result<String> { bail!("malloc failed") },
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("malloc failed"), "{error:#}");
+    }
 
     #[test]
     fn test_timesteps_2x() {

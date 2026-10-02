@@ -22,6 +22,8 @@ clap.workspace = true
 figment.workspace = true
 futures-util.workspace = true
 glob = "=0.3.3"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 mime_guess.workspace = true
 percent-encoding.workspace = true
 rand_core.workspace = true
@@ -39,17 +41,15 @@ thiserror = "2"
 tokio.workspace = true
 tokio-util = { workspace = true, features = ["io", "rt"] }
 toml.workspace = true
+tower.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 url.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-hyper = { version = "1", features = ["http1", "server"] }
-hyper-util = { version = "0.1", features = ["tokio"] }
 tempfile = "3"
 tokio = { workspace = true, features = ["test-util"] }
-tower.workspace = true
 
 [lints.rust]
 unsafe_code = "forbid"

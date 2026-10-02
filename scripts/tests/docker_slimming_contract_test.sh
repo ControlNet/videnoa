@@ -52,14 +52,35 @@ if grep -Fq 'COPY --from=builder /build/web/dist /app/web/dist' "$WORKER_DOCKERF
   fail 'Worker runtime still duplicates the embedded WebUI'
 fi
 
-for removed_binary in mkvextract mkvinfo mkvmerge; do
-  grep -Fq "/usr/bin/$removed_binary" "$WORKER_DOCKERFILE" \
+readonly MEDIA_TOOLS_DIR='/media-tools'
+readonly MKVTOOLNIX_DIR="$MEDIA_TOOLS_DIR/.mkvtoolnix-101.0"
+
+for removed_binary in mkvextract mkvinfo mkvmerge mkvtoolnix-gui; do
+  grep -Fq "$MKVTOOLNIX_DIR/usr/bin/$removed_binary" "$WORKER_DOCKERFILE" \
     || fail "Worker runtime does not remove $removed_binary"
 done
 
-if grep -Fq '/usr/bin/mkvpropedit' "$WORKER_DOCKERFILE"; then
+if grep -Fq "$MKVTOOLNIX_DIR/usr/bin/mkvpropedit" "$WORKER_DOCKERFILE"; then
   fail 'Worker runtime removes required mkvpropedit'
 fi
+
+# The runtime must ship the release media tools bundle (FFmpeg 8.1), not the
+# Ubuntu 22.04 apt ffmpeg/mkvtoolnix packages.
+if grep -Eq '^[[:space:]]+(ffmpeg|mkvtoolnix)([[:space:]]|\\$)' "$WORKER_DOCKERFILE"; then
+  fail 'Worker runtime still installs apt ffmpeg/mkvtoolnix instead of the release media tools bundle'
+fi
+require_exact_line \
+  "$WORKER_DOCKERFILE" \
+  'ARG MEDIA_TOOLS_URL=https://github.com/ControlNet/videnoa/releases/download/misc/bin_linux64.zip' \
+  'Worker runtime must download the Linux release media tools bundle'
+grep -Eq '^ARG MEDIA_TOOLS_SHA256=[0-9a-f]{64}$' "$WORKER_DOCKERFILE" \
+  || fail 'Worker runtime must pin the media tools bundle SHA256'
+grep -Fq 'sha256sum --quiet -c SHA256SUMS' "$WORKER_DOCKERFILE" \
+  || fail 'Worker runtime must verify the media tools bundle SHA256SUMS'
+require_exact_line \
+  "$WORKER_DOCKERFILE" \
+  "COPY --from=media-tools $MEDIA_TOOLS_DIR/ /app/bin/" \
+  'Worker runtime must install the media tools bundle into /app/bin'
 
 require_exact_line \
   "$WORKER_DOCKERFILE" \
@@ -106,12 +127,21 @@ if [[ -n "$WORKER_IMAGE" ]]; then
   docker run --rm --entrypoint /bin/sh "$WORKER_IMAGE" -c '
     set -eu
     test ! -e /app/web/dist
-    test -x /usr/bin/mkvpropedit
-    test ! -e /usr/bin/mkvextract
-    test ! -e /usr/bin/mkvinfo
-    test ! -e /usr/bin/mkvmerge
+    test -x /app/bin/ffmpeg
+    test -x /app/bin/ffprobe
+    test -x /app/bin/mkvpropedit
+    test ! -e /usr/bin/ffmpeg
+    test ! -e /usr/bin/mkvpropedit
+    test ! -e /app/bin/.mkvtoolnix-101.0/usr/bin/mkvextract
+    test ! -e /app/bin/.mkvtoolnix-101.0/usr/bin/mkvinfo
+    test ! -e /app/bin/.mkvtoolnix-101.0/usr/bin/mkvmerge
+    test ! -e /app/bin/.mkvtoolnix-101.0/usr/bin/mkvtoolnix-gui
     grep -a -q '\.symtab' /usr/local/bin/videnoa
-    mkvpropedit --version >/dev/null
+    test "$(command -v ffmpeg)" = /app/bin/ffmpeg
+    ffmpeg -hide_banner -version | head -n 1 | grep -q "^ffmpeg version n8\.1"
+    ffprobe -hide_banner -version | head -n 1 | grep -q "^ffprobe version n8\.1"
+    ffmpeg -hide_banner -encoders | grep -Eq "libx264|libx265|libsvtav1"
+    mkvpropedit --version | grep -q "v101\.0"
     test -f /usr/local/lib/libonnxruntime.so.1.23.2
     test -f /usr/local/lib/libnvinfer_builder_resource.so.10.9.0
 

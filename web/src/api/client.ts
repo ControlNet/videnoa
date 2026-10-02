@@ -392,14 +392,6 @@ export function listPresets(): Promise<Preset[]> {
   return request<Preset[]>('/api/presets');
 }
 
-export function createPreset(
-  name: string,
-  description: string,
-  workflow: Workflow,
-): Promise<Preset> {
-  return request<Preset>('/api/presets', jsonBody({ name, description, workflow }));
-}
-
 // ─── Workflows ────────────────────────────────────────────────────────────────
 
 export interface WorkflowEntry {

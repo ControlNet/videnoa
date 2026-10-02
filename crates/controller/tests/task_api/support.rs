@@ -152,6 +152,7 @@ async fn fixture_with_busy_timeout_option(busy_timeout: Option<Duration>) -> Tes
             .await;
         database_options = database_options
             .with_busy_timeout(busy_timeout)
+            .with_acquire_timeout(busy_timeout)
             .with_max_connections(1);
     }
     let database = Database::open(database_options)

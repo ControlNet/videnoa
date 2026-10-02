@@ -51,6 +51,40 @@ export function requireText(job, jobName, expected) {
 	}
 }
 
+const PINNED_ACTION = /^[^@\s]+@[0-9a-f]{40}$/;
+
+/**
+ * Every job must have a timeout (reusable-workflow calls cannot), every
+ * third-party action must be pinned to a full commit SHA, and every direct
+ * cargo build/test/clippy invocation must use the committed lockfile.
+ */
+export function validateJobHygiene(jobs, workflowName) {
+	for (const [jobName, job] of Object.entries(jobs)) {
+		if (job.uses === undefined) {
+			requireValue(
+				Number.isInteger(job["timeout-minutes"]) && job["timeout-minutes"] > 0,
+				`${workflowName}.${jobName} must set timeout-minutes`,
+			);
+		}
+		for (const step of job.steps ?? []) {
+			if (typeof step.uses === "string" && !step.uses.startsWith("./")) {
+				requireValue(
+					PINNED_ACTION.test(step.uses),
+					`${workflowName}.${jobName} must pin ${step.uses} to a commit SHA`,
+				);
+			}
+			if (typeof step.run !== "string") continue;
+			for (const line of step.run.split("\n")) {
+				if (!/\bcargo (test|clippy|build)\b/.test(line)) continue;
+				requireValue(
+					line.includes("--locked"),
+					`${workflowName}.${jobName} must run cargo with --locked: ${line.trim()}`,
+				);
+			}
+		}
+	}
+}
+
 export function validateGraph(jobs, workflowName) {
 	for (const [jobName, job] of Object.entries(jobs)) {
 		for (const dependency of asList(job.needs)) {

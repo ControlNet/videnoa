@@ -142,6 +142,9 @@ stage averages and sys time, not single wall times.
 - `a300113`: the decoder scales with the source matrix (tag, else BT.709 for
   sizes of at least 1280 wide or more than 576 high), and the encoder, stream
   output and preview convert with `out_color_matrix=bt709:out_range=limited`.
+  After v0.1.7 the untagged fallback became BT.709 at every size, by request:
+  the mpv-style SD -> BT.601 guess was dropped. Tagged SD sources (for example
+  `smpte170m`) still decode with their tag.
   Ignored round-trip tests:
   - `decoder_recovers_source_rgb_for_tagged_and_untagged_matrices`
   - `encoded_output_decodes_back_to_the_source_colors`

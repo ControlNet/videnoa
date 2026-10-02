@@ -2,7 +2,8 @@
 # videnoa Dockerfile
 # Multi-stage build: Rust compilation → NVIDIA CUDA runtime with ORT + TRT
 #
-# All runtime libraries (ONNX Runtime, TensorRT) are baked into the image.
+# All runtime libraries (ONNX Runtime, TensorRT) and the release media tools
+# bundle (FFmpeg 8.1, ffprobe, mkvpropedit in /app/bin) are baked into the image.
 # Mount models, the TensorRT cache, and /app/data for persistent Worker state.
 # Mount host media separately when workflows need direct file access.
 #
@@ -85,7 +86,36 @@ RUN pip install --no-cache-dir "tensorrt-cu12-libs==${TRT_VERSION}" \
     && cp /usr/local/lib/python3.12/site-packages/tensorrt_libs/libnvonnxparser.so.10 /trt-lib/
 
 # ---------------------------------------------------------------------------
-# Stage 4: Runtime image — minimal CUDA + cuDNN + bundled ORT + TRT
+# Stage 4: Download the release media tools bundle (FFmpeg 8.1, ffprobe,
+# mkvpropedit). This is the same misc-release asset the Linux release archive
+# ships (scripts/package_dist.sh, scripts/setup_dev_media_tools.sh), so the
+# image encodes with the same FFmpeg build instead of Ubuntu's FFmpeg 4.4.
+# ---------------------------------------------------------------------------
+FROM debian:bookworm-slim AS media-tools
+
+RUN apt-get update && apt-get install -y --no-install-recommends wget ca-certificates unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Pinned to a specific upload of the mutable `misc` release asset; bump the
+# checksum together with the asset. Only mkvpropedit is used, so the other
+# MKVToolNix executables are dropped after the bundle checksums are verified.
+ARG MEDIA_TOOLS_URL=https://github.com/ControlNet/videnoa/releases/download/misc/bin_linux64.zip
+ARG MEDIA_TOOLS_SHA256=6d1944351a5d4d236eae8930dd6a68a4d7da73228e5c6c5657cbb3967cdeb1a9
+RUN wget -q --tries=4 --timeout=120 -O /tmp/bin_linux64.zip "${MEDIA_TOOLS_URL}" \
+    && echo "${MEDIA_TOOLS_SHA256}  /tmp/bin_linux64.zip" | sha256sum -c - \
+    && unzip -q /tmp/bin_linux64.zip -d /tmp/media-tools \
+    && test -x /tmp/media-tools/bin/ffmpeg \
+    && (cd /tmp/media-tools/bin && sha256sum --quiet -c SHA256SUMS) \
+    && mv /tmp/media-tools/bin /media-tools \
+    && rm -rf /tmp/bin_linux64.zip /tmp/media-tools \
+    && rm -f \
+        /media-tools/.mkvtoolnix-101.0/usr/bin/mkvextract \
+        /media-tools/.mkvtoolnix-101.0/usr/bin/mkvinfo \
+        /media-tools/.mkvtoolnix-101.0/usr/bin/mkvmerge \
+        /media-tools/.mkvtoolnix-101.0/usr/bin/mkvtoolnix-gui
+
+# ---------------------------------------------------------------------------
+# Stage 5: Runtime image — minimal CUDA + cuDNN + bundled ORT + TRT
 # ---------------------------------------------------------------------------
 FROM nvidia/cuda:12.8.0-base-ubuntu22.04 AS runtime
 
@@ -106,14 +136,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libcudnn9-cuda-12=${CUDNN_VERSION} \
         libnvfatbin-12-8=${NVFATBIN_VERSION} \
         libnvjitlink-12-8=${NVJITLINK_VERSION} \
-        ffmpeg \
-        mkvtoolnix \
         ca-certificates \
         curl \
-    && rm -f \
-        /usr/bin/mkvextract \
-        /usr/bin/mkvinfo \
-        /usr/bin/mkvmerge \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -124,6 +148,11 @@ COPY --from=ort-download /ort-lib/ /usr/local/lib/
 COPY --from=trt-download /trt-lib/ /usr/local/lib/
 
 RUN ldconfig
+
+# runtime::command_for resolves ffmpeg/ffprobe/mkvpropedit from <cwd>/bin
+# (WORKDIR /app) before PATH; PATH covers runs with a different working dir.
+COPY --from=media-tools /media-tools/ /app/bin/
+ENV PATH="/app/bin:${PATH}"
 
 RUN mkdir -p /app/models /app/trt_cache /app/config /app/presets /data
 

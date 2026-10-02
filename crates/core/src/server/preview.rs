@@ -1,8 +1,7 @@
 //! Single-frame previews use real processors, without running workflow I/O actions.
 use std::collections::HashMap;
-use std::io::Write;
 use std::path::Path;
-use std::process::Stdio;
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 
@@ -12,9 +11,14 @@ use crate::node::{ExecutionContext, FrameProcessor, Node};
 use crate::nodes::compile_context::VideoCompileContext;
 use crate::nodes::rescale::RescaleNode;
 use crate::nodes::resize::ResizeNode;
-use crate::nodes::video_input::{extract_metadata, run_ffprobe, VideoDecoder};
+use crate::nodes::video_input::{decode_first_frame, extract_metadata, run_ffprobe_within};
 use crate::registry::NodeRegistry;
+use crate::subprocess::output_with_timeout;
 use crate::types::{Frame, PortData, PortType};
+
+/// Deadline for each FFmpeg/ffprobe child of a preview. Preview processing
+/// holds the single GPU permit, so a hung child must not hold it forever.
+const PREVIEW_SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub(super) fn validate(graph: &PipelineGraph, registry: &NodeRegistry) -> Result<()> {
     graph.validate(registry)?;
@@ -85,12 +89,11 @@ pub(super) fn process(
         let values = match instance.node_type.as_str() {
             "VideoInput" => {
                 // Use the selected extracted image, never reopen the workflow's input.
-                let (info, metadata) = extract_metadata(&run_ffprobe(input)?, input)?;
-                let mut decoder = VideoDecoder::new(input, &info, Some("none"))?;
+                let probe = run_ffprobe_within(input, PREVIEW_SUBPROCESS_TIMEOUT)?;
+                let (info, metadata) = extract_metadata(&probe, input)?;
                 frame = Some(
-                    decoder
-                        .next()
-                        .ok_or_else(|| anyhow!("preview image has no frame"))??,
+                    decode_first_frame(input, &info, PREVIEW_SUBPROCESS_TIMEOUT)
+                        .context("failed to decode the preview image")?,
                 );
                 HashMap::from([
                     (
@@ -152,6 +155,23 @@ pub(super) fn process(
 }
 
 fn write_png(frame: Frame, output: &Path) -> Result<()> {
+    write_png_with(
+        crate::runtime::command_for("ffmpeg"),
+        frame,
+        output,
+        PREVIEW_SUBPROCESS_TIMEOUT,
+    )
+}
+
+/// Encodes `frame` to a PNG at `output` with the FFmpeg `command`, killing it
+/// after `timeout`. Pixels are written while stderr is drained, so FFmpeg
+/// output cannot fill its pipe and stall the write.
+fn write_png_with(
+    mut command: std::process::Command,
+    frame: Frame,
+    output: &Path,
+    timeout: Duration,
+) -> Result<()> {
     let Frame::CpuRgb {
         data,
         width,
@@ -162,7 +182,7 @@ fn write_png(frame: Frame, output: &Path) -> Result<()> {
         bail!("preview output must be an RGB image");
     };
     let format = if bit_depth > 8 { "rgb48le" } else { "rgb24" };
-    let mut child = crate::runtime::command_for("ffmpeg")
+    command
         .args([
             "-v",
             "error",
@@ -187,27 +207,86 @@ fn write_png(frame: Frame, output: &Path) -> Result<()> {
             "-update",
             "1",
         ])
-        .arg(output)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("failed to start preview PNG encoder")?;
-    let written = child
-        .stdin
-        .take()
-        .ok_or_else(|| anyhow!("missing PNG encoder input"))?
-        .write_all(&data);
-    if written.is_err() {
-        let _ = child.kill();
+        .arg(output);
+    output_with_timeout(&mut command, Some(data), timeout)
+        .context("failed to start preview PNG encoder")?
+        .check("preview PNG encoder")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pixel() -> Frame {
+        Frame::CpuRgb {
+            data: vec![1, 2, 3],
+            width: 1,
+            height: 1,
+            bit_depth: 8,
+        }
     }
-    let result = child.wait_with_output()?;
-    written.context("failed to write preview pixels")?;
-    if !result.status.success() {
-        bail!(
-            "preview PNG encoding failed: {}",
-            String::from_utf8_lossy(&result.stderr)
+
+    #[cfg(unix)]
+    fn sh_command(script: &str) -> std::process::Command {
+        // The encoder arguments follow as ignored positional parameters.
+        let mut command = std::process::Command::new("sh");
+        command.args(["-c", script, "ffmpeg"]);
+        command
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn png_encoder_receives_the_pixels() {
+        let dir = tempfile::tempdir().unwrap();
+        let received = dir.path().join("received");
+        let script = format!("cat > '{}'", received.display());
+        write_png_with(
+            sh_command(&script),
+            pixel(),
+            &dir.path().join("out.png"),
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(received).unwrap(), [1, 2, 3]);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn hung_png_encoder_is_killed_at_its_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let start = std::time::Instant::now();
+        let message = write_png_with(
+            sh_command("exec sleep 30"),
+            pixel(),
+            &dir.path().join("out.png"),
+            Duration::from_millis(200),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(start.elapsed() < Duration::from_secs(10));
+        assert!(
+            message.contains("preview PNG encoder timed out"),
+            "{message}"
         );
     }
-    Ok(())
+
+    #[test]
+    #[cfg(unix)]
+    fn png_encoder_failure_reports_ffmpeg_stderr() {
+        let dir = tempfile::tempdir().unwrap();
+        let message = write_png_with(
+            sh_command("printf 'Could not open file\\n' >&2; exit 1"),
+            pixel(),
+            &dir.path().join("out.png"),
+            Duration::from_secs(10),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(message.contains("Could not open file"), "{message}");
+    }
+
+    #[test]
+    fn preview_subprocesses_have_a_deadline() {
+        assert!(PREVIEW_SUBPROCESS_TIMEOUT <= Duration::from_secs(60));
+    }
 }

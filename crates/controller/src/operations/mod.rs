@@ -130,9 +130,14 @@ async fn require_auth(
     request: Request,
     next: Next,
 ) -> Result<Response, OperationsError> {
-    authenticate(&state.auth, peer_ip(&request)?, request.headers(), Utc::now())
-        .await
-        .map_err(|error| OperationsError::from_auth(&error))?;
+    authenticate(
+        &state.auth,
+        peer_ip(&request)?,
+        request.headers(),
+        Utc::now(),
+    )
+    .await
+    .map_err(|error| OperationsError::from_auth(&error))?;
     Ok(next.run(request).await)
 }
 
@@ -141,8 +146,13 @@ async fn require_mutation(
     request: Request,
     next: Next,
 ) -> Result<Response, OperationsError> {
-    authorize_mutation(&state.auth, peer_ip(&request)?, request.headers(), Utc::now())
-        .await
-        .map_err(|error| OperationsError::from_auth(&error))?;
+    authorize_mutation(
+        &state.auth,
+        peer_ip(&request)?,
+        request.headers(),
+        Utc::now(),
+    )
+    .await
+    .map_err(|error| OperationsError::from_auth(&error))?;
     Ok(next.run(request).await)
 }

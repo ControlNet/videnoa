@@ -24,6 +24,7 @@ use uuid::Uuid;
 
 pub mod auth;
 mod files;
+pub mod http_server;
 mod idempotency;
 pub mod iroh;
 mod persistence;
@@ -108,6 +109,8 @@ const DEFAULT_WORKFLOW_NAME_API_JOBS: &str = "ad-hoc workflow";
 const DEFAULT_WORKFLOW_NAME_API_BATCH: &str = "batch workflow";
 const RERUN_COMPLETED_REJECTION: &str = "cannot rerun completed job";
 const PREVIEW_VSYNC_MODE: &str = "vfr";
+/// Budget for the preview's metadata probe, separate from the extraction's.
+const PREVIEW_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 impl AppState {
     pub fn ensure_auth_ready(&self) -> Result<()> {
@@ -1412,7 +1415,7 @@ fn parse_and_validate_workflow(
 
     workflow
         .validate(&state.inner.node_registry)
-        .and_then(|()| validate_video_workflow(&workflow))
+        .and_then(|()| validate_video_workflow(&workflow, &state.inner.node_registry))
         .and_then(|()| validate_workflow_encoders(&workflow))
         .map_err(|e| AppError::BadRequest(format!("workflow validation failed: {e:#}")))?;
 
@@ -1585,7 +1588,9 @@ async fn create_batch(
     let base_workflow: serde_json::Value = payload.workflow;
     let workflow_name = workflow_name_from_request(&base_workflow, DEFAULT_WORKFLOW_NAME_API_BATCH);
 
-    let mut job_ids = Vec::with_capacity(payload.file_paths.len());
+    // Prepare every entry before starting any, so one bad file rejects the
+    // whole batch instead of leaving the earlier jobs running behind a 400.
+    let mut prepared = Vec::with_capacity(payload.file_paths.len());
 
     for file_path in &payload.file_paths {
         let mut wf = base_workflow.clone();
@@ -1641,22 +1646,50 @@ async fn create_batch(
             }
         }
 
-        let workflow: PipelineGraph = parse_and_validate_workflow(&state, wf)?;
+        let workflow: PipelineGraph =
+            parse_and_validate_workflow(&state, wf).map_err(|error| match error {
+                AppError::BadRequest(message) => {
+                    AppError::BadRequest(format!("batch entry '{file_path}': {message}"))
+                }
+                other => other,
+            })?;
 
-        let created = create_and_spawn_job(
-            &state,
-            JobSubmission {
-                workflow,
-                params: None,
-                workflow_name: workflow_name.clone(),
-                workflow_source: WORKFLOW_SOURCE_API_BATCH.to_string(),
-                rerun_of_job_id: None,
-            },
-        )?;
-        let id = created.id;
+        let (job, response) = prepare_job(JobSubmission {
+            workflow,
+            params: None,
+            workflow_name: workflow_name.clone(),
+            workflow_source: WORKFLOW_SOURCE_API_BATCH.to_string(),
+            rerun_of_job_id: None,
+        });
+        prepared.push((file_path, job, response));
+    }
 
-        info!(job_id = %id, file_path = %file_path, "Batch job created");
-        job_ids.push(id);
+    // Persist all jobs before spawning any; on a storage failure remove the
+    // ones already stored so the batch leaves nothing behind.
+    for (index, (_, job, _)) in prepared.iter().enumerate() {
+        if let Err(error) = state.persist_job_snapshot(job) {
+            if let Some(persistence) = &state.inner.jobs_persistence {
+                for (_, stored, _) in &prepared[..index] {
+                    if let Err(rollback_error) = persistence.delete_job(&stored.id) {
+                        error!(
+                            job_id = %stored.id,
+                            error = ?rollback_error,
+                            "Failed to roll back persisted batch job"
+                        );
+                    }
+                }
+            }
+            return Err(AppError::Internal(format!(
+                "failed to persist new job: {error:#}"
+            )));
+        }
+    }
+
+    let mut job_ids = Vec::with_capacity(prepared.len());
+    for (file_path, job, response) in prepared {
+        spawn_job(&state, job);
+        info!(job_id = %response.id, file_path = %file_path, "Batch job created");
+        job_ids.push(response.id);
     }
 
     let total = job_ids.len();
@@ -1854,10 +1887,27 @@ async fn list_presets(State(state): State<AppState>) -> Json<Vec<PresetResponse>
     Json(presets)
 }
 
+/// Upper bound on entries in the in-memory preset map (built-in presets
+/// included). Presets created through the API are not persisted, so the map
+/// must stay bounded for the lifetime of the process.
+const MAX_PRESETS: usize = 256;
+
 async fn create_preset(
     State(state): State<AppState>,
     Json(payload): Json<CreatePresetRequest>,
-) -> (StatusCode, Json<PresetResponse>) {
+) -> Result<(StatusCode, Json<PresetResponse>), (StatusCode, Json<ErrorResponse>)> {
+    if state.inner.presets.len() >= MAX_PRESETS {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(ErrorResponse {
+                error: format!(
+                    "preset limit reached ({MAX_PRESETS} presets); API-created presets are kept in memory only, restart the server to clear them"
+                ),
+                code: Some("preset_limit_reached"),
+            }),
+        ));
+    }
+
     let id = Uuid::new_v4().to_string();
     let preset = Preset {
         name: payload.name,
@@ -1874,7 +1924,7 @@ async fn create_preset(
 
     state.inner.presets.insert(id, preset);
 
-    (StatusCode::CREATED, Json(response))
+    Ok((StatusCode::CREATED, Json(response)))
 }
 
 // ---------------------------------------------------------------------------
@@ -2297,46 +2347,37 @@ async fn extract_frames(
     })?;
     let session = cache.create()?;
     let preview_id = Uuid::new_v4().to_string();
-    let deadline = tokio::time::Instant::now() + preview_cache::EXTRACTION_TIMEOUT;
     let mut probe = crate::runtime::command_for("ffprobe");
-    probe.args([
-        "-v",
-        "error",
-        "-count_frames",
-        "-select_streams",
-        "v:0",
-        "-show_entries",
-        "stream=width,height,color_space,nb_read_frames",
-        "-of",
-        "json",
-        &payload.video_path,
-    ]);
-    let probe = preview_cache::run_command(
-        probe,
-        &session,
-        deadline.saturating_duration_since(tokio::time::Instant::now()),
-    )
-    .await?;
+    probe.args(preview_probe_args(&payload.video_path));
+    // The probe reads container metadata only and has its own short budget;
+    // a probe that cannot finish in time falls back to the default estimate.
+    let probe = match preview_cache::run_command(probe, &session, PREVIEW_PROBE_TIMEOUT).await {
+        Ok(probe) => probe,
+        Err(error) if preview_cache::is_timeout(&error) => {
+            warn!(
+                video_path = %payload.video_path,
+                timeout_s = PREVIEW_PROBE_TIMEOUT.as_secs(),
+                "preview probe timed out; sampling with the default frame estimate"
+            );
+            Vec::new()
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let deadline = tokio::time::Instant::now() + preview_cache::EXTRACTION_TIMEOUT;
 
-    let (total_frames, color_matrix) = parse_preview_probe(&probe);
-    let interval = (total_frames / payload.count as u64).max(1);
+    let probe = parse_preview_probe(&probe);
+    let interval = (probe.total_frames / payload.count as u64).max(1);
 
     let output_pattern = session.path().join("frame_%04d.png");
     let mut command = crate::runtime::command_for("ffmpeg");
     command
-        .args([
-            "-nostdin",
-            "-v",
-            "error",
-            "-i",
+        .args(preview_extraction_args(
             &payload.video_path,
-            "-vf",
-            &preview_extraction_filter(interval, color_matrix),
-            "-frames:v",
-            &payload.count.to_string(),
-            "-vsync",
-            PREVIEW_VSYNC_MODE,
-        ])
+            probe.stream_index,
+            interval,
+            probe.color_matrix,
+            payload.count,
+        ))
         .arg(output_pattern);
     preview_cache::run_command(
         command,
@@ -2371,47 +2412,164 @@ async fn extract_frames(
     ))
 }
 
-/// Frame count and swscale input matrix from the preview ffprobe JSON.
-/// Unparseable output falls back to 1000 frames, like the former CSV probe.
-fn parse_preview_probe(probe: &[u8]) -> (u64, &'static str) {
+/// ffprobe arguments for the preview's stream choice, frame count and source
+/// matrix. Every video stream is listed with its disposition so the preview
+/// can pick the stream a job decodes. The probe reads container metadata
+/// only: `-count_frames` would decode the whole file, which alone can exceed
+/// the extraction budget on long or 4K sources.
+fn preview_probe_args(video_path: &str) -> [&str; 9] {
+    [
+        "-v",
+        "error",
+        "-select_streams",
+        "v",
+        "-show_entries",
+        "stream=index,nb_frames,duration,r_frame_rate,color_space:\
+         stream_disposition=default,attached_pic:format=duration",
+        "-of",
+        "json",
+        video_path,
+    ]
+}
+
+/// Frame count used when the preview probe gives nothing usable.
+const PREVIEW_FALLBACK_FRAMES: u64 = 1000;
+
+/// What the preview probe found: the stream to sample, roughly how many
+/// frames it has, and the swscale input matrix.
+#[derive(Debug, PartialEq)]
+struct PreviewProbe {
+    /// Absolute stream index; `None` when the probe gave nothing usable.
+    stream_index: Option<usize>,
+    total_frames: u64,
+    color_matrix: &'static str,
+}
+
+impl PreviewProbe {
+    fn fallback() -> Self {
+        Self {
+            stream_index: None,
+            total_frames: PREVIEW_FALLBACK_FRAMES,
+            color_matrix: crate::nodes::video_input::source_color_matrix(None),
+        }
+    }
+
+    #[cfg(test)]
+    fn frames_and_matrix(&self) -> (u64, &'static str) {
+        (self.total_frames, self.color_matrix)
+    }
+}
+
+/// Stream choice, frame count and swscale input matrix from the preview
+/// ffprobe JSON.
+///
+/// The stream is ranked like a job's (`primary_video_stream_rank`). The count
+/// is its `nb_frames` when present, otherwise the stream (or container)
+/// duration times `r_frame_rate`, otherwise 1000. It only spaces the sampled
+/// frames, so an estimate is enough.
+fn parse_preview_probe(probe: &[u8]) -> PreviewProbe {
     #[derive(Deserialize)]
     struct Probe {
+        #[serde(default)]
         streams: Vec<ProbeStream>,
+        format: Option<ProbeFormat>,
     }
     #[derive(Deserialize)]
     struct ProbeStream {
-        width: Option<u32>,
-        height: Option<u32>,
+        index: Option<usize>,
+        #[serde(default)]
+        disposition: HashMap<String, serde_json::Value>,
         color_space: Option<String>,
-        nb_read_frames: Option<String>,
+        nb_frames: Option<String>,
+        duration: Option<String>,
+        r_frame_rate: Option<String>,
+    }
+    #[derive(Deserialize)]
+    struct ProbeFormat {
+        duration: Option<String>,
     }
 
-    let stream = serde_json::from_slice::<Probe>(probe)
-        .ok()
-        .and_then(|probe| probe.streams.into_iter().next());
-    let Some(stream) = stream else {
-        return (
-            1000,
-            crate::nodes::video_input::source_color_matrix(None, 0, 0),
-        );
+    let Some(probe) = serde_json::from_slice::<Probe>(probe).ok() else {
+        return PreviewProbe::fallback();
     };
-    let total_frames = stream
-        .nb_read_frames
+    let format_duration = probe.format.and_then(|format| format.duration);
+    let Some(stream) = probe.streams.into_iter().min_by_key(|stream| {
+        let flag =
+            |key| crate::nodes::video_input::disposition_value_set(stream.disposition.get(key));
+        crate::nodes::video_input::primary_video_stream_rank(
+            flag("attached_pic"),
+            flag("default"),
+            stream.index.unwrap_or(usize::MAX),
+        )
+    }) else {
+        return PreviewProbe::fallback();
+    };
+
+    let positive = |value: f64| (value.is_finite() && value > 0.0).then_some(value);
+    let counted = stream
+        .nb_frames
         .as_deref()
-        .and_then(|frames| frames.trim().parse().ok())
-        .unwrap_or(1000);
-    let color_matrix = crate::nodes::video_input::source_color_matrix(
-        stream.color_space.as_deref(),
-        stream.width.unwrap_or(0),
-        stream.height.unwrap_or(0),
-    );
-    (total_frames, color_matrix)
+        .and_then(|frames| frames.trim().parse::<u64>().ok())
+        .filter(|&frames| frames > 0);
+    let estimated = || {
+        let duration = [stream.duration.as_deref(), format_duration.as_deref()]
+            .into_iter()
+            .flatten()
+            .find_map(|duration| duration.trim().parse::<f64>().ok().and_then(positive))?;
+        let rate = stream
+            .r_frame_rate
+            .as_deref()
+            .and_then(crate::nodes::video_input::parse_frame_rate)
+            .and_then(positive)?;
+        Some((duration * rate).round() as u64).filter(|&frames| frames > 0)
+    };
+    let total_frames = counted
+        .or_else(estimated)
+        .unwrap_or(PREVIEW_FALLBACK_FRAMES);
+    PreviewProbe {
+        stream_index: stream.index,
+        total_frames,
+        color_matrix: crate::nodes::video_input::source_color_matrix(stream.color_space.as_deref()),
+    }
+}
+
+/// FFmpeg arguments (before the output pattern) that write `count` preview
+/// frames sampled from the probed stream, or from the first video stream when
+/// the probe chose none.
+fn preview_extraction_args(
+    video_path: &str,
+    stream_index: Option<usize>,
+    interval: u64,
+    color_matrix: &str,
+    count: u32,
+) -> Vec<String> {
+    let stream = stream_index.map_or_else(|| "0:v:0".to_owned(), |index| format!("0:{index}"));
+    [
+        "-nostdin",
+        "-v",
+        "error",
+        "-i",
+        video_path,
+        "-map",
+        &stream,
+        "-vf",
+        &preview_extraction_filter(interval, color_matrix),
+        "-frames:v",
+        &count.to_string(),
+        "-vsync",
+        PREVIEW_VSYNC_MODE,
+    ]
+    .map(str::to_owned)
+    .to_vec()
 }
 
 /// Samples every `interval`-th frame and converts it to RGB with the source matrix,
 /// matching how video jobs decode.
 fn preview_extraction_filter(interval: u64, color_matrix: &str) -> String {
-    format!("select='not(mod(n\\,{interval}))',scale=in_color_matrix={color_matrix}:flags=bicubic")
+    format!(
+        "select='not(mod(n\\,{interval}))',scale=in_color_matrix={color_matrix}:flags={}",
+        crate::nodes::video_input::RGB_DECODE_SCALE_FLAGS
+    )
 }
 
 async fn serve_preview_frame(
@@ -2901,25 +3059,176 @@ mod tests {
 
     #[test]
     fn preview_probe_reports_frame_count_and_source_matrix() {
-        let tagged = br#"{"streams":[{"width":720,"height":480,"color_space":"bt709","nb_read_frames":"240"}]}"#;
-        assert_eq!(parse_preview_probe(tagged), (240, "bt709"));
+        // The container's frame count wins.
+        let counted = br#"{"streams":[{"nb_frames":"240","duration":"99.0","r_frame_rate":"24/1","color_space":"smpte170m"}],"format":{"duration":"99.0"}}"#;
+        assert_eq!(
+            parse_preview_probe(counted).frames_and_matrix(),
+            (240, "smpte170m")
+        );
 
-        let untagged_hd =
-            br#"{"streams":[{"width":1920,"height":1080,"color_space":"unknown","nb_read_frames":"12"}]}"#;
-        assert_eq!(parse_preview_probe(untagged_hd), (12, "bt709"));
+        let untagged = br#"{"streams":[{"color_space":"unknown","nb_frames":"12"}]}"#;
+        assert_eq!(
+            parse_preview_probe(untagged).frames_and_matrix(),
+            (12, "bt709")
+        );
+    }
 
-        let untagged_sd = br#"{"streams":[{"width":720,"height":480,"nb_read_frames":"5"}]}"#;
-        assert_eq!(parse_preview_probe(untagged_sd), (5, "bt601"));
+    #[test]
+    fn preview_probe_estimates_frames_from_duration_and_rate() {
+        // Matroska has no stream frame count: stream duration x frame rate.
+        let stream_duration = br#"{"streams":[{"duration":"10.010000","r_frame_rate":"24000/1001","color_space":"bt709"}],"format":{"duration":"12.0"}}"#;
+        assert_eq!(
+            parse_preview_probe(stream_duration).frames_and_matrix(),
+            (240, "bt709")
+        );
 
-        // Unparseable output keeps the previous frame-count fallback.
-        assert_eq!(parse_preview_probe(b"garbage"), (1000, "bt601"));
+        // Without a stream duration the container duration is used.
+        let format_duration = br#"{"streams":[{"nb_frames":"N/A","r_frame_rate":"25/1"}],"format":{"duration":"1440.000000"}}"#;
+        assert_eq!(
+            parse_preview_probe(format_duration).frames_and_matrix(),
+            (36_000, "bt709")
+        );
+    }
+
+    #[test]
+    fn preview_probe_falls_back_to_1000_frames() {
+        for probe in [
+            &br#"garbage"#[..],
+            br#""#,
+            br#"{"streams":[]}"#,
+            // A rate without any duration, and a duration without a usable rate.
+            br#"{"streams":[{"r_frame_rate":"24/1"}],"format":{}}"#,
+            br#"{"streams":[{"r_frame_rate":"0/0"}],"format":{"duration":"60.0"}}"#,
+            br#"{"streams":[{"nb_frames":"0","r_frame_rate":"24/1","duration":"N/A"}]}"#,
+        ] {
+            assert_eq!(
+                parse_preview_probe(probe).frames_and_matrix(),
+                (1000, "bt709"),
+                "{}",
+                String::from_utf8_lossy(probe)
+            );
+        }
+    }
+
+    #[test]
+    fn preview_probe_picks_the_video_stream_jobs_decode() {
+        // Cover art is skipped and the default stream wins over a lower index,
+        // like `select_primary_video_stream`; frames and matrix come from it.
+        let probe = br#"{"streams":[
+            {"index":0,"nb_frames":"1","color_space":"bt470bg","disposition":{"default":1,"attached_pic":1}},
+            {"index":1,"nb_frames":"100","color_space":"smpte170m","disposition":{"default":0,"attached_pic":0}},
+            {"index":3,"nb_frames":"240","color_space":"bt709","disposition":{"default":1,"attached_pic":0}}
+        ]}"#;
+        let parsed = parse_preview_probe(probe);
+        assert_eq!(parsed.stream_index, Some(3));
+        assert_eq!(parsed.frames_and_matrix(), (240, "bt709"));
+
+        // Without dispositions the lowest index wins.
+        let plain = br#"{"streams":[{"index":2,"nb_frames":"5"},{"index":1,"nb_frames":"7"}]}"#;
+        let parsed = parse_preview_probe(plain);
+        assert_eq!(parsed.stream_index, Some(1));
+        assert_eq!(parsed.frames_and_matrix(), (7, "bt709"));
+
+        // An unusable probe chooses no stream.
+        assert_eq!(parse_preview_probe(b"garbage").stream_index, None);
+    }
+
+    #[test]
+    fn preview_probe_reads_container_metadata_without_decoding() {
+        let args = preview_probe_args("/media/input.mkv");
+        assert!(!args.contains(&"-count_frames"), "{args:?}");
+        assert!(
+            args.windows(2).any(|pair| pair
+                == [
+                    "-show_entries",
+                    "stream=index,nb_frames,duration,r_frame_rate,color_space:\
+                     stream_disposition=default,attached_pic:format=duration"
+                ]),
+            "{args:?}"
+        );
+        // Every video stream is listed so the preview can pick the one jobs decode.
+        assert!(args.windows(2).any(|pair| pair == ["-select_streams", "v"]));
+        assert_eq!(args.last(), Some(&"/media/input.mkv"));
+        assert!(PREVIEW_PROBE_TIMEOUT < preview_cache::EXTRACTION_TIMEOUT);
+    }
+
+    #[test]
+    fn preview_extraction_samples_the_probed_video_stream() {
+        let args = preview_extraction_args("/media/input.mkv", Some(2), 25, "bt709", 4);
+        let input = args.iter().position(|arg| arg == "-i").unwrap();
+        assert_eq!(args[input + 1], "/media/input.mkv");
+        // Without `-map` FFmpeg would pick the "best" (largest) video stream
+        // instead of the one the probe chose.
+        let map = args.iter().position(|arg| arg == "-map").unwrap();
+        assert!(map > input, "-map must be an output option: {args:?}");
+        assert_eq!(args[map + 1], "0:2");
+
+        // A probe that chose nothing (failed or timed out) samples the first
+        // video stream.
+        let args = preview_extraction_args("/media/input.mkv", None, 25, "bt709", 4);
+        let map = args.iter().position(|arg| arg == "-map").unwrap();
+        assert_eq!(args[map + 1], "0:v:0");
+        assert!(args
+            .windows(2)
+            .any(|pair| pair[0] == "-vf" && pair[1] == preview_extraction_filter(25, "bt709")));
+        assert!(args.windows(2).any(|pair| pair == ["-frames:v", "4"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair[0] == "-vsync" && pair[1] == PREVIEW_VSYNC_MODE));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires ffmpeg with libx264"]
+    async fn preview_extraction_reads_frames_from_the_stream_jobs_decode() {
+        // Given: a clip whose second video stream is the default one, so jobs
+        // decode it, while `v:0` is a smaller non-default stream.
+        let state = test_state();
+        let video_path = state.inner.data_dir.join("two-video-streams.mkv");
+        let status = crate::runtime::command_for("ffmpeg")
+            .args(["-v", "error", "-y"])
+            .args(["-f", "lavfi", "-i", "testsrc2=size=160x90:rate=24"])
+            .args(["-f", "lavfi", "-i", "testsrc2=size=320x180:rate=24"])
+            .args(["-map", "0:v", "-map", "1:v", "-t", "2", "-c:v", "libx264"])
+            .args(["-disposition:v:0", "0", "-disposition:v:1", "default"])
+            .arg(&video_path)
+            .status()
+            .unwrap();
+        assert!(status.success(), "failed to write the fixture");
+
+        // When: preview frames are extracted.
+        let Json(response) = extract_frames(
+            State(state.clone()),
+            Json(ExtractFramesRequest {
+                video_path: video_path.to_string_lossy().into_owned(),
+                count: 3,
+            }),
+        )
+        .await
+        .map(|(_, json)| json)
+        .map_err(|error| error.into_response().status())
+        .unwrap();
+
+        // Then: every frame comes from the default stream, as in a job.
+        assert_eq!(response.frames.len(), 3);
+        let session = state
+            .preview_cache()
+            .unwrap()
+            .get(&response.preview_id)
+            .unwrap();
+        for frame in &response.frames {
+            let filename = frame.url.rsplit('/').next().unwrap();
+            let png = session.read(filename).unwrap();
+            let width = u32::from_be_bytes(png[16..20].try_into().unwrap());
+            let height = u32::from_be_bytes(png[20..24].try_into().unwrap());
+            assert_eq!((width, height), (320, 180), "{filename}");
+        }
     }
 
     #[test]
     fn preview_extraction_converts_with_the_source_matrix() {
         assert_eq!(
             preview_extraction_filter(25, "bt709"),
-            "select='not(mod(n\\,25))',scale=in_color_matrix=bt709:flags=bicubic"
+            "select='not(mod(n\\,25))',scale=in_color_matrix=bt709:flags=bicubic+accurate_rnd+full_chroma_int"
         );
     }
 
@@ -3447,7 +3756,9 @@ mod tests {
                 {"id": "input", "node_type": "VideoInput", "params": {
                     "path": temp_path_str("nonexistent-video-videnoa-test.mkv")
                 }},
-                {"id": "output", "node_type": "VideoOutput", "params": {}}
+                {"id": "output", "node_type": "VideoOutput", "params": {
+                    "output_path": temp_path_str("nonexistent-video-videnoa-test.out.mkv")
+                }}
             ],
             "connections": [
                 {
@@ -3492,6 +3803,135 @@ mod tests {
             !err_msg.contains("CompileContext"),
             "should not fail due to missing CompileContext, got: {err_msg}"
         );
+    }
+
+    fn all_nodes_state() -> AppState {
+        let mut node_registry = NodeRegistry::new();
+        register_all_nodes(&mut node_registry);
+        let model_registry = ModelRegistry::with_builtin_models(test_models_dir());
+        AppState::new(
+            node_registry,
+            model_registry,
+            DashMap::new(),
+            AppConfig::default(),
+            test_config_path(),
+            test_data_dir(),
+        )
+    }
+
+    /// POST a workflow to /api/jobs and return the status plus the response body.
+    async fn post_job(state: &AppState, workflow: serde_json::Value) -> (StatusCode, String) {
+        let mut app = app_router(state.clone());
+        let body = serde_json::json!({ "workflow": workflow });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/jobs")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let resp = send_request(&mut app, req).await;
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&bytes).to_string())
+    }
+
+    fn frames_edge(from: &str, to: &str) -> serde_json::Value {
+        serde_json::json!({"from_node": from, "from_port": "frames", "to_node": to,
+                           "to_port": "frames", "port_type": "VideoFrames"})
+    }
+
+    fn source_path_edge(from: &str, to: &str) -> serde_json::Value {
+        serde_json::json!({"from_node": from, "from_port": "source_path", "to_node": to,
+                           "to_port": "source_path", "port_type": "Path"})
+    }
+
+    #[tokio::test]
+    async fn test_create_job_rejects_video_output_without_output_path() {
+        let state = all_nodes_state();
+        let workflow = serde_json::json!({
+            "nodes": [
+                {"id": "input", "node_type": "VideoInput", "params": {"path": temp_path_str("in.mkv")}},
+                {"id": "output", "node_type": "VideoOutput", "params": {}}
+            ],
+            "connections": [frames_edge("input", "output"), source_path_edge("input", "output")]
+        });
+
+        let (status, body) = post_job(&state, workflow).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            body.contains("node 'output' missing required input port 'output_path'"),
+            "{body}"
+        );
+        assert!(state.inner.jobs.is_empty(), "no job may be queued");
+    }
+
+    #[tokio::test]
+    async fn test_create_job_rejects_non_source_feeding_video_frames() {
+        let state = all_nodes_state();
+        let workflow = serde_json::json!({
+            "nodes": [
+                {"id": "const", "node_type": "Constant", "params": {"type": "Path", "value": temp_path_str("in.mkv")}},
+                {"id": "output", "node_type": "VideoOutput", "params": {"output_path": temp_path_str("out.mkv")}}
+            ],
+            "connections": [
+                frames_edge("const", "output"),
+                {"from_node": "const", "from_port": "value", "to_node": "output",
+                 "to_port": "source_path", "port_type": "Path"}
+            ]
+        });
+
+        let (status, body) = post_job(&state, workflow).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            body.contains("node 'const' of type 'Constant' cannot be the VideoFrames source"),
+            "{body}"
+        );
+        assert!(state.inner.jobs.is_empty(), "no job may be queued");
+    }
+
+    #[tokio::test]
+    async fn test_create_job_rejects_frame_chain_fan_out() {
+        let state = all_nodes_state();
+        let workflow = serde_json::json!({
+            "nodes": [
+                {"id": "input", "node_type": "VideoInput", "params": {"path": temp_path_str("in.mkv")}},
+                {"id": "out_a", "node_type": "VideoOutput", "params": {"output_path": temp_path_str("a.mkv")}},
+                {"id": "out_b", "node_type": "VideoOutput", "params": {"output_path": temp_path_str("b.mkv")}}
+            ],
+            "connections": [
+                frames_edge("input", "out_a"), frames_edge("input", "out_b"),
+                source_path_edge("input", "out_a"), source_path_edge("input", "out_b")
+            ]
+        });
+
+        let (status, body) = post_job(&state, workflow).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(body.contains("fan-out detected"), "{body}");
+        assert!(state.inner.jobs.is_empty(), "no job may be queued");
+    }
+
+    #[tokio::test]
+    async fn test_create_job_rejects_multiple_video_sources() {
+        let state = all_nodes_state();
+        let workflow = serde_json::json!({
+            "nodes": [
+                {"id": "in_a", "node_type": "VideoInput", "params": {"path": temp_path_str("a.mkv")}},
+                {"id": "in_b", "node_type": "VideoInput", "params": {"path": temp_path_str("b.mkv")}},
+                {"id": "out_a", "node_type": "VideoOutput", "params": {"output_path": temp_path_str("a.out.mkv")}},
+                {"id": "out_b", "node_type": "VideoOutput", "params": {"output_path": temp_path_str("b.out.mkv")}}
+            ],
+            "connections": [
+                frames_edge("in_a", "out_a"), frames_edge("in_b", "out_b"),
+                source_path_edge("in_a", "out_a"), source_path_edge("in_b", "out_b")
+            ]
+        });
+
+        let (status, body) = post_job(&state, workflow).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(body.contains("multiple source nodes detected"), "{body}");
+        assert!(state.inner.jobs.is_empty(), "no job may be queued");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4969,11 +5409,13 @@ mod tests {
             .await
             .unwrap();
         let json: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json.len(), 22);
+        assert_eq!(json.len(), 20);
         let node_types: Vec<&str> = json
             .iter()
             .map(|n| n["node_type"].as_str().unwrap())
             .collect();
+        assert!(!node_types.contains(&"ColorSpace"));
+        assert!(!node_types.contains(&"SceneDetect"));
         assert!(node_types.contains(&"Downloader"));
         assert!(node_types.contains(&"PathDivider"));
         assert!(node_types.contains(&"PathJoiner"));
@@ -5115,6 +5557,114 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
+    fn persisted_job_count(state: &AppState) -> i64 {
+        let persistence = state.inner.jobs_persistence.as_ref().unwrap();
+        let conn = Connection::open(persistence.db_path()).unwrap();
+        conn.query_row("SELECT COUNT(*) FROM jobs", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    async fn post_batch(
+        state: &AppState,
+        file_paths: Vec<String>,
+        workflow: serde_json::Value,
+    ) -> (StatusCode, String) {
+        let mut app = app_router(state.clone());
+        let body = serde_json::json!({ "file_paths": file_paths, "workflow": workflow });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/batch")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let resp = send_request(&mut app, req).await;
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&bytes).to_string())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_create_batch_starts_nothing_when_a_later_entry_is_invalid() {
+        // Test-only factory: the real VideoInput accepts any path at validation
+        // time, so reject one marker path to force a failure on the second entry.
+        const REJECTED: &str = "rejected-by-test-factory.mkv";
+        let mut node_registry = NodeRegistry::new();
+        register_all_nodes(&mut node_registry);
+        node_registry.register("VideoInput", |params| {
+            let path = params
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            if path.ends_with(REJECTED) {
+                anyhow::bail!("test factory rejects {path}");
+            }
+            Ok(Box::new(crate::nodes::video_input::VideoInputNode::new(
+                &params,
+            )?))
+        });
+        let state = AppState::new(
+            node_registry,
+            ModelRegistry::with_builtin_models(test_models_dir()),
+            DashMap::new(),
+            AppConfig::default(),
+            test_config_path(),
+            test_data_dir(),
+        );
+        let workflow = serde_json::json!({
+            "nodes": [
+                {"id": "input", "node_type": "VideoInput", "params": {}},
+                {"id": "output", "node_type": "VideoOutput", "params": {"output_path": temp_path_str("batch-out.mkv")}}
+            ],
+            "connections": [frames_edge("input", "output"), source_path_edge("input", "output")]
+        });
+
+        let (status, body) = post_batch(
+            &state,
+            vec![temp_path_str("batch-ok.mkv"), temp_path_str(REJECTED)],
+            workflow,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            body.contains(REJECTED),
+            "error should name the entry: {body}"
+        );
+        assert!(state.inner.jobs.is_empty(), "no batch job may be started");
+        assert_eq!(persisted_job_count(&state), 0, "no batch job may be stored");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_create_batch_rolls_back_when_a_later_entry_fails_to_persist() {
+        let state = test_state();
+        let persistence = state.inner.jobs_persistence.as_ref().unwrap();
+        let conn = Connection::open(persistence.db_path()).unwrap();
+        // Deliberate database fault injection: the second insert fails.
+        conn.execute_batch(
+            "CREATE TRIGGER reject_second_job BEFORE INSERT ON jobs \
+             WHEN (SELECT COUNT(*) FROM jobs) >= 1 \
+             BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
+        )
+        .unwrap();
+
+        let (status, body) = post_batch(
+            &state,
+            vec![temp_path_str("video1.mkv"), temp_path_str("video2.mkv")],
+            valid_workflow_json(),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+        assert!(state.inner.jobs.is_empty(), "no batch job may be started");
+        assert_eq!(
+            persisted_job_count(&state),
+            0,
+            "jobs stored before the failure must be rolled back"
+        );
+    }
+
     #[tokio::test]
     async fn test_extract_frames_missing_file() {
         let mut app = test_router();
@@ -5216,6 +5766,48 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(json["id"].is_string());
         assert_eq!(json["name"], "My Custom Preset");
+    }
+
+    #[tokio::test]
+    async fn test_create_preset_rejects_when_map_is_full() {
+        let state = test_state();
+        for index in 0..MAX_PRESETS {
+            state.inner.presets.insert(
+                format!("prefilled-{index}"),
+                Preset {
+                    name: format!("Prefilled {index}"),
+                    description: String::new(),
+                    workflow: serde_json::json!({"nodes": [], "connections": []}),
+                },
+            );
+        }
+        let mut app = app_router(state.clone());
+
+        let body = serde_json::json!({
+            "name": "One Too Many",
+            "description": "",
+            "workflow": {"nodes": [], "connections": []}
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/presets")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let resp = send_request(&mut app, req).await;
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["code"], "preset_limit_reached");
+        assert!(json["error"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("{MAX_PRESETS} presets")));
+        assert_eq!(state.inner.presets.len(), MAX_PRESETS);
     }
 
     fn fs_test_state(models_dir: PathBuf) -> AppState {
@@ -6634,5 +7226,39 @@ mod tests {
             enabled_performance_envelope(&full_sample)["status"],
             "enabled"
         );
+    }
+
+    /// `POST /api/run` validates the saved workflow before the Controller's
+    /// params are injected, so every bundled preset must pass that validation
+    /// with its inputs fed only through `WorkflowInput` connections.
+    #[test]
+    fn bundled_presets_pass_run_validation_before_param_injection() {
+        let presets_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../presets");
+        let data_dir = unique_temp_dir("videnoa-preset-validation");
+        let mut config = AppConfig::default();
+        config.paths.presets_dir = presets_dir.clone();
+        let state = app_state_with_config(config, data_dir.join("config.toml"), data_dir);
+
+        let preset_files = std::fs::read_dir(&presets_dir)
+            .expect("read presets dir")
+            .flatten()
+            .filter(|entry| entry.path().extension().and_then(|e| e.to_str()) == Some("json"))
+            .count();
+        assert!(
+            preset_files > 0,
+            "no presets found in {}",
+            presets_dir.display()
+        );
+        assert_eq!(
+            state.inner.presets.len(),
+            preset_files,
+            "every preset should load"
+        );
+
+        for preset in state.inner.presets.iter() {
+            if let Err(error) = parse_and_validate_workflow(&state, preset.workflow.clone()) {
+                panic!("preset '{}' fails run validation: {error:?}", preset.key());
+            }
+        }
     }
 }

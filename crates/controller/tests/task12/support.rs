@@ -167,6 +167,16 @@ impl Fixture {
     }
 
     pub fn executor(&self) -> TestResult<TransferExecutor> {
+        self.executor_with_transfer_seconds(1)
+    }
+
+    /// Executor whose transfers time out after `transfer_seconds`. Tests that
+    /// park a transfer at a checkpoint while other work runs need a bound that
+    /// cannot expire under load.
+    pub fn executor_with_transfer_seconds(
+        &self,
+        transfer_seconds: u64,
+    ) -> TestResult<TransferExecutor> {
         Ok(TransferExecutor::new(
             TransferResources {
                 store: self.store.clone(),
@@ -179,7 +189,7 @@ impl Fixture {
                     &videnoa_controller::domain::TimeoutSettingsDto {
                         health_seconds: 1,
                         poll_seconds: 3,
-                        transfer_seconds: 1,
+                        transfer_seconds,
                     },
                     &videnoa_controller::domain::RetrySettingsDto {
                         initial_seconds: 1,

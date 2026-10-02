@@ -17,4 +17,5 @@ pub mod registry;
 pub mod runtime;
 pub mod server;
 pub mod streaming_executor;
+pub(crate) mod subprocess;
 pub mod types;
