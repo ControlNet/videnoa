@@ -199,6 +199,12 @@ for (const target of ["D:/actions/package-target", "/tmp/package-target", "${{ r
 	expectContractFailure("missing verified frontend artifact", () => validateUnitWorkflow(workflow), /upload-artifact/);
 }
 
+for (const [label, command] of [["lint", "npm run lint"], ["tests", "npm test"]]) {
+	const workflow = structuredClone(loadWorkflow(unitPath));
+	workflow.jobs["web-build-check"].steps = workflow.jobs["web-build-check"].steps.filter((step) => !step.run?.startsWith(command));
+	expectContractFailure(`Worker web ${label} not run`, () => validateUnitWorkflow(workflow), new RegExp(`web-build-check is missing contract: ${command}`));
+}
+
 // Hygiene contracts: timeouts, SHA-pinned actions, and --locked cargo calls.
 {
 	const workflow = structuredClone(loadWorkflow(unitPath));
