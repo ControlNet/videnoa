@@ -35,5 +35,10 @@ and `latest`:
 - No issues were tied to this release. The v0.1.7 known issue (NVENC 64x64
   probe) is fixed.
 - Housekeeping before the release: merged `origin/feat/optional-password`
-  deleted; local tag `v0.1.2` differs from origin's (left untouched), so use
-  `git fetch origin` without `--tags`.
+  deleted; local tag `v0.1.2` differed from origin's (left untouched), so
+  `git fetch origin` was used without `--tags`.
+- Resolved later on 2026-10-02: local `v0.1.2` now matches origin (tag object
+  `f1be02f`, commit `5dcc10a`) and `git fetch --tags origin` succeeds. The
+  old local tag object `af9ada0` (commit `52d13af`, still on master) is only
+  shadowed in `packed-refs`. The only local-only tag left is the intentional
+  `archive/v0.1.3-2026-09-01`.
