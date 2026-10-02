@@ -18,7 +18,7 @@ toml = "0.8"
 petgraph = { version = "0.8", features = ["serde-1"] }
 anyhow = "1"
 argon2 = "0.5.3"
-base64 = "0.22.1"
+base64 = "0.23.1"
 cap-fs-ext = "=3.4.2"
 cap-std = "=3.4.2"
 tracing = "0.1"
