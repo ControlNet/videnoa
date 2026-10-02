@@ -116,6 +116,7 @@ impl LifecycleService {
 const fn stage_action(stage: ResumeStage) -> DurableAction {
     match stage {
         ResumeStage::Uploading => DurableAction::Upload,
+        ResumeStage::Staged => DurableAction::Submit,
         ResumeStage::Downloading => DurableAction::Download,
         ResumeStage::Verifying => DurableAction::Verify,
         ResumeStage::Publishing => DurableAction::Publish,

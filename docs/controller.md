@@ -314,6 +314,13 @@ A worker that rejects the submission with HTTP 400 (for example a workflow that
 fails validation) fails the task with `remote_submission_failed`; the failure
 message ends with the worker's `error` text, cleaned of control characters and
 cut to 1024 characters. Other rejected responses are not reflected.
+The Controller never retries a rejection automatically. After the cause is fixed
+on the worker (for example a missing model), the task detail's Retry action
+returns the task to `staged` on the same attempt and submits it again with the
+same submission key and remote input; the input is not uploaded again. Failures
+recorded before this change, which are marked `retryable=false`, can be retried
+the same way. The worker keeps the uploaded input of a failed task until the
+task is retried or its workspace is removed.
 Confirmation and cancellation recovery remain available while scheduling is paused.
 Transfer and cleanup failures use bounded persisted retry. Downstream retries do
 not repeat successful AI work.
