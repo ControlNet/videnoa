@@ -13,6 +13,7 @@
 - Establish and enforce a Clippy policy. `cargo clippy -p videnoa-core -p videnoa-app --all-targets -- -D warnings` currently reports 53 errors.
 - Add desktop compilation coverage to ordinary CI.
 - Add dependency scanning. GitHub Dependabot alerts are disabled and no code-scanning analysis exists.
+  - 2026-10-02: the owner does not want Dependabot (its PRs were closed and the config removed). CI covers Rust advisories with `cargo deny check advisories`; check npm with `npm audit`.
 
 ## Product and Operations
 
