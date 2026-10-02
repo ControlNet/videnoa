@@ -121,6 +121,81 @@ async fn capabilities_merge_workflows_and_presets_when_interfaces_are_compatible
     Ok(())
 }
 
+#[tokio::test]
+async fn capabilities_load_when_a_newer_worker_adds_response_fields() -> TestResult {
+    // Given: a Worker whose health, workflow and preset responses carry fields
+    // this Controller does not know, including an extra key on an interface port.
+    let server = MockVidenoa::start().await?;
+    let client = test_client(
+        &server,
+        Duration::from_secs(5),
+        Duration::from_secs(1),
+        JSON_LIMIT,
+    )?;
+    for (route, body) in [
+        (
+            Route::Health,
+            serde_json::json!({"status": "ok", "version": "9.9.9"}),
+        ),
+        (
+            Route::Workflows,
+            serde_json::json!([{
+                "filename": "eligible-workflow.json",
+                "name": "Eligible",
+                "description": "",
+                "workflow": {},
+                "has_interface": true,
+                "validation": {"valid": true},
+            }]),
+        ),
+        (
+            Route::Presets,
+            serde_json::json!([{
+                "id": "eligible-preset",
+                "name": "Eligible preset",
+                "description": "",
+                "builtin": true,
+                "workflow": {"interface": {
+                    "inputs": [
+                        {"name": "input", "port_type": "Path", "label": "Source"},
+                        {"name": "output", "port_type": "Path"},
+                    ],
+                    "outputs": [],
+                    "notes": "added later",
+                }},
+            }]),
+        ),
+    ] {
+        server
+            .set_fault(Fault::Response(ResponseFault {
+                route,
+                status: 200,
+                body: serde_json::to_vec(&body)?,
+            }))
+            .await;
+        // Each one-shot fault is consumed by its own request below.
+        match route {
+            Route::Health => assert!(client.health().await?.is_healthy()),
+            Route::Workflows => assert_eq!(client.workflows().await?.len(), 1),
+            _ => {}
+        }
+    }
+
+    // When: the catalog is refreshed against those responses.
+    let capabilities = client.capabilities().await?;
+
+    // Then: the unknown fields are ignored and both entries stay eligible.
+    assert_eq!(
+        capabilities.compatibility(&WorkflowName::new("eligible-preset")),
+        Some(Compatibility::Eligible)
+    );
+    assert_eq!(
+        capabilities.compatibility(&WorkflowName::new("eligible-workflow.json")),
+        Some(Compatibility::Eligible)
+    );
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn remote_lifecycle_streams_files_and_preserves_workflow_paths() -> TestResult {
     // Given: payloads larger than the configured client chunk and a tracked streaming reader.

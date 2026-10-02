@@ -224,6 +224,30 @@ fn workflow_response_path(path: &StdPath) -> Result<String, AppError> {
     })
 }
 
+/// See `controller_facing_responses_keep_the_fields_older_controllers_accept`.
+#[cfg(test)]
+pub(super) fn assert_controller_facing_file_responses() {
+    let keys = |value: serde_json::Value| {
+        let mut keys: Vec<String> = value.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+        keys
+    };
+    let upload = serde_json::to_value(UploadResponse {
+        path: String::new(),
+        size: 0,
+    })
+    .unwrap();
+    assert_eq!(keys(upload), ["path", "size"]);
+    let stat = serde_json::to_value(FileStatResponse {
+        path: String::new(),
+        size: 0,
+        is_file: true,
+        is_dir: false,
+    })
+    .unwrap();
+    assert_eq!(keys(stat), ["is_dir", "is_file", "path", "size"]);
+}
+
 #[cfg(test)]
 mod tests {
     use super::relative_to_or_absolute;
