@@ -637,6 +637,22 @@ Rollback requires the pre-upgrade Controller and worker snapshots. Never point
 an older binary at a database already migrated by a newer version. There is no
 manual migration command or supported migration downgrade.
 
+### Worker API compatibility
+
+Controller and workers can be upgraded separately within these rules:
+
+- Since v0.1.9, Controller ignores fields it does not know in worker
+  responses. Known fields and status values are still checked strictly.
+- Controllers up to v0.1.8 reject unknown fields in worker responses. Workers
+  therefore do not add fields to the responses those Controllers read (health,
+  workflow and preset lists, interfaces, run receipts, jobs, uploads and file
+  metadata); a Worker unit test pins these field sets. New information is served
+  from new endpoints instead.
+- Controller detects a new worker endpoint by trying it: a worker that predates
+  it answers 404, and Controller falls back to the older behaviour.
+- Controller sends no new request fields to existing worker endpoints, because
+  workers reject unknown request fields.
+
 ## Troubleshooting
 
 ```bash

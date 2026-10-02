@@ -3052,6 +3052,113 @@ mod tests {
     use rusqlite::Connection;
     use tower::{Service, ServiceExt};
 
+    /// Field names of `value`'s JSON object, sorted.
+    fn json_keys(value: impl Serialize) -> Vec<String> {
+        let mut keys: Vec<String> = serde_json::to_value(value)
+            .unwrap()
+            .as_object()
+            .expect("response serializes as an object")
+            .keys()
+            .cloned()
+            .collect();
+        keys.sort();
+        keys
+    }
+
+    fn sorted(keys: &[&str]) -> Vec<String> {
+        let mut keys: Vec<String> = keys.iter().map(|key| (*key).to_owned()).collect();
+        keys.sort();
+        keys
+    }
+
+    /// Controllers up to v0.1.8 reject unknown fields in these responses, so
+    /// adding one would take those Controllers' workers offline or fail their
+    /// tasks. New data goes behind a new endpoint instead (docs/controller.md,
+    /// "Worker API compatibility").
+    #[test]
+    fn controller_facing_responses_keep_the_fields_older_controllers_accept() {
+        let now = Utc::now();
+        assert_eq!(
+            json_keys(HealthResponse {
+                status: "ok".to_owned()
+            }),
+            sorted(&["status"])
+        );
+        assert_eq!(
+            json_keys(WorkflowEntry {
+                filename: "a.json".to_owned(),
+                name: String::new(),
+                description: String::new(),
+                workflow: serde_json::json!({}),
+                has_interface: false,
+            }),
+            sorted(&[
+                "filename",
+                "name",
+                "description",
+                "workflow",
+                "has_interface"
+            ])
+        );
+        assert_eq!(
+            json_keys(PresetResponse {
+                id: "a".to_owned(),
+                name: String::new(),
+                description: String::new(),
+                workflow: serde_json::json!({}),
+            }),
+            sorted(&["id", "name", "description", "workflow"])
+        );
+        assert_eq!(
+            json_keys(CreateJobResponse {
+                id: "a".to_owned(),
+                status: JobStatus::Queued,
+                created_at: now,
+            }),
+            sorted(&["id", "status", "created_at"])
+        );
+        assert_eq!(
+            json_keys(ProgressUpdate {
+                current_frame: 0,
+                total_frames: None,
+                fps: 0.0,
+                eta_seconds: None,
+            }),
+            sorted(&["current_frame", "total_frames", "fps", "eta_seconds"])
+        );
+        assert_eq!(
+            json_keys(JobResponse {
+                id: "a".to_owned(),
+                status: JobStatus::Running,
+                created_at: now,
+                started_at: None,
+                completed_at: None,
+                progress: None,
+                error: None,
+                workflow_name: String::new(),
+                workflow_source: String::new(),
+                params: None,
+                rerun_of_job_id: None,
+                duration_ms: None,
+            }),
+            sorted(&[
+                "id",
+                "status",
+                "created_at",
+                "started_at",
+                "completed_at",
+                "progress",
+                "error",
+                "workflow_name",
+                "workflow_source",
+                "params",
+                "rerun_of_job_id",
+                "duration_ms",
+            ])
+        );
+        files::assert_controller_facing_file_responses();
+    }
+
     #[test]
     fn preview_extraction_uses_variable_frame_rate_sync_mode() {
         assert_eq!(PREVIEW_VSYNC_MODE, "vfr");
