@@ -66,8 +66,14 @@ relay_urls = ["https://relay.example.com"]
 - The lists must match. A worker on self-hosted relays is not reachable from a
   Controller on the public network, and the reverse, because neither side
   publishes to or looks up the other's address service.
+- Several relays may be listed for redundancy, including N0's public relays
+  next to your own (`https://use1-1.relay.n0.iroh.link`,
+  `https://usw1-1.relay.n0.iroh.link`, `https://euc1-1.relay.n0.iroh.link`,
+  `https://aps1-1.relay.n0.iroh.link`). An endpoint homes on one reachable
+  relay, and the Controller dials through every relay it lists, so an
+  unreachable relay falls back to the next one. Listing public relays does not
+  turn public address lookup back on.
 - Changing the Worker list restarts its endpoint with the same Endpoint ID.
-  Settings saved from either WebUI keep the list; neither page edits it.
 - Removing `relay_urls` (or setting `[]`) returns to the public N0 network.
 - Put credentials for the relay host only in its own deployment, never in
   these URLs.
