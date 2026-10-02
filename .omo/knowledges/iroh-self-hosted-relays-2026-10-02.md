@@ -49,6 +49,19 @@
 - Testing-library: a `Field` whose label also holds a hint or error needs a
   regex label query (`/^Relay URLs/`).
 
+## Multiple relays
+
+- `relay_urls` may hold several relays (own + N0 public ones). Each endpoint
+  homes on one reachable relay; `dial_address` hints every listed relay, so
+  the Controller finds a worker homed on any relay in its list.
+- Transport tests (`relay_tests`): `dialing_reaches_a_worker_on_any_listed_relay`
+  (worker [A], controller [B, A]) and
+  `an_unreachable_relay_falls_back_to_the_next_listed_one` (both
+  [`http://127.0.0.1:9`, A]). Runtime failover after the home relay dies is
+  iroh's net_report behaviour and is not covered by a Videnoa test.
+- N0 relay URLs (iroh 1.1.0 `defaults::prod`): use1-1 / usw1-1 / euc1-1 /
+  aps1-1 `.relay.n0.iroh.link`.
+
 ## Testing
 
 - `iroh = { version = "=1.1.0", features = ["test-utils"] }` as a transport

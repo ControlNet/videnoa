@@ -586,7 +586,48 @@ mod relay_tests {
         // Given: a local relay with a self-signed test certificate, and
         // ephemeral test identities that know only that relay.
         let (_relay_map, relay_url, _relay) = iroh::test_utils::run_relay_server().await?;
-        let network = Network::with_relays([relay_url.to_string()])?.with_insecure_test_relay_tls();
+        let network = test_network(&[relay_url.as_str()])?;
+
+        // When/Then: the Controller side dials by Endpoint ID alone, with no
+        // address lookup configured, and reaches the worker through the relay.
+        relayed_round_trip(&network, &network).await
+    }
+
+    #[tokio::test]
+    async fn dialing_reaches_a_worker_on_any_listed_relay() -> Result<()> {
+        // Given: a worker homed on relay A, and a Controller that lists
+        // another relay first, as with a self-hosted relay plus public ones.
+        let (_map_a, relay_a, _relay_a) = iroh::test_utils::run_relay_server().await?;
+        let (_map_b, relay_b, _relay_b) = iroh::test_utils::run_relay_server().await?;
+        let worker = test_network(&[relay_a.as_str()])?;
+        let controller = test_network(&[relay_b.as_str(), relay_a.as_str()])?;
+
+        // When/Then: every listed relay is a dialing hint, so the worker's
+        // relay is found even though it is not the Controller's first.
+        relayed_round_trip(&worker, &controller).await
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_relay_falls_back_to_the_next_listed_one() -> Result<()> {
+        // Given: both sides list a relay that is down (nothing listens on the
+        // test-only discard port) ahead of a working one.
+        let (_relay_map, relay_url, _relay) = iroh::test_utils::run_relay_server().await?;
+        let network = test_network(&["http://127.0.0.1:9", relay_url.as_str()])?;
+
+        // When/Then: the endpoints home on the working relay and connect.
+        relayed_round_trip(&network, &network).await
+    }
+
+    fn test_network(urls: &[&str]) -> Result<Network> {
+        Ok(Network::with_relays(urls)?.with_insecure_test_relay_tls())
+    }
+
+    /// Starts a worker on `worker_network`, dials it by Endpoint ID from a
+    /// client on `controller_network`, and reads bytes from the worker's target.
+    async fn relayed_round_trip(
+        worker_network: &Network,
+        controller_network: &Network,
+    ) -> Result<()> {
         let worker_root = tempfile::tempdir()?;
         let controller_root = tempfile::tempdir()?;
         let identity = Identity::open(worker_root.path())?;
@@ -601,24 +642,24 @@ mod relay_tests {
                 }
             })
         });
-        let server = Server::start(&identity, target, auth, PeerMap::default(), &network).await?;
+        let server =
+            Server::start(&identity, target, auth, PeerMap::default(), worker_network).await?;
         tokio::time::timeout(Duration::from_secs(10), server.endpoint.online()).await?;
         assert!(server
             .addr()
             .relay_urls()
-            .all(|url| network.relays().contains(url)));
-        let client = Client::open(controller_root.path(), &network).await?;
+            .all(|url| worker_network.relays().contains(url)));
+        let client = Client::open(controller_root.path(), controller_network).await?;
         let origin = tokio::spawn(async move {
             let (mut tcp, _) = listener.accept().await?;
             tcp.write_all(b"relayed").await?;
             anyhow::Ok(())
         });
-
-        // When: the Controller side dials by Endpoint ID alone, with no
-        // address lookup configured.
-        let mut stream = client.tunnel(server.id(), "relay test credential").await?;
-
-        // Then: the tunnel reaches the worker through the configured relay.
+        let mut stream = tokio::time::timeout(
+            Duration::from_secs(20),
+            client.tunnel(server.id(), "relay test credential"),
+        )
+        .await??;
         let mut value = [0; 7];
         stream.read_exact(&mut value).await?;
         assert_eq!(&value, b"relayed");
