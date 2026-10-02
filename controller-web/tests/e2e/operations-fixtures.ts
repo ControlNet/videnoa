@@ -23,7 +23,7 @@ export const workerTemplate: Worker = {
   enabled: true,
   online: false,
   compute_slots: 4,
-  capabilities: { workflows: [{ name: "anime-2x", kind: "workflow" }], refreshed_at: "2026-09-03T10:00:00Z" },
+  capabilities: { workflows: [{ name: "anime-2x", kind: "workflow" }], invalid_workflows: [], refreshed_at: "2026-09-03T10:00:00Z" },
   capacity: {
     used_slots: 2,
     available_slots: 2,

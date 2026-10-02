@@ -84,6 +84,7 @@ async fn concurrent_reservations_claim_once_and_respect_capacity() -> TestResult
                     name: WorkflowName::new("anime-upscale"),
                     kind: WorkflowKind::Workflow,
                 }],
+                invalid_workflows: Vec::new(),
                 refreshed_at: Some(now),
             },
             last_seen_at: Some(now),

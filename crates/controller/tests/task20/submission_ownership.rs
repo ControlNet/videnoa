@@ -25,10 +25,10 @@ async fn same_key_replay_maps_to_one_remote_job() -> TestResult {
 
     // When: the same request is replayed with the same key.
     let created = client
-        .run("eligible-workflow.json", "durable-key", params.clone())
+        .run("eligible-workflow", "durable-key", params.clone())
         .await?;
     let replayed = client
-        .run("eligible-workflow.json", "durable-key", params)
+        .run("eligible-workflow", "durable-key", params)
         .await?;
 
     // Then: two requests resolve to one durable remote job.

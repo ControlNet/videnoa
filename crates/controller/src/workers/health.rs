@@ -159,6 +159,7 @@ impl WorkerHealthService {
                     online: true,
                     capabilities: WorkerCapabilities {
                         workflows: catalog.eligible_workflows(),
+                        invalid_workflows: catalog.invalid_workflows(),
                         refreshed_at: Some(now),
                     },
                     last_seen_at: Some(now),

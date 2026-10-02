@@ -26,7 +26,7 @@ pub use enums::{
 pub use errors::{ApiError, ApiErrorEnvelope, FieldError};
 pub use execution_nodes::{
     WorkerCapabilities, WorkerCapacity, WorkerCreateRequest, WorkerDeleteResponse,
-    WorkerListResponse, WorkerSummary, WorkerUpdateRequest, WorkflowSummary,
+    InvalidWorkflow, WorkerListResponse, WorkerSummary, WorkerUpdateRequest, WorkflowSummary,
 };
 pub use ids::{AttemptId, RemoteJobId, SessionId, SseEventId, SubmissionKey, TaskId, WorkerId};
 pub use pagination::{PageLimit, PageOffset, PageRequest, PagingError};

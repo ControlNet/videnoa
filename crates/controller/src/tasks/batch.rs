@@ -173,6 +173,8 @@ impl TaskService {
         &self,
         request: BatchPreviewRequest,
     ) -> Result<BatchPreview, TaskApiError> {
+        self.ensure_runnable_workflow(&WorkflowName::new(&request.workflow))
+            .await?;
         let service = self.clone();
         tokio::task::spawn_blocking(move || service.build_preview(&request))
             .await

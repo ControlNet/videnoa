@@ -56,6 +56,29 @@ describe("worker API schemas", () => {
     expect(parsed.success).toBe(true)
   })
 
+  it("defaults invalid workflows when the Controller omits them", () => {
+    // Given: a worker with no rejected workflows, which Rust serializes without the field.
+    const payload = { items: [worker], total: 1 }
+
+    // When: the payload is parsed.
+    const parsed = workerListSchema.parse(payload)
+
+    // Then: consumers always see a list.
+    expect(parsed.items[0]?.capabilities.invalid_workflows).toEqual([])
+  })
+
+  it("parses workflows a worker reports as invalid", () => {
+    // Given: a worker that rejects one of its workflows.
+    const invalid = { name: "broken.json", kind: "workflow", reason: "unknown node type 'Blur'" }
+    const payload = { items: [{ ...worker, capabilities: { ...worker.capabilities, invalid_workflows: [invalid] } }], total: 1 }
+
+    // When: the payload is parsed.
+    const parsed = workerListSchema.parse(payload)
+
+    // Then: the reason reaches the Workers table.
+    expect(parsed.items[0]?.capabilities.invalid_workflows).toEqual([invalid])
+  })
+
   it("rejects unknown worker summary fields", () => {
     // Given: a server response that drifted beyond the closed Rust DTO.
     const payload = { items: [{ ...worker, secret: "must-not-cross" }], total: 1 }

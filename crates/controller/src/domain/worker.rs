@@ -12,10 +12,22 @@ pub struct WorkflowSummary {
     pub kind: WorkflowKind,
 }
 
+/// A workflow whose interface fits but which the Worker itself rejects, so
+/// it is not scheduled there.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct InvalidWorkflow {
+    pub name: WorkflowName,
+    pub kind: WorkflowKind,
+    pub reason: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkerCapabilities {
     pub workflows: Vec<WorkflowSummary>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub invalid_workflows: Vec<InvalidWorkflow>,
     pub refreshed_at: Option<DateTime<Utc>>,
 }
 
