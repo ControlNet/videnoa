@@ -115,10 +115,12 @@ The server speaks HTTP/1.1 only; cleartext HTTP/2 (h2c) is not accepted.
 
 - Output is always encoded as BT.709 limited range and tagged as such.
 - Sources tagged with a colour matrix are decoded with that matrix.
-- Untagged sources are decoded as BT.709 at every resolution (since v0.1.7;
-  earlier versions guessed BT.601 for SD-sized untagged sources).
-- BT.2020 primaries are not converted: a BT.2020 source is processed and
-  tagged as BT.709 without a colour-space conversion.
+- Untagged sources are decoded as BT.709 at every resolution (since v0.1.8;
+  v0.1.7 used BT.601 for frames narrower than 1280 and at most 576 high, and
+  earlier versions always used BT.601).
+- Wide-gamut primaries (BT.2020, DCI-P3, XYZ) are not converted: such a source
+  is processed and tagged as BT.709 without a colour-space conversion, and the
+  Worker logs a warning.
 
 ### Workflow constraints
 
