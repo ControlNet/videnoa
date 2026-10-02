@@ -39,6 +39,17 @@ describe("task lifecycle action policy", () => {
     expect(canRetryTask({ ...failed, failure: { ...failed.failure, failure_stage: "processing" } })).toBe(false)
   })
 
+  it("allows manual resubmission of a Worker rejection marked nonretryable", () => {
+    const rejected = {
+      ...task, status: "failed",
+      failure: { failure_stage: "submission", failure_code: "remote_submission_failed", message: "rejected: missing model", retryable: false },
+    } as const
+    expect(canRetryTask(rejected)).toBe(true)
+    expect(failureGuidance("remote_submission_failed", "submission").kind).toBe("stage_retry")
+    expect(canRetryTask({ ...rejected, failure: { ...rejected.failure, failure_stage: "processing" } })).toBe(false)
+    expect(failureGuidance("remote_submission_failed", "processing").kind).toBe("blocked")
+  })
+
   it("allows cancellation only from queued through verifying", () => {
     // Given/When: every boundary status is evaluated.
     const allowed = ["queued", "reserved", "uploading", "staged", "submitting", "processing", "remote_completed", "downloading", "verifying"] as const

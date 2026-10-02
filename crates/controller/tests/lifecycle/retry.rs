@@ -222,3 +222,25 @@ fn historical_input_changed_is_manually_retryable_even_when_marked_terminal() {
         RetryMode::Blocked
     );
 }
+
+#[test]
+fn rejected_submission_is_manually_resubmittable_even_when_marked_terminal() {
+    // A worker rejection (HTTP 4xx before any job exists) stores no remote
+    // state, so the same attempt and submission key can be submitted again.
+    assert_eq!(
+        Lifecycle::retry_mode(&failure(
+            FailureStage::Submission,
+            FailureCode::RemoteSubmissionFailed,
+            false
+        )),
+        RetryMode::Resume(ResumeStage::Staged)
+    );
+    assert_eq!(
+        Lifecycle::retry_mode(&failure(
+            FailureStage::Processing,
+            FailureCode::RemoteSubmissionFailed,
+            false
+        )),
+        RetryMode::Blocked
+    );
+}

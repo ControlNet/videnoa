@@ -5,6 +5,7 @@ use super::Lifecycle;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ResumeStage {
     Uploading,
+    Staged,
     Downloading,
     Verifying,
     Publishing,
@@ -15,6 +16,7 @@ impl ResumeStage {
     pub(crate) const fn status(self) -> TaskStatus {
         match self {
             Self::Uploading => TaskStatus::Uploading,
+            Self::Staged => TaskStatus::Staged,
             Self::Downloading => TaskStatus::Downloading,
             Self::Verifying => TaskStatus::Verifying,
             Self::Publishing => TaskStatus::Publishing,
@@ -38,6 +40,13 @@ impl Lifecycle {
             && matches!(failure.failure_stage, FailureStage::Upload)
         {
             return RetryMode::Resume(ResumeStage::Uploading);
+        }
+        // A Worker rejection is terminal for automatic retry, but the user may fix
+        // the Worker and resubmit the uploaded input on the same attempt.
+        if matches!(failure.failure_code, FailureCode::RemoteSubmissionFailed)
+            && matches!(failure.failure_stage, FailureStage::Submission)
+        {
+            return RetryMode::Resume(ResumeStage::Staged);
         }
         if !failure.retryable {
             return RetryMode::Blocked;
