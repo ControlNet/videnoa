@@ -197,14 +197,17 @@ where
     Observe: FnMut() -> Observed,
     Observed: Future<Output = Option<T>>,
 {
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            if let Some(value) = observe().await {
-                return value;
+    tokio::time::timeout(
+        crate::mock_videnoa::deadline::eventually(Duration::from_secs(5)),
+        async {
+            loop {
+                if let Some(value) = observe().await {
+                    return value;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
             }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
+        },
+    )
     .await
     .map_err(|_| std::io::Error::other("timed out waiting for durable runtime state").into())
 }

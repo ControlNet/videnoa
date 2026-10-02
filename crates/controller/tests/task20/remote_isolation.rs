@@ -180,15 +180,18 @@ async fn wait_for_status(
     task: &Task,
     expected: TaskStatus,
 ) -> TestResult<videnoa_controller::domain::TaskDetailResponse> {
-    tokio::time::timeout(Duration::from_secs(15), async {
-        loop {
-            let detail = fixture.task(task).await?;
-            if detail.task.status == expected {
-                return Ok(detail);
+    tokio::time::timeout(
+        crate::mock_videnoa::deadline::eventually(Duration::from_secs(15)),
+        async {
+            loop {
+                let detail = fixture.task(task).await?;
+                if detail.task.status == expected {
+                    return Ok(detail);
+                }
+                tokio::task::yield_now().await;
             }
-            tokio::task::yield_now().await;
-        }
-    })
+        },
+    )
     .await
     .map_err(|_| std::io::Error::other(format!("task did not reach {expected:?}")))?
 }

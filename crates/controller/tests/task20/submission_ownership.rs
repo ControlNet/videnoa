@@ -266,14 +266,19 @@ async fn orchestration_recovers_lost_submission_response_without_restart() -> Te
     let task = fixture
         .create_task("automatic-submission-retry", b"input-video")
         .await?;
-    tokio::time::timeout(std::time::Duration::from_secs(15), async {
-        loop {
-            if fixture.store.task(task.id).await?.expect("task").status == TaskStatus::Processing {
-                return Ok::<_, Box<dyn std::error::Error + Send + Sync>>(());
+    tokio::time::timeout(
+        crate::mock_videnoa::deadline::eventually(std::time::Duration::from_secs(15)),
+        async {
+            loop {
+                if fixture.store.task(task.id).await?.expect("task").status
+                    == TaskStatus::Processing
+                {
+                    return Ok::<_, Box<dyn std::error::Error + Send + Sync>>(());
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-    })
+        },
+    )
     .await??;
     assert_eq!(worker.counters().await.get(Route::Run), 2);
     assert_eq!(worker.job_count().await, 1);

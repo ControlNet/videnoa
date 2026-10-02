@@ -33,9 +33,18 @@ TMPDIR=/dev/shm/videnoa-tests cargo test --locked -p videnoa-controller --test t
 
 CI runners (SSD) are not affected; dev CI has been green.
 
-## Not done
+## Fix (`test/task20-deadlines`)
 
-Harness deadlines were not changed. The positive waits are hard-coded in
-about 26 places across 18 files (5 s mock checkpoints, 10-15 s proofs), and
-some nearby windows assert that something does *not* happen, so they need
-separating before any increase.
+- `crates/controller/tests/support/mock_videnoa/deadline.rs`:
+  `eventually(base)` multiplies a positive-wait bound by
+  `VIDENOA_TEST_DEADLINE_SCALE` (default 6; 5 s -> 30 s, 15 s -> 90 s).
+- Every task20/mock-harness wait for something that must eventually happen
+  goes through it: mock checkpoints, transfer checkpoints, status/proof waits,
+  runtime and mock shutdown.
+- Unchanged on purpose: the 500 ms "paused scheduler must not submit" window
+  (`pause.rs`), polling sleeps, time-advancing sleeps in `worker_health.rs`,
+  `shutdown.rs` drain bounds, and the mock client's reqwest timeouts (stall
+  fault tests rely on them).
+- Result on the plain disk: `one_worker` 25/25 (before: 2 failures in 7);
+  full task20 40/40. Bounds expire only in failing runs, so passing runs take
+  as long as before.

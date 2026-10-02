@@ -133,17 +133,20 @@ impl CheckpointHub {
     pub async fn await_reached(&self, ticket: &CheckpointTicket) -> Result<(), HarnessError> {
         let gate = &self.gates[&ticket.checkpoint];
         let mut changes = gate.changes.subscribe();
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                if changes.borrow().reached >= ticket.generation {
-                    return Ok(());
+        tokio::time::timeout(
+            crate::mock_videnoa::deadline::eventually(Duration::from_secs(5)),
+            async {
+                loop {
+                    if changes.borrow().reached >= ticket.generation {
+                        return Ok(());
+                    }
+                    changes
+                        .changed()
+                        .await
+                        .map_err(|_| HarnessError::CheckpointClosed)?;
                 }
-                changes
-                    .changed()
-                    .await
-                    .map_err(|_| HarnessError::CheckpointClosed)?;
-            }
-        })
+            },
+        )
         .await
         .map_err(|_| HarnessError::CheckpointTimeout(ticket.checkpoint.name()))?
     }

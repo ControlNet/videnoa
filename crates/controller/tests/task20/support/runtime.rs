@@ -185,12 +185,15 @@ impl ControllerRuntime {
             let _ = shutdown.send(());
         }
         self.coordinator.stop_stage_intake();
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            (&mut self.task).await??;
-            (&mut self.orchestration).await??;
-            (&mut self.worker_health).await??;
-            TestResult::Ok(())
-        })
+        tokio::time::timeout(
+            crate::mock_videnoa::deadline::eventually(std::time::Duration::from_secs(5)),
+            async {
+                (&mut self.task).await??;
+                (&mut self.orchestration).await??;
+                (&mut self.worker_health).await??;
+                TestResult::Ok(())
+            },
+        )
         .await
         .map_err(|_| std::io::Error::other("Controller runtime did not stop"))??;
         Ok(())
@@ -199,10 +202,12 @@ impl ControllerRuntime {
     pub(super) async fn wait_for_orchestration_error(
         &mut self,
     ) -> TestResult<videnoa_controller::orchestration::OrchestrationError> {
-        let joined =
-            tokio::time::timeout(std::time::Duration::from_secs(5), &mut self.orchestration)
-                .await
-                .map_err(|_| std::io::Error::other("orchestration did not terminate"))??;
+        let joined = tokio::time::timeout(
+            crate::mock_videnoa::deadline::eventually(std::time::Duration::from_secs(5)),
+            &mut self.orchestration,
+        )
+        .await
+        .map_err(|_| std::io::Error::other("orchestration did not terminate"))??;
         joined
             .err()
             .ok_or_else(|| std::io::Error::other("orchestration exited successfully").into())

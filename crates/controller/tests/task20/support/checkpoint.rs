@@ -27,7 +27,7 @@ impl CheckpointGate {
 
     pub async fn wait(&self) -> TestResult {
         let permit = tokio::time::timeout(
-            Duration::from_secs(10),
+            crate::mock_videnoa::deadline::eventually(Duration::from_secs(10)),
             Arc::clone(&self.reached).acquire_owned(),
         )
         .await

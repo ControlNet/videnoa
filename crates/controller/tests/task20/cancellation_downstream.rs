@@ -155,15 +155,18 @@ async fn wait_for_status(
     task: &Task,
     status: TaskStatus,
 ) -> TestResult<TaskDetailResponse> {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            let detail = fixture.task(task).await?;
-            if detail.task.status == status {
-                return Ok::<_, Box<dyn std::error::Error + Send + Sync>>(detail);
+    tokio::time::timeout(
+        crate::mock_videnoa::deadline::eventually(Duration::from_secs(10)),
+        async {
+            loop {
+                let detail = fixture.task(task).await?;
+                if detail.task.status == status {
+                    return Ok::<_, Box<dyn std::error::Error + Send + Sync>>(detail);
+                }
+                tokio::task::yield_now().await;
             }
-            tokio::task::yield_now().await;
-        }
-    })
+        },
+    )
     .await
     .map_err(|_| std::io::Error::other("task did not reach downstream cancellation status"))?
 }
