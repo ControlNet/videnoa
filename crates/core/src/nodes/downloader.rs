@@ -57,7 +57,7 @@ impl Node for DownloaderNode {
     fn execute(
         &mut self,
         inputs: &HashMap<String, PortData>,
-        _ctx: &ExecutionContext,
+        ctx: &ExecutionContext,
     ) -> Result<HashMap<String, PortData>> {
         let url_raw = match inputs.get("url") {
             Some(PortData::Str(value)) => value,
@@ -67,7 +67,10 @@ impl Node for DownloaderNode {
         let parsed_url = parse_http_url(url_raw)?;
         let redacted = redacted_url_for_display(&parsed_url);
         debug!(url = %redacted, "downloading URL to local path");
-        let final_path = download_to_file(&parsed_url, &redacted)?;
+        // One directory per download keeps the original file name without
+        // colliding with other downloads; it is removed when the job ends.
+        let download_dir = ctx.scratch.allocate_dir()?;
+        let final_path = download_to_file(&parsed_url, &redacted, &download_dir)?;
 
         let mut outputs = HashMap::new();
         outputs.insert("path".to_string(), PortData::Path(final_path));
@@ -94,7 +97,7 @@ fn parse_http_url(raw: &str) -> Result<Url> {
     }
 }
 
-fn download_to_file(url: &Url, redacted_url: &str) -> Result<PathBuf> {
+fn download_to_file(url: &Url, redacted_url: &str, download_dir: &Path) -> Result<PathBuf> {
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(DOWNLOAD_CONNECT_TIMEOUT)
         .timeout(DOWNLOAD_REQUEST_TIMEOUT)
@@ -102,7 +105,7 @@ fn download_to_file(url: &Url, redacted_url: &str) -> Result<PathBuf> {
         .context("failed to build HTTP client for downloader")?;
 
     for attempt in 1..=DOWNLOAD_MAX_ATTEMPTS {
-        match download_once(&client, url, redacted_url) {
+        match download_once(&client, url, redacted_url, download_dir) {
             Ok(final_path) => return Ok(final_path),
             Err(attempt_error) => {
                 let DownloadAttemptError { retryable, error } = attempt_error;
@@ -146,6 +149,7 @@ fn download_once(
     client: &reqwest::blocking::Client,
     url: &Url,
     redacted_url: &str,
+    download_dir: &Path,
 ) -> std::result::Result<PathBuf, DownloadAttemptError> {
     let mut response = client.get(url.as_str()).send().map_err(|err| {
         let wrapped = anyhow!("failed to start download from {redacted_url}");
@@ -171,17 +175,7 @@ fn download_once(
     }
 
     let (final_path, tmp_path) =
-        destination_paths_for_url_and_headers(url, Some(response.headers()));
-    if let Some(parent_dir) = final_path.parent() {
-        fs::create_dir_all(parent_dir)
-            .with_context(|| {
-                format!(
-                    "failed to create downloader cache dir: {}",
-                    parent_dir.display()
-                )
-            })
-            .map_err(DownloadAttemptError::fatal)?;
-    }
+        destination_paths_for_url_and_headers(download_dir, url, Some(response.headers()));
 
     cleanup_file_if_exists(&tmp_path);
 
@@ -282,6 +276,7 @@ fn cleanup_file_if_exists(path: &Path) {
 }
 
 fn destination_paths_for_url_and_headers(
+    download_dir: &Path,
     url: &Url,
     response_headers: Option<&reqwest::header::HeaderMap>,
 ) -> (PathBuf, PathBuf) {
@@ -289,19 +284,21 @@ fn destination_paths_for_url_and_headers(
     let digest_hex = format!("{digest:x}");
     let filename = choose_download_filename(url, &digest_hex, response_headers);
 
-    let final_path = std::env::temp_dir()
-        .join("videnoa")
-        .join("downloads")
-        .join(filename);
-    let tmp_path = final_path.with_extension(format!(
+    let final_path = download_dir.join(filename);
+    let tmp_path = part_path(&final_path);
+
+    (final_path, tmp_path)
+}
+
+/// Temporary file a download is written to before it is renamed into place.
+fn part_path(final_path: &Path) -> PathBuf {
+    final_path.with_extension(format!(
         "{}part",
         final_path
             .extension()
             .map(|ext| format!("{}.", ext.to_string_lossy()))
             .unwrap_or_default()
-    ));
-
-    (final_path, tmp_path)
+    ))
 }
 
 fn choose_download_filename(
@@ -571,11 +568,23 @@ mod tests {
             .as_nanos()
     }
 
-    fn cleanup_url_paths(url: &str) {
-        let parsed = Url::parse(url).unwrap();
-        let (final_path, tmp_path) = destination_paths_for_url_and_headers(&parsed, None);
-        let _ = fs::remove_file(final_path);
-        let _ = fs::remove_file(tmp_path);
+    /// Every file left in an execution's scratch space.
+    fn scratch_files(ctx: &ExecutionContext) -> Vec<PathBuf> {
+        fn walk(dir: &Path, files: &mut Vec<PathBuf>) {
+            for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, files);
+                } else {
+                    files.push(path);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        if let Some(root) = ctx.scratch.root() {
+            walk(root, &mut files);
+        }
+        files
     }
 
     enum ServerResponse {
@@ -709,7 +718,8 @@ mod tests {
             ),
         );
 
-        let (final_path, _) = destination_paths_for_url_and_headers(&url, Some(&headers));
+        let (final_path, _) =
+            destination_paths_for_url_and_headers(Path::new("/scratch"), &url, Some(&headers));
         let file_name = final_path
             .file_name()
             .unwrap()
@@ -730,18 +740,17 @@ mod tests {
             HeaderValue::from_static("attachment; filename=\"../../unsafe/..\\episode?.mkv\""),
         );
 
-        let (final_path, _) = destination_paths_for_url_and_headers(&url, Some(&headers));
+        let (final_path, _) =
+            destination_paths_for_url_and_headers(Path::new("/scratch"), &url, Some(&headers));
         let file_name = final_path
             .file_name()
             .unwrap()
             .to_string_lossy()
             .into_owned();
-        let expected_parent = std::env::temp_dir().join("videnoa").join("downloads");
-
         assert_eq!(
             final_path.parent().unwrap(),
-            expected_parent.as_path(),
-            "sanitized filename must stay in downloader cache root"
+            Path::new("/scratch"),
+            "sanitized filename must stay in the download directory"
         );
         assert_eq!(
             file_name, "episode.mkv",
@@ -755,7 +764,8 @@ mod tests {
     fn test_filename_derivation_fallback_chain_without_headers() {
         let basename_url =
             Url::parse("https://example.com/media/My%20Clip.mp4?token=secret").unwrap();
-        let (basename_path, _) = destination_paths_for_url_and_headers(&basename_url, None);
+        let (basename_path, _) =
+            destination_paths_for_url_and_headers(Path::new("/scratch"), &basename_url, None);
         let basename_file = basename_path
             .file_name()
             .unwrap()
@@ -768,7 +778,8 @@ mod tests {
         );
 
         let fallback_url = Url::parse("https://example.com/?token=secret").unwrap();
-        let (fallback_path, _) = destination_paths_for_url_and_headers(&fallback_url, None);
+        let (fallback_path, _) =
+            destination_paths_for_url_and_headers(Path::new("/scratch"), &fallback_url, None);
         let fallback_file = fallback_path
             .file_name()
             .unwrap()
@@ -791,14 +802,13 @@ mod tests {
             spawn_single_response_server(ServerResponse::Success(payload.clone()));
         let url = format!("{base_url}/videos/{id}.mp4?token=secret-value");
 
-        cleanup_url_paths(&url);
-
+        let ctx = ExecutionContext::default();
         let mut node = DownloaderNode::new();
         let mut inputs = HashMap::new();
         inputs.insert("url".to_string(), PortData::Str(url.clone()));
 
         let outputs = node
-            .execute(&inputs, &ExecutionContext::default())
+            .execute(&inputs, &ctx)
             .expect("download should succeed");
         server_handle.join().unwrap();
 
@@ -807,21 +817,21 @@ mod tests {
             _ => panic!("expected path Path output"),
         };
 
-        let expected_path =
-            destination_paths_for_url_and_headers(&Url::parse(&url).unwrap(), None).0;
-        assert_eq!(output_path, expected_path);
+        assert!(output_path.starts_with(downloads_root()));
+        assert_eq!(
+            output_path.file_name().and_then(|name| name.to_str()),
+            Some(format!("{id}.mp4").as_str())
+        );
         assert!(output_path.exists(), "downloaded file should exist");
 
         let file_bytes = fs::read(&output_path).expect("downloaded file should be readable");
         assert_eq!(file_bytes, payload);
 
-        let (_, tmp_path) = destination_paths_for_url_and_headers(&Url::parse(&url).unwrap(), None);
+        let tmp_path = part_path(&output_path);
         assert!(
             !tmp_path.exists(),
             ".part file should be removed after success"
         );
-
-        cleanup_url_paths(&url);
     }
 
     #[test]
@@ -829,12 +839,13 @@ mod tests {
         let id = unique_id();
         let url = format!("ftp://example.com/video/{id}.mp4?token=super-secret-token");
 
+        let ctx = ExecutionContext::default();
         let mut node = DownloaderNode::new();
         let mut inputs = HashMap::new();
         inputs.insert("url".to_string(), PortData::Str(url));
 
         let err = node
-            .execute(&inputs, &ExecutionContext::default())
+            .execute(&inputs, &ctx)
             .err()
             .expect("invalid scheme should fail");
         let msg = err.to_string();
@@ -864,14 +875,13 @@ mod tests {
         });
         let url = format!("{base_url}/missing/{id}.mp4?api_key=abc123");
 
-        cleanup_url_paths(&url);
-
+        let ctx = ExecutionContext::default();
         let mut node = DownloaderNode::new();
         let mut inputs = HashMap::new();
         inputs.insert("url".to_string(), PortData::Str(url.clone()));
 
         let err = node
-            .execute(&inputs, &ExecutionContext::default())
+            .execute(&inputs, &ctx)
             .err()
             .expect("404 response should fail");
         server_handle.join().unwrap();
@@ -886,15 +896,10 @@ mod tests {
             "error must not leak query value: {msg}"
         );
 
-        let (final_path, tmp_path) =
-            destination_paths_for_url_and_headers(&Url::parse(&url).unwrap(), None);
-        assert!(
-            !final_path.exists(),
-            "final file should not exist on HTTP failure"
-        );
-        assert!(
-            !tmp_path.exists(),
-            ".part file should not remain on HTTP failure"
+        assert_eq!(
+            scratch_files(&ctx),
+            Vec::<PathBuf>::new(),
+            "neither the final nor the .part file may remain (on HTTP failure)"
         );
     }
 
@@ -913,14 +918,13 @@ mod tests {
         let (base_url, request_count, server_handle) = spawn_sequence_server(responses);
         let url = format!("{base_url}/broken/{id}.mkv?token=top-secret");
 
-        cleanup_url_paths(&url);
-
+        let ctx = ExecutionContext::default();
         let mut node = DownloaderNode::new();
         let mut inputs = HashMap::new();
         inputs.insert("url".to_string(), PortData::Str(url.clone()));
 
         let err = node
-            .execute(&inputs, &ExecutionContext::default())
+            .execute(&inputs, &ctx)
             .err()
             .expect("truncated body should fail");
         server_handle.join().unwrap();
@@ -936,15 +940,10 @@ mod tests {
         );
         assert_eq!(request_count.load(Ordering::SeqCst), DOWNLOAD_MAX_ATTEMPTS);
 
-        let (final_path, tmp_path) =
-            destination_paths_for_url_and_headers(&Url::parse(&url).unwrap(), None);
-        assert!(
-            !final_path.exists(),
-            "final file should not exist after read failure"
-        );
-        assert!(
-            !tmp_path.exists(),
-            ".part file should be cleaned after read failure"
+        assert_eq!(
+            scratch_files(&ctx),
+            Vec::<PathBuf>::new(),
+            "neither the final nor the .part file may remain (after read failure)"
         );
     }
 
@@ -962,14 +961,13 @@ mod tests {
         ]);
         let url = format!("{base_url}/retry/{id}.mp4?token=retry-secret");
 
-        cleanup_url_paths(&url);
-
+        let ctx = ExecutionContext::default();
         let mut node = DownloaderNode::new();
         let mut inputs = HashMap::new();
         inputs.insert("url".to_string(), PortData::Str(url.clone()));
 
         let outputs = node
-            .execute(&inputs, &ExecutionContext::default())
+            .execute(&inputs, &ctx)
             .expect("retryable status should eventually succeed");
         server_handle.join().unwrap();
 
@@ -981,13 +979,11 @@ mod tests {
         };
         assert_eq!(fs::read(&output_path).unwrap(), payload);
 
-        let (_, tmp_path) = destination_paths_for_url_and_headers(&Url::parse(&url).unwrap(), None);
+        let tmp_path = part_path(&output_path);
         assert!(
             !tmp_path.exists(),
             ".part file should be removed after retries"
         );
-
-        cleanup_url_paths(&url);
     }
 
     #[test]
@@ -1012,14 +1008,13 @@ mod tests {
         ]);
         let url = format!("{base_url}/retry-fail/{id}.mp4?api_key=super-secret-value");
 
-        cleanup_url_paths(&url);
-
+        let ctx = ExecutionContext::default();
         let mut node = DownloaderNode::new();
         let mut inputs = HashMap::new();
         inputs.insert("url".to_string(), PortData::Str(url.clone()));
 
         let err = node
-            .execute(&inputs, &ExecutionContext::default())
+            .execute(&inputs, &ctx)
             .err()
             .expect("retry exhaustion should fail");
         server_handle.join().unwrap();
@@ -1036,15 +1031,199 @@ mod tests {
         );
         assert_eq!(request_count.load(Ordering::SeqCst), DOWNLOAD_MAX_ATTEMPTS);
 
-        let (final_path, tmp_path) =
-            destination_paths_for_url_and_headers(&Url::parse(&url).unwrap(), None);
-        assert!(
-            !final_path.exists(),
-            "final file should not exist after retry exhaustion"
+        assert_eq!(
+            scratch_files(&ctx),
+            Vec::<PathBuf>::new(),
+            "neither the final nor the .part file may remain (after retry exhaustion)"
         );
-        assert!(
-            !tmp_path.exists(),
-            ".part file should be cleaned after retry exhaustion"
+    }
+
+    fn download(url: &str, ctx: &ExecutionContext) -> PathBuf {
+        let mut node = DownloaderNode::new();
+        let inputs = HashMap::from([("url".to_string(), PortData::Str(url.to_string()))]);
+        match node
+            .execute(&inputs, ctx)
+            .expect("download should succeed")
+            .remove("path")
+        {
+            Some(PortData::Path(path)) => path,
+            _ => panic!("expected path Path output"),
+        }
+    }
+
+    fn downloads_root() -> PathBuf {
+        std::env::temp_dir().join("videnoa").join("downloads")
+    }
+
+    fn single_downloader_graph(url: &str) -> crate::graph::PipelineGraph {
+        serde_json::from_value(serde_json::json!({
+            "nodes": [{ "id": "dl", "node_type": "Downloader", "params": { "url": url } }],
+            "connections": []
+        }))
+        .expect("valid downloader graph")
+    }
+
+    fn output_path(outputs: &HashMap<String, HashMap<String, PortData>>) -> PathBuf {
+        match outputs.get("dl").and_then(|node| node.get("path")) {
+            Some(PortData::Path(path)) => path.clone(),
+            _ => panic!("expected dl.path output"),
+        }
+    }
+
+    #[test]
+    fn same_file_name_from_different_urls_does_not_collide() {
+        // Given: two URLs that end in the same file name but serve different bodies.
+        let name = format!("{}.mkv", unique_id());
+        let (first_base, first_server) =
+            spawn_single_response_server(ServerResponse::Success(b"first".to_vec()));
+        let (second_base, second_server) =
+            spawn_single_response_server(ServerResponse::Success(b"second".to_vec()));
+        let ctx = ExecutionContext::default();
+
+        // When: one execution downloads both.
+        let first = download(&format!("{first_base}/a/{name}"), &ctx);
+        let second = download(&format!("{second_base}/b/{name}"), &ctx);
+        first_server.join().unwrap();
+        second_server.join().unwrap();
+
+        // Then: each keeps its own file, under the original file name.
+        assert_ne!(first, second);
+        assert_eq!(
+            first.file_name().and_then(|n| n.to_str()),
+            Some(name.as_str())
         );
+        assert_eq!(
+            second.file_name().and_then(|n| n.to_str()),
+            Some(name.as_str())
+        );
+        assert_eq!(fs::read(&first).unwrap(), b"first");
+        assert_eq!(fs::read(&second).unwrap(), b"second");
+    }
+
+    #[test]
+    fn concurrent_executions_download_into_separate_directories() {
+        // Given: two executions (jobs) fetching the same file name at the same time.
+        let name = format!("{}.mp4", unique_id());
+        let results = thread::scope(|scope| {
+            let workers: Vec<_> = [b"job-one".to_vec(), b"job-two".to_vec()]
+                .into_iter()
+                .map(|body| {
+                    let name = name.clone();
+                    scope.spawn(move || {
+                        let (base, server) =
+                            spawn_single_response_server(ServerResponse::Success(body.clone()));
+                        let ctx = ExecutionContext::default();
+                        let path = download(&format!("{base}/{name}"), &ctx);
+                        server.join().unwrap();
+                        (path.clone(), fs::read(&path).unwrap(), body)
+                    })
+                })
+                .collect();
+            workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+
+        // Then: neither job sees the other's file or temporary file.
+        assert_ne!(results[0].0.parent(), results[1].0.parent());
+        for (path, bytes, body) in &results {
+            assert_eq!(bytes, body, "{} holds another job's bytes", path.display());
+            assert!(path.starts_with(downloads_root()));
+        }
+    }
+
+    #[test]
+    fn downloads_are_removed_when_the_execution_ends() {
+        // Given: a file downloaded during an execution.
+        let (base, server) =
+            spawn_single_response_server(ServerResponse::Success(b"payload".to_vec()));
+        let ctx = ExecutionContext::default();
+        let path = download(&format!("{base}/{}.mp4", unique_id()), &ctx);
+        server.join().unwrap();
+        assert!(
+            path.exists(),
+            "the file must exist while the execution runs"
+        );
+
+        // When: the execution ends.
+        drop(ctx);
+
+        // Then: its download directory is gone.
+        assert!(!path.exists());
+        let execution_dir = path
+            .ancestors()
+            .find(|dir| dir.parent() == Some(downloads_root().as_path()))
+            .expect("download lives in a per-execution directory");
+        assert!(!execution_dir.exists());
+    }
+
+    #[test]
+    fn top_level_executor_removes_downloads_when_the_job_returns() {
+        // Given: a job whose only node downloads a file.
+        let (base, server) =
+            spawn_single_response_server(ServerResponse::Success(b"payload".to_vec()));
+        let graph = single_downloader_graph(&format!("{base}/{}.mkv", unique_id()));
+        let registry = crate::registry::build_default_registry();
+
+        // When: the job runs to completion, as the server and the CLI run it.
+        let outputs = crate::executor::SequentialExecutor::execute(&graph, &registry)
+            .expect("job should succeed");
+        server.join().unwrap();
+
+        // Then: the downloaded file was cleaned up with the job.
+        let path = output_path(&outputs);
+        assert!(path.starts_with(downloads_root()));
+        assert!(!path.exists(), "download should be removed at job end");
+    }
+
+    #[test]
+    fn nested_executions_keep_downloads_until_the_outer_job_ends() {
+        // Given: an outer job context and an inner workflow that downloads.
+        let (base, server) =
+            spawn_single_response_server(ServerResponse::Success(b"nested".to_vec()));
+        let dir = std::env::temp_dir().join(format!("videnoa-nested-dl-{}", unique_id()));
+        fs::create_dir_all(&dir).unwrap();
+        let inner_path = dir.join("inner.json");
+        let inner = serde_json::json!({
+            "nodes": [
+                { "id": "dl", "node_type": "Downloader",
+                  "params": { "url": format!("{base}/{}.mkv", unique_id()) } },
+                { "id": "wf_out", "node_type": "WorkflowOutput",
+                  "params": { "ports": [{ "name": "path", "port_type": "Path" }] } }
+            ],
+            "connections": [
+                { "from_node": "dl", "from_port": "path", "to_node": "wf_out",
+                  "to_port": "path", "port_type": "Path" }
+            ]
+        });
+        fs::write(&inner_path, serde_json::to_string(&inner).unwrap()).unwrap();
+        let mut workflow = crate::nodes::workflow_io::WorkflowNode::from_params(&HashMap::from([
+            (
+                "workflow_path".to_string(),
+                serde_json::json!(inner_path.to_string_lossy()),
+            ),
+            (
+                "interface_outputs".to_string(),
+                serde_json::json!([{ "name": "path", "port_type": "Path" }]),
+            ),
+        ]));
+        let outer = ExecutionContext::default();
+
+        // When: the inner workflow finishes inside the outer job.
+        let outputs = workflow
+            .execute(&HashMap::new(), &outer)
+            .expect("nested workflow should succeed");
+        server.join().unwrap();
+        let path = match outputs.get("path") {
+            Some(PortData::Path(path)) => path.clone(),
+            _ => panic!("expected nested path output"),
+        };
+
+        // Then: the file outlives the inner run and goes away with the outer job.
+        assert_eq!(fs::read(&path).unwrap(), b"nested");
+        drop(outer);
+        assert!(!path.exists());
+        let _ = fs::remove_dir_all(&dir);
     }
 }
