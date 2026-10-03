@@ -106,7 +106,7 @@ lifetime; increasing the policy does not extend an existing session's deadline.
 `<DATA ROOT>/controller.toml` is the sole persisted Controller configuration source.
 Its optional `[iroh]` section (`relay_urls`, `use_public_relays`) is edited in Web Settings or the
 file and read at startup, so a change applies after the next Controller start.
-See [self-hosted relays](iroh.md#self-hosted-relays).
+See [self-hosted relays](../docs/iroh.md#self-hosted-relays).
 The in-memory `ControllerConfig` is the active runtime configuration.
 `controller.sqlite3` holds durable operational/application state: tasks, attempts,
 workers, recovery evidence, idempotency, administrator credential, and sessions.
