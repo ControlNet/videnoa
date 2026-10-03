@@ -23,7 +23,7 @@ export const workerTemplate: Worker = {
   enabled: true,
   online: false,
   compute_slots: 4,
-  capabilities: { workflows: [{ name: "anime-2x", kind: "workflow" }], refreshed_at: "2026-09-03T10:00:00Z" },
+  capabilities: { workflows: [{ name: "anime-2x", kind: "workflow" }], invalid_workflows: [], refreshed_at: "2026-09-03T10:00:00Z" },
   capacity: {
     used_slots: 2,
     available_slots: 2,
@@ -61,6 +61,7 @@ export const settingsTemplate: SettingsResponse = {
   },
   timeouts: { health_seconds: 15, poll_seconds: 5, transfer_seconds: 300 },
   retry: { initial_seconds: 2, maximum_seconds: 30, max_attempts: 4 },
+  iroh: { relay_urls: [], use_public_relays: false, restart_required: false },
 }
 
 const readiness = {
@@ -234,6 +235,9 @@ export async function installOperationalApi(page: Page): Promise<OperationalApi>
       scheduler: request.scheduler,
       timeouts: request.timeouts,
       retry: request.retry,
+      iroh: request.iroh === undefined
+        ? settings.iroh
+        : { ...request.iroh, restart_required: request.iroh.relay_urls.length > 0 },
     }
     if (settingsSaveIsDegraded) {
       settingsSaveIsDegraded = false

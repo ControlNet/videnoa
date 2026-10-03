@@ -138,3 +138,43 @@ fn configured_paths_resolve_relative_to_workspace() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+fn iroh_relays_are_optional_validated_and_preserved() -> TestResult {
+    // Given: documents without, with valid, and with invalid self-hosted relays.
+    let relays = format!(
+        "{}\n[iroh]\nrelay_urls = [\"https://relay.example.test\"]\nuse_public_relays = true\n",
+        complete_config()
+    );
+    let invalid = format!(
+        "{}\n[iroh]\nrelay_urls = [\"ftp://relay.example.test\"]\n",
+        complete_config()
+    );
+    let unknown = format!("{}\n[iroh]\ndiscovery = \"none\"\n", complete_config());
+
+    // When / Then: no section keeps the public N0 network and adds nothing on write.
+    let public = ControllerConfig::from_toml(complete_config())?;
+    assert!(public.iroh.relay_urls.is_empty());
+    assert!(!public.to_toml()?.contains("[iroh]"));
+
+    // Relays load and survive the projection the settings API writes back.
+    let configured = ControllerConfig::from_toml(&relays)?;
+    assert_eq!(configured.iroh.relay_urls, ["https://relay.example.test"]);
+    assert!(configured.iroh.use_public_relays);
+    assert!(!public.iroh.use_public_relays);
+    assert_eq!(
+        ControllerConfig::from_toml(&configured.to_toml()?)?,
+        configured
+    );
+
+    // Invalid URLs and unknown keys fail at the typed boundary.
+    assert!(matches!(
+        ControllerConfig::from_toml(&invalid),
+        Err(ConfigError::Schema { .. })
+    ));
+    assert!(matches!(
+        ControllerConfig::from_toml(&unknown),
+        Err(ConfigError::Schema { .. })
+    ));
+    Ok(())
+}

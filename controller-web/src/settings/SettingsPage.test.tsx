@@ -17,6 +17,7 @@ const testOnlySettings = {
   scheduler: { paused: false, default_compute_slots: 2, prefetch_per_worker: 1, max_concurrent_uploads: 2, max_concurrent_downloads: 3 },
   timeouts: { health_seconds: 15, poll_seconds: 5, transfer_seconds: 300 },
   retry: { initial_seconds: 2, maximum_seconds: 30, max_attempts: 4 },
+  iroh: { relay_urls: [] as string[], use_public_relays: false, restart_required: false },
 } as const
 
 describe("Settings page", () => {
@@ -77,6 +78,7 @@ describe("Settings page", () => {
       retry: testOnlySettings.retry,
       server: { host: "0.0.0.0", port: 4555 },
       auth: { secure_cookie: false, session_absolute_seconds: 31536000, session_idle_seconds: 2592000 },
+      iroh: { relay_urls: [], use_public_relays: false },
     })
     expect(screen.getByLabelText("Absolute session seconds")).not.toHaveAttribute("max")
     expect(screen.getByLabelText("Idle session seconds")).not.toHaveAttribute("max")
@@ -286,4 +288,45 @@ it("keeps the draft across a failed scheduler refresh and retries without allowi
   fireEvent.click(screen.getByRole("button", { name: "Retry" }))
   await waitFor(() => expect(screen.getByRole("button", { name: "Save and apply settings" })).toBeEnabled())
   expect(screen.getByLabelText("Server port")).toHaveValue(4555)
+})
+
+it("saves iroh relays one per line and reports the restart without locking the scheduler", async () => {
+  // Given: a Controller running on the public iroh relays.
+  const updates: unknown[] = []
+  let remote: SettingsResponse = testOnlySettings
+  const apiClient = createApiClient({ onUnauthorized: () => undefined, fetcher: async (input, init) => {
+    const request = new Request(input, init)
+    if (new URL(request.url).pathname === "/api/readiness") return Response.json({ status: "ready", checks: [] })
+    if (request.method === "PUT") {
+      const update = settingsUpdateRequestSchema.parse(await request.json())
+      updates.push(update)
+      remote = { ...remote, version: remote.version + 1, iroh: { relay_urls: update.iroh?.relay_urls ?? [], use_public_relays: update.iroh?.use_public_relays ?? false, restart_required: true } }
+    }
+    return Response.json(remote)
+  } })
+  render(<SettingsPage apiClient={apiClient} />)
+  const relays = await screen.findByLabelText(/^Relay URLs/)
+  expect(relays).toHaveValue("")
+  // Public relays only make sense next to self-hosted ones.
+  const usePublic = screen.getByLabelText(/Also use the public iroh relays/)
+  expect(usePublic).toBeDisabled()
+
+  // When: an invalid relay is entered, then corrected and saved.
+  fireEvent.change(relays, { target: { value: "ftp://relay.example.test" } })
+  fireEvent.click(screen.getByRole("button", { name: "Save and apply settings" }))
+  expect(await screen.findByText(/http or https/i)).toBeInTheDocument()
+  expect(relays).toHaveFocus()
+  expect(updates).toHaveLength(0)
+  fireEvent.change(relays, { target: { value: " https://relay.example.test \n\nhttp://10.0.0.5:3340\n" } })
+  expect(usePublic).toBeEnabled()
+  fireEvent.click(usePublic)
+  fireEvent.click(screen.getByRole("button", { name: "Save and apply settings" }))
+
+  // Then: blank lines are dropped and the pending restart does not lock scheduler control.
+  await waitFor(() => expect(updates).toHaveLength(1))
+  expect(updates[0]).toMatchObject({ iroh: { relay_urls: ["https://relay.example.test", "http://10.0.0.5:3340"], use_public_relays: true } })
+  expect(await screen.findByText(/Restart the Controller to connect through the saved relays/)).toBeInTheDocument()
+  expect(screen.getByText("Restart required")).toBeInTheDocument()
+  expect(screen.getByRole("status")).toHaveTextContent("restart required")
+  expect(screen.getByRole("button", { name: "Pause scheduler" })).toBeEnabled()
 })

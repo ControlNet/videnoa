@@ -1,6 +1,7 @@
 #[path = "client.rs"]
 pub mod api;
 pub mod checkpoints;
+pub mod deadline;
 pub mod domain;
 pub mod faults;
 mod fingerprint;

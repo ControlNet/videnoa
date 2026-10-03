@@ -34,6 +34,16 @@ string_value!(InputExtension);
 string_value!(OutputExtension);
 string_value!(RemotePath);
 string_value!(WorkflowName);
+
+impl WorkflowName {
+    /// The name a Worker's `POST /api/run` accepts. Saved workflows are listed
+    /// by file name (`anime.json`) but run by file stem (`anime`); preset ids
+    /// are unchanged.
+    #[must_use]
+    pub fn run_name(&self) -> &str {
+        self.0.strip_suffix(".json").unwrap_or(&self.0)
+    }
+}
 string_value!(SourceReference);
 string_value!(WorkerName);
 string_value!(IdempotencyKey);

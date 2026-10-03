@@ -9,8 +9,31 @@ import { CheckRow, Field, SettingsGrid, SettingsSection, settingsInputClass } fr
 
 interface Status { enabled: boolean; running: boolean; endpoint_id: string | null; error: string | null }
 
-export function IrohSettings({ enabled, savedEnabled, onChange }: { enabled: boolean; savedEnabled: boolean; onChange: (enabled: boolean) => void }) {
+interface IrohSettingsProps {
+  enabled: boolean;
+  savedEnabled: boolean;
+  onChange: (enabled: boolean) => void;
+  relayUrls: readonly string[];
+  savedRelayUrls: readonly string[];
+  onRelayUrlsChange: (relayUrls: string[]) => void;
+  usePublicRelays: boolean;
+  onUsePublicRelaysChange: (usePublicRelays: boolean) => void;
+}
+
+function relayLines(text: string): string[] {
+  return text.split('\n').map((line) => line.trim()).filter((line) => line !== '');
+}
+
+export function IrohSettings({ enabled, savedEnabled, onChange, relayUrls, savedRelayUrls, onRelayUrlsChange, usePublicRelays, onUsePublicRelaysChange }: IrohSettingsProps) {
   const { t } = useTranslation('settings');
+  // The draft keeps the line breaks being typed; it follows the form on save or reset.
+  const [relayDraft, setRelayDraft] = useState(() => relayUrls.join('\n'));
+  const [draftSavedKey, setDraftSavedKey] = useState(() => savedRelayUrls.join('\n'));
+  const savedKey = savedRelayUrls.join('\n');
+  if (savedKey !== draftSavedKey || relayLines(relayDraft).join('\n') !== relayUrls.join('\n')) {
+    setDraftSavedKey(savedKey);
+    setRelayDraft(relayUrls.join('\n'));
+  }
   const passwordEnabled = useAuthStore((state) => state.session?.password_enabled ?? false);
   const [status, setStatus] = useState<Status | null>(null);
   const [error, setError] = useState(false);
@@ -87,6 +110,35 @@ export function IrohSettings({ enabled, savedEnabled, onChange }: { enabled: boo
           </Button>
         </div>
       </Field>
+      <Field id="settings-iroh-relays" label={t('iroh.relays')} hint="relay_urls" className="sm:col-span-6">
+        <textarea
+          id="settings-iroh-relays"
+          rows={3}
+          spellCheck={false}
+          aria-describedby="settings-iroh-relays-hint"
+          className="min-h-16 w-full rounded-md border border-border bg-background-deep px-3 py-1.5 font-mono text-[12.5px] leading-5 shadow-none placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          value={relayDraft}
+          onChange={(event) => {
+            setRelayDraft(event.target.value);
+            onRelayUrlsChange(relayLines(event.target.value));
+          }}
+        />
+        <p id="settings-iroh-relays-hint" className="text-[11px] leading-4 text-muted-foreground">{t('iroh.relaysHint')}</p>
+      </Field>
+      <div className="flex min-w-0 flex-col sm:col-span-6">
+        {/* The note belongs to the option, so the row gives up its full control height. */}
+        <CheckRow
+          id="settings-iroh-public-relays"
+          className="min-h-6"
+          label={t('iroh.usePublicRelays')}
+          checked={usePublicRelays}
+          disabled={relayUrls.length === 0}
+          aria-describedby="settings-iroh-public-relays-hint"
+          onChange={(event) => { onUsePublicRelaysChange(event.target.checked); }}
+        />
+        {/* Indented by the box and its gap so the note aligns with the label text. */}
+        <p id="settings-iroh-public-relays-hint" className="pl-6 text-[11px] leading-4 text-muted-foreground">{t('iroh.usePublicRelaysHint')}</p>
+      </div>
     </SettingsGrid>
     {copyFailed && <p role="alert" className="text-[11px] text-destructive">{t('iroh.copyFailed')}</p>}
   </SettingsSection>;

@@ -14,7 +14,7 @@ const worker: Worker = {
   enabled: true,
   online: true,
   compute_slots: 4,
-  capabilities: { workflows: [], refreshed_at: null },
+  capabilities: { workflows: [], invalid_workflows: [], refreshed_at: null },
   capacity: {
     used_slots: 0,
     available_slots: 4,

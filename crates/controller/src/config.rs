@@ -53,6 +53,27 @@ pub struct ControllerConfig {
     pub scheduler: SchedulerConfig,
     pub timeouts: TimeoutConfig,
     pub retry: RetryConfig,
+    pub iroh: IrohConfig,
+}
+
+/// iroh transport settings, read from `controller.toml` at startup.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct IrohConfig {
+    /// Self-hosted relays; empty uses the public N0 relays and discovery.
+    pub relay_urls: Vec<String>,
+    /// Also use N0's public relays next to `relay_urls`; ignored without them.
+    pub use_public_relays: bool,
+}
+
+impl IrohConfig {
+    /// The relay network these settings select.
+    ///
+    /// # Errors
+    /// Returns an error when a relay URL is invalid.
+    pub fn network(&self) -> anyhow::Result<videnoa_transport::Network> {
+        Ok(videnoa_transport::Network::with_relays(&self.relay_urls)?
+            .including_public_relays(self.use_public_relays))
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -176,6 +197,7 @@ impl Default for ControllerConfig {
                 maximum: Duration::from_secs(RETRY_MAXIMUM_SECONDS),
                 max_attempts: DEFAULT_MAX_ATTEMPTS,
             },
+            iroh: IrohConfig::default(),
         }
     }
 }

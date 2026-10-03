@@ -18,19 +18,22 @@ impl ControllerFixture {
             .register_worker_without_wait_with_slots(server, name, true, slots)
             .await?;
         let worker_id = worker.id;
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                if self
-                    .store
-                    .worker(worker_id)
-                    .await?
-                    .is_some_and(|record| record.online)
-                {
-                    return TestResult::Ok(());
+        tokio::time::timeout(
+            crate::mock_videnoa::deadline::eventually(Duration::from_secs(5)),
+            async {
+                loop {
+                    if self
+                        .store
+                        .worker(worker_id)
+                        .await?
+                        .is_some_and(|record| record.online)
+                    {
+                        return TestResult::Ok(());
+                    }
+                    tokio::task::yield_now().await;
                 }
-                tokio::task::yield_now().await;
-            }
-        })
+            },
+        )
         .await
         .map_err(|_| std::io::Error::other("worker did not become online"))??;
         Ok(worker)

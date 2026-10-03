@@ -647,6 +647,7 @@ pub fn api_router(state: AppState) -> Router {
         )
         .route("/api/jobs", post(create_job).get(list_jobs))
         .route("/api/run", post(run_workflow_by_name))
+        .route("/api/run/validate", post(validate_run_workflow))
         .route("/api/jobs/{id}", get(get_job).delete(delete_job_history))
         .route("/api/jobs/{id}/rerun", post(rerun_job))
         .route("/api/nodes", get(list_nodes))
@@ -1304,6 +1305,10 @@ async fn update_config(
         ));
     }
     payload
+        .iroh
+        .network()
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+    payload
         .auth
         .validate()
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
@@ -1380,7 +1385,39 @@ async fn run_workflow_by_name(
             IdempotentJobLookup::Conflict => return Err(AppError::IdempotencyConflict),
         }
     }
-    let resolved = resolve_run_workflow_file(&state, &workflow_name).await?;
+    let (workflow, workflow_source) = load_run_workflow(&state, &workflow_name).await?;
+    let submission = JobSubmission {
+        workflow,
+        params: payload.params,
+        workflow_name,
+        workflow_source: workflow_source.to_string(),
+        rerun_of_job_id: None,
+    };
+    match idempotency_key {
+        Some(key) => create_idempotent_job(&state, submission, &key, &fingerprint),
+        None => create_and_spawn_job(&state, submission)
+            .map(|created| (StatusCode::CREATED, Json(created))),
+    }
+}
+
+/// Checks a saved workflow or preset exactly as `POST /api/run` would before
+/// creating a job, so a Controller can learn that a workflow will be rejected
+/// before it uploads any input. Workers that predate this route answer 404.
+async fn validate_run_workflow(
+    State(state): State<AppState>,
+    Json(payload): Json<RunWorkflowRequest>,
+) -> Result<StatusCode, AppError> {
+    let workflow_name = validate_run_workflow_name(payload.workflow_name.as_deref())?;
+    load_run_workflow(&state, &workflow_name).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Resolves, reads and validates the workflow `POST /api/run` would execute.
+async fn load_run_workflow(
+    state: &AppState,
+    workflow_name: &str,
+) -> Result<(PipelineGraph, &'static str), AppError> {
+    let resolved = resolve_run_workflow_file(state, workflow_name).await?;
 
     let workflow_document = std::fs::read_to_string(&resolved.path)
         .map_err(|e| AppError::Internal(format!("failed to read workflow: {e}")))?;
@@ -1391,19 +1428,8 @@ async fn run_workflow_by_name(
         .cloned()
         .unwrap_or(parsed_document);
 
-    let workflow = parse_and_validate_workflow(&state, workflow_value)?;
-    let submission = JobSubmission {
-        workflow,
-        params: payload.params,
-        workflow_name,
-        workflow_source: resolved.workflow_source.to_string(),
-        rerun_of_job_id: None,
-    };
-    match idempotency_key {
-        Some(key) => create_idempotent_job(&state, submission, &key, &fingerprint),
-        None => create_and_spawn_job(&state, submission)
-            .map(|created| (StatusCode::CREATED, Json(created))),
-    }
+    let workflow = parse_and_validate_workflow(state, workflow_value)?;
+    Ok((workflow, resolved.workflow_source))
 }
 
 fn parse_and_validate_workflow(
@@ -2366,25 +2392,32 @@ async fn extract_frames(
     let deadline = tokio::time::Instant::now() + preview_cache::EXTRACTION_TIMEOUT;
 
     let probe = parse_preview_probe(&probe);
-    let interval = (probe.total_frames / payload.count as u64).max(1);
-
-    let output_pattern = session.path().join("frame_%04d.png");
-    let mut command = crate::runtime::command_for("ffmpeg");
-    command
-        .args(preview_extraction_args(
-            &payload.video_path,
-            probe.stream_index,
-            interval,
-            probe.color_matrix,
-            payload.count,
-        ))
-        .arg(output_pattern);
-    preview_cache::run_command(
-        command,
-        &session,
-        deadline.saturating_duration_since(tokio::time::Instant::now()),
-    )
-    .await?;
+    if let Some(duration) = probe.duration_seconds {
+        // One input seek per sample: a single pass with `select` decodes every
+        // frame up to the last sample, which on long 4K sources exceeds the
+        // extraction budget.
+        let times = preview_sample_times(duration, payload.count);
+        extract_seeked_frames(&session, &payload.video_path, &probe, times, deadline).await?;
+    } else {
+        let interval = (probe.total_frames / payload.count as u64).max(1);
+        let output_pattern = session.path().join("frame_%04d.png");
+        let mut command = crate::runtime::command_for("ffmpeg");
+        command
+            .args(preview_extraction_args(
+                &payload.video_path,
+                probe.stream_index,
+                interval,
+                probe.color_matrix,
+                payload.count,
+            ))
+            .arg(output_pattern);
+        preview_cache::run_command(
+            command,
+            &session,
+            deadline.saturating_duration_since(tokio::time::Instant::now()),
+        )
+        .await?;
+    }
 
     let mut frames = Vec::new();
     for i in 1..=payload.count {
@@ -2443,6 +2476,8 @@ struct PreviewProbe {
     stream_index: Option<usize>,
     total_frames: u64,
     color_matrix: &'static str,
+    /// Stream (or container) duration; `None` when unknown.
+    duration_seconds: Option<f64>,
 }
 
 impl PreviewProbe {
@@ -2451,6 +2486,7 @@ impl PreviewProbe {
             stream_index: None,
             total_frames: PREVIEW_FALLBACK_FRAMES,
             color_matrix: crate::nodes::video_input::source_color_matrix(None),
+            duration_seconds: None,
         }
     }
 
@@ -2511,11 +2547,12 @@ fn parse_preview_probe(probe: &[u8]) -> PreviewProbe {
         .as_deref()
         .and_then(|frames| frames.trim().parse::<u64>().ok())
         .filter(|&frames| frames > 0);
+    let duration_seconds = [stream.duration.as_deref(), format_duration.as_deref()]
+        .into_iter()
+        .flatten()
+        .find_map(|duration| duration.trim().parse::<f64>().ok().and_then(positive));
     let estimated = || {
-        let duration = [stream.duration.as_deref(), format_duration.as_deref()]
-            .into_iter()
-            .flatten()
-            .find_map(|duration| duration.trim().parse::<f64>().ok().and_then(positive))?;
+        let duration = duration_seconds?;
         let rate = stream
             .r_frame_rate
             .as_deref()
@@ -2530,6 +2567,7 @@ fn parse_preview_probe(probe: &[u8]) -> PreviewProbe {
         stream_index: stream.index,
         total_frames,
         color_matrix: crate::nodes::video_input::source_color_matrix(stream.color_space.as_deref()),
+        duration_seconds,
     }
 }
 
@@ -2567,9 +2605,113 @@ fn preview_extraction_args(
 /// matching how video jobs decode.
 fn preview_extraction_filter(interval: u64, color_matrix: &str) -> String {
     format!(
-        "select='not(mod(n\\,{interval}))',scale=in_color_matrix={color_matrix}:flags={}",
+        "select='not(mod(n\\,{interval}))',{}",
+        preview_scale_filter(color_matrix)
+    )
+}
+
+/// Converts to RGB with the source matrix, matching how video jobs decode.
+fn preview_scale_filter(color_matrix: &str) -> String {
+    format!(
+        "scale=in_color_matrix={color_matrix}:flags={}",
         crate::nodes::video_input::RGB_DECODE_SCALE_FLAGS
     )
+}
+
+/// How many single-frame seeks run at once.
+const PREVIEW_SEEK_CONCURRENCY: usize = 4;
+
+/// Seconds of `count` evenly spaced samples: sample `k` sits at `k / count`
+/// of the duration, the spacing frame selection gives.
+fn preview_sample_times(duration_seconds: f64, count: u32) -> Vec<f64> {
+    (0..count)
+        .map(|k| duration_seconds * f64::from(k) / f64::from(count))
+        .collect()
+}
+
+/// FFmpeg arguments (before the output file) that write the one frame at
+/// `seconds`. The input seek jumps to the nearest earlier keyframe and decodes
+/// only from there, so the cost does not grow with the sample's position.
+fn preview_seek_args(
+    video_path: &str,
+    stream_index: Option<usize>,
+    seconds: f64,
+    color_matrix: &str,
+) -> Vec<String> {
+    let stream = stream_index.map_or_else(|| "0:v:0".to_owned(), |index| format!("0:{index}"));
+    [
+        "-nostdin",
+        "-v",
+        "error",
+        "-ss",
+        &format!("{seconds:.3}"),
+        "-i",
+        video_path,
+        "-map",
+        &stream,
+        "-vf",
+        &preview_scale_filter(color_matrix),
+        "-frames:v",
+        "1",
+        "-update",
+        "1",
+    ]
+    .map(str::to_owned)
+    .to_vec()
+}
+
+/// Writes `frame_{k+1:04}.png` for each sample time with bounded concurrency.
+/// A sample that fails is skipped; the error is returned only when no frame
+/// was written at all.
+async fn extract_seeked_frames(
+    session: &preview_cache::PreviewSession,
+    video_path: &str,
+    probe: &PreviewProbe,
+    times: Vec<f64>,
+    deadline: tokio::time::Instant,
+) -> anyhow::Result<()> {
+    use futures_util::StreamExt as _;
+
+    let results: Vec<anyhow::Result<()>> =
+        futures_util::stream::iter(times.into_iter().enumerate())
+            .map(|(k, seconds)| async move {
+                let output = session.path().join(format!("frame_{:04}.png", k + 1));
+                let mut command = crate::runtime::command_for("ffmpeg");
+                command
+                    .args(preview_seek_args(
+                        video_path,
+                        probe.stream_index,
+                        seconds,
+                        probe.color_matrix,
+                    ))
+                    .arg(&output);
+                let result = preview_cache::run_command(
+                    command,
+                    session,
+                    deadline.saturating_duration_since(tokio::time::Instant::now()),
+                )
+                .await;
+                if result.is_err() {
+                    // A killed or failed run may leave a partial image behind.
+                    let _ = std::fs::remove_file(&output);
+                }
+                result.map(drop)
+            })
+            .buffer_unordered(PREVIEW_SEEK_CONCURRENCY)
+            .collect()
+            .await;
+    let failures: Vec<_> = results.into_iter().filter_map(Result::err).collect();
+    let written = std::fs::read_dir(session.path())
+        .map(|mut entries| entries.any(|entry| entry.is_ok()))
+        .unwrap_or(false);
+    match failures.into_iter().next() {
+        Some(error) if !written => Err(error),
+        Some(error) => {
+            warn!(video_path, error = %format!("{error:#}"), "some preview samples failed; returning the rest");
+            Ok(())
+        }
+        None => Ok(()),
+    }
 }
 
 async fn serve_preview_frame(
@@ -3052,6 +3194,113 @@ mod tests {
     use rusqlite::Connection;
     use tower::{Service, ServiceExt};
 
+    /// Field names of `value`'s JSON object, sorted.
+    fn json_keys(value: impl Serialize) -> Vec<String> {
+        let mut keys: Vec<String> = serde_json::to_value(value)
+            .unwrap()
+            .as_object()
+            .expect("response serializes as an object")
+            .keys()
+            .cloned()
+            .collect();
+        keys.sort();
+        keys
+    }
+
+    fn sorted(keys: &[&str]) -> Vec<String> {
+        let mut keys: Vec<String> = keys.iter().map(|key| (*key).to_owned()).collect();
+        keys.sort();
+        keys
+    }
+
+    /// Controllers up to v0.1.8 reject unknown fields in these responses, so
+    /// adding one would take those Controllers' workers offline or fail their
+    /// tasks. New data goes behind a new endpoint instead (docs/controller.md,
+    /// "Worker API compatibility").
+    #[test]
+    fn controller_facing_responses_keep_the_fields_older_controllers_accept() {
+        let now = Utc::now();
+        assert_eq!(
+            json_keys(HealthResponse {
+                status: "ok".to_owned()
+            }),
+            sorted(&["status"])
+        );
+        assert_eq!(
+            json_keys(WorkflowEntry {
+                filename: "a.json".to_owned(),
+                name: String::new(),
+                description: String::new(),
+                workflow: serde_json::json!({}),
+                has_interface: false,
+            }),
+            sorted(&[
+                "filename",
+                "name",
+                "description",
+                "workflow",
+                "has_interface"
+            ])
+        );
+        assert_eq!(
+            json_keys(PresetResponse {
+                id: "a".to_owned(),
+                name: String::new(),
+                description: String::new(),
+                workflow: serde_json::json!({}),
+            }),
+            sorted(&["id", "name", "description", "workflow"])
+        );
+        assert_eq!(
+            json_keys(CreateJobResponse {
+                id: "a".to_owned(),
+                status: JobStatus::Queued,
+                created_at: now,
+            }),
+            sorted(&["id", "status", "created_at"])
+        );
+        assert_eq!(
+            json_keys(ProgressUpdate {
+                current_frame: 0,
+                total_frames: None,
+                fps: 0.0,
+                eta_seconds: None,
+            }),
+            sorted(&["current_frame", "total_frames", "fps", "eta_seconds"])
+        );
+        assert_eq!(
+            json_keys(JobResponse {
+                id: "a".to_owned(),
+                status: JobStatus::Running,
+                created_at: now,
+                started_at: None,
+                completed_at: None,
+                progress: None,
+                error: None,
+                workflow_name: String::new(),
+                workflow_source: String::new(),
+                params: None,
+                rerun_of_job_id: None,
+                duration_ms: None,
+            }),
+            sorted(&[
+                "id",
+                "status",
+                "created_at",
+                "started_at",
+                "completed_at",
+                "progress",
+                "error",
+                "workflow_name",
+                "workflow_source",
+                "params",
+                "rerun_of_job_id",
+                "duration_ms",
+            ])
+        );
+        files::assert_controller_facing_file_responses();
+    }
+
     #[test]
     fn preview_extraction_uses_variable_frame_rate_sync_mode() {
         assert_eq!(PREVIEW_VSYNC_MODE, "vfr");
@@ -3088,6 +3337,63 @@ mod tests {
             parse_preview_probe(format_duration).frames_and_matrix(),
             (36_000, "bt709")
         );
+    }
+
+    #[test]
+    fn preview_probe_reports_the_duration_to_seek_in() {
+        // The stream duration wins over the container's.
+        let both = br#"{"streams":[{"duration":"10.5","r_frame_rate":"24/1"}],"format":{"duration":"12.0"}}"#;
+        assert_eq!(parse_preview_probe(both).duration_seconds, Some(10.5));
+        let container = br#"{"streams":[{"nb_frames":"240"}],"format":{"duration":"1440.000000"}}"#;
+        assert_eq!(
+            parse_preview_probe(container).duration_seconds,
+            Some(1440.0)
+        );
+        // Without a usable duration there is nothing to seek in.
+        for probe in [
+            &br#"{"streams":[{"nb_frames":"240","duration":"N/A"}],"format":{}}"#[..],
+            br#"{"streams":[{"duration":"0"}]}"#,
+            br#"garbage"#,
+        ] {
+            assert_eq!(
+                parse_preview_probe(probe).duration_seconds,
+                None,
+                "{}",
+                String::from_utf8_lossy(probe)
+            );
+        }
+    }
+
+    #[test]
+    fn preview_samples_are_spaced_like_frame_selection() {
+        // Sample k sits at k/count of the duration, as frame k*total/count does.
+        assert_eq!(preview_sample_times(100.0, 4), [0.0, 25.0, 50.0, 75.0]);
+        assert_eq!(preview_sample_times(7.5, 1), [0.0]);
+    }
+
+    #[test]
+    fn preview_seek_reads_one_frame_after_an_input_seek() {
+        let args = preview_seek_args("/media/input.mkv", Some(2), 1234.5678, "bt709");
+        // `-ss` before `-i` seeks the demuxer instead of decoding up to the
+        // sample, which is what keeps long 4K sources inside the budget.
+        let seek = args.iter().position(|arg| arg == "-ss").unwrap();
+        let input = args.iter().position(|arg| arg == "-i").unwrap();
+        assert!(seek < input, "{args:?}");
+        assert_eq!(args[seek + 1], "1234.568");
+        assert_eq!(args[input + 1], "/media/input.mkv");
+        let map = args.iter().position(|arg| arg == "-map").unwrap();
+        assert!(map > input, "-map must be an output option: {args:?}");
+        assert_eq!(args[map + 1], "0:2");
+        // The same RGB conversion as the sampled path, without frame selection.
+        assert!(args
+            .windows(2)
+            .any(|pair| pair[0] == "-vf" && pair[1] == preview_scale_filter("bt709")));
+        assert!(args.windows(2).any(|pair| pair == ["-frames:v", "1"]));
+        assert!(args.windows(2).any(|pair| pair == ["-update", "1"]));
+
+        let args = preview_seek_args("/media/input.mkv", None, 0.0, "bt709");
+        let map = args.iter().position(|arg| arg == "-map").unwrap();
+        assert_eq!(args[map + 1], "0:v:0");
     }
 
     #[test]
@@ -3222,6 +3528,94 @@ mod tests {
             let height = u32::from_be_bytes(png[20..24].try_into().unwrap());
             assert_eq!((width, height), (320, 180), "{filename}");
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires ffmpeg with libx264"]
+    async fn preview_extraction_seeks_to_evenly_spaced_samples() {
+        // Given: a clip that is red for 4 s and then blue for 4 s, with one
+        // keyframe every 2 s.
+        let state = test_state();
+        let video_path = state.inner.data_dir.join("red-then-blue.mkv");
+        let status = crate::runtime::command_for("ffmpeg")
+            .args(["-v", "error", "-y"])
+            .args([
+                "-f",
+                "lavfi",
+                "-i",
+                "color=red:size=64x36:rate=24:duration=4",
+            ])
+            .args([
+                "-f",
+                "lavfi",
+                "-i",
+                "color=blue:size=64x36:rate=24:duration=4",
+            ])
+            .args([
+                "-filter_complex",
+                "[0:v][1:v]concat=n=2:v=1[v]",
+                "-map",
+                "[v]",
+            ])
+            .args(["-c:v", "libx264", "-g", "48", "-pix_fmt", "yuv420p"])
+            .arg(&video_path)
+            .status()
+            .unwrap();
+        assert!(status.success(), "failed to write the fixture");
+
+        // When: four preview frames are extracted.
+        let Json(response) = extract_frames(
+            State(state.clone()),
+            Json(ExtractFramesRequest {
+                video_path: video_path.to_string_lossy().into_owned(),
+                count: 4,
+            }),
+        )
+        .await
+        .map(|(_, json)| json)
+        .map_err(|error| error.into_response().status())
+        .unwrap();
+
+        // Then: samples at 0, 2, 4 and 6 s are red, red, blue, blue, and keep
+        // the index-to-file mapping frame processing relies on.
+        assert_eq!(
+            response
+                .frames
+                .iter()
+                .map(|frame| frame.index)
+                .collect::<Vec<_>>(),
+            [0, 1, 2, 3]
+        );
+        let session = state
+            .preview_cache()
+            .unwrap()
+            .get(&response.preview_id)
+            .unwrap();
+        let mut colors = Vec::new();
+        for frame in &response.frames {
+            let filename = frame.url.rsplit('/').next().unwrap();
+            assert_eq!(filename, format!("frame_{:04}.png", frame.index + 1));
+            let output = crate::runtime::command_for("ffmpeg")
+                .args(["-v", "error", "-i"])
+                .arg(session.path().join(filename))
+                .args([
+                    "-vf",
+                    "scale=1:1",
+                    "-f",
+                    "rawvideo",
+                    "-pix_fmt",
+                    "rgb24",
+                    "-",
+                ])
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "failed to read {filename}");
+            let [red, _, blue] = output.stdout[..3] else {
+                unreachable!()
+            };
+            colors.push(if red > blue { "red" } else { "blue" });
+        }
+        assert_eq!(colors, ["red", "red", "blue", "blue"]);
     }
 
     #[test]
@@ -4371,6 +4765,96 @@ mod tests {
         assert_eq!(params_value["input"], "/tmp/input-video.mkv");
         assert_eq!(params_value["seed"], 42);
 
+        let _ = std::fs::remove_dir_all(&workflows_dir);
+        let _ = std::fs::remove_dir_all(&presets_dir);
+    }
+
+    async fn post_json(
+        app: &mut Router,
+        uri: &str,
+        body: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        let req = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let resp = send_request(app, req).await;
+        let status = resp.status();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json = if body.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::from_slice(&body).unwrap()
+        };
+        (status, json)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_validation_matches_run_without_creating_a_job() {
+        let state = test_state();
+        let mut app = app_router(state.clone());
+        let workflows_dir = unique_temp_dir("videnoa-validate-workflows");
+        let presets_dir = unique_temp_dir("videnoa-validate-presets");
+        std::fs::create_dir_all(&workflows_dir).expect("create workflows dir");
+        std::fs::create_dir_all(&presets_dir).expect("create presets dir");
+        set_workflow_lookup_dirs(&state, workflows_dir.clone(), presets_dir.clone()).await;
+        write_json_file(
+            &workflows_dir.join("valid.json"),
+            &serde_json::json!({"workflow": valid_workflow_json()}),
+        );
+        write_json_file(
+            &presets_dir.join("broken.json"),
+            &serde_json::json!({"workflow": {"invalid": true}}),
+        );
+
+        let (status, body) = post_json(
+            &mut app,
+            "/api/run/validate",
+            serde_json::json!({"workflow_name": "valid"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+
+        let (status, validate_body) = post_json(
+            &mut app,
+            "/api/run/validate",
+            serde_json::json!({"workflow_name": "broken"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (run_status, run_body) = post_json(
+            &mut app,
+            "/api/run",
+            serde_json::json!({"workflow_name": "broken"}),
+        )
+        .await;
+        assert_eq!(run_status, StatusCode::BAD_REQUEST);
+        assert_eq!(validate_body["error"], run_body["error"]);
+
+        let (status, _) = post_json(
+            &mut app,
+            "/api/run/validate",
+            serde_json::json!({"workflow_name": "missing"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, body) = post_json(
+            &mut app,
+            "/api/run/validate",
+            serde_json::json!({"workflow_name": "valid.json"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"], "workflow_name must not include .json suffix");
+
+        assert!(
+            state.inner.jobs.is_empty(),
+            "validation must not create jobs"
+        );
         let _ = std::fs::remove_dir_all(&workflows_dir);
         let _ = std::fs::remove_dir_all(&presets_dir);
     }

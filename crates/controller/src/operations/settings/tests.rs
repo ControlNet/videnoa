@@ -122,6 +122,7 @@ async fn settings_update_persists_toml_and_hot_applies_every_public_field() -> T
         scheduler: current.scheduler,
         timeouts: current.timeouts,
         retry: current.retry,
+        iroh: None,
     };
     request.server.port = new_port;
     request.auth.secure_cookie = true;
@@ -206,6 +207,7 @@ async fn path_change_is_staged_for_restart_after_scheduler_is_drained() -> TestR
         },
         timeouts: current.timeouts,
         retry: current.retry,
+        iroh: None,
     };
 
     // When: the operator saves the new roots.
@@ -266,6 +268,7 @@ async fn path_change_requires_paused_scheduler() -> TestResult {
         scheduler: current.scheduler,
         timeouts: current.timeouts,
         retry: current.retry,
+        iroh: None,
     };
 
     // When: the running scheduler receives a path change.
@@ -315,6 +318,7 @@ async fn toml_failure_changes_neither_runtime_nor_generation() -> TestResult {
         scheduler: current.scheduler,
         timeouts: current.timeouts,
         retry: current.retry,
+        iroh: None,
     };
     request.auth.secure_cookie = true;
     request.timeouts.poll_seconds = 12;
@@ -376,6 +380,7 @@ async fn server_change_without_listener_capability_is_rejected_before_commit() -
         scheduler: current.scheduler,
         timeouts: current.timeouts,
         retry: current.retry,
+        iroh: None,
     };
     request.server.port = reservation.local_addr()?.port();
     drop(reservation);
@@ -441,6 +446,7 @@ async fn host_only_change_on_held_port_is_rejected_with_restart_guidance() -> Te
         scheduler: current.scheduler,
         timeouts: current.timeouts,
         retry: current.retry,
+        iroh: None,
     };
 
     // When: only the host changes to the wildcard address on the same port.

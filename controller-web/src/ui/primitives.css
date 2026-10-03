@@ -120,12 +120,23 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* One entry per line: the height follows the rows instead of the single-line control. */
+.field textarea {
+  block-size: auto;
+  min-block-size: var(--control-field);
+  padding-block: var(--space-2);
+  line-height: 1.5;
+  resize: vertical;
+}
+
 .field input:hover:not(:disabled),
-.field select:hover:not(:disabled) {
+.field select:hover:not(:disabled),
+.field textarea:hover:not(:disabled) {
   border-color: var(--color-text-quiet);
 }
 
-.field input[aria-invalid="true"] {
+.field input[aria-invalid="true"],
+.field textarea[aria-invalid="true"] {
   border-color: var(--color-danger);
 }
 
@@ -235,10 +246,12 @@
   flex-direction: row;
   align-items: center;
   gap: var(--space-2);
-  block-size: var(--control-field);
+  /* A minimum, not a fixed height: a label that wraps on a narrow screen stays inside the row. */
+  min-block-size: var(--control-field);
 }
 
 .field--check input[type="checkbox"] {
+  flex-shrink: 0;
   inline-size: 1rem;
   block-size: 1rem;
   margin: 0;
@@ -249,6 +262,35 @@
   font-size: var(--type-cell);
   font-weight: 500;
   color: var(--color-text);
+}
+
+/* An unavailable option must not read as one that is merely unchecked. */
+.field--check input[type="checkbox"]:disabled,
+.field--check input[type="checkbox"]:disabled + span {
+  cursor: not-allowed;
+}
+
+.field--check input[type="checkbox"]:disabled + span {
+  color: var(--color-text-quiet);
+}
+
+.field-check-group {
+  display: flex;
+  flex-direction: column;
+}
+
+/* The note belongs to the option, so the row gives up its full control height. */
+.field-check-group > .field--check {
+  min-block-size: 1.5rem;
+}
+
+/* Indented by the box and its gap so the note aligns with the label text. */
+.field-check-hint {
+  padding-inline-start: calc(1rem + var(--space-2));
+  color: var(--color-text-quiet);
+  font-size: var(--type-chip);
+  font-weight: 500;
+  line-height: 1.5;
 }
 
 /* Text input with a leading icon, used for search. */

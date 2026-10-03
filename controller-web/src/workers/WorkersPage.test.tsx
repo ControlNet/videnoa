@@ -50,6 +50,47 @@ describe("Workers page", () => {
     expect(screen.getByLabelText("Compute slots")).toHaveAttribute("max", "65535")
   })
 
+  it("shows workflows a healthy worker rejects in its error cell", async () => {
+    // Given: an online worker without a health error that rejects two workflows.
+    const apiClient = createApiClient({
+      fetcher: async () => Response.json({
+        items: [{
+          id: "550e8400-e29b-41d4-a716-446655440000",
+          version: 4,
+          name: "render-east",
+          api_url: "https://worker.example/api/",
+          enabled: true,
+          online: true,
+          compute_slots: 4,
+          capabilities: {
+            workflows: [],
+            invalid_workflows: [
+              { name: "broken.json", kind: "workflow", reason: "unknown node type 'Blur'" },
+              { name: "old-preset", kind: "preset", reason: "missing model file" },
+            ],
+            refreshed_at: "2030-01-01T00:00:00Z",
+          },
+          capacity: { used_slots: 0, available_slots: 4, assigned_tasks: 0, staged_tasks: 0, processing_tasks: 0, active_uploads: 0, active_downloads: 0, progress: null },
+          last_seen_at: "2030-01-01T00:01:00Z",
+          last_assigned_at: null,
+          created_at: "2030-01-01T00:00:00Z",
+          updated_at: "2030-01-01T00:01:00Z",
+          last_error: null,
+        }],
+        total: 1,
+      }),
+      onUnauthorized: () => undefined,
+    })
+
+    // When: the table renders.
+    render(<WorkersPage apiClient={apiClient} />)
+
+    // Then: the count is visible and each reason is in the cell title.
+    const cell = await screen.findByText("2 invalid workflows")
+    expect(cell).toHaveAttribute("title", "broken.json: unknown node type 'Blur'\nold-preset: missing model file")
+    expect(cell).toHaveClass("worker-error--present")
+  })
+
   it("associates worker validation errors and focuses the first invalid field", async () => {
     // Given: the add dialog is open with invalid boundary values.
     const apiClient = createApiClient({

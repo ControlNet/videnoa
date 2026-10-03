@@ -135,7 +135,7 @@ pub(crate) fn remote_job_identity_matches(
         return false;
     };
     job.id == remote_job_id
-        && job.workflow_name == task.request.workflow
+        && job.workflow_name.as_str() == task.request.workflow.run_name()
         && params.get("input") == Some(&Value::String(input.as_str().to_owned()))
         && params.get("output") == Some(&Value::String(output.as_str().to_owned()))
 }

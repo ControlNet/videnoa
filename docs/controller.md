@@ -104,6 +104,9 @@ file (restart after manual edits). Log in again to receive the longer absolute
 lifetime; increasing the policy does not extend an existing session's deadline.
 
 `<DATA ROOT>/controller.toml` is the sole persisted Controller configuration source.
+Its optional `[iroh]` section (`relay_urls`, `use_public_relays`) is edited in Web Settings or the
+file and read at startup, so a change applies after the next Controller start.
+See [self-hosted relays](../docs/iroh.md#self-hosted-relays).
 The in-memory `ControllerConfig` is the active runtime configuration.
 `controller.sqlite3` holds durable operational/application state: tasks, attempts,
 workers, recovery evidence, idempotency, administrator credential, and sessions.
@@ -274,6 +277,19 @@ workflow and preset catalogs. A name is eligible only when its interface has
 `Path` inputs named exactly `input` and `output`. Controller does not deploy or
 synchronize workflows.
 
+Each health refresh also asks the worker to validate every eligible name with
+`POST /api/run/validate`, the same checks `POST /api/run` applies, without
+creating a job. A name the worker rejects is not scheduled there and is listed
+under `capabilities.invalid_workflows` with the worker's reason; the Workers
+page shows the count in the error column and the reasons in its tooltip.
+Workers older than v0.1.9 answer 404, and a validation request that fails for
+any other reason (timeout, 5xx) also leaves the name eligible.
+
+Task and batch creation, including batch preview, return 400 with a `workflow`
+field error when every worker that reports the workflow reports it invalid and
+none can run it. A workflow no worker has reported yet is still accepted and
+waits in the queue as before.
+
 Worker updates use `PUT /api/workers/{id}` with the current version and all
 mutable fields. Enable and disable use `POST /api/workers/{id}/enable` and
 `/disable`. Delete uses `DELETE /api/workers/{id}?version=N` and succeeds only
@@ -314,6 +330,13 @@ A worker that rejects the submission with HTTP 400 (for example a workflow that
 fails validation) fails the task with `remote_submission_failed`; the failure
 message ends with the worker's `error` text, cleaned of control characters and
 cut to 1024 characters. Other rejected responses are not reflected.
+The Controller never retries a rejection automatically. After the cause is fixed
+on the worker (for example a missing model), the task detail's Retry action
+returns the task to `staged` on the same attempt and submits it again with the
+same submission key and remote input; the input is not uploaded again. Failures
+recorded before this change, which are marked `retryable=false`, can be retried
+the same way. The worker keeps the uploaded input of a failed task until the
+task is retried or its workspace is removed.
 Confirmation and cancellation recovery remain available while scheduling is paused.
 Transfer and cleanup failures use bounded persisted retry. Downstream retries do
 not repeat successful AI work.
@@ -562,8 +585,8 @@ including zero counts.
 | `GET` | `/api/workers` | Worker list, capabilities, and capacity |
 | `POST` | `/api/workers` | Create `name`, `api_url` (or `transport`=`iroh` plus `endpoint_id`), `enabled`, `compute_slots`, optional `password` |
 | `PUT` | `/api/workers/{id}` | Current version plus all mutable fields |
-| `GET` | `/api/settings` | Version, editable paths, restart state, server, auth policy, scheduler, timeouts, retry |
-| `PUT` | `/api/settings` | Current `version` plus complete `paths`, `server`, `auth`, `scheduler`, `timeouts`, `retry` |
+| `GET` | `/api/settings` | Version, editable paths, restart state, server, auth policy, scheduler, timeouts, retry, `iroh` (`relay_urls`, `use_public_relays`, `restart_required`) |
+| `PUT` | `/api/settings` | Current `version` plus complete `paths`, `server`, `auth`, `scheduler`, `timeouts`, `retry`; optional `iroh` (`relay_urls`, `use_public_relays`), omitted to keep the saved relays |
 | `POST` | `/api/scheduler/pause` | `{"version":N}` |
 | `POST` | `/api/scheduler/resume` | `{"version":N}` |
 
@@ -574,6 +597,11 @@ They are persisted immediately and reported with `restart_required=true`, then
 activated during the next Controller start. Startup copies durable state into a
 new empty DATA ROOT before opening SQLite and keeps the original root as rollback
 evidence. The configuration file is always `<DATA ROOT>/controller.toml`.
+
+Saved iroh relays are likewise persisted immediately and applied at the next
+start; `iroh.restart_required` reports the pending change separately from the
+path restart, so it does not lock the scheduler controls. Invalid relay URLs
+return a `400` field error for `iroh`.
 
 Other mutable fields are persisted and hot-applied, including listener and
 authentication policy. A listener update is rejected before persistence when
@@ -629,6 +657,22 @@ Startup applies pending migrations atomically. Verify `/api/health`,
 Rollback requires the pre-upgrade Controller and worker snapshots. Never point
 an older binary at a database already migrated by a newer version. There is no
 manual migration command or supported migration downgrade.
+
+### Worker API compatibility
+
+Controller and workers can be upgraded separately within these rules:
+
+- Since v0.1.9, Controller ignores fields it does not know in worker
+  responses. Known fields and status values are still checked strictly.
+- Controllers up to v0.1.8 reject unknown fields in worker responses. Workers
+  therefore do not add fields to the responses those Controllers read (health,
+  workflow and preset lists, interfaces, run receipts, jobs, uploads and file
+  metadata); a Worker unit test pins these field sets. New information is served
+  from new endpoints instead.
+- Controller detects a new worker endpoint by trying it: a worker that predates
+  it answers 404, and Controller falls back to the older behaviour.
+- Controller sends no new request fields to existing worker endpoints, because
+  workers reject unknown request fields.
 
 ## Troubleshooting
 

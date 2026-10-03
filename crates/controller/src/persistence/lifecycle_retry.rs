@@ -43,11 +43,13 @@ impl Store {
         let result = sqlx::query(
             "UPDATE task_attempts SET status = ?, failure_stage = NULL, failure_code = NULL,
                 failure_message = NULL, failure_retryable = NULL, retry_count = 0,
-                next_retry_at_ms = NULL, version = version + 1, updated_at_ms = ?
+                next_retry_at_ms = NULL, version = version + 1, updated_at_ms = ?,
+                submission_owner = CASE WHEN ? = 'staged' THEN NULL ELSE submission_owner END
              WHERE id = ? AND status = 'failed' AND version = ?",
         )
         .bind(status)
         .bind(occurred_at)
+        .bind(status)
         .bind(write.attempt.id.to_string())
         .bind(sqlite_u64("attempt_version", write.attempt.version)?)
         .execute(&mut *transaction)

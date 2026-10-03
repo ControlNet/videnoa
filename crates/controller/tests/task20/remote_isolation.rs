@@ -4,9 +4,12 @@ use videnoa_controller::domain::{FailureCode, FailureStage, Task, TaskStatus};
 
 use crate::mock_videnoa::checkpoints::Checkpoint;
 use crate::mock_videnoa::faults::{Fault, ResponseFault};
-use crate::mock_videnoa::journal::Route;
+use crate::mock_videnoa::journal::{HeaderValueSnapshot, Route};
 use crate::mock_videnoa::server::MockVidenoa;
-use crate::support::{assert_completed_pipeline, complete_mock_job, ControllerFixture, TestResult};
+use crate::support::{
+    assert_completed_pipeline, assert_restarted_pipeline, complete_mock_job, ControllerFixture,
+    TestResult,
+};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn rejected_submission_fails_only_its_task_while_other_work_completes() -> TestResult {
@@ -114,20 +117,81 @@ async fn malformed_poll_fails_only_its_task_while_other_work_completes() -> Test
     assert_completed_pipeline(&fixture, &good_worker, &good_task, b"good-output").await
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn rejected_submission_resubmits_on_manual_retry_without_reupload() -> TestResult {
+    // Given: a worker that rejects the task's first submission.
+    let worker = MockVidenoa::start_persistent().await?;
+    let fixture = ControllerFixture::start().await?;
+    worker
+        .set_fault(Fault::Response(ResponseFault {
+            route: Route::Run,
+            status: 400,
+            body: br#"{"error":"workflow validation failed"}"#.to_vec(),
+        }))
+        .await;
+    fixture.register_worker(&worker, "submission-fixed").await?;
+    let task = fixture
+        .create_task("submission-fixed", b"fixed-input")
+        .await?;
+    let failed = wait_for_status(&fixture, &task, TaskStatus::Failed).await?;
+    assert_eq!(
+        failed.task.failure.map(|failure| failure.failure_code),
+        Some(FailureCode::RemoteSubmissionFailed)
+    );
+    let original = failed
+        .attempts
+        .first()
+        .ok_or_else(|| std::io::Error::other("failed attempt missing"))?
+        .clone();
+
+    // When: the cause is fixed on the worker and the user retries.
+    let retried = fixture.retry_task(&task).await?;
+    complete_mock_job(&worker, &task, b"fixed-output").await?;
+
+    // Then: the same attempt resubmits with its key, without a second upload.
+    assert_eq!(retried.attempt_id, original.id);
+    assert_restarted_pipeline(&fixture, &worker, &task, b"fixed-output").await?;
+    let counters = worker.counters().await;
+    assert_eq!(counters.get(Route::Run), 2);
+    assert_eq!(counters.get(Route::Upload), 1);
+    assert_eq!(worker.job_count().await, 1);
+    let keys: Vec<String> = worker
+        .journal()
+        .await
+        .into_iter()
+        .filter(|entry| entry.route == Route::Run)
+        .filter_map(|entry| {
+            entry
+                .headers
+                .into_iter()
+                .find(|header| header.name == "idempotency-key")
+                .and_then(|header| match header.value {
+                    HeaderValueSnapshot::Bytes(bytes) => String::from_utf8(bytes).ok(),
+                    HeaderValueSnapshot::Redacted => None,
+                })
+        })
+        .collect();
+    assert_eq!(keys, vec![original.submission_key.to_string(); 2]);
+    Ok(())
+}
+
 async fn wait_for_status(
     fixture: &ControllerFixture,
     task: &Task,
     expected: TaskStatus,
 ) -> TestResult<videnoa_controller::domain::TaskDetailResponse> {
-    tokio::time::timeout(Duration::from_secs(15), async {
-        loop {
-            let detail = fixture.task(task).await?;
-            if detail.task.status == expected {
-                return Ok(detail);
+    tokio::time::timeout(
+        crate::mock_videnoa::deadline::eventually(Duration::from_secs(15)),
+        async {
+            loop {
+                let detail = fixture.task(task).await?;
+                if detail.task.status == expected {
+                    return Ok(detail);
+                }
+                tokio::task::yield_now().await;
             }
-            tokio::task::yield_now().await;
-        }
-    })
+        },
+    )
     .await
     .map_err(|_| std::io::Error::other(format!("task did not reach {expected:?}")))?
 }

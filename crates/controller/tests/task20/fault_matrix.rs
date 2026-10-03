@@ -223,14 +223,17 @@ async fn restart_mid_download() -> TestResult {
 }
 
 async fn wait_for_remote_job(worker: &MockVidenoa) -> TestResult {
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        loop {
-            if worker.job_count().await == 1 {
-                return;
+    tokio::time::timeout(
+        crate::mock_videnoa::deadline::eventually(std::time::Duration::from_secs(10)),
+        async {
+            loop {
+                if worker.job_count().await == 1 {
+                    return;
+                }
+                tokio::task::yield_now().await;
             }
-            tokio::task::yield_now().await;
-        }
-    })
+        },
+    )
     .await
     .map_err(|_| std::io::Error::other("remote job was not created after restart"))?;
     Ok(())

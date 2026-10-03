@@ -51,6 +51,14 @@ const workflowSummarySchema = z
   })
   .strict()
 
+const invalidWorkflowSchema = z
+  .object({
+    name: z.string(),
+    kind: z.enum(["workflow", "preset"]),
+    reason: z.string(),
+  })
+  .strict()
+
 const workerCapacitySchema = z
   .object({
     used_slots: z.number().int().nonnegative().max(65_535),
@@ -78,6 +86,8 @@ export const workerSchema = z
     capabilities: z
       .object({
         workflows: z.array(workflowSummarySchema),
+        // Omitted by the Controller when empty.
+        invalid_workflows: z.array(invalidWorkflowSchema).default([]),
         refreshed_at: z.iso.datetime().nullable(),
       })
       .strict(),

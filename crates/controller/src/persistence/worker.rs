@@ -17,6 +17,7 @@ impl Store {
     pub async fn insert_worker(&self, worker: &NewWorker) -> Result<(), PersistenceError> {
         let capabilities = WorkerCapabilities {
             workflows: Vec::new(),
+            invalid_workflows: Vec::new(),
             refreshed_at: None,
         };
         sqlx::query(

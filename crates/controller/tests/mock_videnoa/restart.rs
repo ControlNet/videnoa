@@ -19,10 +19,10 @@ async fn persistent_restart_retains_state_and_cancels_active_jobs() -> TestResul
         .upload("restart/input.mkv", b"persistent-input")
         .await?;
     let queued = client
-        .run("eligible-workflow.json", "queued-key", json!({"value": 1}))
+        .run("eligible-workflow", "queued-key", json!({"value": 1}))
         .await?;
     let running = client
-        .run("eligible-workflow.json", "running-key", json!({"value": 2}))
+        .run("eligible-workflow", "running-key", json!({"value": 2}))
         .await?;
     server
         .set_job(&running.body.id, JobStatus::Running, None)
@@ -46,7 +46,7 @@ async fn persistent_restart_retains_state_and_cancels_active_jobs() -> TestResul
         b"persistent-input"
     );
     let replay = client
-        .run("eligible-workflow.json", "running-key", json!({"value": 2}))
+        .run("eligible-workflow", "running-key", json!({"value": 2}))
         .await?;
     assert_eq!(replay.status, StatusCode::OK);
     assert_eq!(replay.body.id, running.body.id);
@@ -60,7 +60,7 @@ async fn state_loss_restart_exposes_ambiguity_without_safe_resubmission_claim() 
     let mut server = MockVidenoa::start_persistent().await?;
     let client = MockClient::new(server.base_url())?;
     let created = client
-        .run("eligible-workflow.json", "lost-key", json!({"value": 1}))
+        .run("eligible-workflow", "lost-key", json!({"value": 1}))
         .await?;
 
     // When: restart deliberately discards the prior durable state.

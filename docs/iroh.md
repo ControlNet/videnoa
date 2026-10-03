@@ -1,8 +1,9 @@
 # Iroh worker connections
 
 Videnoa supports authenticated TCP tunnels over iroh for Controller-to-worker
-API traffic. The first implementation uses N0 address discovery and default
-relays. It attempts direct connectivity where available and can use relay paths.
+API traffic. By default it uses N0 address discovery and the public N0 relays;
+[self-hosted relays](#self-hosted-relays) replace both. It attempts direct
+connectivity where available and can use relay paths.
 Only the worker's Endpoint ID is needed for registration; tickets, public inbound
 ports, and user-managed TCP proxy processes are not required.
 
@@ -26,6 +27,60 @@ enabled = true
 The default is disabled. A worker without a configured password cannot accept
 an iroh tunnel. Startup failures leave the local HTTP service available for
 configuration; the iroh status reports the failure.
+
+## Self-hosted relays
+
+To avoid the public N0 infrastructure, run your own
+[iroh relay](https://docs.iroh.computer/) and list it on **both** the Worker
+and the Controller. With relays configured, an endpoint uses only those relays
+and no public address lookup: it publishes nothing to `dns.iroh.link`, and the
+Controller dials a worker's Endpoint ID through the configured relays. A
+direct path is still attempted once the relay connects the two peers.
+
+Both WebUIs edit the list under **Settings**, one URL per line. Saving on the
+Worker restarts its endpoint with the same Endpoint ID; saving on the
+Controller writes `controller.toml` and shows *Restart required* until the
+Controller is restarted. The equivalent files:
+
+Worker, in its `config.toml` (restart after editing, or save Settings in the
+WebUI to apply it):
+
+```toml
+[iroh]
+enabled = true
+relay_urls = ["https://relay.example.com"]
+```
+
+Controller, in `<DATA ROOT>/controller.toml` (restart after editing or saving
+Settings):
+
+```toml
+[iroh]
+relay_urls = ["https://relay.example.com"]
+```
+
+- URLs must use `http` or `https`. An invalid value rejects the Worker
+  settings save (400), shows as an error in the Worker's iroh status when it is
+  in `config.toml` at startup, and stops Controller startup with a
+  configuration error.
+- The lists must match. A worker on self-hosted relays is not reachable from a
+  Controller on the public network, and the reverse, because neither side
+  publishes to or looks up the other's address service.
+- Several relays may be listed for redundancy. An endpoint homes on the
+  reachable relay with the lowest latency (list order does not matter), and
+  the Controller dials through every relay it lists, so an unreachable relay
+  falls back to another one.
+- **Also use the public iroh relays** (`use_public_relays = true` in either
+  file's `[iroh]` section) adds N0's public relays, taken from iroh's built-in
+  list, next to yours. They are chosen by latency like your own relays, not
+  held in reserve, and public address lookup stays off. The option needs at
+  least one self-hosted relay and must be set the same on both sides: a worker
+  homed on a public relay is unreachable from a Controller that does not use
+  them.
+- Changing the Worker list restarts its endpoint with the same Endpoint ID.
+- Removing `relay_urls` (or setting `[]`) returns to the public N0 network.
+- Put credentials for the relay host only in its own deployment, never in
+  these URLs.
 
 ## Identity and authentication
 
@@ -101,15 +156,19 @@ cargo test --locked -p videnoa-core iroh_password_and_api_lifecycle --lib
 cargo test --locked -p videnoa-controller --test iroh_registration
 cargo test --locked -p videnoa-controller controller_http_client_streams_through_authenticated_iroh --lib
 cargo test --locked -p videnoa-transport n0_endpoint_id_only_connection -- --ignored
+cargo test --locked -p videnoa-transport self_hosted_relay_connects_by_endpoint_id_without_public_services
 ```
 
-Expected: all selected tests pass. The last test deliberately uses public N0
-services; it is ignored in normal offline/local test runs. All test identities,
+Expected: all selected tests pass. The `n0_endpoint_id_only_connection` test
+deliberately uses public N0 services; it is ignored in normal offline/local test
+runs. The self-hosted relay test starts a local relay with a self-signed test
+certificate and needs no network access. All test identities,
 passwords, in-memory jobs, and streaming payloads are synthetic test fixtures.
 No production service or runtime directory is used.
 
 Local and single-host N0 tests do not establish separate-network NAT/CGNAT
 compatibility, forced-relay throughput, or Windows execution. Those remain
 release acceptance checks, together with representative concurrent video
-transfers and control-request latency. Self-hosted relay configuration is not
-part of this release's implementation.
+transfers and control-request latency. Self-hosted relays are verified against
+a local test relay only; deploying and operating a production relay is outside
+Videnoa.

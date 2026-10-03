@@ -86,6 +86,7 @@ async fn task_and_attempt_repositories_round_trip_remote_evidence() -> TestResul
                     name: WorkflowName::new("anime upscale ../v2"),
                     kind: WorkflowKind::Workflow,
                 }],
+                invalid_workflows: Vec::new(),
                 refreshed_at: Some(now),
             },
             last_seen_at: Some(now),

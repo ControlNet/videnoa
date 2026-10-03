@@ -13,11 +13,14 @@ use super::{ControllerFixture, TestResult};
 const FIRST_JOB_ID: &str = "00000000-0000-4000-8000-000000000001";
 
 pub async fn complete_mock_job(server: &MockVidenoa, task: &Task, output: &[u8]) -> TestResult {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while server.job_count().await == 0 {
-            tokio::task::yield_now().await;
-        }
-    })
+    tokio::time::timeout(
+        crate::mock_videnoa::deadline::eventually(Duration::from_secs(10)),
+        async {
+            while server.job_count().await == 0 {
+                tokio::task::yield_now().await;
+            }
+        },
+    )
     .await
     .map_err(|_| std::io::Error::other("remote job was not persisted"))?;
     server
@@ -31,15 +34,18 @@ pub async fn wait_for_completed(
     server: &MockVidenoa,
     task: &Task,
 ) -> TestResult<videnoa_controller::domain::TaskDetailResponse> {
-    match tokio::time::timeout(Duration::from_secs(15), async {
-        loop {
-            let detail = fixture.task(task).await?;
-            if detail.task.status == TaskStatus::Completed {
-                return Ok(detail);
+    match tokio::time::timeout(
+        crate::mock_videnoa::deadline::eventually(Duration::from_secs(15)),
+        async {
+            loop {
+                let detail = fixture.task(task).await?;
+                if detail.task.status == TaskStatus::Completed {
+                    return Ok(detail);
+                }
+                tokio::task::yield_now().await;
             }
-            tokio::task::yield_now().await;
-        }
-    })
+        },
+    )
     .await
     {
         Ok(completed) => completed,
@@ -56,7 +62,8 @@ pub async fn wait_for_positive_download_partial(
         .temp_root
         .join(task.id.to_string())
         .join("output.mp4.part");
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now()
+        + crate::mock_videnoa::deadline::eventually(Duration::from_secs(10));
     let mut last_part_state = String::from("missing");
     loop {
         match tokio::fs::metadata(&part).await {
@@ -91,7 +98,8 @@ pub async fn coherent_task_attempt(
     expected_status: TaskStatus,
     operation: &str,
 ) -> TestResult<(TaskRecord, AttemptRecord)> {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now()
+        + crate::mock_videnoa::deadline::eventually(Duration::from_secs(10));
     loop {
         let task_before = fixture.store.task(task.id).await?;
         let attempt = fixture.store.current_attempt(task.id).await?;

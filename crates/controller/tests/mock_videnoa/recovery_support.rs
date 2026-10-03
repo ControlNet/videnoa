@@ -84,6 +84,7 @@ impl Fixture {
                         name: WorkflowName::new("eligible-workflow.json"),
                         kind: WorkflowKind::Workflow,
                     }],
+                    invalid_workflows: Vec::new(),
                     refreshed_at: Some(now),
                 },
                 last_seen_at: Some(now),

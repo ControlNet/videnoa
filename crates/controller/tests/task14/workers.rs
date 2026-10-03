@@ -106,6 +106,7 @@ async fn worker_health_refresh_publishes_background_delta() -> TestResult {
             online: false,
             capabilities: WorkerCapabilities {
                 workflows: Vec::new(),
+                invalid_workflows: Vec::new(),
                 refreshed_at: Some(now),
             },
             last_seen_at: worker.last_seen_at,

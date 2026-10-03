@@ -14,7 +14,7 @@ use crate::mock_videnoa::journal::{JournalOutcome, Route};
 use crate::mock_videnoa::state::SharedState;
 
 mod submission;
-pub(crate) use submission::run;
+pub(crate) use submission::{run, validate};
 
 pub(crate) async fn poll(
     State(state): State<Arc<SharedState>>,

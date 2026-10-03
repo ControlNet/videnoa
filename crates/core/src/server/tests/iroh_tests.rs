@@ -85,7 +85,9 @@ async fn iroh_password_and_api_lifecycle() -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("endpoint missing"))?;
     let identity = addr.id;
     let client_root = tempfile::tempdir()?;
-    let client = videnoa_transport::Client::open(client_root.path()).await?;
+    let client =
+        videnoa_transport::Client::open(client_root.path(), &videnoa_transport::Network::default())
+            .await?;
     assert!(client
         .tunnel(addr.clone(), "incorrect test password")
         .await
@@ -239,6 +241,90 @@ async fn iroh_password_and_api_lifecycle() -> anyhow::Result<()> {
     assert!(status["endpoint_id"].is_null());
     assert_eq!(status["running"], false);
     client.shutdown().await;
+    state.shutdown_iroh().await;
+    http_server.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn iroh_relay_settings_are_validated_and_restart_the_endpoint() -> anyhow::Result<()> {
+    let state = test_state();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let url = format!("http://{}", listener.local_addr()?);
+    let app = app_router(state.clone());
+    let http_server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+    });
+    let http = reqwest::Client::new();
+    // Deliberately synthetic credential, isolated from production state.
+    let password = "iroh relay test worker password";
+    let created = http
+        .put(format!("{url}/api/auth/password"))
+        .header("Origin", &url)
+        .json(&serde_json::json!({"password": password, "password_confirmation": password}))
+        .send()
+        .await?;
+    assert!(created.status().is_success());
+    let put = |config: crate::config::AppConfig| {
+        let request = http
+            .put(format!("{url}/api/config"))
+            .bearer_auth(password)
+            .json(&config);
+        async move { anyhow::Ok(request.send().await?.status()) }
+    };
+    let mut config = state.inner.config.read().await.clone();
+    config.iroh.enabled = true;
+
+    // An invalid relay URL is rejected before anything is saved.
+    config.iroh.relay_urls = vec!["ftp://relay.example.test".into()];
+    assert_eq!(put(config.clone()).await?, reqwest::StatusCode::BAD_REQUEST);
+    assert!(!state.inner.config.read().await.iroh.enabled);
+    assert!(state.iroh_addr().await.is_none());
+
+    // Unreachable test relays: the endpoint still binds and keeps its identity.
+    config.iroh.relay_urls = vec!["http://127.0.0.1:9".into()];
+    assert!(put(config.clone()).await?.is_success());
+    let first = state.iroh_relays().await.expect("endpoint running");
+    assert_eq!(first, ["http://127.0.0.1:9/"]);
+    let identity = state.iroh_addr().await.expect("endpoint running").id;
+
+    // Changing the relays restarts the endpoint with the same identity.
+    config.iroh.relay_urls = vec!["http://127.0.0.1:10".into()];
+    assert!(put(config.clone()).await?.is_success());
+    assert_eq!(
+        state.iroh_relays().await.expect("endpoint running"),
+        ["http://127.0.0.1:10/"]
+    );
+    assert_eq!(
+        state.iroh_addr().await.expect("endpoint running").id,
+        identity
+    );
+
+    // Public relays join the self-hosted one, again without a new identity.
+    config.iroh.use_public_relays = true;
+    assert!(put(config.clone()).await?.is_success());
+    let mixed = state.iroh_relays().await.expect("endpoint running");
+    assert_eq!(mixed[0], "http://127.0.0.1:10/");
+    assert!(
+        mixed[1..]
+            .iter()
+            .all(|relay| relay.contains(".relay.n0.iroh.link")),
+        "{mixed:?}"
+    );
+    assert!(mixed.len() > 1, "{mixed:?}");
+    assert_eq!(
+        state.iroh_addr().await.expect("endpoint running").id,
+        identity
+    );
+
+    // Clearing them returns to the public network.
+    config.iroh.relay_urls.clear();
+    assert!(put(config).await?.is_success());
+    assert_eq!(state.iroh_relays().await, Some(Vec::new()));
     state.shutdown_iroh().await;
     http_server.abort();
     Ok(())

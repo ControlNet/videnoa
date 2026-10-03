@@ -64,6 +64,7 @@ pub async fn fixture() -> TestResult<Fixture> {
                     name: WorkflowName::new("anime-upscale"),
                     kind: WorkflowKind::Workflow,
                 }],
+                invalid_workflows: Vec::new(),
                 refreshed_at: Some(now),
             },
             last_seen_at: Some(now),

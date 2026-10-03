@@ -25,7 +25,7 @@ async fn transport_faults_are_real_and_preserve_acceptance_boundaries() -> TestR
     server.set_fault(Fault::AcceptThenDropRunResponse).await;
     let dropped = client
         .run(
-            "eligible-workflow.json",
+            "eligible-workflow",
             "drop-key",
             json!({"input": "fault/input.mkv"}),
         )
@@ -36,7 +36,7 @@ async fn transport_faults_are_real_and_preserve_acceptance_boundaries() -> TestR
     assert_eq!(server.job_count().await, 1);
     let replay = client
         .run(
-            "eligible-workflow.json",
+            "eligible-workflow",
             "drop-key",
             json!({"input": "fault/input.mkv"}),
         )
@@ -47,12 +47,39 @@ async fn transport_faults_are_real_and_preserve_acceptance_boundaries() -> TestR
 }
 
 #[tokio::test]
+async fn invalid_workflow_fault_rejects_runs_like_the_worker() -> TestResult {
+    // Given: a mock Worker that rejects one workflow.
+    let server = MockVidenoa::start().await?;
+    let client = MockClient::new(server.base_url())?;
+    server
+        .set_fault(Fault::InvalidWorkflow {
+            name: "eligible-workflow".to_owned(),
+            error: "workflow validation failed".to_owned(),
+        })
+        .await;
+
+    // When: the workflow is submitted.
+    let response = client
+        .run_raw("eligible-workflow", "invalid-key", json!({}))
+        .await?;
+
+    // Then: it is refused with the error envelope and no job exists.
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        response.json::<serde_json::Value>().await?,
+        json!({"error": "workflow validation failed"})
+    );
+    assert_eq!(server.job_count().await, 0);
+    Ok(())
+}
+
+#[tokio::test]
 async fn delayed_poll_waits_for_named_release_without_sleep() -> TestResult {
     // Given: a job and a poll-response checkpoint armed before the request.
     let server = MockVidenoa::start().await?;
     let client = MockClient::new(server.base_url())?;
     let created = client
-        .run("eligible-workflow.json", "poll-key", json!({}))
+        .run("eligible-workflow", "poll-key", json!({}))
         .await?;
     let ticket = server.pause(Checkpoint::BeforePollResponse).await;
     let poll_client = client.clone();

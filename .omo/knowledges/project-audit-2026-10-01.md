@@ -167,7 +167,10 @@ deviations worth knowing:
     registration raced the scoped subscriber; the test registers the callsite
     first.
 - Risk 17: actions SHA-pinned, `--locked` everywhere, workspace fmt/clippy/
-  cargo-deny gate, job timeouts, dependabot, Docker publish after packaging.
+  cargo-deny gate, job timeouts, Docker publish after packaging. Dependabot
+  was also added here and removed on 2026-10-02 at the owner's request: do
+  not enable it; bump SHA-pinned actions by hand, and rely on cargo-deny and
+  `npm audit` for advisories.
   `cargo fmt --all` does not follow `include!`
   (`crates/controller/src/module_topology.rs`), so CI also runs rustfmt on
   every tracked `.rs` file; eight drifted controller files were formatted.

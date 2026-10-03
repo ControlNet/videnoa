@@ -2,8 +2,8 @@ use std::path::{Component, Path};
 use std::time::Duration;
 
 use crate::config::{
-    AuthConfig, ControllerConfig, PathConfig, RetryConfig, SchedulerConfig, ServerConfig,
-    TimeoutConfig,
+    AuthConfig, ControllerConfig, IrohConfig, PathConfig, RetryConfig, SchedulerConfig,
+    ServerConfig, TimeoutConfig,
 };
 use crate::domain::SettingsUpdateRequest;
 
@@ -12,10 +12,20 @@ use super::OperationsError;
 const MAX_DURATION_SECONDS: u64 = 7 * 24 * 60 * 60;
 const MAX_RETRY_ATTEMPTS: u32 = 100;
 
+/// Applies a settings request to `current`. Settings outside the API, such as
+/// workspace roots, and iroh relays the request omits are kept.
 pub(super) fn build_config(
-    paths: &PathConfig,
+    current: &ControllerConfig,
     request: &SettingsUpdateRequest,
 ) -> Result<ControllerConfig, OperationsError> {
+    let paths = &current.paths;
+    let iroh = request.iroh.as_ref().map_or_else(
+        || current.iroh.clone(),
+        |iroh| IrohConfig {
+            relay_urls: iroh.relay_urls.clone(),
+            use_public_relays: iroh.use_public_relays,
+        },
+    );
     Ok(ControllerConfig {
         server: ServerConfig {
             host: request.server.host,
@@ -52,10 +62,16 @@ pub(super) fn build_config(
             max_attempts: std::num::NonZeroU32::new(request.retry.max_attempts)
                 .ok_or(OperationsError::InvalidRequest)?,
         },
+        iroh,
     })
 }
 
 pub(super) fn validate(request: &SettingsUpdateRequest) -> Result<(), OperationsError> {
+    if let Some(iroh) = &request.iroh {
+        videnoa_transport::Network::with_relays(&iroh.relay_urls).map_err(|_| {
+            OperationsError::InvalidField("iroh", "relay URLs must be valid http or https URLs")
+        })?;
+    }
     validate_path("paths.data_root", &request.paths.data_root)?;
     validate_path("paths.cache_root", &request.paths.cache_root)?;
     if request.server.port == 0 {

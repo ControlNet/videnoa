@@ -24,6 +24,7 @@ export function canCancelTask(task: Task): boolean {
 export function canRetryTask(task: Task): boolean {
   if (task.status !== "failed" || task.failure === null) return false
   if (task.failure.failure_code === "input_changed" && task.failure.failure_stage === "upload") return true
+  if (task.failure.failure_code === "remote_submission_failed" && task.failure.failure_stage === "submission") return true
   if (!task.failure.retryable) return false
   return isSupportedRetryPair(task.failure.failure_code, task.failure.failure_stage)
 }
@@ -88,9 +89,12 @@ export function failureGuidance(code: FailureCode, stage: FailureStage): Failure
         kind: "stage_retry",
         message: "Inspect the destination and verified temporary file before retrying publication. Manual retry rechecks ownership and content without overwriting conflicting files or repeating AI processing.",
       }
+    case "remote_submission_failed":
+      return stage === "submission"
+        ? { kind: "stage_retry", message: "The worker rejected the submission. Fix the reported cause on the worker, then retry: the uploaded input is submitted again on the same attempt without re-uploading or changing paths." }
+        : { kind: "blocked", message: "This submission failure cannot be retried from its recorded stage." }
     case "worker_unavailable":
     case "workflow_incompatible":
-    case "remote_submission_failed":
     case "cancelled":
       return { kind: "blocked", message: "This failure is not retryable. Resolve the reported condition and create a new task if task inputs must change." }
   }

@@ -11,6 +11,23 @@ pub(super) struct RawControllerConfig {
     pub scheduler: RawSchedulerConfig,
     pub timeouts: RawTimeoutConfig,
     pub retry: RawRetryConfig,
+    #[serde(default, skip_serializing_if = "RawIrohConfig::is_empty")]
+    pub iroh: RawIrohConfig,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RawIrohConfig {
+    #[serde(default)]
+    pub relay_urls: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub use_public_relays: bool,
+}
+
+impl RawIrohConfig {
+    fn is_empty(&self) -> bool {
+        self.relay_urls.is_empty() && !self.use_public_relays
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -97,6 +114,7 @@ impl Default for RawControllerConfig {
                 maximum_seconds: 60,
                 max_attempts: 5,
             },
+            iroh: RawIrohConfig::default(),
         }
     }
 }

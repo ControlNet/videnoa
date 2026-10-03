@@ -97,6 +97,7 @@ pub fn capabilities(workflows: &[&str], refreshed_at: DateTime<Utc>) -> WorkerCa
                 kind: WorkflowKind::Workflow,
             })
             .collect(),
+        invalid_workflows: Vec::new(),
         refreshed_at: Some(refreshed_at),
     }
 }

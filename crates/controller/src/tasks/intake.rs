@@ -81,6 +81,7 @@ impl TaskService {
         if let Some(outcome) = self.preflight(&key, request_fingerprint).await? {
             return Ok(outcome);
         }
+        self.ensure_runnable_workflow(&request.workflow).await?;
         let service = self.clone();
         let task = tokio::task::spawn_blocking(move || service.prepare_task(request))
             .await

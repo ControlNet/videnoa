@@ -32,6 +32,7 @@ const FAST_TEST_PASSWORD_HASH: &str = "$argon2id$v=19$m=64,t=1,p=1$dmlkZW5vYS10Z
 pub(super) struct Fixture {
     _directory: TempDir,
     pub router: Router,
+    pub store: Store,
     pub input: PathBuf,
     pub output: PathBuf,
     pub session: SessionClient,
@@ -163,13 +164,14 @@ async fn fixture_with_busy_timeout_option(busy_timeout: Option<Duration>) -> Tes
         .insert_administrator_credential(FAST_TEST_PASSWORD_HASH, chrono::Utc::now())
         .await
         .context("seeding task API fixture credential")?;
-    let router = reopen_router(directory.path(), store)?;
+    let router = reopen_router(directory.path(), store.clone())?;
     let session = SessionClient::login(&router, false)
         .await
         .map_err(|error| format!("logging in task API fixture session: {error}"))?;
     Ok(Fixture {
         _directory: directory,
         router,
+        store,
         input,
         output,
         session,

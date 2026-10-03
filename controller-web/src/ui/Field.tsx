@@ -1,4 +1,4 @@
-import type { InputHTMLAttributes, ReactNode, Ref } from "react"
+import type { InputHTMLAttributes, ReactNode, Ref, TextareaHTMLAttributes } from "react"
 
 type BaseFieldProps = {
   readonly id: string
@@ -28,6 +28,30 @@ export function Field({ id, label, error, hint, ...input }: InputFieldProps) {
       <span>{label}</span>
       <input
         {...input}
+        id={id}
+        aria-invalid={error === undefined ? undefined : true}
+        aria-describedby={describedBy === "" ? undefined : describedBy}
+      />
+      {hint === undefined ? null : <small id={hintId} className="field-hint">{hint}</small>}
+      {error === undefined ? null : <small id={errorId} role="alert">{error}</small>}
+    </label>
+  )
+}
+
+type TextAreaFieldProps = BaseFieldProps & Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, "id" | "className">
+
+/** A multi-line `Field`, for lists entered one item per line. */
+export function TextAreaField({ id, label, error, hint, ...textarea }: TextAreaFieldProps) {
+  const errorId = `${id}-error`
+  const hintId = `${id}-hint`
+  const describedBy = [error === undefined ? null : errorId, hint === undefined ? null : hintId]
+    .filter((value) => value !== null)
+    .join(" ")
+  return (
+    <label className="field" htmlFor={id}>
+      <span>{label}</span>
+      <textarea
+        {...textarea}
         id={id}
         aria-invalid={error === undefined ? undefined : true}
         aria-describedby={describedBy === "" ? undefined : describedBy}
@@ -91,14 +115,33 @@ type CheckFieldProps = {
   readonly name: string
   readonly label: string
   readonly checked: boolean
+  readonly disabled?: boolean
+  readonly hint?: ReactNode
   readonly onChange: (checked: boolean) => void
 }
 
-export function CheckField({ id, name, label, checked, onChange }: CheckFieldProps) {
-  return (
+export function CheckField({ id, name, label, checked, disabled, hint, onChange }: CheckFieldProps) {
+  const hintId = `${id}-hint`
+  const field = (
     <label className="field field--check" htmlFor={id}>
-      <input id={id} name={name} type="checkbox" checked={checked} onChange={(event) => onChange(event.currentTarget.checked)} />
+      <input
+        id={id}
+        name={name}
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        aria-describedby={hint === undefined ? undefined : hintId}
+        onChange={(event) => onChange(event.currentTarget.checked)}
+      />
       <span>{label}</span>
     </label>
+  )
+  if (hint === undefined) return field
+  // The hint sits under the label text, indented past the box, so it reads as the option's own note.
+  return (
+    <div className="field-check-group">
+      {field}
+      <small id={hintId} className="field-check-hint">{hint}</small>
+    </div>
   )
 }
