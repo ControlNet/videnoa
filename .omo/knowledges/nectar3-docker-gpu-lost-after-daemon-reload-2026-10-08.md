@@ -1,8 +1,9 @@
 # nectar3: videnoa container lost the GPU while running (2026-10-08)
 
 Access: `ssh -i ~/.ssh/id_rsa_ansr nectar3.neusym.cloud.edu.au` (host
-`ansr-nectar-3`, user `zhixi`, groups `sudo docker`, TZ Etc/UTC). The
-user has no journal access without sudo.
+`ansr-nectar-3`, user `zhixi`, groups `sudo docker`, TZ Etc/UTC). Passwordless sudo was
+added by the user on 2026-10-08 in `/etc/sudoers.d/90-zhixi-nopasswd`, so
+`sudo -n` works over non-interactive SSH.
 
 ## Symptom
 
@@ -37,17 +38,40 @@ The container stayed `Up (healthy)`, 0 restarts, started 2026-10-05
 - `/dev/char/195:0`, `195:255`, `510:0`, `510:1` symlinks were dated 15:31
   (created around the first host `nvidia-smi` of this investigation); only
   `195:254` dated from container start, so they were absent before.
-- Most likely trigger (not confirmed, no journal access): unattended-upgrade
-  on 2026-10-07 06:20 UTC (kernel 5.15.0-198, udev-related packages), whose
-  maintainer scripts commonly run `systemctl daemon-reload`.
+- Confirmed trigger: `sudo journalctl _PID=1` shows the only systemd reloads
+  between container start and the failures at 2026-10-08 06:10:48, 06:10:52
+  and 06:10:59 UTC. `/var/log/apt/history.log` shows `unattended-upgrade`
+  upgrading `snapd` (2.76 -> 2.76.3) from 06:10:38 to 06:11:00; its
+  maintainer scripts stopped/restarted snapd and reloaded systemd. The
+  2026-10-07 06:20 run (kernel 5.15.0-198) caused no reload. The failures
+  only showed at 15:25 because that was the first GPU job after the reload.
 - Only one `videnoa` process on the host (the container's PID 1). The single
   `Failed to persist failed transition ... database is locked` on the first
   failed job is therefore not a second Worker sharing `data/jobs.db`.
 
-## Fix options (none applied)
+## Actions taken (2026-10-08 ~15:45 UTC)
 
-- Immediate: `docker restart videnoa` restores access until the next
-  daemon-reload.
+- Automatic installs disabled without touching systemd units
+  (`systemctl enable/disable` itself triggers a daemon-reload):
+  `/etc/apt/apt.conf.d/20auto-upgrades` now sets
+  `APT::Periodic::Update-Package-Lists "1"` and
+  `APT::Periodic::Unattended-Upgrade "0"`; original saved as
+  `/var/backups/20auto-upgrades.bak-2026-10-08` (a backup inside
+  `apt.conf.d/` makes apt print an "invalid filename extension" notice).
+  Verify: `apt-config dump | grep Periodic::Unattended-Upgrade` -> `"0"`.
+- Snap auto-refresh held: `sudo snap refresh --hold` (`snap refresh --time`
+  shows `hold: forever`). Snap refreshes rewrite mount units and reload
+  systemd too. Undo: `sudo snap refresh --unhold`.
+- `docker restart videnoa`; `docker exec videnoa nvidia-smi -L` lists
+  `GPU 0: NVIDIA A40-24Q`, health `healthy`.
+- Consequence: no automatic security updates. After manual
+  `sudo apt upgrade`, run `docker restart videnoa` and check
+  `docker exec videnoa nvidia-smi -L`.
+- Undo apt change:
+  `sudo cp -a /var/backups/20auto-upgrades.bak-2026-10-08 /etc/apt/apt.conf.d/20auto-upgrades`.
+
+## Remaining fix options (not applied)
+
 - Permanent, NVIDIA's documented options: create the `/dev/char` symlinks
   persistently (`sudo nvidia-ctk system create-dev-char-symlinks --create-all`
   plus the udev rule from NVIDIA's troubleshooting guide) and pass the nodes
