@@ -6,8 +6,10 @@ Verified on 2026-10-06 against the running `videnoa` container using image
 - Host and container both expose an NVIDIA A40-24Q with 24576 MiB VRAM and
   driver 580.65.06.
 - Docker `HostConfig.DeviceRequests` requests all GPUs (`Count: -1`,
-  `Capabilities: [["gpu"]]`). The reported `runc` runtime does not prevent
-  GPU access in this deployment.
+  `Capabilities: [["gpu"]]`). The reported `runc` runtime grants GPU access
+  at container start, but that access is lost on a later host
+  `systemctl daemon-reload` (see
+  `nectar3-docker-gpu-lost-after-daemon-reload-2026-10-08.md`).
 - A real CLI workflow inside the existing container successfully ran
   `RealESRGAN_x4plus_anime_6B.onnx` with the CUDA execution provider.
 - The input was synthetic FFmpeg `testsrc2` test footage: 24 frames at 12 fps,
