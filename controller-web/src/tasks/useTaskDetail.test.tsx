@@ -204,6 +204,7 @@ function task(id: string, inputPath: string, version: number): Task {
     source_reference: null,
     input_size: 1024,
     worker_id: "00000000-0000-4000-8000-000000000023",
+    requested_worker_id: null,
     remote_job_id: null,
     progress: {
       percent: 30,

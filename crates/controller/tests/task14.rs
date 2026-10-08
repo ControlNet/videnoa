@@ -4,6 +4,8 @@ mod auth_readiness;
 mod retry;
 #[path = "task14/retry_faults.rs"]
 mod retry_faults;
+#[path = "task14/retry_queue.rs"]
+mod retry_queue;
 #[path = "task14/retry_support.rs"]
 mod retry_support;
 #[path = "task14/settings.rs"]

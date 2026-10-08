@@ -4,11 +4,12 @@ use axum::Json;
 use chrono::Utc;
 
 use crate::domain::{
-    AttemptId, CancelTaskResponse, RetryTaskResponse, SubmissionKey, TaskActionRequest, TaskId,
+    CancelTaskResponse, RemoteJobId, RetryTaskRequest, RetryTaskResponse, TaskActionRequest,
+    TaskId, WorkerId, WorkflowName,
 };
 use crate::lifecycle::{
-    Lifecycle, ProcessingRetryCommand, RemoteTerminalStatus, RetryMode, TerminalRemoteEvidence,
-    WorkspaceCleaned,
+    Lifecycle, RemoteTerminalStatus, RequeueRetryCommand, ResumeStage, RetryMode,
+    TerminalRemoteEvidence, WorkspaceCleaned,
 };
 use crate::remote::{FileApiPath, JobStatus, VidenoaClient, VidenoaClientError};
 
@@ -45,7 +46,7 @@ pub(super) async fn cancel(
 pub(super) async fn retry(
     State(state): State<OperationsState>,
     id: Result<Path<TaskId>, PathRejection>,
-    payload: Result<Json<TaskActionRequest>, JsonRejection>,
+    payload: Result<Json<RetryTaskRequest>, JsonRejection>,
 ) -> Result<Json<RetryTaskResponse>, OperationsError> {
     let Path(id) = id.map_err(|_| OperationsError::InvalidRequest)?;
     let Json(request) = payload.map_err(|_| OperationsError::InvalidRequest)?;
@@ -61,16 +62,29 @@ pub(super) async fn retry(
         .failure
         .as_ref()
         .ok_or(OperationsError::Conflict("task has no retryable failure"))?;
-    let (committed, attempt_id) = match Lifecycle::retry_mode(failure) {
-        RetryMode::Resume(_) | RetryMode::Blocked => (
+    let moved = request
+        .worker_id
+        .filter(|worker_id| Some(*worker_id) != attempt.attempt.worker_id);
+    let (committed, attempt_id) = match (Lifecycle::retry_mode(failure), moved) {
+        (mode @ RetryMode::NewProcessingAttempt, _)
+        | (mode @ RetryMode::Resume(ResumeStage::Uploading | ResumeStage::Staged), Some(_)) => {
+            let requested = request.worker_id;
+            (requeue(&state, &task, &attempt, mode, requested).await?, None)
+        }
+        (RetryMode::Resume(_) | RetryMode::Blocked, None) => (
             state
                 .lifecycle
                 .retry_downstream(&task, &attempt, Utc::now())
                 .await
                 .map_err(|error| OperationsError::from_lifecycle(&error))?,
-            attempt.attempt.id,
+            Some(attempt.attempt.id),
         ),
-        RetryMode::NewProcessingAttempt => processing_retry(&state, &task, &attempt).await?,
+        (RetryMode::Resume(_) | RetryMode::Blocked, Some(_)) => {
+            return Err(OperationsError::InvalidField(
+                "worker_id",
+                "This failure can only be retried on the Worker that holds its output",
+            ));
+        }
     };
     Ok(Json(RetryTaskResponse {
         task_id: id,
@@ -79,32 +93,72 @@ pub(super) async fn retry(
     }))
 }
 
-async fn processing_retry(
+/// Deletes the task workspace on the failed attempt's Worker, after checking
+/// that its remote job (if any) is terminal, then queues the task for
+/// `requested` (default: the same Worker).
+async fn requeue(
     state: &OperationsState,
     task: &crate::persistence::TaskRecord,
     attempt: &crate::persistence::AttemptRecord,
-) -> Result<(crate::lifecycle::CommittedCommand, AttemptId), OperationsError> {
-    let worker_id = attempt
+    mode: RetryMode,
+    requested: Option<WorkerId>,
+) -> Result<crate::lifecycle::CommittedCommand, OperationsError> {
+    let original_id = attempt
         .attempt
         .worker_id
         .ok_or(OperationsError::RemoteStateAmbiguous)?;
-    let remote_job_id = attempt
-        .attempt
-        .remote_job_id
-        .ok_or(OperationsError::RemoteStateAmbiguous)?;
-    let worker = state
+    let requested = requested.unwrap_or(original_id);
+    ensure_retry_worker(state, requested, &task.request.workflow).await?;
+    let original = state
         .workers
-        .worker(worker_id)
+        .worker(original_id)
         .await
         .map_err(|error| OperationsError::from_worker(&error))?
         .ok_or(OperationsError::RemoteStateAmbiguous)?;
     let client = VidenoaClient::new_with_password(
-        worker.api_url,
+        original.api_url,
         state.scheduler.runtime_settings().remote_timeouts(),
         state.payload_limits,
-        worker.password.as_ref(),
+        original.password.as_ref(),
     )
     .map_err(|_| OperationsError::Internal)?;
+    let terminal = match (attempt.attempt.remote_job_id, mode) {
+        (Some(remote_job_id), _) => {
+            Some(terminal_job(&client, task, attempt, remote_job_id).await?)
+        }
+        (None, RetryMode::NewProcessingAttempt) => {
+            return Err(OperationsError::RemoteStateAmbiguous);
+        }
+        (None, _) => None,
+    };
+    let workspace =
+        FileApiPath::parse(&task.id.to_string()).map_err(|_| OperationsError::Internal)?;
+    match client.delete_file(&workspace).await {
+        Ok(()) | Err(VidenoaClientError::NotFound) => {}
+        Err(error) => return Err(OperationsError::from_remote(&error)),
+    }
+    state
+        .lifecycle
+        .retry_requeue(
+            task,
+            attempt,
+            &RequeueRetryCommand {
+                requested_worker_id: requested,
+                terminal,
+                workspace: WorkspaceCleaned::new(task.id),
+            },
+            Utc::now(),
+        )
+        .await
+        .map_err(|error| OperationsError::from_lifecycle(&error))
+}
+
+async fn terminal_job(
+    client: &VidenoaClient,
+    task: &crate::persistence::TaskRecord,
+    attempt: &crate::persistence::AttemptRecord,
+    remote_job_id: RemoteJobId,
+) -> Result<TerminalRemoteEvidence, OperationsError> {
     let job = client
         .job(remote_job_id)
         .await
@@ -122,30 +176,43 @@ async fn processing_retry(
             ));
         }
     };
-    let workspace =
-        FileApiPath::parse(&task.id.to_string()).map_err(|_| OperationsError::Internal)?;
-    match client.delete_file(&workspace).await {
-        Ok(()) | Err(VidenoaClientError::NotFound) => {}
-        Err(error) => return Err(OperationsError::from_remote(&error)),
-    }
-    let attempt_id = AttemptId::random();
-    let committed = state
-        .lifecycle
-        .retry_processing(
-            task,
-            attempt,
-            &ProcessingRetryCommand {
-                attempt_id,
-                worker_id,
-                submission_key: SubmissionKey::random(),
-                terminal: TerminalRemoteEvidence::new(remote_job_id, terminal),
-                workspace: WorkspaceCleaned::new(task.id, remote_job_id),
-            },
-            Utc::now(),
-        )
+    Ok(TerminalRemoteEvidence::new(remote_job_id, terminal))
+}
+
+/// Rejects a retry Worker that is unknown, disabled, or does not report the workflow.
+async fn ensure_retry_worker(
+    state: &OperationsState,
+    worker_id: WorkerId,
+    workflow: &WorkflowName,
+) -> Result<(), OperationsError> {
+    let worker = state
+        .workers
+        .worker(worker_id)
         .await
-        .map_err(|error| OperationsError::from_lifecycle(&error))?;
-    Ok((committed, attempt_id))
+        .map_err(|error| OperationsError::from_worker(&error))?
+        .ok_or(OperationsError::InvalidField(
+            "worker_id",
+            "Worker was not found",
+        ))?;
+    if !worker.enabled {
+        return Err(OperationsError::InvalidField(
+            "worker_id",
+            "Worker is disabled",
+        ));
+    }
+    let capabilities = &worker.capabilities;
+    let runnable = capabilities.workflows.iter().any(|summary| &summary.name == workflow)
+        && !capabilities
+            .invalid_workflows
+            .iter()
+            .any(|invalid| &invalid.name == workflow);
+    if !runnable {
+        return Err(OperationsError::InvalidField(
+            "worker_id",
+            "Worker does not report this task's workflow as runnable",
+        ));
+    }
+    Ok(())
 }
 
 async fn task(

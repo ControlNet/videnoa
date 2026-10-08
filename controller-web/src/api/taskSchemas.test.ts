@@ -26,6 +26,7 @@ const task = {
   source_reference: null,
   input_size: 4_194_304,
   worker_id: "00000000-0000-4000-8000-000000000003",
+  requested_worker_id: null,
   remote_job_id: "00000000-0000-4000-8000-000000000005",
   progress,
   attempt_count: 1,

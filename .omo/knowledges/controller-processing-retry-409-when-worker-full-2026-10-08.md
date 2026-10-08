@@ -31,17 +31,29 @@ stays `failed`.
   retry is pinned to the failed attempt's Worker, so new ani-rss tasks keep
   taking the slot first.
 
-## Workarounds
+## Workarounds (Controllers before the fix)
 
 - Retry when the Worker has no task in `reserved`/`uploading`/`staged`.
 - Or temporarily raise *Prefetch per Worker* in the Controller Settings, retry,
   then set it back.
 - Pausing the scheduler does not help; a paused scheduler also blocks it.
 
-## Possible fixes (not done)
+## Fix (branch `feature/retry-queue-worker-choice`, merged into dev 2026-10-08)
 
-- Return a distinct error (Worker offline / no free slot / scheduler paused)
-  instead of the version-conflict CAS outcome.
-- Show the server's 409 message in the Task Detail pane.
-- Or let a processing retry go back to the queue instead of requiring the
-  original Worker to have room immediately.
+- Processing retry now requeues: after the terminal check and workspace delete
+  on the original Worker, `requeue_failed_task` sets the task `queued`,
+  `worker_id = NULL`, `requested_worker_id = <Worker>` (migration `0014`,
+  `ON DELETE SET NULL`). No capacity, online or paused check at retry time; the
+  scheduler (`SCHEDULER_CANDIDATE_SQL`) and `reserve_task` only pair the task
+  with `requested_worker_id`, and reservation clears it and creates attempt N+1.
+- `POST /api/tasks/{id}/retry` takes optional `worker_id`. Processing, upload
+  and rejected-submission failures can move to another Worker (the original's
+  workspace is deleted first; unreachable original = refused). Later stages
+  reject `worker_id` with a field error. `RetryTaskResponse.attempt_id` is
+  `null` for a requeue.
+- Cancelling a queued task ignores its old failed attempt
+  (`lifecycle/cancellation.rs`), otherwise `attempt_cas` saw `failed != queued`.
+- WebUI: split button *Retry* + arrow menu (`RetryWorkerMenu.tsx`); 409 shows
+  the Controller's message instead of always "task changed".
+- A task requested for a Worker that stays offline or disabled waits in the
+  queue; cancel it or delete the Worker to release it.

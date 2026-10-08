@@ -17,7 +17,7 @@ mod state;
 mod transfer;
 
 pub use actions::{
-    AdvanceCommand, CommittedCommand, DurableAction, ProcessingRetryCommand, ReserveCommand,
+    AdvanceCommand, CommittedCommand, DurableAction, RequeueRetryCommand, ReserveCommand,
     SubmissionCancellationReconciliation, SubmissionEvidence, TerminalRemoteEvidence,
     WorkspaceCleaned,
 };
@@ -32,6 +32,6 @@ pub use state::{CommandKind, Lifecycle, RecoveryAction};
 pub use transfer::{DownloadEvidence, PublicationIntent, UploadEvidence};
 
 pub(crate) use actions::{
-    AttemptCas, CancellationWrite, FailureWrite, PairedTransition, ProcessingRetryWrite, RetryWrite,
+    AttemptCas, CancellationWrite, FailureWrite, PairedTransition, RequeueRetryWrite, RetryWrite,
 };
 pub(crate) use transfer::{TransferRetryWrite, TransitionEvidence};

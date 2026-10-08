@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 
 use crate::domain::{
-    AttemptId, FailureInfo, RemoteJobId, RemotePath, SubmissionKey, TaskId, TaskStatus, WorkerId,
+    AttemptId, FailureInfo, RemoteJobId, RemotePath, TaskId, TaskStatus, WorkerId,
 };
 
 use super::{
@@ -151,36 +151,31 @@ impl TerminalRemoteEvidence {
     }
 }
 
+/// Evidence that the failed attempt's Worker no longer holds the task workspace.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WorkspaceCleaned {
     task_id: TaskId,
-    remote_job_id: RemoteJobId,
 }
 
 impl WorkspaceCleaned {
     #[must_use]
-    pub const fn new(task_id: TaskId, remote_job_id: RemoteJobId) -> Self {
-        Self {
-            task_id,
-            remote_job_id,
-        }
+    pub const fn new(task_id: TaskId) -> Self {
+        Self { task_id }
     }
 
     pub(crate) const fn task_id(self) -> TaskId {
         self.task_id
     }
-
-    pub(crate) const fn remote_job_id(self) -> RemoteJobId {
-        self.remote_job_id
-    }
 }
 
+/// Returns a failed task to the queue for one Worker.
+///
+/// `terminal` is required when the failed attempt has a remote job and must be
+/// absent otherwise.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ProcessingRetryCommand {
-    pub attempt_id: AttemptId,
-    pub worker_id: WorkerId,
-    pub submission_key: SubmissionKey,
-    pub terminal: TerminalRemoteEvidence,
+pub struct RequeueRetryCommand {
+    pub requested_worker_id: WorkerId,
+    pub terminal: Option<TerminalRemoteEvidence>,
     pub workspace: WorkspaceCleaned,
 }
 
@@ -232,13 +227,10 @@ pub(crate) struct RetryWrite {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct ProcessingRetryWrite {
+pub(crate) struct RequeueRetryWrite {
     pub task_id: TaskId,
     pub task_version: u64,
-    pub old_attempt: AttemptCas,
-    pub new_attempt_id: AttemptId,
-    pub worker_id: WorkerId,
-    pub submission_key: SubmissionKey,
-    pub remote_job_id: RemoteJobId,
+    pub attempt: AttemptCas,
+    pub requested_worker_id: WorkerId,
     pub occurred_at: DateTime<Utc>,
 }
