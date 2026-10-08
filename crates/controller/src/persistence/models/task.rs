@@ -57,6 +57,8 @@ pub struct TaskRecord {
     pub input_identity: Option<InputIdentity>,
     pub input_content_identity: Option<InputContentIdentity>,
     pub worker_id: Option<WorkerId>,
+    /// The only Worker that may reserve this queued task, set by a retry.
+    pub requested_worker_id: Option<WorkerId>,
     pub remote_job_id: Option<RemoteJobId>,
     pub progress: TaskProgress,
     pub attempt_count: u32,

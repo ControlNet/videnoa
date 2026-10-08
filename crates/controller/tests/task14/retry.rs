@@ -33,15 +33,16 @@ async fn processing_retry_verifies_terminal_remote_cleanup() -> TestResult {
         .await?;
     assert_eq!(retried.status(), StatusCode::OK);
     let response = json_body(retried).await?;
-    assert_eq!(response["status"], "reserved");
-    let new_attempt = fixture
+    assert_eq!(response["status"], "queued");
+    // The failed attempt stays in history; the next reservation creates a new one.
+    assert_eq!(response["attempt_id"], serde_json::Value::Null);
+    let current = fixture
         .store
         .current_attempt(task_id)
         .await?
-        .ok_or("new attempt missing")?;
-    assert_ne!(new_attempt.attempt.id, old_attempt.attempt.id);
-    assert_eq!(response["attempt_id"], new_attempt.attempt.id.to_string());
-    assert_eq!(fixture.store.task_attempts(task_id, 10).await?.len(), 2);
+        .ok_or("attempt missing")?;
+    assert_eq!(current.attempt.id, old_attempt.attempt.id);
+    assert_eq!(fixture.store.task_attempts(task_id, 10).await?.len(), 1);
     assert_eq!(remote.workspace_deletes.load(Ordering::SeqCst), 1);
     assert_eq!(remote.job_deletes.load(Ordering::SeqCst), 0);
     remote.server.abort();

@@ -49,13 +49,15 @@ async fn explicit_processing_retry_creates_replacement_attempt_and_converges() -
     assert!(retry_requests
         .iter()
         .any(|entry| entry.route == Route::DeleteFile));
+    // The retry queues the task; the scheduler reserves a replacement attempt.
+    assert_eq!(retried.status, TaskStatus::Queued);
+    assert_eq!(retried.attempt_id, None);
     let processing = wait_for_status(&fixture, &task, TaskStatus::Processing).await?;
     let replacement = processing
         .attempts
         .iter()
-        .find(|attempt| attempt.id == retried.attempt_id)
+        .find(|attempt| attempt.attempt_number == 2)
         .ok_or_else(|| std::io::Error::other("replacement attempt missing"))?;
-    assert_eq!(retried.attempt_id, replacement.id);
     assert_ne!(replacement.id, original.id);
     assert_ne!(replacement.submission_key, original.submission_key);
     assert_eq!(processing.task.attempt_count, 2);

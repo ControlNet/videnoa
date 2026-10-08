@@ -6,7 +6,7 @@ use crate::persistence::{AttemptRecord, TaskRecord};
 use super::engine::{applied, attempt_cas};
 use super::{
     CommittedCommand, DurableAction, Lifecycle, LifecycleError, LifecycleService,
-    ProcessingRetryCommand, ProcessingRetryWrite, ResumeStage, RetryMode, RetryWrite,
+    RequeueRetryCommand, RequeueRetryWrite, ResumeStage, RetryMode, RetryWrite,
     TransferRetryWrite,
 };
 
@@ -57,59 +57,63 @@ impl LifecycleService {
         Ok(self.committed(task.id, stage.status(), version, stage_action(stage)))
     }
 
-    /// Creates a new attempt only after terminal remote and workspace-cleanup evidence.
+    /// Returns a failed task to the queue for one Worker after its workspace on
+    /// the failed attempt's Worker was deleted.
+    ///
+    /// Only failures before any output exists can be requeued: processing, which
+    /// also needs terminal evidence for the remote job, and upload or rejected
+    /// submission, which never created one. The failed attempt stays in history;
+    /// the next reservation creates a new attempt.
     ///
     /// # Errors
-    /// Returns an error for blocked retry, mismatched evidence, reused identity, or CAS conflict.
-    pub async fn retry_processing(
+    /// Returns an error for other failures, mismatched evidence, or CAS conflict.
+    pub async fn retry_requeue(
         &self,
         task: &TaskRecord,
         attempt: &AttemptRecord,
-        command: &ProcessingRetryCommand,
+        command: &RequeueRetryCommand,
         occurred_at: DateTime<Utc>,
     ) -> Result<CommittedCommand, LifecycleError> {
         let failure = task
             .failure
             .as_ref()
             .ok_or(LifecycleError::IllegalCommand)?;
-        if Lifecycle::retry_mode(failure) != RetryMode::NewProcessingAttempt {
-            return Err(retry_error(failure.failure_code));
+        let remote_job_id = attempt.attempt.remote_job_id;
+        match Lifecycle::retry_mode(failure) {
+            RetryMode::NewProcessingAttempt => {
+                let terminal = command
+                    .terminal
+                    .ok_or(LifecycleError::RemoteEvidenceMismatch)?;
+                if Some(terminal.job_id()) != remote_job_id {
+                    return Err(LifecycleError::RemoteEvidenceMismatch);
+                }
+                match terminal.status() {
+                    super::RemoteTerminalStatus::Completed
+                    | super::RemoteTerminalStatus::Failed
+                    | super::RemoteTerminalStatus::Cancelled => {}
+                }
+            }
+            RetryMode::Resume(ResumeStage::Uploading | ResumeStage::Staged) => {
+                if remote_job_id.is_some() || command.terminal.is_some() {
+                    return Err(LifecycleError::RemoteEvidenceMismatch);
+                }
+            }
+            RetryMode::Resume(_) | RetryMode::Blocked => {
+                return Err(retry_error(failure.failure_code));
+            }
         }
-        let old_attempt = attempt_cas(task, attempt)?;
-        let remote_job_id = attempt
-            .attempt
-            .remote_job_id
-            .ok_or(LifecycleError::RemoteEvidenceMismatch)?;
-        if command.terminal.job_id() != remote_job_id {
-            return Err(LifecycleError::RemoteEvidenceMismatch);
-        }
-        match command.terminal.status() {
-            super::RemoteTerminalStatus::Completed
-            | super::RemoteTerminalStatus::Failed
-            | super::RemoteTerminalStatus::Cancelled => {}
-        }
-        if command.workspace.task_id() != task.id
-            || command.workspace.remote_job_id() != remote_job_id
-        {
+        if command.workspace.task_id() != task.id {
             return Err(LifecycleError::WorkspaceEvidenceMismatch);
         }
-        if command.attempt_id == old_attempt.id
-            || command.submission_key == attempt.attempt.submission_key
-        {
-            return Err(LifecycleError::Conflict);
-        }
-        let write = ProcessingRetryWrite {
+        let write = RequeueRetryWrite {
             task_id: task.id,
             task_version: task.version,
-            old_attempt,
-            new_attempt_id: command.attempt_id,
-            worker_id: command.worker_id,
-            submission_key: command.submission_key,
-            remote_job_id,
+            attempt: attempt_cas(task, attempt)?,
+            requested_worker_id: command.requested_worker_id,
             occurred_at,
         };
-        let version = applied(self.store().retry_processing_attempt(&write).await?)?;
-        Ok(self.committed(task.id, TaskStatus::Reserved, version, DurableAction::None))
+        let version = applied(self.store().requeue_failed_task(&write).await?)?;
+        Ok(self.committed(task.id, TaskStatus::Queued, version, DurableAction::None))
     }
 }
 

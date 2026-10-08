@@ -1,6 +1,4 @@
-use sqlx::Row;
-
-use crate::lifecycle::{ProcessingRetryWrite, RetryWrite};
+use crate::lifecycle::{RequeueRetryWrite, RetryWrite};
 
 use super::codec::{encode_json, sqlite_u64, task_status, timestamp};
 use super::models::empty_progress;
@@ -65,87 +63,37 @@ impl Store {
         })
     }
 
-    pub(crate) async fn retry_processing_attempt(
+    pub(crate) async fn requeue_failed_task(
         &self,
-        write: &ProcessingRetryWrite,
+        write: &RequeueRetryWrite,
     ) -> Result<CasOutcome, PersistenceError> {
-        let _admission = self.submission_admission().read_owned().await;
-        let policy = self.config_manager().scheduler();
-        let mut transaction = self.database.pool().begin().await?;
         let occurred_at = timestamp(write.occurred_at);
-        let attempt_number = sqlx::query(
-            "UPDATE tasks SET status = 'reserved', worker_id = ?, attempt_count = attempt_count + 1,
+        let result = sqlx::query(
+            "UPDATE tasks SET status = 'queued', worker_id = NULL, requested_worker_id = ?,
                 failure_stage = NULL, failure_code = NULL, failure_message = NULL,
                 failure_retryable = NULL, retry_count = 0, next_retry_at_ms = NULL,
-                cancel_requested_at_ms = NULL, reserved_at_ms = ?, version = version + 1,
+                cancel_requested_at_ms = NULL, progress_json = ?, version = version + 1,
                 updated_at_ms = ?
              WHERE id = ? AND status = 'failed' AND version = ?
                AND EXISTS (
                    SELECT 1 FROM task_attempts
                    WHERE id = ? AND task_id = ? AND status = 'failed' AND version = ?
-                     AND remote_job_id = ?
-               )
-               AND EXISTS (
-                   SELECT 1 FROM workers WHERE id = ? AND enabled = 1 AND online = 1
-               )
-                AND (
-                    SELECT COUNT(*) FROM tasks pending
-                    WHERE pending.worker_id = ?
-                      AND pending.status IN ('reserved', 'uploading', 'staged')
-                ) < (SELECT MAX(worker.compute_slots - (
-                        SELECT COUNT(*) FROM tasks active
-                        WHERE active.worker_id = worker.id
-                          AND active.status IN ('submitting', 'processing')
-                    ), 0) + ?
-                FROM workers worker
-                WHERE worker.id = ? AND ? = 0)
-             RETURNING attempt_count",
+               )",
         )
-        .bind(write.worker_id.to_string())
-        .bind(occurred_at)
+        .bind(write.requested_worker_id.to_string())
+        .bind(encode_json("progress_json", &empty_progress())?)
         .bind(occurred_at)
         .bind(write.task_id.to_string())
         .bind(sqlite_u64("task_version", write.task_version)?)
-        .bind(write.old_attempt.id.to_string())
+        .bind(write.attempt.id.to_string())
         .bind(write.task_id.to_string())
-        .bind(sqlite_u64("attempt_version", write.old_attempt.version)?)
-        .bind(write.remote_job_id.to_string())
-        .bind(write.worker_id.to_string())
-        .bind(write.worker_id.to_string())
-        .bind(i64::from(policy.prefetch_per_worker))
-        .bind(write.worker_id.to_string())
-        .bind(policy.paused)
-        .fetch_optional(&mut *transaction)
+        .bind(sqlite_u64("attempt_version", write.attempt.version)?)
+        .execute(self.database.pool())
         .await?;
-        let Some(attempt_number) = attempt_number else {
-            transaction.rollback().await?;
+        if result.rows_affected() != 1 {
             return Ok(CasOutcome::Conflict);
-        };
-        let attempt_number: i64 = attempt_number.try_get("attempt_count")?;
-        sqlx::query(
-            "INSERT INTO task_attempts (
-                id, task_id, attempt_no, worker_id, status, submission_key,
-                progress_json, created_at_ms, updated_at_ms
-             ) VALUES (?, ?, ?, ?, 'reserved', ?, ?, ?, ?)",
-        )
-        .bind(write.new_attempt_id.to_string())
-        .bind(write.task_id.to_string())
-        .bind(attempt_number)
-        .bind(write.worker_id.to_string())
-        .bind(write.submission_key.to_string())
-        .bind(encode_json("progress_json", &empty_progress())?)
-        .bind(occurred_at)
-        .bind(occurred_at)
-        .execute(&mut *transaction)
-        .await?;
-        sqlx::query("UPDATE workers SET last_assigned_at_ms = ?, updated_at_ms = ? WHERE id = ?")
-            .bind(occurred_at)
-            .bind(occurred_at)
-            .bind(write.worker_id.to_string())
-            .execute(&mut *transaction)
-            .await?;
-        transaction.commit().await?;
-        tracing::info!(task_id = %write.task_id, attempt_id = %write.new_attempt_id, worker_id = %write.worker_id, "Processing retry reserved");
+        }
+        tracing::info!(task_id = %write.task_id, failed_attempt_id = %write.attempt.id, requested_worker_id = %write.requested_worker_id, "Task requeued for retry");
         Ok(CasOutcome::Applied {
             new_version: write.task_version + 1,
         })

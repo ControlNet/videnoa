@@ -20,7 +20,7 @@ use super::PersistenceError;
 
 pub(super) const TASK_COLUMNS: &str = "id, version, status, input_path, output_path, \
     input_extension, output_extension, workflow, priority, source, source_reference, input_size, \
-    input_mtime_ms, input_identity, input_content_identity, worker_id, progress_json, attempt_count, failure_stage, failure_code, \
+    input_mtime_ms, input_identity, input_content_identity, worker_id, requested_worker_id, progress_json, attempt_count, failure_stage, failure_code, \
     failure_message, failure_retryable, retry_count, next_retry_at_ms, cancel_requested_at_ms, \
     created_at_ms, updated_at_ms, reserved_at_ms, upload_started_at_ms, staged_at_ms, \
     submission_started_at_ms, processing_started_at_ms, remote_completed_at_ms, \
@@ -57,10 +57,8 @@ pub(super) fn map_task(row: &SqliteRow) -> Result<TaskRecord, PersistenceError> 
                 .map_err(|bytes| corrupt("expected_output_sha256", bytes.len()))
         })
         .transpose()?;
-    let worker_id = row
-        .try_get::<Option<String>, _>("worker_id")?
-        .map(|value| parse_brand::<WorkerId>("worker_id", &value))
-        .transpose()?;
+    let worker_id = optional_worker_id(row, "worker_id")?;
+    let requested_worker_id = optional_worker_id(row, "requested_worker_id")?;
     let remote_job_id = row
         .try_get::<Option<String>, _>("remote_job_id")?
         .map(|value| parse_brand::<RemoteJobId>("remote_job_id", &value))
@@ -103,6 +101,7 @@ pub(super) fn map_task(row: &SqliteRow) -> Result<TaskRecord, PersistenceError> 
         input_identity,
         input_content_identity,
         worker_id,
+        requested_worker_id,
         remote_job_id,
         progress: decode_json::<TaskProgress>("progress_json", row.try_get("progress_json")?)?,
         attempt_count: rust_u32("attempt_count", row.try_get("attempt_count")?)?,
@@ -153,4 +152,10 @@ fn optional_time(
     field: &'static str,
 ) -> Result<Option<chrono::DateTime<chrono::Utc>>, PersistenceError> {
     parse_optional_timestamp(field, row.try_get(field)?)
+}
+
+fn optional_worker_id(row: &SqliteRow, column: &'static str) -> Result<Option<WorkerId>, PersistenceError> {
+    row.try_get::<Option<String>, _>(column)?
+        .map(|value| parse_brand::<WorkerId>(column, &value))
+        .transpose()
 }

@@ -29,6 +29,21 @@ export function canRetryTask(task: Task): boolean {
   return isSupportedRetryPair(task.failure.failure_code, task.failure.failure_stage)
 }
 
+/**
+ * Whether the retry may move to another Worker: only failures before any output
+ * exists. The Controller deletes the task workspace on the original Worker first.
+ */
+export function canRetryOnAnotherWorker(task: Task): boolean {
+  if (!canRetryTask(task) || task.failure === null) return false
+  const { failure_code: code, failure_stage: stage } = task.failure
+  return (
+    (code === "processing_failed" && stage === "processing") ||
+    (code === "transfer_failed" && stage === "upload") ||
+    (code === "input_changed" && stage === "upload") ||
+    (code === "remote_submission_failed" && stage === "submission")
+  )
+}
+
 function isSupportedRetryPair(code: FailureCode, stage: FailureStage): boolean {
   switch (code) {
     case "processing_failed":
@@ -69,7 +84,7 @@ export function failureGuidance(code: FailureCode, stage: FailureStage): Failure
     case "processing_failed":
       return {
         kind: "processing_retry",
-        message: "Processing retry first verifies the remote job is terminal and the task workspace is clean, then starts a new processing attempt.",
+        message: "Processing retry first verifies the remote job is terminal and the task workspace is clean, then queues the task for a new processing attempt on the same Worker, or on the Worker chosen from the Retry menu.",
       }
     case "transfer_failed":
     case "verification_failed":

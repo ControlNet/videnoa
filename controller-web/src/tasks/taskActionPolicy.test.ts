@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 
-import type { Task } from "../api/taskSchemas"
-import { canCancelTask, canRetryTask, failureGuidance } from "./taskActionPolicy"
+import type { FailureCode, FailureStage, Task } from "../api/taskSchemas"
+import { canCancelTask, canRetryOnAnotherWorker, canRetryTask, failureGuidance } from "./taskActionPolicy"
 
 const task = {
   id: "00000000-0000-4000-8000-000000000001",
@@ -17,6 +17,7 @@ const task = {
   source_reference: null,
   input_size: 1024,
   worker_id: null,
+  requested_worker_id: null,
   remote_job_id: null,
   progress: { percent: 0, processed_frames: null, total_frames: null, frames_per_second: null, eta_seconds: null, bytes_transferred: null, bytes_total: null },
   attempt_count: 1,
@@ -48,6 +49,24 @@ describe("task lifecycle action policy", () => {
     expect(failureGuidance("remote_submission_failed", "submission").kind).toBe("stage_retry")
     expect(canRetryTask({ ...rejected, failure: { ...rejected.failure, failure_stage: "processing" } })).toBe(false)
     expect(failureGuidance("remote_submission_failed", "processing").kind).toBe("blocked")
+  })
+
+  it("offers another Worker only for failures before any output exists", () => {
+    // Given: failed tasks at each retryable stage.
+    const failedAt = (failure_code: FailureCode, failure_stage: FailureStage, retryable = true): Task => ({
+      ...task,
+      status: "failed",
+      failure: { failure_code, failure_stage, message: "failed", retryable },
+    })
+
+    // Then: compute, upload and rejected submission may move; later stages hold output on the Worker.
+    expect(canRetryOnAnotherWorker(failedAt("processing_failed", "processing"))).toBe(true)
+    expect(canRetryOnAnotherWorker(failedAt("transfer_failed", "upload"))).toBe(true)
+    expect(canRetryOnAnotherWorker(failedAt("input_changed", "upload", false))).toBe(true)
+    expect(canRetryOnAnotherWorker(failedAt("remote_submission_failed", "submission", false))).toBe(true)
+    expect(canRetryOnAnotherWorker(failedAt("transfer_failed", "download"))).toBe(false)
+    expect(canRetryOnAnotherWorker(failedAt("publication_failed", "publication"))).toBe(false)
+    expect(canRetryOnAnotherWorker(failedAt("processing_failed", "processing", false))).toBe(false)
   })
 
   it("allows cancellation only from queued through verifying", () => {

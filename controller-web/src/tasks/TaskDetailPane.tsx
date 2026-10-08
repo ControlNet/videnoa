@@ -1,12 +1,14 @@
-import { RotateCcw, X } from "lucide-react"
+import { ChevronDown, RotateCcw, X } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 
 import { type ApiClient, ApiClientError } from "../api/client"
 import { Button } from "../ui/Button"
 import { cancelTaskResponseSchema, retryTaskResponseSchema } from "../api/taskSchemas"
+import type { Worker } from "../api/workerSchemas"
 import { formatStatus } from "./format"
+import { RetryWorkerMenu } from "./RetryWorkerMenu"
 import { TaskDetailContent } from "./TaskDetailContent"
-import { canCancelTask, canRetryTask, failureGuidance } from "./taskActionPolicy"
+import { canCancelTask, canRetryOnAnotherWorker, canRetryTask, failureGuidance } from "./taskActionPolicy"
 import { useTaskDetail } from "./useTaskDetail"
 
 type TaskDetailPaneProps = {
@@ -25,6 +27,8 @@ export function TaskDetailPane({ apiClient, taskId, onClose, onChanged }: TaskDe
   const [action, setAction] = useState<"cancel" | "retry" | null>(null)
   const [message, setMessage] = useState<string | null>(null)
   const [confirmingCancel, setConfirmingCancel] = useState(false)
+  const [choosingWorker, setChoosingWorker] = useState(false)
+  const retryMenuRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
     void taskId
@@ -39,10 +43,16 @@ export function TaskDetailPane({ apiClient, taskId, onClose, onChanged }: TaskDe
     queueMicrotask(() => cancelTaskRef.current?.focus())
   }
 
-  async function mutate(kind: "cancel" | "retry"): Promise<void> {
+  function closeWorkerMenu(): void {
+    setChoosingWorker(false)
+    queueMicrotask(() => retryMenuRef.current?.focus())
+  }
+
+  async function mutate(kind: "cancel" | "retry", worker?: Worker): Promise<void> {
     const task = data.detail?.task
     if (task === undefined) return
     setAction(kind)
+    setChoosingWorker(false)
     setMessage(null)
     try {
       if (kind === "cancel") {
@@ -51,22 +61,21 @@ export function TaskDetailPane({ apiClient, taskId, onClose, onChanged }: TaskDe
           json: { version: task.version },
           schema: cancelTaskResponseSchema,
         })
+        setMessage("Cancellation requested with the current task version.")
       } else {
-        await apiClient.request(`api/tasks/${task.id}/retry`, {
+        const retried = await apiClient.request(`api/tasks/${task.id}/retry`, {
           method: "POST",
-          json: { version: task.version },
+          json: worker === undefined ? { version: task.version } : { version: task.version, worker_id: worker.id },
           schema: retryTaskResponseSchema,
         })
+        setMessage(retryMessage(retried.status, worker))
       }
-      setMessage(kind === "cancel" ? "Cancellation requested with the current task version." : "Retry accepted for the failed stage.")
       onChanged()
       data.reload()
     } catch (error) {
       if (!(error instanceof ApiClientError)) throw error
       if (error.status === 409) {
-        setMessage(
-          "The task changed before this action completed. Current detail and the bounded page were refetched; review the new state before acting again.",
-        )
+        setMessage(`${conflictMessage(error.message)} Current detail and the bounded page were refetched; review the new state before acting again.`)
         onChanged()
         data.reload()
       } else if (error.code === "remote_state_ambiguous") {
@@ -74,7 +83,7 @@ export function TaskDetailPane({ apiClient, taskId, onClose, onChanged }: TaskDe
       } else if (error.code === "publication_ambiguous") {
         setMessage("Publication is ambiguous. Inspect the final and staging paths before further action; retry remains blocked.")
       } else {
-        setMessage(error.message)
+        setMessage(error.fieldErrors[0]?.message ?? error.message)
       }
     } finally {
       setAction(null)
@@ -92,7 +101,8 @@ export function TaskDetailPane({ apiClient, taskId, onClose, onChanged }: TaskDe
       onKeyDown={(event) => {
         if (event.key !== "Escape") return
         event.preventDefault()
-        if (confirmingCancel) dismissCancellation()
+        if (choosingWorker) closeWorkerMenu()
+        else if (confirmingCancel) dismissCancellation()
         else onClose()
       }}
     >
@@ -107,10 +117,36 @@ export function TaskDetailPane({ apiClient, taskId, onClose, onChanged }: TaskDe
             </Button>
           ) : null}
           {task !== undefined && canRetryTask(task) ? (
-            <Button variant="primary" size="sm" disabled={action !== null} onClick={() => void mutate("retry")}>
-              <RotateCcw size={13} aria-hidden="true" />
-              Retry Failed Stage
-            </Button>
+            <div className="retry-split">
+              <Button variant="primary" size="sm" disabled={action !== null} title="Retry the failed stage" onClick={() => void mutate("retry")}>
+                <RotateCcw size={13} aria-hidden="true" />
+                Retry
+              </Button>
+              {canRetryOnAnotherWorker(task) ? (
+                <Button
+                  ref={retryMenuRef}
+                  variant="primary"
+                  size="sm"
+                  icon
+                  aria-label="Retry on another Worker"
+                  aria-haspopup="menu"
+                  aria-expanded={choosingWorker}
+                  disabled={action !== null}
+                  onClick={() => setChoosingWorker((open) => !open)}
+                >
+                  <ChevronDown size={13} aria-hidden="true" />
+                </Button>
+              ) : null}
+              {choosingWorker ? (
+                <RetryWorkerMenu
+                  apiClient={apiClient}
+                  workflow={task.workflow}
+                  originalWorkerId={task.worker_id}
+                  onSelect={(worker) => void mutate("retry", worker)}
+                  onClose={() => setChoosingWorker(false)}
+                />
+              ) : null}
+            </div>
           ) : null}
           <Button variant="outline" size="sm" icon aria-label="Close Task Detail" onClick={onClose}>
             <X size={14} aria-hidden="true" />
@@ -175,4 +211,16 @@ export function TaskDetailPane({ apiClient, taskId, onClose, onChanged }: TaskDe
       )}
     </section>
   )
+}
+
+function retryMessage(status: string, worker: Worker | undefined): string {
+  if (status !== "queued") return "Retry accepted for the failed stage."
+  return worker === undefined
+    ? "Retry queued. The task starts when its Worker has a free slot."
+    : `Retry queued for ${worker.name}. The original Worker's workspace for this task was deleted.`
+}
+
+function conflictMessage(serverMessage: string): string {
+  if (serverMessage === "task changed since it was read") return "The task changed before this action completed."
+  return `The Controller refused the action: ${serverMessage}.`
 }

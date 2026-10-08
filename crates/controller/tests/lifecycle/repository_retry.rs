@@ -1,7 +1,7 @@
 use videnoa_controller::domain::{AttemptId, RemoteJobId, SubmissionKey, TaskStatus};
 use videnoa_controller::lifecycle::{
-    AdvanceCommand, DownstreamFailure, DurableAction, LifecycleFailure, ProcessingRetryCommand,
-    RemoteTerminalStatus, TerminalRemoteEvidence, WorkspaceCleaned,
+    AdvanceCommand, DownstreamFailure, DurableAction, LifecycleFailure, RemoteTerminalStatus,
+    RequeueRetryCommand, ReserveCommand, TerminalRemoteEvidence, WorkspaceCleaned,
 };
 
 use super::support::{fixture, reserve, upload_evidence, TestResult};
@@ -64,30 +64,11 @@ async fn downstream_retry_resumes_same_attempt_without_repeating_compute() -> Te
 }
 
 #[tokio::test]
-async fn processing_retry_preserves_history_and_requires_new_submission_identity() -> TestResult {
+async fn processing_retry_requeues_and_next_reservation_uses_new_identity() -> TestResult {
     // Given: a failed processing attempt with terminal remote and cleanup evidence.
     let fixture = fixture().await?;
     let old_attempt_id = reserve(&fixture).await?;
-    let remote_job_id = advance_to_processing(&fixture, old_attempt_id).await?;
-    let task = fixture
-        .store
-        .task(fixture.task_id)
-        .await?
-        .ok_or_else(|| std::io::Error::other("task missing"))?;
-    let attempt = fixture
-        .store
-        .attempt(old_attempt_id)
-        .await?
-        .ok_or_else(|| std::io::Error::other("attempt missing"))?;
-    fixture
-        .service
-        .fail(
-            &task,
-            Some(&attempt),
-            LifecycleFailure::restart_cancelled("worker restarted"),
-            fixture.now,
-        )
-        .await?;
+    let remote_job_id = fail_processing(&fixture, old_attempt_id).await?;
     let failed_task = fixture
         .store
         .task(fixture.task_id)
@@ -99,27 +80,60 @@ async fn processing_retry_preserves_history_and_requires_new_submission_identity
         .await?
         .ok_or_else(|| std::io::Error::other("attempt missing"))?;
     let old_key = failed_attempt.attempt.submission_key;
-    let new_attempt_id = AttemptId::random();
-    let new_key = SubmissionKey::random();
+    let evidence = |job_id| RequeueRetryCommand {
+        requested_worker_id: fixture.worker_id,
+        terminal: Some(TerminalRemoteEvidence::new(
+            job_id,
+            RemoteTerminalStatus::Cancelled,
+        )),
+        workspace: WorkspaceCleaned::new(fixture.task_id),
+    };
 
-    // When: explicit processing retry creates a new reserved attempt.
-    let committed = fixture
+    // When: evidence for another remote job is offered, nothing changes.
+    let mismatch = fixture
         .service
-        .retry_processing(
+        .retry_requeue(
             &failed_task,
             &failed_attempt,
-            &ProcessingRetryCommand {
-                attempt_id: new_attempt_id,
-                worker_id: fixture.worker_id,
-                submission_key: new_key,
-                terminal: TerminalRemoteEvidence::new(
-                    remote_job_id,
-                    RemoteTerminalStatus::Cancelled,
-                ),
-                workspace: WorkspaceCleaned::new(fixture.task_id, remote_job_id),
-            },
+            &evidence(RemoteJobId::random()),
             fixture.now,
         )
+        .await;
+    assert!(mismatch.is_err());
+
+    // When: explicit processing retry requeues the task for the same Worker.
+    let committed = fixture
+        .service
+        .retry_requeue(
+            &failed_task,
+            &failed_attempt,
+            &evidence(remote_job_id),
+            fixture.now,
+        )
+        .await?;
+    let queued = fixture
+        .store
+        .task(fixture.task_id)
+        .await?
+        .ok_or_else(|| std::io::Error::other("task missing"))?;
+    assert_eq!(committed.action(), DurableAction::None);
+    assert_eq!(queued.status, TaskStatus::Queued);
+    assert_eq!(queued.requested_worker_id, Some(fixture.worker_id));
+    assert_eq!(queued.attempt_count, 1);
+
+    // And: the next reservation creates a replacement attempt.
+    let new_attempt_id = AttemptId::random();
+    let new_key = SubmissionKey::random();
+    fixture
+        .service
+        .reserve(&ReserveCommand {
+            task_id: fixture.task_id,
+            expected_task_version: queued.version,
+            worker_id: fixture.worker_id,
+            attempt_id: new_attempt_id,
+            submission_key: new_key,
+            reserved_at: fixture.now,
+        })
         .await?;
 
     // Then: task paths stay immutable and both old and new attempt identities remain durable.
@@ -138,8 +152,8 @@ async fn processing_retry_preserves_history_and_requires_new_submission_identity
         .attempt(new_attempt_id)
         .await?
         .ok_or_else(|| std::io::Error::other("new attempt missing"))?;
-    assert_eq!(committed.action(), DurableAction::None);
     assert_eq!(stored_task.status, TaskStatus::Reserved);
+    assert_eq!(stored_task.requested_worker_id, None);
     assert_eq!(stored_task.attempt_count, 2);
     assert_eq!(
         stored_task.request.input_path.as_str(),
@@ -155,6 +169,34 @@ async fn processing_retry_preserves_history_and_requires_new_submission_identity
     assert_eq!(new_attempt.attempt.submission_key, new_key);
     assert_ne!(old_key, new_key);
     Ok(())
+}
+
+/// Advances an attempt to processing and fails it as cancelled by a Worker restart.
+async fn fail_processing(
+    fixture: &super::support::Fixture,
+    attempt_id: AttemptId,
+) -> TestResult<RemoteJobId> {
+    let remote_job_id = advance_to_processing(fixture, attempt_id).await?;
+    let task = fixture
+        .store
+        .task(fixture.task_id)
+        .await?
+        .ok_or_else(|| std::io::Error::other("task missing"))?;
+    let attempt = fixture
+        .store
+        .attempt(attempt_id)
+        .await?
+        .ok_or_else(|| std::io::Error::other("attempt missing"))?;
+    fixture
+        .service
+        .fail(
+            &task,
+            Some(&attempt),
+            LifecycleFailure::restart_cancelled("worker restarted"),
+            fixture.now,
+        )
+        .await?;
+    Ok(remote_job_id)
 }
 
 async fn advance_to_processing(

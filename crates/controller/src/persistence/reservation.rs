@@ -15,9 +15,11 @@ impl Store {
         let policy = self.config_manager().scheduler();
         let mut transaction = self.database.pool().begin().await?;
         let attempt_no = sqlx::query(
-            "UPDATE tasks SET status = 'reserved', worker_id = ?, version = version + 1,
-                attempt_count = attempt_count + 1, updated_at_ms = ?, reserved_at_ms = ?
+            "UPDATE tasks SET status = 'reserved', worker_id = ?, requested_worker_id = NULL,
+                version = version + 1, attempt_count = attempt_count + 1, updated_at_ms = ?,
+                reserved_at_ms = ?
              WHERE id = ? AND status = 'queued' AND version = ?
+               AND (requested_worker_id IS NULL OR requested_worker_id = ?)
                AND EXISTS (
                    SELECT 1 FROM workers worker
                    WHERE worker.id = ? AND worker.enabled = 1 AND worker.online = 1
@@ -46,6 +48,7 @@ impl Store {
             "expected_task_version",
             reservation.expected_task_version,
         )?)
+        .bind(reservation.worker_id.to_string())
         .bind(reservation.worker_id.to_string())
         .bind(policy.paused)
         .bind(i64::from(policy.prefetch_per_worker))

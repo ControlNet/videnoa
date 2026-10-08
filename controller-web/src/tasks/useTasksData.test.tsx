@@ -20,6 +20,7 @@ const initialTask = {
   source_reference: null,
   input_size: 1024,
   worker_id: "550e8400-e29b-41d4-a716-446655440001",
+  requested_worker_id: null,
   remote_job_id: null,
   progress: {
     percent: 30,

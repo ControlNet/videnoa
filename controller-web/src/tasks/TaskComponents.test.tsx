@@ -367,6 +367,7 @@ function taskRow(workerId: string, id = "00000000-0000-4000-8000-000000000001"):
     source_reference: null,
     input_size: 4_294_967_296,
     worker_id: workerId,
+    requested_worker_id: null,
     remote_job_id: null,
     progress: {
       percent: 42,
