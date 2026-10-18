@@ -32,14 +32,30 @@ runs one ffmpeg process with two inputs:
 - input 1 is the source file, from which audio, subtitles and attachments
   are copied with `-c copy`.
 
-The source demuxer reads at disk speed while video packets trickle in, or
-have not been emitted at all during model warm-up. Once the DTS gap is
-larger than libavformat's default `max_interleave_delta` (10 s), the muxer
-flushes the queued audio and subtitle packets without waiting for video.
-So the whole audio track lands before the first video frame. A longer
-episode or a high-bitrate lossless track could also go over ffmpeg's
-pre-mux queue limit (`muxing_queue_data_threshold`, 50 MB) and fail with
-"Too many packets buffered".
+The real trigger is the FFmpeg 7+ CLI scheduler (`fftools/ffmpeg_sched.c`,
+`trailing_dts` / `schedule_update_locked`), not just the slow pipe:
+
+- The scheduler finds the output stream that is furthest behind (the
+  trailing DTS). It lets only the inputs feeding streams within
+  `SCHEDULE_TOLERANCE` (100 ms) of that stream keep reading, and pauses the
+  others.
+- If any unfinished output stream has no DTS yet, the trailing DTS is
+  unknown, and only the sources of streams without a DTS may read. Font
+  attachments never produce packets, so their stream has no DTS until its
+  demuxer reaches EOF. Because the attachments shared input 1 with the
+  audio, the source demuxer read the whole file at once, and the muxer's
+  `max_interleave_delta` (10 s) flushed all of that audio before any video.
+  With a 2-minute real clip, audio landed 110 s ahead (the clip minus 10 s).
+- Sparse subtitle tracks cause the same problem on a smaller scale. During a
+  gap in the dialogue the subtitle stream is the trailing stream, so the
+  shared demuxer reads ahead to the next line, and the audio it reads
+  arrives early too. Without fonts but with sparse subtitles, the lead was
+  still about 17 s, and it gets longer during a silent OP.
+- These measurements are the same whether the video comes from the pipe or
+  from a separate video-only file. So a two-stage ffmpeg remux does not
+  help, and neither does `-max_interleave_delta 0`: that option buffered
+  the whole output in RAM when a subtitle track ended early (the file
+  stayed at 0 bytes during the encode).
 
 ## Repairing an existing output
 
@@ -50,21 +66,45 @@ for 2 GB on local disk and leaves the audio MD5 unchanged:
 mkvmerge -o "out.fixed.mkv" "out.mkv"
 ```
 
-A single-input `ffmpeg -i out.mkv -map 0 -c copy` is not a reliable fix: one
-demuxer reads the file in its current order, so the muxer meets the same
-gap.
+A plain `ffmpeg -c copy` remux does not fix the file. Attachments and
+sparse subtitles cause the same scheduler read-ahead described above.
 
-## Code fix options (not implemented yet)
+## Fix (implemented 2026-10-18)
 
-1. Add `-max_interleave_delta 0` to the output args. libavformat then
-   buffers until every stream has a packet. Costs:
-   - RAM grows to the size of every copied stream that runs ahead of the
-     video (fine for ~35 MB of AAC, GBs for lossless movie audio);
-   - a sparse or empty subtitle track makes video packets pile up in RAM
-     until that track's next packet, or until the trailer.
-2. Two stages: encode video only into a temp file, then remux:
-   `ffmpeg -i temp -i source -map 0:v:0 -map 1 -map -1:v -c copy
-   -map_metadata 1 -map_chapters 1 ...`. With two file inputs, the ffmpeg 7+
-   scheduler throttles each demuxer, so packets interleave correctly. Costs
-   temp disk about the size of the output, plus a few seconds. Do not
-   require mkvmerge, because the bundled `bin/` only ships mkvpropedit.
+`build_ffmpeg_args` gives each kind of copied stream its own demuxer of the
+source:
+
+```
+-i pipe:0 -i SRC -t 1 -i SRC -i SRC
+-map 0:v:0 -map 1 -map -1:v -map -1:s -map -1:t -map 3:s? -map 2:t?
+```
+
+- Input 1 carries audio (and data streams), input 3 carries subtitles, and
+  input 2 carries attachments.
+- Fonts are in the header, so `-t 1` lets the attachment input reach EOF
+  almost immediately, which finishes its stream.
+- When a subtitle gap makes input 3 read ahead, it discards the audio and
+  video it reads, so nothing reaches the muxer early. The other inputs
+  simply wait.
+- Unused inputs (sources without subtitles or attachments) are probed but
+  not read.
+- Cost: the source is read twice, once by input 1 and once by input 3.
+
+Verified with an end-to-end CLI run: VideoInput to VideoOutput, libx265,
+on a 2-minute clip with 14 subtitle tracks and 14 fonts.
+
+| Build | Audio written ahead of all video |
+|---|---|
+| old binary | 110 s |
+| new binary | 0 s |
+
+Stream order, language, default flags and BPS tags match the source. The
+audio, subtitle and font payloads are byte-identical.
+
+## Chapters / "skip intro"
+
+That source has no chapters: `ffprobe -show_chapters` is empty, and there is
+no Chapters element and no sidecar files. VideoOutput already passes
+`-map_chapters 1`. A remembered "skip OP" marker most likely comes from the
+media server's intro detection (Jellyfin Intro Skipper, Plex or Emby markers).
+That data is stored per file in the server database, not in the MKV.
