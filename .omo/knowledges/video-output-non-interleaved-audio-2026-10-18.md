@@ -23,23 +23,114 @@ source file plays fine.
 - Minor quirk, not the cause: the ffmpeg-muxed AAC track carries
   `Bit depth: 32`, which the mkvmerge source does not have.
 
-## Cause
+## Cause: FFmpeg's scheduler, not just the slow pipe
 
-`EncoderConfig::build_ffmpeg_args` (`crates/core/src/nodes/video_output.rs`)
-runs one ffmpeg process with two inputs:
+The old `build_ffmpeg_args` ran one ffmpeg process with two inputs:
 
 - input 0 is the processed frames on `pipe:0`, produced at AI speed;
-- input 1 is the source file, from which audio, subtitles and attachments
-  are copied with `-c copy`.
+- input 1 is the source, whose non-video streams are copied with `-c copy`.
 
-The source demuxer reads at disk speed while video packets trickle in, or
-have not been emitted at all during model warm-up. Once the DTS gap is
-larger than libavformat's default `max_interleave_delta` (10 s), the muxer
-flushes the queued audio and subtitle packets without waiting for video.
-So the whole audio track lands before the first video frame. A longer
-episode or a high-bitrate lossless track could also go over ffmpeg's
-pre-mux queue limit (`muxing_queue_data_threshold`, 50 MB) and fail with
-"Too many packets buffered".
+The FFmpeg 7+ CLI scheduler (`fftools/ffmpeg_sched.c`, `trailing_dts` and
+`schedule_update_locked`) lets an input keep reading only while the output
+stream it feeds is the one furthest behind (within `SCHEDULE_TOLERANCE`,
+100 ms). If any unfinished output stream has no DTS yet, only the sources
+of such streams may read.
+
+- **Font attachments** never produce packets, so the shared source demuxer
+  read the whole file at once, and `max_interleave_delta` (10 s) flushed
+  all of that audio before any video. On a 2-minute real clip, audio landed
+  110 s ahead.
+- **Sparse subtitle tracks** cause the same read-ahead during gaps in the
+  dialogue (about 17 s measured without fonts).
+- **Audio tracks of unequal length** do the same once the shorter one ends
+  (19 s lead measured with a 30 s track plus a 1 s track).
+
+Approaches that were measured and rejected:
+
+| Approach | Problem |
+|---|---|
+| `-max_interleave_delta 0` | When a subtitle track ended early, the whole output was buffered in RAM: the file stayed at 0 bytes during the encode. |
+| Two-stage, with ffmpeg doing the remux | Same scheduler behaviour: 110 s lead with fonts. |
+| Splitting the source into per-type inputs: `-i SRC` for audio, `-t 1 -i SRC` for attachments, `-i SRC` for subtitles (commit bd3a070, reverted in 9d2f100) | Fixed the reported file, but a Codex (gpt-6-astra) review found three problems, two of them reproduced here. |
+
+The Codex findings on the split-input approach:
+
+- **Reproduced:** audio tracks of unequal length still share one demuxer
+  and give a 19 s lead.
+- **Reproduced:** `-t 1` never stops a packetless attachment input. The
+  input-duration check only runs on selected packets, so the attachment
+  input read the whole 162 MB clip, and the source was scanned three times.
+- **Not reproduced, source-reasoned:** a separate subtitle input does its
+  own `correct_input_start_times` and discontinuity handling, so subtitles
+  can drift on MPEG-TS and other `AVFMT_TS_DISCONT` sources.
+
+## Fix (ead34f4): mkvmerge muxes Matroska outputs
+
+For `.mkv` and `.mka` outputs, VideoEncoder works in two steps:
+
+1. FFmpeg encodes only the pipe (`build_video_only_ffmpeg_args`, with no
+   source input) into the hidden file `.{stem}.videnoa-video.mkv` beside
+   the output.
+2. In `finish`, mkvmerge builds the output:
+   `mkvmerge --quiet --output OUT --no-global-tags --default-track-flag 0:yes
+   VIDEO_ONLY --no-video SOURCE`.
+
+What mkvmerge preserves:
+
+- the source track order, including the order across track types;
+- languages, default flags, chapters and global tags (the title);
+- attachments.
+
+mkvmerge also writes the BPS and NUMBER_OF_FRAMES statistics tags itself,
+so mkvpropedit is not run on this path.
+
+`MuxPlan::for_config` runs `mkvmerge --identify --identification-format
+json SOURCE` before any frame is processed:
+
+- If mkvmerge is missing, the job fails immediately, naming
+  `setup_dev_media_tools.sh` and `bin_win64.zip`.
+- If the JSON says `recognized` or `supported` is false (exit code 0), it
+  logs a warning and falls back to the single FFmpeg pass.
+
+How the mkvmerge step ends:
+
+| mkvmerge exit | Result |
+|---|---|
+| 0 | Success; the temp file is removed. |
+| 1 | Warnings, still a success; the temp file is removed. |
+| 2 | Error quoting mkvmerge's stdout. The partial output is removed and the encoded video is kept and named in the error. |
+
+If the encode is dropped before `finish`, `Drop` removes the partial temp
+file. Non-Matroska outputs keep the old single FFmpeg pass.
+
+Verification:
+
+- `mkv_output_keeps_copied_streams_interleaved_with_slow_video` is an
+  ignored test that needs the real tools; run it with `PATH=$PWD/bin:$PATH`.
+  It uses a source with a font, a one-line subtitle, 20 s and 1 s audio
+  tracks, chapters and a title, plus a 3 s warm-up before any frame is
+  written. With mkvmerge it passes (lead under 1 s). Forcing the old direct
+  mux fails it with a 10 s lead.
+- End-to-end CLI run on a real 2-minute clip with 14 subtitle tracks and
+  14 fonts: lead 0.4 s.
+  - Audio, subtitle and font payloads are byte-identical to the source.
+  - Decoded video frames are identical to the old build. The first packet
+    grows because mkvmerge repeats the HEVC/H.264 parameter sets in-band.
+  - mkvmerge exits 0 on the real 4K 71.928 fps HEVC output.
+
+Tooling:
+
+- `bin_linux64.zip` on the misc release now contains a `bin/mkvmerge`
+  wrapper, written the same way as the mkvpropedit one but with
+  `ARGV0=mkvmerge`. The checksum is `be77fd66...`, and the previous upload
+  is kept as `bin_linux64-2026-09-07.zip`.
+- The Dockerfile pins the new checksum and keeps mkvmerge.
+- Still open:
+  - `bin_win64.zip` has no `mkvmerge.exe` yet;
+  - remote workers keep the old bundle until `setup_dev_media_tools.sh` is
+    re-run.
+- In zsh, `ARGV0` is special and is not exported by `ARGV0=x cmd`. Use
+  `env ARGV0=mkvmerge .../AppRun` when you test the AppRun by hand.
 
 ## Repairing an existing output
 
@@ -50,21 +141,13 @@ for 2 GB on local disk and leaves the audio MD5 unchanged:
 mkvmerge -o "out.fixed.mkv" "out.mkv"
 ```
 
-A single-input `ffmpeg -i out.mkv -map 0 -c copy` is not a reliable fix: one
-demuxer reads the file in its current order, so the muxer meets the same
-gap.
+A plain `ffmpeg -c copy` remux does not fix the file, because attachments
+and sparse subtitles trigger the same scheduler read-ahead.
 
-## Code fix options (not implemented yet)
+## Chapters / "skip intro"
 
-1. Add `-max_interleave_delta 0` to the output args. libavformat then
-   buffers until every stream has a packet. Costs:
-   - RAM grows to the size of every copied stream that runs ahead of the
-     video (fine for ~35 MB of AAC, GBs for lossless movie audio);
-   - a sparse or empty subtitle track makes video packets pile up in RAM
-     until that track's next packet, or until the trailer.
-2. Two stages: encode video only into a temp file, then remux:
-   `ffmpeg -i temp -i source -map 0:v:0 -map 1 -map -1:v -c copy
-   -map_metadata 1 -map_chapters 1 ...`. With two file inputs, the ffmpeg 7+
-   scheduler throttles each demuxer, so packets interleave correctly. Costs
-   temp disk about the size of the output, plus a few seconds. Do not
-   require mkvmerge, because the bundled `bin/` only ships mkvpropedit.
+That source has no chapters: `ffprobe -show_chapters` is empty, and there is
+no Chapters element and no sidecar files. A remembered "skip OP" marker most
+likely comes from the media server's intro detection (Jellyfin Intro
+Skipper, Plex or Emby markers). That data is stored per file in the server
+database, not in the MKV.
