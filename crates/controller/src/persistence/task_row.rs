@@ -154,7 +154,10 @@ fn optional_time(
     parse_optional_timestamp(field, row.try_get(field)?)
 }
 
-fn optional_worker_id(row: &SqliteRow, column: &'static str) -> Result<Option<WorkerId>, PersistenceError> {
+fn optional_worker_id(
+    row: &SqliteRow,
+    column: &'static str,
+) -> Result<Option<WorkerId>, PersistenceError> {
     row.try_get::<Option<String>, _>(column)?
         .map(|value| parse_brand::<WorkerId>(column, &value))
         .transpose()

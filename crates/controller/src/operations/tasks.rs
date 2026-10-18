@@ -69,7 +69,10 @@ pub(super) async fn retry(
         (mode @ RetryMode::NewProcessingAttempt, _)
         | (mode @ RetryMode::Resume(ResumeStage::Uploading | ResumeStage::Staged), Some(_)) => {
             let requested = request.worker_id;
-            (requeue(&state, &task, &attempt, mode, requested).await?, None)
+            (
+                requeue(&state, &task, &attempt, mode, requested).await?,
+                None,
+            )
         }
         (RetryMode::Resume(_) | RetryMode::Blocked, None) => (
             state
@@ -201,7 +204,10 @@ async fn ensure_retry_worker(
         ));
     }
     let capabilities = &worker.capabilities;
-    let runnable = capabilities.workflows.iter().any(|summary| &summary.name == workflow)
+    let runnable = capabilities
+        .workflows
+        .iter()
+        .any(|summary| &summary.name == workflow)
         && !capabilities
             .invalid_workflows
             .iter()

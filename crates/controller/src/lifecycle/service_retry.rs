@@ -6,8 +6,7 @@ use crate::persistence::{AttemptRecord, TaskRecord};
 use super::engine::{applied, attempt_cas};
 use super::{
     CommittedCommand, DurableAction, Lifecycle, LifecycleError, LifecycleService,
-    RequeueRetryCommand, RequeueRetryWrite, ResumeStage, RetryMode, RetryWrite,
-    TransferRetryWrite,
+    RequeueRetryCommand, RequeueRetryWrite, ResumeStage, RetryMode, RetryWrite, TransferRetryWrite,
 };
 
 impl LifecycleService {
