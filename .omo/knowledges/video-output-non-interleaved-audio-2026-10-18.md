@@ -124,11 +124,33 @@ Tooling:
   wrapper, written the same way as the mkvpropedit one but with
   `ARGV0=mkvmerge`. The checksum is `be77fd66...`, and the previous upload
   is kept as `bin_linux64-2026-09-07.zip`.
-- The Dockerfile pins the new checksum and keeps mkvmerge.
-- Still open:
-  - `bin_win64.zip` has no `mkvmerge.exe` yet;
-  - remote workers keep the old bundle until `setup_dev_media_tools.sh` is
-    re-run.
+- The Dockerfile pins the new checksum and keeps mkvmerge. Building only the
+  `media-tools` stage locally confirms that the checksum matches and that
+  mkvmerge/mkvpropedit 101.0 run in the stage image.
+- `bin_win64.zip` was rebuilt by the `Windows media tools` workflow (run
+  39121588173), using `scripts/media_tools.ps1 -Build`, and uploaded. Its
+  SHA-256 is `0db8501b...`; the previous upload is kept as
+  `bin_win64-2026-09-28.zip`.
+  - mkvmerge.exe and mkvpropedit.exe now come from the official MKVToolNix
+    101.0 portable zip (`mkvtoolnix-64-bit-101.0.zip`, SHA-256 `59a807b4...`
+    per the publisher's `sha256sums.txt`). Both exes import only Windows
+    system DLLs. The zip's `doc/COPYING.txt` ships as
+    `MKVTOOLNIX-LICENSE.txt`.
+  - `-Verify` now also muxes every encode case with source audio through
+    mkvmerge and checks the NUMBER_OF_FRAMES tag that mkvmerge writes.
+  - The FFmpeg pin moved to `autobuild-2026-09-30-13-08`
+    (`ffmpeg-n8.1.3-9-g29e619e767-win64-gpl-8.1.zip`). The old pin,
+    `autobuild-2026-09-26-13-03`, returned 404: BtbN deletes daily
+    autobuilds after about two weeks and keeps only each month's last
+    build, so always pin a month-end build.
+  - The SHA256SUMS file inside the Windows zip uses CRLF line endings. To
+    check it on Linux, run `tr -d '\r' < SHA256SUMS | sha256sum -c -`.
+  - `-Verify` can be run on Linux with the official PowerShell container:
+    `docker run --rm -v $PWD/scripts:/w/scripts:ro -v $PWD/bin:/w/bin:ro
+    mcr.microsoft.com/powershell:7.4-ubuntu-22.04 pwsh -NoProfile -File
+    /w/scripts/media_tools.ps1 -Verify -BinDir /w/bin`.
+- Still open: remote workers keep the old bundle until
+  `setup_dev_media_tools.sh` is re-run.
 - In zsh, `ARGV0` is special and is not exported by `ARGV0=x cmd`. Use
   `env ARGV0=mkvmerge .../AppRun` when you test the AppRun by hand.
 
