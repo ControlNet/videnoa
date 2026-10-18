@@ -263,15 +263,7 @@ impl EncoderConfig {
         );
 
         let is_nvenc = self.is_nvenc();
-        let source = self.source_path.to_string_lossy().into_owned();
 
-        // FFmpeg's scheduler lets an input run ahead while the most-behind
-        // output stream it feeds has no new packet. Font attachments never
-        // have packets, and subtitle tracks go quiet between lines, so if they
-        // shared the audio's demuxer, the whole audio track would be written
-        // before the slower piped video and players would lose sync or audio.
-        // Each kind therefore gets its own demuxer of the source (inputs 1-3).
-        // Fonts live in the header, so the attachment input stops after 1s.
         let mut args: Vec<String> = vec![
             "-nostdin".into(),
             "-y".into(),
@@ -286,27 +278,13 @@ impl EncoderConfig {
             "-i".into(),
             "pipe:0".into(),
             "-i".into(),
-            source.clone(),
-            "-t".into(),
-            "1".into(),
-            "-i".into(),
-            source.clone(),
-            "-i".into(),
-            source,
+            self.source_path.to_string_lossy().into_owned(),
             "-map".into(),
             "0:v:0".into(),
             "-map".into(),
             "1".into(),
             "-map".into(),
             "-1:v".into(),
-            "-map".into(),
-            "-1:s".into(),
-            "-map".into(),
-            "-1:t".into(),
-            "-map".into(),
-            "3:s?".into(),
-            "-map".into(),
-            "2:t?".into(),
             "-c:v".into(),
             self.codec.clone(),
         ];
@@ -1099,35 +1077,6 @@ mod tests {
         assert!(args.contains(&"-copy_unknown".to_string()));
 
         assert_eq!(args.last().unwrap(), &test_output_path().to_string_lossy());
-    }
-
-    #[test]
-    fn subtitles_and_attachments_are_read_through_their_own_source_inputs() {
-        // Given: an encode that copies the source's non-video streams.
-        let args = default_config().build_ffmpeg_args();
-        let source = test_source_path().to_string_lossy().into_owned();
-
-        // When: the input files and stream maps are read back.
-        let inputs: Vec<&str> = args
-            .windows(2)
-            .filter(|w| w[0] == "-i")
-            .map(|w| w[1].as_str())
-            .collect();
-        let maps: Vec<&str> = args
-            .windows(2)
-            .filter(|w| w[0] == "-map")
-            .map(|w| w[1].as_str())
-            .collect();
-
-        // Then: audio, attachments and subtitles each come from a separate
-        // demuxer of the source, so neither a font attachment (no packets) nor
-        // a sparse subtitle track lets the scheduler read the audio far ahead
-        // of the piped video. The attachment input stops after a moment since
-        // fonts live in the header.
-        assert_eq!(inputs, ["pipe:0", &source, &source, &source]);
-        let attachment_input = args.iter().rposition(|a| a == "-i").unwrap() - 2;
-        assert_eq!(args[attachment_input - 2..attachment_input], ["-t", "1"]);
-        assert_eq!(maps, ["0:v:0", "1", "-1:v", "-1:s", "-1:t", "3:s?", "2:t?"]);
     }
 
     #[test]
