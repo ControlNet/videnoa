@@ -55,14 +55,16 @@ fi
 readonly MEDIA_TOOLS_DIR='/media-tools'
 readonly MKVTOOLNIX_DIR="$MEDIA_TOOLS_DIR/.mkvtoolnix-101.0"
 
-for removed_binary in mkvextract mkvinfo mkvmerge mkvtoolnix-gui; do
+for removed_binary in mkvextract mkvinfo mkvtoolnix-gui; do
   grep -Fq "$MKVTOOLNIX_DIR/usr/bin/$removed_binary" "$WORKER_DOCKERFILE" \
     || fail "Worker runtime does not remove $removed_binary"
 done
 
-if grep -Fq "$MKVTOOLNIX_DIR/usr/bin/mkvpropedit" "$WORKER_DOCKERFILE"; then
-  fail 'Worker runtime removes required mkvpropedit'
-fi
+for required_binary in mkvmerge mkvpropedit; do
+  if grep -Fq "$MKVTOOLNIX_DIR/usr/bin/$required_binary" "$WORKER_DOCKERFILE"; then
+    fail "Worker runtime removes required $required_binary"
+  fi
+done
 
 # The runtime must ship the release media tools bundle (FFmpeg 8.1), not the
 # Ubuntu 22.04 apt ffmpeg/mkvtoolnix packages.
@@ -129,18 +131,19 @@ if [[ -n "$WORKER_IMAGE" ]]; then
     test ! -e /app/web/dist
     test -x /app/bin/ffmpeg
     test -x /app/bin/ffprobe
+    test -x /app/bin/mkvmerge
     test -x /app/bin/mkvpropedit
     test ! -e /usr/bin/ffmpeg
     test ! -e /usr/bin/mkvpropedit
     test ! -e /app/bin/.mkvtoolnix-101.0/usr/bin/mkvextract
     test ! -e /app/bin/.mkvtoolnix-101.0/usr/bin/mkvinfo
-    test ! -e /app/bin/.mkvtoolnix-101.0/usr/bin/mkvmerge
     test ! -e /app/bin/.mkvtoolnix-101.0/usr/bin/mkvtoolnix-gui
     grep -a -q '\.symtab' /usr/local/bin/videnoa
     test "$(command -v ffmpeg)" = /app/bin/ffmpeg
     ffmpeg -hide_banner -version | head -n 1 | grep -q "^ffmpeg version n8\.1"
     ffprobe -hide_banner -version | head -n 1 | grep -q "^ffprobe version n8\.1"
     ffmpeg -hide_banner -encoders | grep -Eq "libx264|libx265|libsvtav1"
+    mkvmerge --version | grep -q "v101\.0"
     mkvpropedit --version | grep -q "v101\.0"
     test -f /usr/local/lib/libonnxruntime.so.1.23.2
     test -f /usr/local/lib/libnvinfer_builder_resource.so.10.9.0
