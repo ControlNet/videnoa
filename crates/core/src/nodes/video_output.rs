@@ -478,7 +478,14 @@ impl MuxPlan {
                 }
             },
         )?;
-        output.check("mkvmerge --identify")?;
+        // mkvmerge reports its errors on stdout rather than stderr.
+        output.check("mkvmerge --identify").with_context(|| {
+            format!(
+                "mkvmerge cannot identify {}: {}",
+                config.source_path.display(),
+                String::from_utf8_lossy(&output.stdout).trim()
+            )
+        })?;
 
         if mkvmerge_can_read(&output.stdout)? {
             Ok(Self::Mkvmerge {
@@ -1975,6 +1982,28 @@ mod tests {
         // A source mkvmerge cannot read still gets its streams through FFmpeg.
         let plan = MuxPlan::for_config_with(&default_config(), &unknown).unwrap();
         assert!(matches!(plan, MuxPlan::Direct));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mkvmerge_identification_failure_quotes_its_stdout() {
+        // Given: mkvmerge rejects the source, reporting on stdout as it does.
+        let dir = tempfile::tempdir().unwrap();
+        let failing = fake_ffmpeg(
+            dir.path(),
+            "mkvmerge-failing",
+            "printf 'Error: the file is truncated\\n'; exit 2",
+        );
+
+        // When: the encoder checks the source before processing.
+        let error = MuxPlan::for_config_with(&default_config(), &failing)
+            .err()
+            .expect("a rejected source must fail");
+
+        // Then: the job error carries mkvmerge's own message.
+        let message = format!("{error:#}");
+        assert!(message.contains("the file is truncated"), "{message}");
+        assert!(message.contains("exit status: 2"), "{message}");
     }
 
     /// An encoder whose FFmpeg copies stdin into its last argument (the
