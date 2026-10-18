@@ -29,9 +29,11 @@ $ProgressPreference = 'SilentlyContinue'
 
 # Pinned upstream inputs. Update each group together and record the change in
 # .omo/knowledges when bumping FFmpeg or MKVToolNix.
-$FfmpegRelease = 'autobuild-2026-09-26-13-03'
-$FfmpegAsset = 'ffmpeg-n8.1.3-win64-gpl-8.1.zip'
-$FfmpegSha256 = 'd20ef03f0f4161453b9f46a72471eb5370f56b6410fe8bca14a4b0220c6c924a'
+# BtbN deletes daily autobuilds after about two weeks but keeps each month's
+# last one, so pin a month-end autobuild.
+$FfmpegRelease = 'autobuild-2026-09-30-13-08'
+$FfmpegAsset = 'ffmpeg-n8.1.3-9-g29e619e767-win64-gpl-8.1.zip'
+$FfmpegSha256 = '7b801cdd3a1a0bb54ae6f572187e68b4ed54f52086cfee133fab2180bfb429fa'
 # Same MKVToolNix release as the Linux bundle; the SHA-256 matches the
 # publisher's sha256sums.txt for that release.
 $MkvtoolnixVersion = '101.0'
