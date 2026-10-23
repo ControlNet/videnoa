@@ -22,6 +22,7 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
+use tempfile::TempPath;
 use tracing::{debug, info, warn};
 
 use crate::frame_pool::FramePool;
@@ -126,30 +127,41 @@ impl EncoderConfig {
             })
     }
 
-    /// Hidden file beside the output that holds the encoded video until
-    /// mkvmerge adds the source's other streams.
-    pub fn video_only_path(&self) -> PathBuf {
+    /// Reserves a new hidden file beside the output, named after it, e.g.
+    /// `.Episode.a1B2c3.videnoa-video.mkv`. The random part keeps concurrent
+    /// encodes (and `x.mkv` next to `x.mka`) apart; the file is removed when
+    /// the returned path is dropped.
+    fn reserve_temp_beside_output(&self, role: &str, extension: &str) -> Result<TempPath> {
         let stem = self
             .output_path
             .file_stem()
             .map(|stem| stem.to_string_lossy().into_owned())
             .unwrap_or_default();
-        self.output_path
-            .with_file_name(format!(".{stem}.videnoa-video.mkv"))
+        let dir = match self.output_path.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent,
+            _ => Path::new("."),
+        };
+        let file = tempfile::Builder::new()
+            .prefix(&format!(".{stem}."))
+            .suffix(&format!(".videnoa-{role}.{extension}"))
+            .tempfile_in(dir)
+            .with_context(|| format!("failed to create a temporary file in {}", dir.display()))?;
+        Ok(file.into_temp_path())
     }
 
-    /// mkvmerge arguments that put the encoded video first and append every
-    /// non-video stream, chapter, tag and attachment of the source. Global
-    /// tags come from the source only; mkvmerge writes the track statistics.
-    pub fn build_mkvmerge_args(&self) -> Vec<String> {
+    /// mkvmerge arguments that write `merged` from the encoded `video_only`
+    /// file followed by every non-video stream, chapter, tag and attachment
+    /// of the source. Global tags come from the source only; mkvmerge writes
+    /// the track statistics.
+    pub fn build_mkvmerge_args(&self, video_only: &Path, merged: &Path) -> Vec<String> {
         vec![
             "--quiet".into(),
             "--output".into(),
-            self.output_path.to_string_lossy().into_owned(),
+            merged.to_string_lossy().into_owned(),
             "--no-global-tags".into(),
             "--default-track-flag".into(),
             "0:yes".into(),
-            self.video_only_path().to_string_lossy().into_owned(),
+            video_only.to_string_lossy().into_owned(),
             "--no-video".into(),
             self.source_path.to_string_lossy().into_owned(),
         ]
@@ -274,16 +286,19 @@ impl EncoderConfig {
     /// Arguments for one FFmpeg pass that encodes the piped frames and copies
     /// the source's non-video streams into the output.
     pub fn build_ffmpeg_args(&self) -> Vec<String> {
-        self.ffmpeg_args(true)
+        self.ffmpeg_args(None)
     }
 
-    /// Arguments that encode only the piped frames into
-    /// [`Self::video_only_path`], for mkvmerge to finish.
-    pub fn build_video_only_ffmpeg_args(&self) -> Vec<String> {
-        self.ffmpeg_args(false)
+    /// Arguments that encode only the piped frames into `video_only`, for
+    /// mkvmerge to finish.
+    pub fn build_video_only_ffmpeg_args(&self, video_only: &Path) -> Vec<String> {
+        self.ffmpeg_args(Some(video_only))
     }
 
-    fn ffmpeg_args(&self, copy_source_streams: bool) -> Vec<String> {
+    /// Without `video_only`, FFmpeg also copies the source's other streams
+    /// into the output itself.
+    fn ffmpeg_args(&self, video_only: Option<&Path>) -> Vec<String> {
+        let copy_source_streams = video_only.is_none();
         let input_pix_fmt = if self.bit_depth > 8 {
             "rgb48le"
         } else {
@@ -401,8 +416,8 @@ impl EncoderConfig {
             args.push("profile=main10".into());
         }
 
-        if !copy_source_streams {
-            args.push(self.video_only_path().to_string_lossy().into_owned());
+        if let Some(video_only) = video_only {
+            args.push(video_only.to_string_lossy().into_owned());
             return args;
         }
 
@@ -430,7 +445,7 @@ pub struct VideoEncoder {
     frame_size: usize,
     /// Pipe bit depth; RGB frames of another depth are converted before writing.
     bit_depth: u8,
-    output_path: PathBuf,
+    config: EncoderConfig,
     /// Pending mkvmerge step; [`MuxPlan::Direct`] once nothing is left to do.
     mux: MuxPlan,
     /// Receives written frames so upstream stages can reuse their buffers.
@@ -441,10 +456,10 @@ pub struct VideoEncoder {
 enum MuxPlan {
     /// FFmpeg copies them while it encodes.
     Direct,
-    /// FFmpeg writes only the video to `video_only_path`; `command`
-    /// (mkvmerge) then builds the output from it and the source.
+    /// FFmpeg writes only the video to `video_only`; `command` (mkvmerge)
+    /// then builds the output from it and the source.
     Mkvmerge {
-        video_only_path: PathBuf,
+        video_only: TempPath,
         command: Box<Command>,
     },
 }
@@ -489,7 +504,7 @@ impl MuxPlan {
 
         if mkvmerge_can_read(&output.stdout)? {
             Ok(Self::Mkvmerge {
-                video_only_path: config.video_only_path(),
+                video_only: config.reserve_temp_beside_output("video", "mkv")?,
                 command: Box::new(mkvmerge()),
             })
         } else {
@@ -513,16 +528,24 @@ fn mkvmerge_can_read(identification: &[u8]) -> Result<bool> {
         && container["supported"].as_bool() == Some(true))
 }
 
-/// Runs the prepared mkvmerge `command`. Exit status 1 means the output was
-/// written with warnings. On failure the encoded video stays at
-/// `video_only_path` so the expensive encode is not lost.
+/// Runs mkvmerge (`command`) into a temporary file and moves it to the
+/// output once mkvmerge succeeds; exit status 1 means it succeeded with
+/// warnings. On failure the output is left as it was and the encoded video
+/// is kept so the expensive encode is not lost.
 fn mux_with_mkvmerge(
     command: &mut Command,
-    video_only_path: &Path,
-    output_path: &Path,
+    config: &EncoderConfig,
+    video_only: TempPath,
 ) -> Result<()> {
+    let output_path = &config.output_path;
+    let extension = output_path
+        .extension()
+        .map_or_else(|| "mkv".into(), |extension| extension.to_string_lossy());
+    let merged = config.reserve_temp_beside_output("mux", &extension)?;
+
     info!(output = %output_path.display(), "mkvmerge: adding the source's other streams");
     let result = command
+        .args(config.build_mkvmerge_args(&video_only, &merged))
         .stdin(Stdio::null())
         .output()
         .context("failed to run mkvmerge")?;
@@ -541,21 +564,33 @@ fn mux_with_mkvmerge(
         Some(1) => {
             warn!(output = %output_path.display(), report = %tail, "mkvmerge finished with warnings")
         }
-        _ => {
-            let _ = std::fs::remove_file(output_path);
-            bail!(
-                "mkvmerge exited with {}; the encoded video is kept at {}; output: {}",
-                result.status,
-                video_only_path.display(),
-                if tail.is_empty() { "(none)" } else { tail }
-            );
-        }
+        _ => bail!(
+            "mkvmerge exited with {}; the encoded video {}; output: {}",
+            result.status,
+            keep_encoded_video(video_only),
+            if tail.is_empty() { "(none)" } else { tail }
+        ),
     }
 
-    if let Err(error) = std::fs::remove_file(video_only_path) {
-        warn!(path = %video_only_path.display(), %error, "failed to remove the video-only file");
+    if let Err(error) = merged.persist(output_path) {
+        bail!(
+            "failed to move the mkvmerge output to {}: {error}; the encoded video {}",
+            output_path.display(),
+            keep_encoded_video(video_only)
+        );
+    }
+    if let Err(error) = video_only.close() {
+        warn!(%error, "failed to remove the video-only file");
     }
     Ok(())
+}
+
+/// Keeps the encoded video after a failed mux and says where it is.
+fn keep_encoded_video(video_only: TempPath) -> String {
+    match video_only.keep() {
+        Ok(path) => format!("is kept at {}", path.display()),
+        Err(error) => format!("could not be kept ({error})"),
+    }
 }
 
 /// How long a failed encoder may take to exit before it is killed so its
@@ -571,13 +606,10 @@ impl VideoEncoder {
 
     /// Starts the encoder from `command` (an FFmpeg executable) with the
     /// arguments built from `config`, finishing the output as `mux` says.
-    fn spawn_with(config: &EncoderConfig, mut command: Command, mut mux: MuxPlan) -> Result<Self> {
-        let args = match &mut mux {
+    fn spawn_with(config: &EncoderConfig, mut command: Command, mux: MuxPlan) -> Result<Self> {
+        let args = match &mux {
             MuxPlan::Direct => config.build_ffmpeg_args(),
-            MuxPlan::Mkvmerge { command, .. } => {
-                command.args(config.build_mkvmerge_args());
-                config.build_video_only_ffmpeg_args()
-            }
+            MuxPlan::Mkvmerge { video_only, .. } => config.build_video_only_ffmpeg_args(video_only),
         };
         let frame_size = config.frame_size();
 
@@ -623,7 +655,7 @@ impl VideoEncoder {
             stderr,
             frame_size,
             bit_depth: config.bit_depth,
-            output_path: config.output_path.clone(),
+            config: config.clone(),
             mux,
             pool: FramePool::shared(),
         })
@@ -674,12 +706,12 @@ impl VideoEncoder {
 
         match std::mem::replace(&mut self.mux, MuxPlan::Direct) {
             // Post-process MKV files: regenerate track statistics tags.
-            MuxPlan::Direct => add_mkv_statistics_tags(&self.output_path),
+            MuxPlan::Direct => add_mkv_statistics_tags(&self.config.output_path),
             // mkvmerge writes the track statistics tags itself.
             MuxPlan::Mkvmerge {
-                video_only_path,
+                video_only,
                 mut command,
-            } => mux_with_mkvmerge(&mut command, &video_only_path, &self.output_path)?,
+            } => mux_with_mkvmerge(&mut command, &self.config, video_only)?,
         }
 
         Ok(())
@@ -703,13 +735,8 @@ impl Drop for VideoEncoder {
         let _ = self.child.kill();
         let _ = self.child.wait();
         self.stderr.join();
-        // The encode stopped before mkvmerge ran; its partial video is useless.
-        if let MuxPlan::Mkvmerge {
-            video_only_path, ..
-        } = &self.mux
-        {
-            let _ = std::fs::remove_file(video_only_path);
-        }
+        // FFmpeg has exited, so dropping `mux` next can remove an unfinished
+        // video-only file even on Windows.
     }
 }
 
@@ -1859,7 +1886,8 @@ mod tests {
         let config = default_config();
 
         // When: the first-stage FFmpeg arguments are built.
-        let args = config.build_video_only_ffmpeg_args();
+        let video_only = std::env::temp_dir().join(".output.x.videnoa-video.mkv");
+        let args = config.build_video_only_ffmpeg_args(&video_only);
 
         // Then: FFmpeg reads only the pipe, so no copied source stream can
         // make its scheduler read ahead, and it writes the hidden temp file.
@@ -1878,31 +1906,43 @@ mod tests {
             let vf = args.iter().position(|a| a == "-vf").unwrap();
             args[vf + 1].clone()
         });
-        assert_eq!(
-            args.last().unwrap(),
-            &config.video_only_path().to_string_lossy()
-        );
+        assert_eq!(args.last().unwrap(), &video_only.to_string_lossy());
     }
 
     #[test]
-    fn video_only_file_is_hidden_beside_the_output() {
-        let mut config = default_config();
-        config.output_path = PathBuf::from("/media/show/Episode 01 - AI.mkv");
+    fn temp_files_are_hidden_beside_the_output_and_never_shared() {
+        // Given: two outputs whose names differ only by extension.
+        let dir = tempfile::tempdir().unwrap();
+        let mut mkv = default_config();
+        mkv.output_path = dir.path().join("Episode 01 - AI.mkv");
+        let mut mka = mkv.clone();
+        mka.output_path = dir.path().join("Episode 01 - AI.mka");
 
-        assert_eq!(
-            config.video_only_path(),
-            PathBuf::from("/media/show/.Episode 01 - AI.videnoa-video.mkv")
-        );
+        // When: each reserves its video-only file.
+        let first = mkv.reserve_temp_beside_output("video", "mkv").unwrap();
+        let second = mka.reserve_temp_beside_output("video", "mkv").unwrap();
+
+        // Then: both are hidden files beside the output, and they differ.
+        assert_ne!(first.to_path_buf(), second.to_path_buf());
+        for temp in [&first, &second] {
+            assert_eq!(temp.parent(), Some(dir.path()));
+            let name = temp.file_name().unwrap().to_string_lossy();
+            assert!(name.starts_with(".Episode 01 - AI."), "{name}");
+            assert!(name.ends_with(".videnoa-video.mkv"), "{name}");
+            assert!(temp.exists(), "{name} must be reserved on disk");
+        }
     }
 
     #[test]
     fn mkvmerge_args_put_the_encoded_video_first_and_drop_the_source_video() {
         let config = default_config();
+        let video_only = std::env::temp_dir().join(".output.x.videnoa-video.mkv");
+        let merged = std::env::temp_dir().join(".output.y.videnoa-mux.mkv");
 
-        let args = config.build_mkvmerge_args();
+        let args = config.build_mkvmerge_args(&video_only, &merged);
 
-        let output = test_output_path().to_string_lossy().into_owned();
-        let video = config.video_only_path().to_string_lossy().into_owned();
+        let output = merged.to_string_lossy().into_owned();
+        let video = video_only.to_string_lossy().into_owned();
         let source = test_source_path().to_string_lossy().into_owned();
         assert_eq!(
             args,
@@ -2006,11 +2046,24 @@ mod tests {
         assert!(message.contains("exit status: 2"), "{message}");
     }
 
+    /// Names of the mkvmerge temp files in `dir`.
+    fn temp_files_in(dir: &Path) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".videnoa-"))
+            .collect()
+    }
+
     /// An encoder whose FFmpeg copies stdin into its last argument (the
     /// video-only file) and whose mkvmerge writes the output, prints `report`
-    /// and exits with `status`.
+    /// and exits with `status`. Also returns the video-only path.
     #[cfg(unix)]
-    fn mkvmerge_encoder(dir: &Path, report: &str, status: i32) -> (EncoderConfig, VideoEncoder) {
+    fn mkvmerge_encoder(
+        dir: &Path,
+        report: &str,
+        status: i32,
+    ) -> (EncoderConfig, VideoEncoder, PathBuf) {
         let mut config = default_config();
         config.output_path = dir.join("Episode - AI.mkv");
         config.width = 4;
@@ -2030,12 +2083,14 @@ printf merged > "$out"; printf '{report}\n'; exit {status}"#,
                 args = dir.join("mkvmerge-args").display(),
             ),
         );
+        let video_only = config.reserve_temp_beside_output("video", "mkv").unwrap();
+        let video_only_path = video_only.to_path_buf();
         let plan = MuxPlan::Mkvmerge {
-            video_only_path: config.video_only_path(),
+            video_only,
             command: Box::new(mkvmerge()),
         };
         let encoder = VideoEncoder::spawn_with(&config, ffmpeg(), plan).unwrap();
-        (config, encoder)
+        (config, encoder, video_only_path)
     }
 
     #[cfg(unix)]
@@ -2043,42 +2098,45 @@ printf merged > "$out"; printf '{report}\n'; exit {status}"#,
     fn mkvmerge_assembles_the_output_and_removes_the_video_only_file() {
         // Given: an MKV encode muxed by mkvmerge.
         let dir = tempfile::tempdir().unwrap();
-        let (config, mut encoder) = mkvmerge_encoder(dir.path(), "", 0);
+        let (config, mut encoder, video_only) = mkvmerge_encoder(dir.path(), "", 0);
 
         // When: frames are written and the encode finishes.
         let frame = vec![7_u8; config.frame_size()];
         encoder.write_frame(&frame).unwrap();
         encoder.finish().unwrap();
 
-        // Then: mkvmerge read the encoded video, wrote the output, and the
-        // temp file is gone.
+        // Then: mkvmerge read the encoded video into a temp file that became
+        // the output, and no temp file is left.
         let args = std::fs::read_to_string(dir.path().join("mkvmerge-args")).unwrap();
-        assert_eq!(
-            args.lines().collect::<Vec<_>>(),
-            config.build_mkvmerge_args()
-        );
+        let args: Vec<&str> = args.lines().collect();
+        let merged = Path::new(args[2]);
+        assert_eq!(merged.parent(), Some(dir.path()));
+        assert_ne!(merged, config.output_path);
+        assert_eq!(args, config.build_mkvmerge_args(&video_only, merged));
         assert_eq!(std::fs::read(&config.output_path).unwrap(), b"merged");
-        assert!(!config.video_only_path().exists());
+        assert_eq!(temp_files_in(dir.path()), Vec::<String>::new());
     }
 
     #[cfg(unix)]
     #[test]
     fn mkvmerge_warnings_do_not_fail_the_job() {
         let dir = tempfile::tempdir().unwrap();
-        let (config, mut encoder) = mkvmerge_encoder(dir.path(), "Warning: odd timestamps", 1);
+        let (config, mut encoder, _) = mkvmerge_encoder(dir.path(), "Warning: odd timestamps", 1);
 
         encoder.finish().unwrap();
 
         assert!(config.output_path.exists());
-        assert!(!config.video_only_path().exists());
+        assert_eq!(temp_files_in(dir.path()), Vec::<String>::new());
     }
 
     #[cfg(unix)]
     #[test]
     fn mkvmerge_failure_keeps_the_encoded_video_and_quotes_mkvmerge() {
-        // Given: mkvmerge fails after the expensive encode succeeded.
+        // Given: mkvmerge fails after the expensive encode succeeded, and a
+        // file from an earlier run already sits at the output path.
         let dir = tempfile::tempdir().unwrap();
-        let (config, mut encoder) = mkvmerge_encoder(dir.path(), "Error: disk full", 2);
+        let (config, mut encoder, video_only) = mkvmerge_encoder(dir.path(), "Error: disk full", 2);
+        std::fs::write(&config.output_path, b"earlier output").unwrap();
         encoder
             .write_frame(&vec![0_u8; config.frame_size()])
             .unwrap();
@@ -2087,11 +2145,17 @@ printf merged > "$out"; printf '{report}\n'; exit {status}"#,
         let message = encoder.finish().unwrap_err().to_string();
         drop(encoder);
 
-        // Then: the error carries mkvmerge's message and names the kept file,
-        // which still holds the encoded video for a manual mux.
+        // Then: the existing output is untouched, mkvmerge's partial file is
+        // gone, and the error carries mkvmerge's message and names the kept
+        // file, which still holds the encoded video for a manual mux.
+        assert_eq!(
+            std::fs::read(&config.output_path).unwrap(),
+            b"earlier output"
+        );
+        let video_only_name = video_only.file_name().unwrap().to_string_lossy();
+        assert_eq!(temp_files_in(dir.path()), [video_only_name.as_ref()]);
         assert!(message.contains("Error: disk full"), "{message}");
         assert!(message.contains("exit status: 2"), "{message}");
-        let video_only = config.video_only_path();
         assert!(
             message.contains(&*video_only.to_string_lossy()),
             "{message}"
@@ -2106,14 +2170,15 @@ printf merged > "$out"; printf '{report}\n'; exit {status}"#,
     #[test]
     fn abandoned_encode_removes_the_partial_video_only_file() {
         let dir = tempfile::tempdir().unwrap();
-        let (config, mut encoder) = mkvmerge_encoder(dir.path(), "", 0);
+        let (config, mut encoder, _) = mkvmerge_encoder(dir.path(), "", 0);
         encoder
             .write_frame(&vec![0_u8; config.frame_size()])
             .unwrap();
 
         drop(encoder);
 
-        assert!(!config.video_only_path().exists());
+        assert!(!dir.path().join("mkvmerge-args").exists(), "mkvmerge ran");
+        assert_eq!(temp_files_in(dir.path()), Vec::<String>::new());
         assert!(!config.output_path.exists());
     }
 
@@ -2202,7 +2267,10 @@ printf merged > "$out"; printf '{report}\n'; exit {status}"#,
             stderr: StderrTail::none(),
             frame_size,
             bit_depth: 8,
-            output_path: null_path(),
+            config: EncoderConfig {
+                output_path: null_path(),
+                ..default_config()
+            },
             mux: MuxPlan::Direct,
             pool: FramePool::shared(),
         };
@@ -2234,7 +2302,10 @@ printf merged > "$out"; printf '{report}\n'; exit {status}"#,
             stderr: StderrTail::none(),
             frame_size: 6,
             bit_depth: 8,
-            output_path: null_path(),
+            config: EncoderConfig {
+                output_path: null_path(),
+                ..default_config()
+            },
             mux: MuxPlan::Direct,
             pool: Arc::clone(&pool),
         };
@@ -2275,7 +2346,10 @@ printf merged > "$out"; printf '{report}\n'; exit {status}"#,
             stderr: StderrTail::none(),
             frame_size: if bit_depth > 8 { 6 } else { 3 },
             bit_depth,
-            output_path: null_path(),
+            config: EncoderConfig {
+                output_path: null_path(),
+                ..default_config()
+            },
             mux: MuxPlan::Direct,
             pool: FramePool::shared(),
         };
@@ -2604,7 +2678,7 @@ printf merged > "$out"; printf '{report}\n'; exit {status}"#,
             Some("Source Title")
         );
         assert_eq!(streams["streams"][0]["disposition"]["default"], 1);
-        assert!(!config.video_only_path().exists());
+        assert_eq!(temp_files_in(dir.path()), Vec::<String>::new());
     }
 
     #[test]
