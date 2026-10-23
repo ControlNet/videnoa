@@ -18,6 +18,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
@@ -155,7 +156,11 @@ impl EncoderConfig {
             _ => Path::new("."),
         };
         let prefix = format!(".{stem}.");
-        let suffix = format!(".videnoa-{role}.{extension}");
+        let suffix = if extension.is_empty() {
+            format!(".videnoa-{role}")
+        } else {
+            format!(".videnoa-{role}.{extension}")
+        };
         let mut builder = tempfile::Builder::new();
         builder.prefix(&prefix).suffix(&suffix);
         // The mux file becomes the output: give it the umask-based mode of
@@ -305,19 +310,24 @@ impl EncoderConfig {
     /// Arguments for one FFmpeg pass that encodes the piped frames and copies
     /// the source's non-video streams into the output.
     pub fn build_ffmpeg_args(&self) -> Vec<String> {
-        self.ffmpeg_args(None)
+        self.ffmpeg_args(&self.output_path, true)
+    }
+
+    /// [`Self::build_ffmpeg_args`] writing to `staged` instead, which is
+    /// moved over the output once the encode has finished.
+    fn build_staged_ffmpeg_args(&self, staged: &Path) -> Vec<String> {
+        self.ffmpeg_args(staged, true)
     }
 
     /// Arguments that encode only the piped frames into `video_only`, for
     /// mkvmerge to finish.
     pub fn build_video_only_ffmpeg_args(&self, video_only: &Path) -> Vec<String> {
-        self.ffmpeg_args(Some(video_only))
+        self.ffmpeg_args(video_only, false)
     }
 
-    /// Without `video_only`, FFmpeg also copies the source's other streams
-    /// into the output itself.
-    fn ffmpeg_args(&self, video_only: Option<&Path>) -> Vec<String> {
-        let copy_source_streams = video_only.is_none();
+    /// Encodes into `target`, also copying the source's other streams when
+    /// `copy_source_streams` is set.
+    fn ffmpeg_args(&self, target: &Path, copy_source_streams: bool) -> Vec<String> {
         let input_pix_fmt = if self.bit_depth > 8 {
             "rgb48le"
         } else {
@@ -435,8 +445,8 @@ impl EncoderConfig {
             args.push("profile=main10".into());
         }
 
-        if let Some(video_only) = video_only {
-            args.push(video_only.to_string_lossy().into_owned());
+        if !copy_source_streams {
+            args.push(target.to_string_lossy().into_owned());
             return args;
         }
 
@@ -444,7 +454,7 @@ impl EncoderConfig {
             args.extend(["-default_mode".into(), "passthrough".into()]);
         }
 
-        args.push(self.output_path.to_string_lossy().into_owned());
+        args.push(target.to_string_lossy().into_owned());
 
         args
     }
@@ -465,25 +475,40 @@ pub struct VideoEncoder {
     /// Pipe bit depth; RGB frames of another depth are converted before writing.
     bit_depth: u8,
     config: EncoderConfig,
-    /// Pending mkvmerge step; [`MuxPlan::Direct`] once nothing is left to do.
+    /// How the output is still to be published; [`MuxPlan::Done`] once it is.
     mux: MuxPlan,
     /// Receives written frames so upstream stages can reuse their buffers.
     pool: Arc<FramePool>,
 }
 
-/// How the encoded video is combined with the source's other streams.
+/// How the encoded video is combined with the source's other streams and
+/// published. The output path is only written once the encode succeeded.
 enum MuxPlan {
-    /// FFmpeg copies them while it encodes.
-    Direct,
+    /// FFmpeg copies them while it encodes into `staged`, which then
+    /// replaces the output.
+    Direct { staged: TempPath },
     /// FFmpeg writes only the video to `video_only`; `command` (mkvmerge)
     /// then builds the output from it and the source.
     Mkvmerge {
         video_only: TempPath,
         command: Box<Command>,
     },
+    /// Nothing is left to publish.
+    Done,
 }
 
 impl MuxPlan {
+    fn direct(config: &EncoderConfig) -> Result<Self> {
+        let extension = config
+            .output_path
+            .extension()
+            .map(|extension| extension.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        Ok(Self::Direct {
+            staged: config.reserve_temp_beside_output("direct", &extension)?,
+        })
+    }
+
     fn for_config(config: &EncoderConfig) -> Result<Self> {
         Self::for_config_with(config, || crate::runtime::command_for("mkvmerge"))
     }
@@ -492,7 +517,7 @@ impl MuxPlan {
     /// mkvmerge fails the job now rather than after hours of processing.
     fn for_config_with(config: &EncoderConfig, mkvmerge: impl Fn() -> Command) -> Result<Self> {
         if !config.output_is_matroska() {
-            return Ok(Self::Direct);
+            return Self::direct(config);
         }
 
         let mut identify = mkvmerge();
@@ -532,7 +557,7 @@ impl MuxPlan {
                 "mkvmerge cannot read the source; FFmpeg will copy its streams, which may \
                  leave audio poorly interleaved with the video"
             );
-            Ok(Self::Direct)
+            Self::direct(config)
         }
     }
 }
@@ -555,6 +580,7 @@ fn mux_with_mkvmerge(
     command: &mut Command,
     config: &EncoderConfig,
     video_only: TempPath,
+    cancelled: &dyn Fn() -> bool,
 ) -> Result<()> {
     let output_path = &config.output_path;
     let extension = output_path
@@ -603,6 +629,10 @@ fn mux_with_mkvmerge(
         ),
     }
 
+    if cancelled() {
+        info!(output = %output_path.display(), "job cancelled; discarding the muxed output");
+        return Ok(());
+    }
     if let Err(error) = merged.persist(output_path) {
         bail!(
             "failed to move the mkvmerge output to {}: {error}; the encoded video {}",
@@ -640,8 +670,9 @@ impl VideoEncoder {
     /// arguments built from `config`, finishing the output as `mux` says.
     fn spawn_with(config: &EncoderConfig, mut command: Command, mux: MuxPlan) -> Result<Self> {
         let args = match &mux {
-            MuxPlan::Direct => config.build_ffmpeg_args(),
+            MuxPlan::Direct { staged } => config.build_staged_ffmpeg_args(staged),
             MuxPlan::Mkvmerge { video_only, .. } => config.build_video_only_ffmpeg_args(video_only),
+            MuxPlan::Done => bail!("the encoder has no output to write"),
         };
         let frame_size = config.frame_size();
 
@@ -722,6 +753,13 @@ impl VideoEncoder {
     }
 
     pub fn finish(&mut self) -> Result<()> {
+        self.finish_unless_cancelled(&AtomicBool::new(false))
+    }
+
+    /// Finishes the encode and publishes the output, unless `cancelled` is
+    /// set by the time it would be published: then the encode is discarded
+    /// and the output path is left as it was.
+    pub fn finish_unless_cancelled(&mut self, cancelled: &AtomicBool) -> Result<()> {
         drop(self.stdin.take());
 
         let status = self.child.wait().context("failed to wait for ffmpeg")?;
@@ -736,14 +774,37 @@ impl VideoEncoder {
 
         debug!("FFmpeg encoder finished successfully");
 
-        match std::mem::replace(&mut self.mux, MuxPlan::Direct) {
-            // Post-process MKV files: regenerate track statistics tags.
-            MuxPlan::Direct => add_mkv_statistics_tags(&self.config.output_path),
+        let is_cancelled = || cancelled.load(Ordering::SeqCst);
+        let output_path = &self.config.output_path;
+        match std::mem::replace(&mut self.mux, MuxPlan::Done) {
+            MuxPlan::Direct { staged } => {
+                // Post-process MKV files: regenerate track statistics tags.
+                add_mkv_statistics_tags(&staged);
+                if is_cancelled() {
+                    info!(output = %output_path.display(), "job cancelled; discarding the encode");
+                    return Ok(());
+                }
+                if let Err(error) = staged.persist(output_path) {
+                    bail!(
+                        "failed to move the encoded output to {}: {}; the encoded video {}",
+                        output_path.display(),
+                        error.error,
+                        keep_encoded_video(error.path)
+                    );
+                }
+            }
             // mkvmerge writes the track statistics tags itself.
             MuxPlan::Mkvmerge {
                 video_only,
                 mut command,
-            } => mux_with_mkvmerge(&mut command, &self.config, video_only)?,
+            } => {
+                if is_cancelled() {
+                    info!(output = %output_path.display(), "job cancelled; skipping the mux");
+                    return Ok(());
+                }
+                mux_with_mkvmerge(&mut command, &self.config, video_only, &is_cancelled)?
+            }
+            MuxPlan::Done => {}
         }
 
         Ok(())
@@ -767,8 +828,8 @@ impl Drop for VideoEncoder {
         let _ = self.child.kill();
         let _ = self.child.wait();
         self.stderr.join();
-        // FFmpeg has exited, so dropping `mux` next can remove an unfinished
-        // video-only file even on Windows.
+        // FFmpeg has exited, so dropping `mux` next can remove its unfinished
+        // temp file even on Windows.
     }
 }
 
@@ -836,6 +897,10 @@ impl FrameSink for VideoEncoder {
 
     fn finish(&mut self) -> Result<()> {
         VideoEncoder::finish(self)
+    }
+
+    fn finish_unless_cancelled(&mut self, cancelled: &AtomicBool) -> Result<()> {
+        VideoEncoder::finish_unless_cancelled(self, cancelled)
     }
 
     fn release_frame(&mut self, frame: Frame) {
@@ -1882,8 +1947,12 @@ mod tests {
             "-c",
             "printf 'x265 [error]: unsupported pixel format\\n' >&2; exit 3",
         ]);
-        let mut encoder =
-            VideoEncoder::spawn_with(&default_config(), command, MuxPlan::Direct).unwrap();
+        let mut encoder = VideoEncoder::spawn_with(
+            &default_config(),
+            command,
+            MuxPlan::direct(&default_config()).unwrap(),
+        )
+        .unwrap();
 
         // When: the job finishes the encode.
         let message = encoder.finish().unwrap_err().to_string();
@@ -1900,7 +1969,8 @@ mod tests {
         let mut command = std::process::Command::new("sh");
         command.args(["-c", "printf 'Conversion failed!\\n' >&2; exit 1"]);
         let config = default_config();
-        let mut encoder = VideoEncoder::spawn_with(&config, command, MuxPlan::Direct).unwrap();
+        let mut encoder =
+            VideoEncoder::spawn_with(&config, command, MuxPlan::direct(&config).unwrap()).unwrap();
 
         // When: a frame larger than the pipe buffer is written.
         let frame = vec![0_u8; config.frame_size()];
@@ -2015,7 +2085,7 @@ mod tests {
         })
         .unwrap();
 
-        assert!(matches!(plan, MuxPlan::Direct));
+        assert!(matches!(plan, MuxPlan::Direct { .. }));
     }
 
     #[test]
@@ -2053,7 +2123,7 @@ mod tests {
 
         // A source mkvmerge cannot read still gets its streams through FFmpeg.
         let plan = MuxPlan::for_config_with(&default_config(), &unknown).unwrap();
-        assert!(matches!(plan, MuxPlan::Direct));
+        assert!(matches!(plan, MuxPlan::Direct { .. }));
     }
 
     #[cfg(unix)]
@@ -2275,6 +2345,114 @@ printf merged > "$out"; printf '{report}\n'; exit {status}"#,
         config.ensure_output_is_not_source().unwrap();
     }
 
+    /// An encoder for `output` whose FFmpeg copies stdin into its last
+    /// argument, finishing through the direct (FFmpeg-only) plan.
+    #[cfg(unix)]
+    fn direct_encoder(dir: &Path, output: &str) -> (EncoderConfig, VideoEncoder) {
+        let mut config = default_config();
+        config.output_path = dir.join(output);
+        config.width = 4;
+        config.height = 2;
+        let ffmpeg = fake_ffmpeg(
+            dir,
+            "ffmpeg",
+            r#"for arg in "$@"; do out="$arg"; done; cat > "$out""#,
+        );
+        let plan = MuxPlan::direct(&config).unwrap();
+        let encoder = VideoEncoder::spawn_with(&config, ffmpeg(), plan).unwrap();
+        (config, encoder)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn direct_output_replaces_an_existing_file_only_when_finished() {
+        // Given: an MP4 encode over a file from an earlier run.
+        let dir = tempfile::tempdir().unwrap();
+        let (config, mut encoder) = direct_encoder(dir.path(), "Episode - AI.mp4");
+        std::fs::write(&config.output_path, b"earlier output").unwrap();
+        let frame = vec![9_u8; config.frame_size()];
+        encoder.write_frame(&frame).unwrap();
+
+        // While encoding, the earlier file is untouched.
+        assert_eq!(
+            std::fs::read(&config.output_path).unwrap(),
+            b"earlier output"
+        );
+
+        // When: the encode finishes.
+        encoder.finish().unwrap();
+
+        // Then: the new output replaced it, with a new file's permissions,
+        // and no temp file is left.
+        assert_eq!(std::fs::read(&config.output_path).unwrap(), frame);
+        assert_eq!(temp_files_in(dir.path()), Vec::<String>::new());
+        use std::os::unix::fs::PermissionsExt;
+        let reference = dir.path().join("reference");
+        std::fs::write(&reference, b"").unwrap();
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&config.output_path), mode(&reference));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn abandoned_direct_encode_keeps_an_existing_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let (config, mut encoder) = direct_encoder(dir.path(), "Episode - AI.mp4");
+        std::fs::write(&config.output_path, b"earlier output").unwrap();
+        encoder
+            .write_frame(&vec![9_u8; config.frame_size()])
+            .unwrap();
+
+        drop(encoder);
+
+        assert_eq!(
+            std::fs::read(&config.output_path).unwrap(),
+            b"earlier output"
+        );
+        assert_eq!(temp_files_in(dir.path()), Vec::<String>::new());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn encode_cancelled_while_finishing_is_not_published() {
+        let cancelled = AtomicBool::new(true);
+
+        // Given: a direct and an mkvmerge encode, each over an earlier file.
+        let dir = tempfile::tempdir().unwrap();
+        let (config, mut encoder) = direct_encoder(dir.path(), "Episode - AI.mp4");
+        std::fs::write(&config.output_path, b"earlier output").unwrap();
+        encoder
+            .write_frame(&vec![9_u8; config.frame_size()])
+            .unwrap();
+
+        // When: the job is cancelled by the time the encode finishes.
+        encoder.finish_unless_cancelled(&cancelled).unwrap();
+
+        // Then: nothing is published and nothing is left behind.
+        assert_eq!(
+            std::fs::read(&config.output_path).unwrap(),
+            b"earlier output"
+        );
+        assert_eq!(temp_files_in(dir.path()), Vec::<String>::new());
+
+        let dir = tempfile::tempdir().unwrap();
+        let (config, mut encoder, _) = mkvmerge_encoder(dir.path(), "", 0);
+        std::fs::write(&config.output_path, b"earlier output").unwrap();
+        encoder
+            .write_frame(&vec![9_u8; config.frame_size()])
+            .unwrap();
+
+        encoder.finish_unless_cancelled(&cancelled).unwrap();
+        drop(encoder);
+
+        assert!(!dir.path().join("mkvmerge-args").exists(), "mkvmerge ran");
+        assert_eq!(
+            std::fs::read(&config.output_path).unwrap(),
+            b"earlier output"
+        );
+        assert_eq!(temp_files_in(dir.path()), Vec::<String>::new());
+    }
+
     #[cfg(unix)]
     #[test]
     fn abandoned_encode_removes_the_partial_video_only_file() {
@@ -2380,7 +2558,7 @@ printf merged > "$out"; printf '{report}\n'; exit {status}"#,
                 output_path: null_path(),
                 ..default_config()
             },
-            mux: MuxPlan::Direct,
+            mux: MuxPlan::Done,
             pool: FramePool::shared(),
         };
 
@@ -2415,7 +2593,7 @@ printf merged > "$out"; printf '{report}\n'; exit {status}"#,
                 output_path: null_path(),
                 ..default_config()
             },
-            mux: MuxPlan::Direct,
+            mux: MuxPlan::Done,
             pool: Arc::clone(&pool),
         };
         let data = pool.copy_u8(&[0, 1, 2, 3, 4, 5]);
@@ -2459,7 +2637,7 @@ printf merged > "$out"; printf '{report}\n'; exit {status}"#,
                 output_path: null_path(),
                 ..default_config()
             },
-            mux: MuxPlan::Direct,
+            mux: MuxPlan::Done,
             pool: FramePool::shared(),
         };
 

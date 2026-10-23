@@ -61,6 +61,13 @@ pub trait FrameSink: Send + 'static {
     fn write_frame(&mut self, frame: &Frame) -> Result<()>;
     fn finish(&mut self) -> Result<()>;
 
+    /// [`finish`](Self::finish), except that a sink which publishes its
+    /// output discards it instead if `cancelled` is set by then.
+    fn finish_unless_cancelled(&mut self, cancelled: &AtomicBool) -> Result<()> {
+        let _ = cancelled;
+        self.finish()
+    }
+
     /// Takes back a frame after [`write_frame`](Self::write_frame) so the sink
     /// can recycle its buffer.
     fn release_frame(&mut self, _frame: Frame) {}
@@ -288,10 +295,12 @@ impl StreamingExecutor {
         // every stage joined, is it known whether the output is whole.
         if let Some(mut encoder) = encoder {
             let complete = first_error.is_none() && !cancel_state.load(Ordering::SeqCst);
+            // A cancel can still arrive while the output is finalized.
+            let cancelled = Arc::clone(&cancel_state);
             let finished = tokio::task::spawn_blocking(move || {
                 if complete {
                     encoder
-                        .finish()
+                        .finish_unless_cancelled(&cancelled)
                         .context("encoder stage failed while finalizing")
                 } else {
                     // Dropping discards the partial output instead of

@@ -22,6 +22,10 @@ impl FrameSink for Box<dyn FrameSink> {
         (**self).finish()
     }
 
+    fn finish_unless_cancelled(&mut self, cancelled: &std::sync::atomic::AtomicBool) -> Result<()> {
+        (**self).finish_unless_cancelled(cancelled)
+    }
+
     fn release_frame(&mut self, frame: Frame) {
         (**self).release_frame(frame)
     }
