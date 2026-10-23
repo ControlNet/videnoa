@@ -5,8 +5,9 @@ was given the worker contract and today's worker fixes from
 `codex-project-review-2026-10-23.md`, and was asked to consult the earlier
 `controller-*.md` design notes before reporting anything as a bug.
 
-Claude has re-read the code for findings 1 and 2 and confirmed both.
-Findings 3-5 are as reported by Codex and have not been re-checked.
+Findings 1, 2 and 5 were each confirmed with a failing test before being
+fixed (see "Fixes" below). Findings 3 and 4 are as reported by Codex, have
+not been re-checked, and were left unfixed at the user's request.
 
 ## Findings
 
@@ -77,3 +78,37 @@ reading the code; no interop tests were run.
 - **Cancel during finalization:** a job DELETE that returns 404 is accepted.
 - **Output equals input is rejected:** `input.*` and `output.*` always have
   different names, so this never triggers for controller jobs.
+
+## Fixes (2026-10-23)
+
+Each fix was test-first: the new test failed on the old code and passes with
+the fix.
+
+- **#2 (`8bee9f6`).**
+  - `StageError::retryable()` in `orchestration.rs` now treats
+    `Recovery(Lifecycle(Conflict))` and `Transfer(Lifecycle(Conflict))` as
+    deferred. The next pass reloads the task and converges on the cancellation.
+  - `Lifecycle(Persistence)` and the invariant errors (`IllegalCommand` and
+    so on) stay fatal; `task20 shutdown::fatal_stage_persistence_failure_terminates_orchestration`
+    still passes. This narrows the "lifecycle CAS is process-fatal" rule in
+    `videnoa-controller-task-20.md` to non-conflict lifecycle errors.
+  - Tests: `task20 cancellation_downstream::live_{downloading,uploading}_cancellation_converges_without_stopping_the_controller`.
+    They cancel in the same controller generation, with no restart. Without
+    the fix, orchestration exits with `Transfer(Lifecycle(Conflict))`.
+- **#1 (`e623375`).**
+  - The `retry` handler in `operations/tasks.rs` claims the task id in
+    `RetriesInFlight`, an in-memory `HashSet` in `OperationsState` released
+    by a drop guard, before loading the task.
+  - A concurrent retry of the same task gets 409 ("task retry is already in
+    progress") before it touches the worker. A retry that arrives after the
+    first one finished fails `require_version`, because the version has moved.
+  - Retries of different tasks are not serialized.
+  - Test: `task14 retry_queue::concurrent_retry_is_rejected_before_it_touches_the_worker`.
+    It uses a mock worker whose workspace DELETE blocks on a semaphore.
+- **#5 (`094119f`).**
+  - `TaskDetailPane` is now a wrapper that renders `TaskDetailPaneBody`
+    keyed by `taskId`. The confirmation, the Worker menu, a late action result
+    and the busy state all reset on a selection change.
+  - An SSE refresh of the same task keeps the same key, so it does not remount
+    and the scroll position is preserved.
+  - Test: `controller-web/src/tasks/TaskDetailPane.test.tsx`.
