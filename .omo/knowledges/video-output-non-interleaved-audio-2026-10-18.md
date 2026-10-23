@@ -122,9 +122,13 @@ FFmpeg has exited. Non-Matroska outputs keep the old single FFmpeg pass.
 - The check cannot happen inside the encoder stage. A failed stage closes
   its output channel before it reports the error, so the encoder sees a
   normal end of input.
-- With the direct FFmpeg pass, the abandoned output is left unfinalized
-  rather than deleted. FFmpeg truncates an existing output only when the
-  first frame arrives, so before that the file may still belong to the user.
+- The direct FFmpeg pass (non-Matroska outputs, or sources mkvmerge cannot
+  read) is staged too: FFmpeg writes `.{stem}.XXXXXX.videnoa-direct.{ext}`,
+  which replaces the output only in `finish`. An abandoned or failed encode
+  therefore never touches an existing output. This was added on 2026-10-23.
+- `finish_unless_cancelled` re-checks the job's cancel flag before every
+  publish, so a cancel that arrives while FFmpeg drains, or before the mux
+  starts, publishes nothing.
 
 Verification:
 

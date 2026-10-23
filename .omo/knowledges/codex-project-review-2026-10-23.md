@@ -206,3 +206,31 @@ Open findings 4, 5, 6, 8 and 9 were confirmed as still present.
   has a 1 s timeout. It failed once under a parallel `cargo test --workspace`
   run, then passed 5 out of 5 runs alone and 3 out of 3 runs as the whole
   binary. The controller does not depend on `videnoa-core`.
+
+### Round 2 fixes, part 2 (2026-10-23)
+
+- **F1: direct output is staged.**
+  - `MuxPlan::Direct { staged }`: FFmpeg encodes into
+    `.{stem}.XXXXXX.videnoa-direct.{ext}`. The extension is kept so FFmpeg
+    still picks the muxer.
+  - `finish` runs mkvpropedit on the staged file, then renames it over the
+    output.
+  - An abandoned or failed encode leaves an existing output untouched.
+  - `MuxPlan::Done` replaced the old `Direct` placeholder.
+- **F2: cancel during finalization.**
+  - `FrameSink::finish_unless_cancelled(&AtomicBool)` has a default that just
+    calls `finish`.
+  - The executor passes it the live `cancel_state`.
+  - `VideoEncoder` checks the flag before each publish, and before starting
+    mkvmerge, which saves the whole mux on a cancel. A cancelled encode is
+    discarded and returns `Ok`.
+  - A mkvmerge that is already running still cannot be interrupted; that is
+    finding 4.
+- **N3: quarter-turn rotation.**
+  - `FfprobeStream.side_data_list[].rotation` is parsed.
+  - `extract_metadata` swaps width and height when `rotation mod 180 == 90`,
+    because FFmpeg autorotates while decoding.
+  - The ignored real-tool test checks the upright picture pixel by pixel
+    against an `-noautorotate` decode.
+- **N6: WebSocket reconnect.** `subscribeToProgress` keeps the retry timer,
+  clears it in `close()`, and `connect()` returns early once closed.
