@@ -40,6 +40,79 @@ async fn test_files_upload_streams_nested_file() {
 }
 
 #[tokio::test]
+async fn interrupted_upload_keeps_the_existing_file() {
+    // Given: a file already uploaded at the target path.
+    let temp = temp_dir();
+    create_workspace_file(
+        temp.path(),
+        "task-123/input.mkv",
+        b"complete earlier upload",
+    );
+    let app = test_app(temp.path());
+
+    // When: a replacement upload breaks off partway through its body.
+    let body = Body::from_stream(futures_util::stream::iter([
+        Ok(axum::body::Bytes::from_static(b"partial")),
+        Err(std::io::Error::other("client went away")),
+    ]));
+    let response = send(&app, Method::PUT, "/api/files/task-123/input.mkv", body).await;
+
+    // Then: the request fails, the earlier file is intact, and no staging
+    // file is left beside it.
+    assert_ne!(response.status(), StatusCode::OK);
+    assert_eq!(
+        std::fs::read(workspace_path(temp.path(), "task-123/input.mkv")).unwrap(),
+        b"complete earlier upload"
+    );
+    let names: Vec<String> = std::fs::read_dir(workspace_path(temp.path(), "task-123"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, ["input.mkv"]);
+}
+
+#[tokio::test]
+async fn upload_replaces_an_existing_file_without_leaving_staging_files() {
+    let temp = temp_dir();
+    create_workspace_file(temp.path(), "task-123/input.mkv", b"old");
+    let app = test_app(temp.path());
+
+    let response = send(
+        &app,
+        Method::PUT,
+        "/api/files/task-123/input.mkv",
+        Body::from("new contents"),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        std::fs::read(workspace_path(temp.path(), "task-123/input.mkv")).unwrap(),
+        b"new contents"
+    );
+    let names: Vec<String> = std::fs::read_dir(workspace_path(temp.path(), "task-123"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, ["input.mkv"]);
+
+    // The upload gets the permissions of any new file, not the owner-only
+    // mode of a temp file.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let reference = workspace_path(temp.path(), "task-123/reference");
+        std::fs::write(&reference, b"").unwrap();
+        let mode =
+            |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode(&workspace_path(temp.path(), "task-123/input.mkv")),
+            mode(&reference)
+        );
+    }
+}
+
+#[tokio::test]
 async fn test_files_download_returns_original_bytes() {
     let temp = temp_dir();
     let original = b"generated-video-payload";
