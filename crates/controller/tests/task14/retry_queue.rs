@@ -175,6 +175,115 @@ async fn rejected_submission_moves_to_another_worker_after_cleanup() -> TestResu
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_retry_is_rejected_before_it_touches_the_worker() -> TestResult {
+    // Given: a processing failure whose first retry is parked inside the
+    // remote workspace delete.
+    let fixture = Fixture::new().await?;
+    let remote_job_id = RemoteJobId::random();
+    let remote = gated_retry_remote(retry_job(remote_job_id)).await?;
+    let worker_id = create_online_retry_worker(&fixture, remote.address).await?;
+    let task_id = create_processing_failure(&fixture, worker_id, remote_job_id).await?;
+    let version = fixture
+        .store
+        .task(task_id)
+        .await?
+        .ok_or("task missing")?
+        .version;
+    let first = tokio::spawn({
+        let router = fixture.router.clone();
+        async move { retry_at_version(&router, task_id, version).await }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while remote.workspace_deletes.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+
+    // When: a second retry arrives with the same task version.
+    let second = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        retry_at_version(&fixture.router, task_id, version),
+    )
+    .await;
+
+    // Then: it is rejected without deleting the workspace again, so it can
+    // never remove the input that the first retry's attempt uploads.
+    let (status, body) = second.map_err(|_| "second retry reached the worker")??;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(remote.workspace_deletes.load(Ordering::SeqCst), 1);
+    remote.release.add_permits(1);
+    let (status, body) = first.await??;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(remote.workspace_deletes.load(Ordering::SeqCst), 1);
+    remote.server.abort();
+    Ok(())
+}
+
+struct GatedRetryRemote {
+    address: std::net::SocketAddr,
+    workspace_deletes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    release: std::sync::Arc<tokio::sync::Semaphore>,
+    server: tokio::task::JoinHandle<Result<(), std::io::Error>>,
+}
+
+/// A Worker whose workspace deletes wait until the test adds a permit.
+async fn gated_retry_remote(job: Value) -> TestResult<GatedRetryRemote> {
+    let workspace_deletes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let release = std::sync::Arc::new(tokio::sync::Semaphore::new(0));
+    let deletes = std::sync::Arc::clone(&workspace_deletes);
+    let gate = std::sync::Arc::clone(&release);
+    let app = axum::Router::new()
+        .route(
+            "/api/jobs/{id}",
+            axum::routing::get(move || {
+                let job = job.clone();
+                async move { axum::Json(job) }
+            }),
+        )
+        .route(
+            "/api/files/{task_id}",
+            axum::routing::delete(move || {
+                let deletes = std::sync::Arc::clone(&deletes);
+                let gate = std::sync::Arc::clone(&gate);
+                async move {
+                    deletes.fetch_add(1, Ordering::SeqCst);
+                    if let Ok(permit) = gate.acquire().await {
+                        permit.forget();
+                    }
+                    StatusCode::NO_CONTENT
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
+    let address = listener.local_addr()?;
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    Ok(GatedRetryRemote {
+        address,
+        workspace_deletes,
+        release,
+        server,
+    })
+}
+
+async fn retry_at_version(
+    router: &axum::Router,
+    task_id: TaskId,
+    version: u64,
+) -> TestResult<(StatusCode, Value)> {
+    let response = router
+        .clone()
+        .oneshot(Fixture::request(
+            "POST",
+            &format!("/api/tasks/{task_id}/retry"),
+            Some(&json!({"version": version})),
+        )?)
+        .await?;
+    let status = response.status();
+    Ok((status, json_body(response).await?))
+}
+
 async fn retry(
     fixture: &Fixture,
     task_id: TaskId,

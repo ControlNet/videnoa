@@ -50,6 +50,7 @@ pub(super) async fn retry(
 ) -> Result<Json<RetryTaskResponse>, OperationsError> {
     let Path(id) = id.map_err(|_| OperationsError::InvalidRequest)?;
     let Json(request) = payload.map_err(|_| OperationsError::InvalidRequest)?;
+    let _in_flight = state.retries_in_flight.claim(id)?;
     let task = task(&state, id).await?;
     require_version(task.version, request.version)?;
     let attempt = state
@@ -94,6 +95,43 @@ pub(super) async fn retry(
         attempt_id,
         status: committed.status(),
     }))
+}
+
+/// Task ids whose retry is still running. A requeue deletes the remote
+/// workspace before its CAS, so a second retry of the same version must not
+/// start until the first has committed; it would otherwise delete the input
+/// that the new attempt uploads.
+#[derive(Clone, Default)]
+pub(super) struct RetriesInFlight(
+    std::sync::Arc<std::sync::Mutex<std::collections::HashSet<TaskId>>>,
+);
+
+impl RetriesInFlight {
+    fn claim(&self, id: TaskId) -> Result<RetryClaim, OperationsError> {
+        let mut claimed = self.0.lock().map_err(|_| OperationsError::Internal)?;
+        if !claimed.insert(id) {
+            return Err(OperationsError::Conflict(
+                "task retry is already in progress",
+            ));
+        }
+        Ok(RetryClaim {
+            retries: self.clone(),
+            id,
+        })
+    }
+}
+
+struct RetryClaim {
+    retries: RetriesInFlight,
+    id: TaskId,
+}
+
+impl Drop for RetryClaim {
+    fn drop(&mut self) {
+        if let Ok(mut claimed) = self.retries.0.lock() {
+            claimed.remove(&self.id);
+        }
+    }
 }
 
 /// Deletes the task workspace on the failed attempt's Worker, after checking
