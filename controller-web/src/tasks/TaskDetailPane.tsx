@@ -18,7 +18,16 @@ type TaskDetailPaneProps = {
   readonly onChanged: () => void
 }
 
-export function TaskDetailPane({ apiClient, taskId, onClose, onChanged }: TaskDetailPaneProps) {
+/*
+ * Keyed by task so a pending cancel confirmation, an open Worker menu or a late
+ * action result for one task never carries over to the next selection, where a
+ * carried-over confirmation would cancel a task the operator never confirmed.
+ */
+export function TaskDetailPane(props: TaskDetailPaneProps) {
+  return <TaskDetailPaneBody key={props.taskId} {...props} />
+}
+
+function TaskDetailPaneBody({ apiClient, taskId, onClose, onChanged }: TaskDetailPaneProps) {
   const paneRef = useRef<HTMLElement>(null)
   const cancelTaskRef = useRef<HTMLButtonElement>(null)
   const keepTaskRef = useRef<HTMLButtonElement>(null)
