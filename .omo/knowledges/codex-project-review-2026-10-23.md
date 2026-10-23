@@ -5,7 +5,7 @@ from reading source, not from running anything. Claude re-read the code for
 findings 1-3, 6, 8 and 9 and confirmed them. Findings 4, 5 and 7 have not been
 re-checked yet.
 
-None of these findings has been fixed yet.
+Findings 1-3 are fixed (see "Status" below). The others are open.
 
 ## Findings
 
@@ -20,6 +20,24 @@ None of these findings has been fixed yet.
 | 7 | Medium | `transport/tunnel.rs`: unauthenticated peers can hold all 64 connection permits, because there is no connection-level auth deadline. | old |
 | 8 | Medium | `package_dist.sh/.ps1` check downloaded bundles only for non-empty size and length. `setup_dev_media_tools.sh` trusts the `SHA256SUMS` inside the zip, which only proves the zip is self-consistent. | old |
 | 9 | Medium | The Dockerfile pins a checksum to the mutable `misc/bin_linux64.zip`. The next asset replacement breaks rebuilds of older commits. | old pattern |
+
+## Status
+
+- **Fixed: findings 1-3**, without changing the controller contract below.
+  - mkvmerge now writes a unique hidden temp file, which is renamed over the
+    output only on success.
+  - The video-only file is also unique.
+  - `StreamingExecutor` finishes the encoder only after every stage succeeded
+    and nothing was cancelled.
+  - Details are in `video-output-non-interleaved-audio-2026-10-18.md`.
+- **Deliberately not changed: finding 7.** A connection-level auth deadline
+  would break the controller's cached QUIC connection; see the contract
+  below.
+- **Open: findings 4-6, 8 and 9.**
+- **Unrelated, pre-existing:**
+  `streaming_executor::parallel_interpolator_tests::test_parallel_interpolator_preserves_order_and_bounds_work`
+  is flaky. Its `max_active == 3` timing assertion fails about 1 run in 3 on
+  unmodified code.
 
 ## Suggested fixes, from Codex
 

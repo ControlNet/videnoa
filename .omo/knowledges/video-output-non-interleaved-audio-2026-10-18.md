@@ -69,11 +69,19 @@ The Codex findings on the split-input approach:
 For `.mkv` and `.mka` outputs, VideoEncoder works in two steps:
 
 1. FFmpeg encodes only the pipe (`build_video_only_ffmpeg_args`, with no
-   source input) into the hidden file `.{stem}.videnoa-video.mkv` beside
-   the output.
-2. In `finish`, mkvmerge builds the output:
-   `mkvmerge --quiet --output OUT --no-global-tags --default-track-flag 0:yes
-   VIDEO_ONLY --no-video SOURCE`.
+   source input) into a hidden temp file beside the output,
+   `.{stem}.XXXXXX.videnoa-video.mkv`.
+2. In `finish`, mkvmerge writes a second hidden temp file,
+   `.{stem}.XXXXXX.videnoa-mux.{ext}`:
+   `mkvmerge --quiet --output MERGED --no-global-tags --default-track-flag
+   0:yes VIDEO_ONLY --no-video SOURCE`. Only after mkvmerge succeeds is that
+   file renamed over the output.
+
+Both temp files are reserved with `tempfile` (random part, exclusive
+creation). So `x.mkv` and `x.mka`, or two concurrent jobs, never share one.
+This changed on 2026-10-23; the names were fixed before then. A process that
+is killed outright (SIGKILL) can leave them behind. The controller deletes
+the whole `{task_id}/` directory, so this only matters for CLI runs.
 
 What mkvmerge preserves:
 
@@ -96,12 +104,25 @@ How the mkvmerge step ends:
 
 | mkvmerge exit | Result |
 |---|---|
-| 0 | Success; the temp file is removed. |
-| 1 | Warnings, still a success; the temp file is removed. |
-| 2 | Error quoting mkvmerge's stdout. The partial output is removed and the encoded video is kept and named in the error. |
+| 0 | Success; the merged file is renamed over the output and the video-only file is removed. |
+| 1 | Warnings, still a success; same as 0. |
+| 2 | Error quoting mkvmerge's stdout. The partial merged file is removed, an existing output is left untouched, and the encoded video is kept and named in the error. |
 
-If the encode is dropped before `finish`, `Drop` removes the partial temp
-file. Non-Matroska outputs keep the old single FFmpeg pass.
+If the encoder is dropped before `finish`, its temp files are removed once
+FFmpeg has exited. Non-Matroska outputs keep the old single FFmpeg pass.
+
+`finish` only runs when the whole pipeline succeeded:
+
+- `StreamingExecutor` joins every stage and drains the errors first.
+- On cancellation or an upstream failure, the encoder is dropped, not
+  finished. This was added on 2026-10-23. Before that, a cancelled MKV job
+  muxed its truncated video with the full-length source audio.
+- The check cannot happen inside the encoder stage. A failed stage closes
+  its output channel before it reports the error, so the encoder sees a
+  normal end of input.
+- With the direct FFmpeg pass, the abandoned output is left unfinalized
+  rather than deleted. FFmpeg truncates an existing output only when the
+  first frame arrives, so before that the file may still belong to the user.
 
 Verification:
 
