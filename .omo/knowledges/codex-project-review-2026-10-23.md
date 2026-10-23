@@ -234,3 +234,22 @@ Open findings 4, 5, 6, 8 and 9 were confirmed as still present.
     against an `-noautorotate` decode.
 - **N6: WebSocket reconnect.** `subscribeToProgress` keeps the retry timer,
   clears it in `close()`, and `connect()` returns early once closed.
+
+### Deferred by the user (2026-10-23)
+
+After the round 2 fixes, the user decided to leave the remaining findings as
+they are for now. They were reviewed and judged acceptable, not overlooked:
+
+- **4:** a stalled ffmpeg or mkvmerge cannot be cancelled.
+- **5:** anamorphic SAR is lost.
+- **6:** the job WebSocket has no auth.
+- **8:** downloaded bundles have no trusted digest.
+- **9:** the Dockerfile pins a digest to a mutable asset.
+- **N5:** the files API has a TOCTOU race that needs a local writer.
+
+Finding 7 stays deliberately unchanged.
+
+CI for every fix commit was green, with all 15 jobs passing:
+
+- run 39952423544 at 911c598;
+- run 39956441290 at 57398c4.
