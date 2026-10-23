@@ -78,7 +78,9 @@ For `.mkv` and `.mka` outputs, VideoEncoder works in two steps:
    file renamed over the output.
 
 Both temp files are reserved with `tempfile` (random part, exclusive
-creation). So `x.mkv` and `x.mka`, or two concurrent jobs, never share one.
+creation), with mode `0o666` minus the umask. A plain `tempfile` file is 0600,
+and the renamed output would keep that mode, so a media server running as
+another user could not read it. So `x.mkv` and `x.mka`, or two concurrent jobs, never share one.
 This changed on 2026-10-23; the names were fixed before then. A process that
 is killed outright (SIGKILL) can leave them behind. The controller deletes
 the whole `{task_id}/` directory, so this only matters for CLI runs.

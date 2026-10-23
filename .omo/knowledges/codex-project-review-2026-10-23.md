@@ -141,3 +141,68 @@ Findings reported by Codex but not yet re-checked by Claude:
 | N6 | Medium | `web/src/api/client.ts`: unsubscribing does not clear a pending WebSocket reconnect timer. |
 
 Open findings 4, 5, 6, 8 and 9 were confirmed as still present.
+
+### Round 2 fixes (2026-10-23)
+
+- **N4: high-bit-depth normalisation.**
+  - `quantize_high_bit_sample_to_u8` in `super_res.rs` and
+    `frame_interpolation.rs` now always divides by 65535.
+  - The per-frame "≤1023 means native 10-bit" guess was removed.
+  - Every high-bit-depth `Frame::CpuRgb` comes from FFmpeg `rgb48le`
+    (decoder, single-frame decode, preview), so its data is always full range.
+  - The tests that assumed native-range samples were replaced by dark-frame
+    tests.
+- **F3: output equals source.** `EncoderConfig::ensure_output_is_not_source`
+  (using the `same-file` crate, which already appeared in the lockfile through
+  another crate) runs first in `VideoEncoder::new`. It catches the same path
+  under another spelling, symlinks and hard links.
+- **F4: keep the encoded video on every mux failure.** `mux_with_mkvmerge`
+  keeps it when reserving the mux file fails and when mkvmerge cannot be
+  launched, not only on a bad exit or a failed rename.
+- **N1: staged uploads.** `upload_file` streams into
+  `.{name}.XXXXXX.videnoa-upload` beside the target and renames it into place
+  only after the whole body has arrived. A broken upload leaves the earlier
+  file intact, and no staging file is left behind. The response
+  (`path`, `size`) is unchanged.
+- **Regression found while fixing N1.** `tempfile` creates files with mode
+  0600. A staged file keeps that mode when it is renamed into place, so the
+  mkvmerge outputs written since 22060cd were owner-only, and Jellyfin or
+  Plex running as another user could not read them. Both staging sites now
+  call `Builder::permissions(0o666)`; `tempfile` applies the umask, so the
+  result is 0664 or 0644, like any new file. Tests compare the file mode with
+  a freshly written reference file.
+
+### Round 2: verification of the remaining findings (subagent, 2026-10-23)
+
+- **F1: CONFIRMED.** Measured: an existing MP4 of 4752 bytes was truncated
+  to 48 bytes, with no `moov` atom, after the kill. Nothing in core, the web
+  UI, the app or desktop checks whether the output already exists.
+  - The web form's path autocomplete makes it easy to pick an existing file.
+  - BatchPanel's repeat-count mode sends the same output N times.
+  - Fix: stage the direct path the same way as the mkvmerge path.
+- **F2: CONFIRMED, Medium.** `complete` is sampled once, so a cancel during
+  the drain or the mux still publishes the output.
+  - The UI has already removed the job by then; it is deleted on cancel.
+  - Fix: check `cancel_state` before each `persist`.
+- **N3: CONFIRMED.**
+  - Measured: `-display_rotation 90` on a 64x32 file makes the decoder emit
+    32x64 frames with the same byte count, but they are labelled 64x32.
+  - The preview is affected too.
+  - Fix: parse `side_data_list[].rotation`, and when it is ±90, swap width
+    and height in `extract_metadata`.
+  - In ffmpeg 8, `-metadata rotate=` no longer sets rotation.
+- **N6: CONFIRMED, low impact.** Normal job completion hits it every time:
+  the orphan reconnects and gets 404 three times.
+  - Fix: `clearTimeout` the retry timer and add an `if (closed) return` guard.
+- **N5: PARTIAL.** It needs a local user who can write to the workspace.
+  Authenticated clients can already read and write any absolute path through
+  job params, so workspace confinement is hygiene, not a security boundary.
+- **N2: mostly REFUTED (stale).** Since e5ce78e, every download uses a fresh
+  scratch dir (`ctx.scratch.allocate_dir()`). Filename traversal is
+  sanitised. The Windows drop order of `tmp_guard` is a nit: std opens files
+  with `FILE_SHARE_DELETE`.
+- **Another flaky test:**
+  `videnoa-controller --test task12 temp_security::part_fifo_is_rejected_without_blocking`
+  has a 1 s timeout. It failed once under a parallel `cargo test --workspace`
+  run, then passed 5 out of 5 runs alone and 3 out of 3 runs as the whole
+  binary. The controller does not depend on `videnoa-core`.
