@@ -40,3 +40,34 @@ None of these findings has been fixed yet.
 - Transport: fixed loopback CONNECT target.
 - Decoder EOF and exit handling.
 - Windows media-tool checksums.
+
+## What the controller relies on from the worker (checked before fixing anything)
+
+The controller only talks to the worker through these endpoints:
+
+- `/api/health`, `/api/workflows`, `/api/presets`;
+- `/api/run` and `/api/run/validate`;
+- `GET` and `DELETE` on `/api/jobs/{id}`;
+- `/api/files/{path}` with GET, PUT, DELETE and `/stat`.
+
+It uses `Authorization: Bearer <password>`. It never uses the WebSocket, `/api/fs/*` or cookies. It polls `GET /api/jobs/{id}` for progress.
+
+Everything the worker must keep doing:
+
+1. The job writes exactly `{task_id}/output.{ext}`, the path the controller sends in `params.output`. The controller downloads that exact name after `completed` (`controller/src/scheduler/upload.rs:134`, `download.rs:88`).
+2. `GET /api/jobs/{id}` echoes `params.input`, `params.output` and `workflow_name` verbatim. Terminal job records are kept, and a 404 is treated as an ambiguous failure that will not be retried (`recovery/processing.rs`).
+3. `completed` means `output.{ext}` is final. The controller downloads it immediately, never ffprobes it, and requires `size > 0` and `Content-Length == stat size`.
+4. `JobStatus` is a closed set: `queued|running|completed|failed|cancelled`. Adding a value breaks the controller's parsing (`controller/src/remote/dto.rs:68`).
+5. `DELETE /api/jobs/{id}` cancels the job, and `DELETE /api/files/{task_id}` removes the whole directory. 404 is accepted for both.
+
+What the controller does not depend on:
+
+- Every task gets a fresh `{task_id}/` directory, and an operator retry deletes it first. The controller therefore never relies on ffmpeg `-y`, an existing output, or the worker deleting a partial file.
+- It never lists worker directories. Hidden temp files inside `{task_id}/` are invisible to it, and `DELETE /api/files/{task_id}` removes them with the directory.
+
+Consequences for the findings above:
+
+- Findings 1-3 are worker-internal. They are safe if `output.{ext}` appears only on success and the status values are unchanged.
+- Finding 6: the controller does not use the WebSocket, but the web UI does.
+- Finding 7: the tunnel already has a per-stream 10 s CONNECT auth deadline. The QUIC connection is cached and reused for the whole process, so a connection-level or periodic re-auth deadline would break the controller. Uploads and downloads have no total timeout.
+- The tunnel's target is a separate `axum::serve` on `127.0.0.1:0` (`core/src/server/iroh.rs:131`). Timeouts added in `http_server.rs` do not reach tunnelled traffic.
