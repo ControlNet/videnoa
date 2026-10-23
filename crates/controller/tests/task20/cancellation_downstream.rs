@@ -72,6 +72,102 @@ async fn downloading_cancellation_removes_positive_partial_workspace() -> TestRe
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn live_downloading_cancellation_converges_without_stopping_the_controller() -> TestResult {
+    // Given: a download that is in flight in a running Controller.
+    let worker = MockVidenoa::start_persistent().await?;
+    let fixture = ControllerFixture::start().await?;
+    fixture
+        .register_worker(&worker, "cancel-live-download")
+        .await?;
+    let run = worker
+        .pause(Checkpoint::AfterRunPersistedBeforeResponse)
+        .await;
+    let download = worker.pause(Checkpoint::MidDownloadBody).await;
+    let task = fixture
+        .create_task("cancel-live-download", b"input-video")
+        .await?;
+    worker.await_checkpoint(&run).await?;
+    complete_mock_job(&worker, &task, b"enhanced-video").await?;
+    worker.release(run).await?;
+    worker.await_checkpoint(&download).await?;
+    let workspace = fixture.temp_root.join(task.id.to_string());
+    wait_for_positive_download_partial(&fixture, &worker, &task).await?;
+
+    // When: the operator cancels while the download is still running, and
+    // the download then completes against its now-stale snapshot.
+    let (task_record, attempt) = coherent_task_attempt(
+        &fixture,
+        &task,
+        TaskStatus::Downloading,
+        "request live downloading cancellation",
+    )
+    .await?;
+    LifecycleService::new(fixture.store.clone())
+        .request_cancellation(&task_record, Some(&attempt), Utc::now())
+        .await
+        .map_err(|error| {
+            lifecycle_operation_error(
+                "request live downloading cancellation",
+                &task_record,
+                &attempt,
+                error,
+            )
+        })?;
+    worker.release(download).await?;
+
+    // Then: the same Controller generation keeps running and converges on
+    // the cancellation, removing both workspaces.
+    wait_for_status(&fixture, &task, TaskStatus::Cancelled).await?;
+    assert!(!workspace.exists());
+    assert_eq!(worker.file_count().await, 0);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn live_uploading_cancellation_converges_without_stopping_the_controller() -> TestResult {
+    // Given: an upload that is in flight in a running Controller.
+    let worker = MockVidenoa::start_persistent().await?;
+    let fixture = ControllerFixture::start().await?;
+    fixture
+        .register_worker(&worker, "cancel-live-upload")
+        .await?;
+    let upload = worker.pause(Checkpoint::AfterUploadBytesAccepted).await;
+    let task = fixture
+        .create_task("cancel-live-upload", &vec![7_u8; 16 * 1024])
+        .await?;
+    worker.await_checkpoint(&upload).await?;
+
+    // When: the operator cancels while the upload is still running, and the
+    // upload then completes against its now-stale snapshot.
+    let (task_record, attempt) = coherent_task_attempt(
+        &fixture,
+        &task,
+        TaskStatus::Uploading,
+        "request live uploading cancellation",
+    )
+    .await?;
+    LifecycleService::new(fixture.store.clone())
+        .request_cancellation(&task_record, Some(&attempt), Utc::now())
+        .await
+        .map_err(|error| {
+            lifecycle_operation_error(
+                "request live uploading cancellation",
+                &task_record,
+                &attempt,
+                error,
+            )
+        })?;
+    worker.release(upload).await?;
+
+    // Then: the same Controller generation keeps running, converges on the
+    // cancellation and removes the uploaded input from the worker.
+    wait_for_status(&fixture, &task, TaskStatus::Cancelled).await?;
+    assert_eq!(worker.job_count().await, 0);
+    assert_eq!(worker.file_count().await, 0);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn verifying_cancellation_removes_verified_workspace() -> TestResult {
     // Given: a real download installed verified bytes and durable evidence before its lifecycle CAS.
     let worker = MockVidenoa::start_persistent().await?;
