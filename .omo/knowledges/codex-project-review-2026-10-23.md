@@ -30,6 +30,14 @@ Findings 1-3 are fixed (see "Status" below). The others are open.
   - `StreamingExecutor` finishes the encoder only after every stage succeeded
     and nothing was cancelled.
   - Details are in `video-output-non-interleaved-audio-2026-10-18.md`.
+  - Finding 3 is fully fixed only for the mkvmerge path. On the direct
+    FFmpeg path (MP4, or MKV that mkvmerge cannot read), a cancel now leaves
+    an unfinalized partial file at the output name. Before the fix it left a
+    finalized but truncated file.
+  - The staged rename on Windows (`TempPath::persist`, which uses MoveFileEx
+    with REPLACE_EXISTING) is not exercised by CI. The mux tests are
+    `cfg(unix)`, and Windows Package smoke only runs `media_tools.ps1
+    -Verify`.
 - **Deliberately not changed: finding 7.** A connection-level auth deadline
   would break the controller's cached QUIC connection; see the contract
   below.
