@@ -48,6 +48,27 @@ struct FfprobeStream {
     tags: HashMap<String, String>,
     #[serde(default)]
     disposition: HashMap<String, serde_json::Value>,
+    /// Holds the display matrix rotation, if any.
+    #[serde(default)]
+    side_data_list: Vec<FfprobeSideData>,
+}
+
+#[derive(serde::Deserialize, Debug)]
+struct FfprobeSideData {
+    /// Degrees counterclockwise; FFmpeg reports it as an integer or a float.
+    rotation: Option<serde_json::Number>,
+}
+
+impl FfprobeStream {
+    /// Whether the display matrix turns the picture by a quarter turn.
+    /// FFmpeg autorotates while decoding, so such frames come out with width
+    /// and height swapped.
+    fn is_quarter_turned(&self) -> bool {
+        self.side_data_list
+            .iter()
+            .filter_map(|side_data| side_data.rotation.as_ref()?.as_f64())
+            .any(|degrees| (degrees.round() as i64).rem_euclid(180) == 90)
+    }
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -244,6 +265,11 @@ pub fn extract_metadata(
     let height = video_stream
         .height
         .ok_or_else(|| anyhow!("video stream missing height"))?;
+    let (width, height) = if video_stream.is_quarter_turned() {
+        (height, width)
+    } else {
+        (width, height)
+    };
 
     let fps_str = video_stream
         .r_frame_rate
@@ -1616,6 +1642,36 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn quarter_turn_rotation_swaps_the_decoded_dimensions() {
+        // FFmpeg autorotates while decoding, so a portrait phone clip stored
+        // as 1920x1080 with a display matrix arrives as 1080x1920 frames.
+        for (rotation, expected) in [
+            ("90", (1080, 1920)),
+            ("-90", (1080, 1920)),
+            ("270", (1080, 1920)),
+            ("180", (1920, 1080)),
+            ("0", (1920, 1080)),
+        ] {
+            let json = format!(
+                r#"{{
+                    "streams": [{{
+                        "index": 0, "codec_type": "video", "codec_name": "h264",
+                        "width": 1920, "height": 1080, "pix_fmt": "yuv420p",
+                        "r_frame_rate": "30/1",
+                        "side_data_list": [
+                            {{"side_data_type": "Display Matrix", "rotation": {rotation}}}
+                        ]
+                    }}],
+                    "format": {{"format_name": "mov,mp4"}}
+                }}"#
+            );
+            let probe = parse_ffprobe_json(json.as_bytes()).unwrap();
+            let (info, _) = extract_metadata(&probe, Path::new("/tmp/clip.mp4")).unwrap();
+            assert_eq!((info.width, info.height), expected, "rotation {rotation}");
+        }
+    }
+
+    #[test]
     fn untagged_sources_are_treated_as_bt709_at_any_size() {
         assert_eq!(source_color_matrix(None), "bt709");
         assert_eq!(source_color_matrix(Some("unknown")), "bt709");
@@ -1819,6 +1875,84 @@ pub(crate) mod tests {
                 .unwrap();
             assert_quadrant_colors(&rgb8_samples(frame), width, height, name);
         }
+    }
+
+    #[test]
+    #[ignore = "requires ffmpeg with libx264"]
+    fn rotated_sources_decode_upright_frames_of_the_rotated_size() {
+        // Given: a 64x32 clip whose display matrix turns it a quarter turn.
+        let dir = tempfile::tempdir().unwrap();
+        let plain = dir.path().join("plain.mp4");
+        let rotated = dir.path().join("rotated.mp4");
+        let ffmpeg = |args: &[&std::ffi::OsStr]| {
+            let status = crate::runtime::command_for("ffmpeg")
+                .args(["-v", "error", "-nostdin", "-y"])
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        };
+        ffmpeg(&[
+            "-f".as_ref(),
+            "lavfi".as_ref(),
+            "-i".as_ref(),
+            "testsrc=s=64x32:d=1".as_ref(),
+            "-c:v".as_ref(),
+            "libx264".as_ref(),
+            plain.as_os_str(),
+        ]);
+        ffmpeg(&[
+            "-display_rotation".as_ref(),
+            "90".as_ref(),
+            "-i".as_ref(),
+            plain.as_os_str(),
+            "-c".as_ref(),
+            "copy".as_ref(),
+            rotated.as_os_str(),
+        ]);
+
+        // When: it is probed and decoded as a pipeline would.
+        let (info, _) = extract_metadata(&run_ffprobe(&rotated).unwrap(), &rotated).unwrap();
+        let frame = VideoDecoder::new(&rotated, &info, None)
+            .unwrap()
+            .next()
+            .expect("one frame")
+            .unwrap();
+        let first = decode_first_frame(&rotated, &info, Duration::from_secs(30)).unwrap();
+
+        // Then: frames are labelled 32x64 and hold the upright picture, i.e.
+        // the stored 64x32 picture turned a quarter turn counterclockwise.
+        assert_eq!((info.width, info.height), (32, 64));
+        assert!(matches!(
+            first,
+            Frame::CpuRgb {
+                width: 32,
+                height: 64,
+                ..
+            }
+        ));
+        let upright = rgb8_samples(frame);
+        let mut stored_args =
+            build_decoder_args(&rotated, "rgb24", info.stream_index, None, "bt709");
+        stored_args.insert(1, "-noautorotate".to_string());
+        let stored = crate::runtime::command_for("ffmpeg")
+            .args(&stored_args)
+            .output()
+            .unwrap()
+            .stdout;
+        let (stored_width, upright_width) = (64, 32);
+        let mut total_difference = 0_u64;
+        for y in 0..64 {
+            for x in 0..32 {
+                for channel in 0..3 {
+                    let up = upright[(y * upright_width + x) * 3 + channel];
+                    let st = stored[(x * stored_width + (stored_width - 1 - y)) * 3 + channel];
+                    total_difference += u64::from(up.abs_diff(st));
+                }
+            }
+        }
+        let mean_difference = total_difference as f64 / (64 * 32 * 3) as f64;
+        assert!(mean_difference < 2.0, "mean difference {mean_difference}");
     }
 
     fn test_mkv_path() -> PathBuf {
