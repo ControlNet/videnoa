@@ -127,6 +127,19 @@ impl EncoderConfig {
             })
     }
 
+    /// Fails if the output names the source file, by any path. Writing the
+    /// result over the source would destroy the only original copy.
+    pub fn ensure_output_is_not_source(&self) -> Result<()> {
+        // An error means one of them does not exist yet, so they differ.
+        if same_file::is_same_file(&self.source_path, &self.output_path).unwrap_or(false) {
+            bail!(
+                "output {} is the source file; choose a different output path",
+                self.output_path.display()
+            );
+        }
+        Ok(())
+    }
+
     /// Reserves a new hidden file beside the output, named after it, e.g.
     /// `.Episode.a1B2c3.videnoa-video.mkv`. The random part keeps concurrent
     /// encodes (and `x.mkv` next to `x.mka`) apart; the file is removed when
@@ -141,9 +154,15 @@ impl EncoderConfig {
             Some(parent) if !parent.as_os_str().is_empty() => parent,
             _ => Path::new("."),
         };
-        let file = tempfile::Builder::new()
-            .prefix(&format!(".{stem}."))
-            .suffix(&format!(".videnoa-{role}.{extension}"))
+        let prefix = format!(".{stem}.");
+        let suffix = format!(".videnoa-{role}.{extension}");
+        let mut builder = tempfile::Builder::new();
+        builder.prefix(&prefix).suffix(&suffix);
+        // The mux file becomes the output: give it the umask-based mode of
+        // any new file rather than a temp file's owner-only one.
+        #[cfg(unix)]
+        builder.permissions(std::os::unix::fs::PermissionsExt::from_mode(0o666));
+        let file = builder
             .tempfile_in(dir)
             .with_context(|| format!("failed to create a temporary file in {}", dir.display()))?;
         Ok(file.into_temp_path())
@@ -530,8 +549,8 @@ fn mkvmerge_can_read(identification: &[u8]) -> Result<bool> {
 
 /// Runs mkvmerge (`command`) into a temporary file and moves it to the
 /// output once mkvmerge succeeds; exit status 1 means it succeeded with
-/// warnings. On failure the output is left as it was and the encoded video
-/// is kept so the expensive encode is not lost.
+/// warnings. On any failure the output is left as it was and the encoded
+/// video is kept so the expensive encode is not lost.
 fn mux_with_mkvmerge(
     command: &mut Command,
     config: &EncoderConfig,
@@ -541,14 +560,26 @@ fn mux_with_mkvmerge(
     let extension = output_path
         .extension()
         .map_or_else(|| "mkv".into(), |extension| extension.to_string_lossy());
-    let merged = config.reserve_temp_beside_output("mux", &extension)?;
+    let merged = match config.reserve_temp_beside_output("mux", &extension) {
+        Ok(merged) => merged,
+        Err(error) => bail!(
+            "{error:#}; the encoded video {}",
+            keep_encoded_video(video_only)
+        ),
+    };
 
     info!(output = %output_path.display(), "mkvmerge: adding the source's other streams");
-    let result = command
+    let result = match command
         .args(config.build_mkvmerge_args(&video_only, &merged))
         .stdin(Stdio::null())
         .output()
-        .context("failed to run mkvmerge")?;
+    {
+        Ok(result) => result,
+        Err(error) => bail!(
+            "failed to run mkvmerge: {error}; the encoded video {}",
+            keep_encoded_video(video_only)
+        ),
+    };
     // mkvmerge reports warnings and errors on stdout.
     let report = format!(
         "{}{}",
@@ -599,6 +630,7 @@ const ENCODER_FAILURE_EXIT_TIMEOUT: Duration = Duration::from_secs(5);
 
 impl VideoEncoder {
     pub fn new(config: &EncoderConfig) -> Result<Self> {
+        config.ensure_output_is_not_source()?;
         config.probe_nvenc()?;
         let mux = MuxPlan::for_config(config)?;
         Self::spawn_with(config, crate::runtime::command_for("ffmpeg"), mux)
@@ -2115,6 +2147,14 @@ printf merged > "$out"; printf '{report}\n'; exit {status}"#,
         assert_eq!(args, config.build_mkvmerge_args(&video_only, merged));
         assert_eq!(std::fs::read(&config.output_path).unwrap(), b"merged");
         assert_eq!(temp_files_in(dir.path()), Vec::<String>::new());
+
+        // And: the output gets the same permissions as any new file, not the
+        // owner-only mode of a temp file, so a media server can read it.
+        use std::os::unix::fs::PermissionsExt;
+        let reference = dir.path().join("reference");
+        std::fs::write(&reference, b"").unwrap();
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&config.output_path), mode(&reference));
     }
 
     #[cfg(unix)]
@@ -2164,6 +2204,75 @@ printf merged > "$out"; printf '{report}\n'; exit {status}"#,
             std::fs::read(&video_only).unwrap().len(),
             config.frame_size()
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mkvmerge_launch_failure_keeps_the_encoded_video() {
+        // Given: an encode whose mkvmerge disappeared after the source check.
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = default_config();
+        config.output_path = dir.path().join("Episode - AI.mkv");
+        config.width = 4;
+        config.height = 2;
+        let video_only = config.reserve_temp_beside_output("video", "mkv").unwrap();
+        let video_only_path = video_only.to_path_buf();
+        let plan = MuxPlan::Mkvmerge {
+            video_only,
+            command: Box::new(std::process::Command::new(dir.path().join("missing"))),
+        };
+        let ffmpeg = fake_ffmpeg(
+            dir.path(),
+            "ffmpeg",
+            r#"for arg in "$@"; do out="$arg"; done; cat > "$out""#,
+        );
+        let mut encoder = VideoEncoder::spawn_with(&config, ffmpeg(), plan).unwrap();
+        encoder
+            .write_frame(&vec![0_u8; config.frame_size()])
+            .unwrap();
+
+        // When: the encode finishes.
+        let message = format!("{:#}", encoder.finish().unwrap_err());
+        drop(encoder);
+
+        // Then: the encoded video survives and the error says where it is.
+        assert!(message.contains("failed to run mkvmerge"), "{message}");
+        assert!(
+            message.contains(&*video_only_path.to_string_lossy()),
+            "{message}"
+        );
+        assert_eq!(
+            std::fs::read(&video_only_path).unwrap().len(),
+            config.frame_size()
+        );
+    }
+
+    #[test]
+    fn output_that_is_the_source_is_rejected_before_encoding() {
+        // Given: an output path that names the source, directly or through a
+        // different spelling of the same path.
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("Episode.mkv");
+        std::fs::write(&source, b"original").unwrap();
+        let mut config = default_config();
+        config.source_path = source.clone();
+        let aliases = [source.clone(), dir.path().join(".").join("Episode.mkv")];
+
+        for alias in aliases {
+            config.output_path = alias.clone();
+
+            // When / Then: the encoder refuses before touching anything.
+            let error = config
+                .ensure_output_is_not_source()
+                .expect_err("writing over the source must be rejected")
+                .to_string();
+            assert!(error.contains("source"), "{error}");
+        }
+        assert_eq!(std::fs::read(&source).unwrap(), b"original");
+
+        // A distinct or not-yet-existing output is fine.
+        config.output_path = dir.path().join("Episode - AI.mkv");
+        config.ensure_output_is_not_source().unwrap();
     }
 
     #[cfg(unix)]

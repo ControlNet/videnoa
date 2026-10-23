@@ -8029,6 +8029,7 @@ dependencies = [
  "reqwest 0.12.27",
  "rusqlite",
  "rust-embed",
+ "same-file",
  "serde",
  "serde_json",
  "sha2 0.10.9",
