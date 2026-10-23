@@ -97,3 +97,47 @@ Consequences for the findings above:
 - Finding 6: the controller does not use the WebSocket, but the web UI does.
 - Finding 7: the tunnel already has a per-stream 10 s CONNECT auth deadline. The QUIC connection is cached and reused for the whole process, so a connection-level or periodic re-auth deadline would break the controller. Uploads and downloads have no total timeout.
 - The tunnel's target is a separate `axum::serve` on `127.0.0.1:0` (`core/src/server/iroh.rs:131`). Timeouts added in `http_server.rs` do not reach tunnelled traffic.
+
+## Round 2 (Codex gpt-6-astra, at 734b35f)
+
+Codex reviewed the fix commits 55cd18e and 22060cd. It also re-checked the open
+findings and looked at areas the first round covered lightly. Its full report is
+not kept in the repo.
+
+Claude verified the following by reading the code:
+
+- **F3 (High).** No check stops the output path from being the same as the
+  source path (`compile_context.rs:231`). Because the mux is now staged,
+  mkvmerge can read the source and then rename the result over it, so the
+  original file is replaced.
+- **F4 (Medium).** In `mux_with_mkvmerge`, an early `?` drops `video_only` and
+  deletes the finished encode. This happens when reserving the mux temp file
+  fails, or when mkvmerge fails to launch.
+- **N1 (High).** `server/files.rs:74`: an upload opens the target with
+  `truncate(true)` before it streams the body. A dropped upload therefore
+  destroys the existing file and leaves a partial one.
+  - The fix must keep the controller contract: the `{path,size}` response, and
+    a stat whose size matches counts as a finished upload.
+- **N4 (High; output quality).** `infer_high_bit_source_max`
+  (`super_res.rs:1100`, `frame_interpolation.rs:1093`) picks the normaliser
+  for each frame from the pixel values:
+  - 1023 if every sample is at most 1023;
+  - otherwise 65535.
+
+  `VideoDecoder` always pipes `rgb48le`, which uses the full 16-bit range, but
+  it labels the frames `bit_depth=10`. A near-black frame from a 10-bit source,
+  with every RGB value at most 1023/65535 (about 8-bit 0-3), is therefore
+  normalised by 1023 and comes out about 64x brighter. Dark fades can flash.
+
+Findings reported by Codex but not yet re-checked by Claude:
+
+| ID | Severity | Finding |
+|---|---|---|
+| F1 | High | The direct FFmpeg path still truncates an existing output before the job succeeds. |
+| F2 | High | A cancel that arrives during the finish or mux step does not stop the result from being published. Same root cause as finding 4. |
+| N2 | High | `downloader.rs`: a remote filename can overwrite an existing file, and the `.part` file is not unique. |
+| N3 | Medium | Rotated sources: FFmpeg's autorotate swaps the width and height, but the frames keep the probed dimensions. |
+| N5 | Medium | The files API has a TOCTOU symlink race on parent directories. It needs a local attacker. |
+| N6 | Medium | `web/src/api/client.ts`: unsubscribing does not clear a pending WebSocket reconnect timer. |
+
+Open findings 4, 5, 6, 8 and 9 were confirmed as still present.
