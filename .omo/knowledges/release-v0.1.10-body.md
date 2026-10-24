@@ -26,7 +26,7 @@ Controller
 Build and dependencies
 
 - The Linux Worker bundle and the Worker image include mkvmerge (MKVToolNix 101.0). The Windows bundle ships the official `mkvmerge.exe` and `mkvpropedit.exe` from MKVToolNix 101.0 and a pinned FFmpeg 8.1.3-based build.
-- rustls, rustls-webpki, webpki-roots, webpki-root-certs and ctutils were updated for RUSTSEC-2026-0346..0349 and RUSTSEC-2026-0381..0385.
+- tokio was updated to 1.54.1 for RUSTSEC-2026-0386, and rustls, rustls-webpki, webpki-roots, webpki-root-certs and ctutils for RUSTSEC-2026-0346..0349 and RUSTSEC-2026-0381..0385.
 
 ## Downloads and Docker
 

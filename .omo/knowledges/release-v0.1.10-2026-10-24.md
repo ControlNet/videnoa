@@ -5,7 +5,8 @@
 - Release branch: `release/0.1.10`, based on dev `23f650b` (43 non-merge
   commits since `v0.1.9`: queued retries and retry on another Worker, the
   mkvmerge MKV mux, both Codex worker review rounds, the Codex controller
-  review fixes and two RUSTSEC dependency bumps).
+  review fixes and two RUSTSEC dependency bumps), plus the RUSTSEC-2026-0386
+  tokio bump made on the release branch after the first candidate run.
 - Version bump as for v0.1.9: `[workspace.package] version` in `Cargo.toml`,
   then `cargo update -w --offline` (five workspace entries in `Cargo.lock`).
   No README or docs version-specific notes needed changing.
