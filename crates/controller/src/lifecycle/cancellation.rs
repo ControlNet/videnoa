@@ -59,9 +59,10 @@ impl LifecycleService {
         let TransitionTarget::Status(next_status) = target else {
             return Err(LifecycleError::IllegalCommand);
         };
+        // A queued task has no live attempt; a retried one keeps its failed attempt.
         let attempt = match attempt {
+            _ if task.status == TaskStatus::Queued => None,
             Some(attempt) => Some(attempt_cas(task, attempt)?),
-            None if task.status == TaskStatus::Queued => None,
             None => return Err(LifecycleError::AttemptRequired),
         };
         let write = CancellationWrite {

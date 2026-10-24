@@ -23,9 +23,14 @@ const FFMPEG: &str = "/usr/bin/ffmpeg";
 const FFPROBE: &str = "/usr/bin/ffprobe";
 
 fn media_tools_available() -> bool {
-    let available = Path::new(FFMPEG).exists() && Path::new(FFPROBE).exists();
+    // MKV outputs are muxed by mkvmerge.
+    let mkvmerge = std::process::Command::new("mkvmerge")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success());
+    let available = Path::new(FFMPEG).exists() && Path::new(FFPROBE).exists() && mkvmerge;
     if !available {
-        eprintln!("Skipping output scaling test: system FFmpeg and FFprobe are required");
+        eprintln!("Skipping output scaling test: system FFmpeg, FFprobe and mkvmerge are required");
     }
     available
 }

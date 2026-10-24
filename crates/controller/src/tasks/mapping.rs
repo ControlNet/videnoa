@@ -16,6 +16,7 @@ pub(crate) fn task(record: TaskRecord) -> Task {
         source_reference: record.request.source_reference,
         input_size: record.input_size,
         worker_id: record.worker_id,
+        requested_worker_id: record.requested_worker_id,
         remote_job_id: record.remote_job_id,
         progress: record.progress,
         attempt_count: record.attempt_count,

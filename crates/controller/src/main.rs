@@ -1,6 +1,6 @@
 use std::net::{IpAddr, SocketAddr};
 use std::num::NonZeroU16;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::Parser;
@@ -46,7 +46,8 @@ struct Cli {
 fn frontend_assets() -> Result<FrontendAssets, StartupError> {
     #[cfg(debug_assertions)]
     {
-        let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../controller-web/dist");
+        let directory =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../controller-web/dist");
         FrontendAssets::from_dist(directory)
     }
 

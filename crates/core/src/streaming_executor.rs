@@ -61,6 +61,13 @@ pub trait FrameSink: Send + 'static {
     fn write_frame(&mut self, frame: &Frame) -> Result<()>;
     fn finish(&mut self) -> Result<()>;
 
+    /// [`finish`](Self::finish), except that a sink which publishes its
+    /// output discards it instead if `cancelled` is set by then.
+    fn finish_unless_cancelled(&mut self, cancelled: &AtomicBool) -> Result<()> {
+        let _ = cancelled;
+        self.finish()
+    }
+
     /// Takes back a frame after [`write_frame`](Self::write_frame) so the sink
     /// can recycle its buffer.
     fn release_frame(&mut self, _frame: Frame) {}
@@ -247,7 +254,7 @@ impl StreamingExecutor {
             upstream_rx = next_rx;
         }
 
-        handles.push(spawn_encoder_stage(
+        let encoder_handle = spawn_encoder_stage(
             encoder,
             upstream_rx,
             frame_counts,
@@ -255,27 +262,60 @@ impl StreamingExecutor {
             cancel_state.clone(),
             cancel_tx.clone(),
             error_tx.clone(),
-        ));
+        );
 
         drop(error_tx);
 
         let mut first_error: Option<anyhow::Error> = None;
+        let mut record_panic = |join_error: tokio::task::JoinError| {
+            signal_cancel(&cancel_state, &cancel_tx);
+            if first_error.is_none() {
+                first_error = Some(anyhow!("streaming task panicked: {join_error}"));
+            }
+        };
 
         for handle in handles {
-            match handle.await {
-                Ok(()) => {}
-                Err(join_error) => {
-                    signal_cancel(&cancel_state, &cancel_tx);
-                    if first_error.is_none() {
-                        first_error = Some(anyhow!("streaming task panicked: {join_error}"));
-                    }
-                }
+            if let Err(join_error) = handle.await {
+                record_panic(join_error);
             }
         }
+        let encoder = encoder_handle.await.unwrap_or_else(|join_error| {
+            record_panic(join_error);
+            None
+        });
 
         while let Some(error) = error_rx.recv().await {
             if first_error.is_none() {
                 first_error = Some(error);
+            }
+        }
+
+        // A failed stage closes its output before it reports, so the encoder
+        // cannot tell a truncated input from a complete one. Only now, with
+        // every stage joined, is it known whether the output is whole.
+        if let Some(mut encoder) = encoder {
+            let complete = first_error.is_none() && !cancel_state.load(Ordering::SeqCst);
+            // A cancel can still arrive while the output is finalized.
+            let cancelled = Arc::clone(&cancel_state);
+            let finished = tokio::task::spawn_blocking(move || {
+                if complete {
+                    encoder
+                        .finish_unless_cancelled(&cancelled)
+                        .context("encoder stage failed while finalizing")
+                } else {
+                    // Dropping discards the partial output instead of
+                    // publishing it.
+                    drop(encoder);
+                    Ok(())
+                }
+            })
+            .await;
+            match finished {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => first_error = Some(error),
+                Err(join_error) => {
+                    first_error = Some(anyhow!("streaming task panicked: {join_error}"))
+                }
             }
         }
 
@@ -451,6 +491,8 @@ fn spawn_parallel_interpolator_stage(
     })
 }
 
+/// Runs the encoder until its input ends. Returns the encoder unfinished, so
+/// the executor can finalize it only if every other stage succeeded too.
 fn spawn_encoder_stage<E>(
     mut encoder: E,
     input: mpsc::Receiver<IndexedFrame>,
@@ -459,7 +501,7 @@ fn spawn_encoder_stage<E>(
     cancel_state: Arc<AtomicBool>,
     cancel_tx: watch::Sender<bool>,
     error_tx: mpsc::UnboundedSender<anyhow::Error>,
-) -> tokio::task::JoinHandle<()>
+) -> tokio::task::JoinHandle<Option<E>>
 where
     E: FrameSink,
 {
@@ -473,21 +515,7 @@ where
         );
 
         match result {
-            Ok(()) => {
-                let finish_result = encoder.finish().context("encoder finish failed");
-                if let Err(error) = finish_result {
-                    if cancel_state.load(Ordering::SeqCst) {
-                        return;
-                    }
-
-                    report_task_error(
-                        &error_tx,
-                        &cancel_state,
-                        &cancel_tx,
-                        error.context("encoder stage failed while finalizing"),
-                    );
-                }
-            }
+            Ok(()) => Some(encoder),
             Err(error) => {
                 report_task_error(
                     &error_tx,
@@ -495,6 +523,7 @@ where
                     &cancel_tx,
                     error.context("encoder stage failed"),
                 );
+                None
             }
         }
     })
@@ -958,6 +987,7 @@ mod tests {
     pub(super) struct SharedSinkState {
         values: Arc<Mutex<Vec<u8>>>,
         written: Arc<AtomicUsize>,
+        finished: Arc<AtomicUsize>,
     }
 
     impl SharedSinkState {
@@ -965,6 +995,7 @@ mod tests {
             Self {
                 values: Arc::new(Mutex::new(Vec::new())),
                 written: Arc::new(AtomicUsize::new(0)),
+                finished: Arc::new(AtomicUsize::new(0)),
             }
         }
 
@@ -974,6 +1005,11 @@ mod tests {
 
         fn written_count(&self) -> usize {
             self.written.load(Ordering::SeqCst)
+        }
+
+        /// How many times the sink was finalized.
+        pub(super) fn finished_count(&self) -> usize {
+            self.finished.load(Ordering::SeqCst)
         }
     }
 
@@ -1012,6 +1048,7 @@ mod tests {
         }
 
         fn finish(&mut self) -> Result<()> {
+            self.state.finished.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
     }
@@ -1139,6 +1176,7 @@ mod tests {
             .await
             .expect("pipeline should complete");
 
+        assert_eq!(state.finished_count(), 1);
         let values = state.values();
         assert_eq!(values.len(), 10);
         for (index, value) in values.into_iter().enumerate() {
@@ -1225,6 +1263,11 @@ mod tests {
             "unexpected error message: {error_message}"
         );
         assert!(state.written_count() < 20);
+        assert_eq!(
+            state.finished_count(),
+            0,
+            "a failed pipeline must not finalize a truncated output"
+        );
     }
 
     #[tokio::test]
@@ -1249,6 +1292,11 @@ mod tests {
         assert!(
             state.written_count() < 10_000,
             "cancel should stop processing before completion"
+        );
+        assert_eq!(
+            state.finished_count(),
+            0,
+            "a cancelled pipeline must not finalize a truncated output"
         );
     }
 

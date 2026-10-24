@@ -149,7 +149,7 @@ async fn rejected_submission_resubmits_on_manual_retry_without_reupload() -> Tes
     complete_mock_job(&worker, &task, b"fixed-output").await?;
 
     // Then: the same attempt resubmits with its key, without a second upload.
-    assert_eq!(retried.attempt_id, original.id);
+    assert_eq!(retried.attempt_id, Some(original.id));
     assert_restarted_pipeline(&fixture, &worker, &task, b"fixed-output").await?;
     let counters = worker.counters().await;
     assert_eq!(counters.get(Route::Run), 2);

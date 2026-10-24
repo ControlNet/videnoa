@@ -1,17 +1,18 @@
 #!/usr/bin/env pwsh
 #Requires -Version 7
 <#
-Build or verify the bundled media tools (FFmpeg, FFprobe, mkvpropedit).
+Build or verify the bundled media tools (FFmpeg, FFprobe, mkvmerge, mkvpropedit).
 
   -Build   Windows only. Assemble release asset misc/bin_win64.zip: download
-           the pinned BtbN GPL FFmpeg build and verify its SHA-256. Take
-           mkvpropedit.exe from the current misc/bin_win64.zip. Assemble
-           bin/ with licenses, provenance and SHA256SUMS, write bin_win64.zip
-           into -OutputDir, then run -Verify on the staged bin/ directory.
+           the pinned BtbN GPL FFmpeg build and the pinned official MKVToolNix
+           portable zip and verify their SHA-256. Assemble bin/ with licenses,
+           provenance and SHA256SUMS, write bin_win64.zip into -OutputDir,
+           then run -Verify on the staged bin/ directory.
   -Verify  Check a bin/ directory (-BinDir) on Windows or Linux. The
            encoders and filters must be present, and the video pipeline's
-           rawvideo -> scale(BT.709)/format/setparams -> encode path, statistics
-           tagging and frame counts must work for libx264 and libx265.
+           rawvideo -> scale(BT.709)/format/setparams -> encode path, the
+           mkvmerge mux with source audio, statistics tagging and frame
+           counts must work for libx264 and libx265.
 #>
 [CmdletBinding()]
 param(
@@ -26,12 +27,18 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-# Pinned upstream inputs. Update all three together and record the change in
-# .omo/knowledges when bumping FFmpeg.
-$FfmpegRelease = 'autobuild-2026-09-26-13-03'
-$FfmpegAsset = 'ffmpeg-n8.1.3-win64-gpl-8.1.zip'
-$FfmpegSha256 = 'd20ef03f0f4161453b9f46a72471eb5370f56b6410fe8bca14a4b0220c6c924a'
-$CurrentBundleUrl = 'https://github.com/ControlNet/videnoa/releases/download/misc/bin_win64.zip'
+# Pinned upstream inputs. Update each group together and record the change in
+# .omo/knowledges when bumping FFmpeg or MKVToolNix.
+# BtbN deletes daily autobuilds after about two weeks but keeps each month's
+# last one, so pin a month-end autobuild.
+$FfmpegRelease = 'autobuild-2026-09-30-13-08'
+$FfmpegAsset = 'ffmpeg-n8.1.3-9-g29e619e767-win64-gpl-8.1.zip'
+$FfmpegSha256 = '7b801cdd3a1a0bb54ae6f572187e68b4ed54f52086cfee133fab2180bfb429fa'
+# Same MKVToolNix release as the Linux bundle; the SHA-256 matches the
+# publisher's sha256sums.txt for that release.
+$MkvtoolnixVersion = '101.0'
+$MkvtoolnixAsset = 'mkvtoolnix-64-bit-101.0.zip'
+$MkvtoolnixSha256 = '59a807b45b34ac524dfdef61edcf0642ee9bd6b08c130cfc078532c362569abc'
 
 $RequiredBuildFlags = @('--enable-gpl', '--enable-libx264', '--enable-libx265')
 $RequiredEncoders = @('libx264', 'libx265', 'hevc_nvenc', 'h264_nvenc')
@@ -77,8 +84,9 @@ function Test-MediaTools([string]$Dir) {
     $suffix = if ($IsWindows) { '.exe' } else { '' }
     $ffmpeg = Join-Path $Dir "ffmpeg$suffix"
     $ffprobe = Join-Path $Dir "ffprobe$suffix"
+    $mkvmerge = Join-Path $Dir "mkvmerge$suffix"
     $mkvpropedit = Join-Path $Dir "mkvpropedit$suffix"
-    foreach ($tool in @($ffmpeg, $ffprobe, $mkvpropedit)) {
+    foreach ($tool in @($ffmpeg, $ffprobe, $mkvmerge, $mkvpropedit)) {
         if (-not (Test-Path -LiteralPath $tool -PathType Leaf)) { Fail "missing $tool" }
     }
 
@@ -88,6 +96,7 @@ function Test-MediaTools([string]$Dir) {
         if ($version -notmatch [regex]::Escape($flag)) { Fail "ffmpeg is not built with $flag" }
     }
     $null = Invoke-Native $ffprobe @('-hide_banner', '-version')
+    Write-Log ((Invoke-Native $mkvmerge @('--version')).Trim())
     Write-Log ((Invoke-Native $mkvpropedit @('--version')).Trim())
 
     $encoders = Invoke-Native $ffmpeg @('-hide_banner', '-encoders')
@@ -107,9 +116,13 @@ function Test-MediaTools([string]$Dir) {
         $raw = Join-Path $scratch 'frames.rgb'
         $null = Invoke-Native $ffmpeg @('-hide_banner', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=128x72:rate=30',
             '-frames:v', '30', '-f', 'rawvideo', '-pix_fmt', 'rgb24', $raw)
+        # Source whose audio mkvmerge adds to the encoded video, as VideoOutput does for MKV outputs.
+        $source = Join-Path $scratch 'source.mkv'
+        $null = Invoke-Native $ffmpeg @('-hide_banner', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=64x36:rate=30',
+            '-f', 'lavfi', '-i', 'sine=duration=1', '-frames:v', '30', '-c:v', 'libx264', '-c:a', 'aac', $source)
         foreach ($case in $EncodeCases) {
             $out = Join-Path $scratch "$($case.Codec)-$($case.PixelFormat).mkv"
-            # Mirrors EncoderConfig::build_ffmpeg_args in crates/core/src/nodes/video_output.rs.
+            # Mirrors EncoderConfig::build_video_only_ffmpeg_args in crates/core/src/nodes/video_output.rs.
             $vf = 'scale=flags=bicubic:out_color_matrix=bt709:out_range=limited,' +
                 "format=$($case.PixelFormat)," +
                 'setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=limited,setsar=1'
@@ -128,6 +141,21 @@ function Test-MediaTools([string]$Dir) {
                 Fail "unexpected probe for $($case.Codec)/$($case.PixelFormat): $($probe | ConvertTo-Json -Depth 5 -Compress)"
             }
             Write-Log "encoded $($case.Codec) $($case.PixelFormat): 30 frames, statistics tag 30"
+
+            # Mirrors EncoderConfig::build_mkvmerge_args: encoded video first, then the source without its video.
+            $muxed = Join-Path $scratch "$($case.Codec)-$($case.PixelFormat)-muxed.mkv"
+            $null = Invoke-Native $mkvmerge @('--quiet', '--output', $muxed, '--no-global-tags',
+                '--default-track-flag', '0:yes', $out, '--no-video', $source)
+            $muxProbe = Invoke-Native $ffprobe @('-v', 'error', '-show_entries', 'stream=codec_type,codec_name:stream_tags',
+                '-of', 'json', $muxed) | ConvertFrom-Json
+            $types = @($muxProbe.streams | ForEach-Object { $_.codec_type })
+            $video = $muxProbe.streams[0]
+            $videoTags = if ($video.PSObject.Properties['tags']) { $video.tags.PSObject.Properties } else { @() }
+            $muxTagged = $videoTags | Where-Object { $_.Name -like 'NUMBER_OF_FRAMES*' } | Select-Object -First 1
+            if (($types -join ',') -ne 'video,audio' -or $null -eq $muxTagged -or [int]$muxTagged.Value -ne 30) {
+                Fail "unexpected mkvmerge output for $($case.Codec)/$($case.PixelFormat): $($muxProbe | ConvertTo-Json -Depth 5 -Compress)"
+            }
+            Write-Log "muxed $($case.Codec) $($case.PixelFormat) with source audio via mkvmerge"
         }
     }
     finally {
@@ -148,16 +176,21 @@ function New-MediaToolsBundle {
     if ($actual -ne $FfmpegSha256) { Fail "SHA-256 mismatch for ${FfmpegAsset}: expected $FfmpegSha256, got $actual" }
     Write-Log "verified $FfmpegAsset SHA-256 $actual"
 
-    $currentZip = Join-Path $work 'current-bin_win64.zip'
-    Invoke-Download $CurrentBundleUrl $currentZip
+    $mkvtoolnixZip = Join-Path $work $MkvtoolnixAsset
+    Invoke-Download "https://mkvtoolnix.download/windows/releases/$MkvtoolnixVersion/$MkvtoolnixAsset" $mkvtoolnixZip
+    $actual = (Get-FileHash -LiteralPath $mkvtoolnixZip -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actual -ne $MkvtoolnixSha256) { Fail "SHA-256 mismatch for ${MkvtoolnixAsset}: expected $MkvtoolnixSha256, got $actual" }
+    Write-Log "verified $MkvtoolnixAsset SHA-256 $actual"
 
     $ffmpegDir = Join-Path $work 'ffmpeg'
-    $currentDir = Join-Path $work 'current'
+    $mkvtoolnixDir = Join-Path $work 'mkvtoolnix'
     Expand-Archive -LiteralPath $ffmpegZip -DestinationPath $ffmpegDir
-    Expand-Archive -LiteralPath $currentZip -DestinationPath $currentDir
+    Expand-Archive -LiteralPath $mkvtoolnixZip -DestinationPath $mkvtoolnixDir
     $ffmpegRoot = Join-Path $ffmpegDir ([IO.Path]::GetFileNameWithoutExtension($FfmpegAsset))
-    $currentMkvpropedit = Join-Path $currentDir 'bin/mkvpropedit.exe'
-    foreach ($path in @((Join-Path $ffmpegRoot 'bin/ffmpeg.exe'), (Join-Path $ffmpegRoot 'bin/ffprobe.exe'), (Join-Path $ffmpegRoot 'LICENSE.txt'), $currentMkvpropedit)) {
+    $mkvtoolnixRoot = Join-Path $mkvtoolnixDir 'mkvtoolnix'
+    $mkvtoolnixTools = @((Join-Path $mkvtoolnixRoot 'mkvmerge.exe'), (Join-Path $mkvtoolnixRoot 'mkvpropedit.exe'))
+    $mkvtoolnixLicense = Join-Path $mkvtoolnixRoot 'doc/COPYING.txt'
+    foreach ($path in @((Join-Path $ffmpegRoot 'bin/ffmpeg.exe'), (Join-Path $ffmpegRoot 'bin/ffprobe.exe'), (Join-Path $ffmpegRoot 'LICENSE.txt')) + $mkvtoolnixTools + @($mkvtoolnixLicense)) {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { Fail "missing expected input $path" }
     }
 
@@ -166,11 +199,11 @@ function New-MediaToolsBundle {
     New-Item -ItemType Directory -Force -Path $bin | Out-Null
     Copy-Item -LiteralPath (Join-Path $ffmpegRoot 'bin/ffmpeg.exe'), (Join-Path $ffmpegRoot 'bin/ffprobe.exe') -Destination $bin
     Copy-Item -LiteralPath (Join-Path $ffmpegRoot 'LICENSE.txt') -Destination (Join-Path $bin 'FFMPEG-LICENSE.txt')
-    Copy-Item -LiteralPath $currentMkvpropedit -Destination $bin
+    Copy-Item -LiteralPath $mkvtoolnixTools -Destination $bin
+    Copy-Item -LiteralPath $mkvtoolnixLicense -Destination (Join-Path $bin 'MKVTOOLNIX-LICENSE.txt')
 
     $ffmpegVersion = ((Invoke-Native (Join-Path $bin 'ffmpeg.exe') @('-hide_banner', '-version')) -split "`n" | Select-Object -First 1).Trim()
-    $mkvVersion = (Invoke-Native (Join-Path $bin 'mkvpropedit.exe') @('--version')).Trim()
-    $mkvSha = (Get-FileHash -LiteralPath $currentMkvpropedit -Algorithm SHA256).Hash.ToLowerInvariant()
+    $mkvVersion = (Invoke-Native (Join-Path $bin 'mkvmerge.exe') @('--version')).Trim()
     @(
         'Videnoa Windows media tools (bin_win64.zip)',
         '',
@@ -180,9 +213,10 @@ function New-MediaToolsBundle {
         '  GPL build (libx264, libx265, libzimg). License: FFMPEG-LICENSE.txt.',
         '  FFmpeg source: https://github.com/FFmpeg/FFmpeg; build scripts: https://github.com/BtbN/FFmpeg-Builds',
         '',
-        "mkvpropedit.exe: $mkvVersion",
-        "  Carried over unchanged from the previous bin_win64.zip (SHA-256 $mkvSha).",
-        '  MKVToolNix, GPL-2.0: https://mkvtoolnix.download/'
+        "mkvmerge.exe, mkvpropedit.exe: $mkvVersion",
+        "  Source: https://mkvtoolnix.download/windows/releases/$MkvtoolnixVersion/",
+        "  Asset: $MkvtoolnixAsset (SHA-256 $MkvtoolnixSha256)",
+        '  MKVToolNix, GPL-2.0. License: MKVTOOLNIX-LICENSE.txt. Project: https://mkvtoolnix.download/'
     ) | Set-Content -LiteralPath (Join-Path $bin 'README-windows-tools.txt') -Encoding utf8
 
     $sums = Get-ChildItem -LiteralPath $bin -File | Sort-Object Name | ForEach-Object {

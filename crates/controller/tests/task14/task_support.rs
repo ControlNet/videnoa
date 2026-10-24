@@ -39,8 +39,18 @@ pub async fn create_online_retry_worker(
     fixture: &Fixture,
     address: SocketAddr,
 ) -> TestResult<WorkerId> {
+    create_online_worker(fixture, address, "retry-worker", &["anime-upscale"]).await
+}
+
+/// Registers an online Worker that reports exactly these workflows.
+pub async fn create_online_worker(
+    fixture: &Fixture,
+    address: SocketAddr,
+    name: &str,
+    workflows: &[&str],
+) -> TestResult<WorkerId> {
     let worker = json!({
-        "name": "retry-worker",
+        "name": name,
         "api_url": format!("http://{address}/"),
         "enabled": true,
         "compute_slots": 1
@@ -62,10 +72,13 @@ pub async fn create_online_retry_worker(
             expected_version: 0,
             online: true,
             capabilities: WorkerCapabilities {
-                workflows: vec![WorkflowSummary {
-                    name: WorkflowName::new("anime-upscale"),
-                    kind: WorkflowKind::Workflow,
-                }],
+                workflows: workflows
+                    .iter()
+                    .map(|name| WorkflowSummary {
+                        name: WorkflowName::new(*name),
+                        kind: WorkflowKind::Workflow,
+                    })
+                    .collect(),
                 invalid_workflows: Vec::new(),
                 refreshed_at: Some(now),
             },

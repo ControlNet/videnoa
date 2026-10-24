@@ -3,7 +3,8 @@
 # Multi-stage build: Rust compilation → NVIDIA CUDA runtime with ORT + TRT
 #
 # All runtime libraries (ONNX Runtime, TensorRT) and the release media tools
-# bundle (FFmpeg 8.1, ffprobe, mkvpropedit in /app/bin) are baked into the image.
+# bundle (FFmpeg 8.1, ffprobe, mkvmerge, mkvpropedit in /app/bin) are baked into
+# the image.
 # Mount models, the TensorRT cache, and /app/data for persistent Worker state.
 # Mount host media separately when workflows need direct file access.
 #
@@ -87,7 +88,7 @@ RUN pip install --no-cache-dir "tensorrt-cu12-libs==${TRT_VERSION}" \
 
 # ---------------------------------------------------------------------------
 # Stage 4: Download the release media tools bundle (FFmpeg 8.1, ffprobe,
-# mkvpropedit). This is the same misc-release asset the Linux release archive
+# mkvmerge, mkvpropedit). This is the same misc-release asset the Linux release archive
 # ships (scripts/package_dist.sh, scripts/setup_dev_media_tools.sh), so the
 # image encodes with the same FFmpeg build instead of Ubuntu's FFmpeg 4.4.
 # ---------------------------------------------------------------------------
@@ -97,10 +98,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends wget ca-certifi
     && rm -rf /var/lib/apt/lists/*
 
 # Pinned to a specific upload of the mutable `misc` release asset; bump the
-# checksum together with the asset. Only mkvpropedit is used, so the other
-# MKVToolNix executables are dropped after the bundle checksums are verified.
+# checksum together with the asset. Only mkvmerge (MKV muxing) and mkvpropedit
+# are used, so the other MKVToolNix executables are dropped after the bundle
+# checksums are verified.
 ARG MEDIA_TOOLS_URL=https://github.com/ControlNet/videnoa/releases/download/misc/bin_linux64.zip
-ARG MEDIA_TOOLS_SHA256=6d1944351a5d4d236eae8930dd6a68a4d7da73228e5c6c5657cbb3967cdeb1a9
+ARG MEDIA_TOOLS_SHA256=be77fd662a155b679eef76ff646329c02b0fe9bee47d1b8c623b8e04f894a8fc
 RUN wget -q --tries=4 --timeout=120 -O /tmp/bin_linux64.zip "${MEDIA_TOOLS_URL}" \
     && echo "${MEDIA_TOOLS_SHA256}  /tmp/bin_linux64.zip" | sha256sum -c - \
     && unzip -q /tmp/bin_linux64.zip -d /tmp/media-tools \
@@ -111,7 +113,6 @@ RUN wget -q --tries=4 --timeout=120 -O /tmp/bin_linux64.zip "${MEDIA_TOOLS_URL}"
     && rm -f \
         /media-tools/.mkvtoolnix-101.0/usr/bin/mkvextract \
         /media-tools/.mkvtoolnix-101.0/usr/bin/mkvinfo \
-        /media-tools/.mkvtoolnix-101.0/usr/bin/mkvmerge \
         /media-tools/.mkvtoolnix-101.0/usr/bin/mkvtoolnix-gui
 
 # ---------------------------------------------------------------------------
@@ -149,7 +150,7 @@ COPY --from=trt-download /trt-lib/ /usr/local/lib/
 
 RUN ldconfig
 
-# runtime::command_for resolves ffmpeg/ffprobe/mkvpropedit from <cwd>/bin
+# runtime::command_for resolves ffmpeg/ffprobe/mkvmerge/mkvpropedit from <cwd>/bin
 # (WORKDIR /app) before PATH; PATH covers runs with a different working dir.
 COPY --from=media-tools /media-tools/ /app/bin/
 ENV PATH="/app/bin:${PATH}"

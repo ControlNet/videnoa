@@ -70,6 +70,9 @@ pub struct Task {
     pub source_reference: Option<SourceReference>,
     pub input_size: u64,
     pub worker_id: Option<WorkerId>,
+    /// The only Worker that may take this queued task, set by a retry.
+    #[serde(default)]
+    pub requested_worker_id: Option<WorkerId>,
     pub remote_job_id: Option<RemoteJobId>,
     pub progress: TaskProgress,
     pub attempt_count: u32,

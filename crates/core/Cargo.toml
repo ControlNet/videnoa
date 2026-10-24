@@ -27,6 +27,7 @@ toml = { workspace = true }
 petgraph = { workspace = true }
 pathdiff = "0.2"
 dunce = "1.0"
+same-file = "1"
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 tower = { workspace = true }

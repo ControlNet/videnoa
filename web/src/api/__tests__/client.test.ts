@@ -18,6 +18,7 @@ import {
   saveWorkflow,
   submitJob,
   submitJobWithParams,
+  subscribeToProgress,
 } from '../client';
 
 beforeEach(() => {
@@ -565,5 +566,55 @@ describe('cancelJob()', () => {
       '/api/jobs/j1',
       { method: 'DELETE' },
     );
+  });
+});
+
+describe('subscribeToProgress()', () => {
+  class FakeWebSocket {
+    static instances: FakeWebSocket[] = [];
+    onmessage: ((event: MessageEvent) => void) | null = null;
+    onclose: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+
+    constructor() {
+      FakeWebSocket.instances.push(this);
+    }
+
+    close() {
+      this.onclose?.();
+    }
+  }
+
+  beforeEach(() => {
+    FakeWebSocket.instances = [];
+    vi.useFakeTimers();
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('does not reconnect after it is closed during a pending retry', () => {
+    const subscription = subscribeToProgress('job-1', vi.fn(), vi.fn());
+    expect(FakeWebSocket.instances).toHaveLength(1);
+
+    // The server ends the socket (e.g. the job finished), scheduling a retry.
+    FakeWebSocket.instances[0].onclose?.();
+    // The view unsubscribes before the retry fires.
+    subscription.close();
+    vi.advanceTimersByTime(10_000);
+
+    expect(FakeWebSocket.instances).toHaveLength(1);
+  });
+
+  it('still reconnects while subscribed', () => {
+    subscribeToProgress('job-1', vi.fn(), vi.fn());
+
+    FakeWebSocket.instances[0].onclose?.();
+    vi.advanceTimersByTime(2_000);
+
+    expect(FakeWebSocket.instances).toHaveLength(2);
   });
 });

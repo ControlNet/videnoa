@@ -175,7 +175,7 @@ async fn parallel_processor_propagates_worker_error() -> Result<()> {
         .collect();
     let stages = vec![PipelineStage::ParallelProcessor(processors)];
     let state = SharedSinkState::new();
-    let sink = CollectingSink::new(state);
+    let sink = CollectingSink::new(state.clone());
     let (_cancel_tx, cancel_rx) = watch::channel(false);
 
     let result = executor
@@ -196,6 +196,9 @@ async fn parallel_processor_propagates_worker_error() -> Result<()> {
         message.contains("injected processor failure at frame 3"),
         "{message}"
     );
+    // The failed stage closes its output before it reports the error, so the
+    // encoder sees a normal end of input; it still must not finalize.
+    assert_eq!(state.finished_count(), 0);
     Ok(())
 }
 

@@ -84,6 +84,7 @@ export const taskSchema = z
     source_reference: z.string().nullable(),
     input_size: z.number().int().nonnegative(),
     worker_id: z.string().uuid().nullable(),
+    requested_worker_id: z.string().uuid().nullable().default(null),
     remote_job_id: z.string().uuid().nullable(),
     progress: taskProgressSchema,
     attempt_count: z.number().int().nonnegative(),
@@ -152,7 +153,7 @@ export const cancelTaskResponseSchema = z
 export const retryTaskResponseSchema = z
   .object({
     task_id: z.string().uuid(),
-    attempt_id: z.string().uuid(),
+    attempt_id: z.string().uuid().nullable(),
     status: taskStatusSchema,
   })
   .strict()

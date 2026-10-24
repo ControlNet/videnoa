@@ -71,21 +71,32 @@ pub(super) async fn upload_file(
         }
     }
 
-    let mut options = tokio::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    // Stream into a hidden file beside the target and move it into place only
+    // once the whole body has arrived, so a broken upload leaves any earlier
+    // file intact. The staging file is removed if anything fails.
+    let file_name = resolved
+        .absolute
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let prefix = format!(".{file_name}.");
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(&prefix).suffix(".videnoa-upload");
+    // Give the upload the umask-based mode of any new file rather than a temp
+    // file's owner-only one.
     #[cfg(unix)]
-    options.custom_flags(libc::O_NOFOLLOW);
-    let file = options
-        .open(&resolved.absolute)
-        .await
-        .map_err(|error| io_error("open upload target", &resolved.absolute, error))?;
+    builder.permissions(std::os::unix::fs::PermissionsExt::from_mode(0o666));
+    let staged = builder
+        .tempfile_in(parent)
+        .map_err(|error| io_error("create upload staging file", parent, error))?;
+    let (file, staged) = staged.into_parts();
 
     let stream = request
         .into_body()
         .into_data_stream()
         .map_err(std::io::Error::other);
     let mut reader = StreamReader::new(stream);
-    let mut writer = BufWriter::new(file);
+    let mut writer = BufWriter::new(tokio::fs::File::from_std(file));
     let size = tokio::io::copy(&mut reader, &mut writer)
         .await
         .map_err(|error| io_error("stream upload", &resolved.absolute, error))?;
@@ -93,6 +104,11 @@ pub(super) async fn upload_file(
         .flush()
         .await
         .map_err(|error| io_error("flush upload", &resolved.absolute, error))?;
+    drop(writer);
+
+    staged
+        .persist(&resolved.absolute)
+        .map_err(|error| io_error("move upload into place", &resolved.absolute, error.error))?;
 
     Ok(Json(UploadResponse {
         path: workflow_response_path(&resolved.absolute)?,

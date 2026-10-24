@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test"
 
+import { workerTemplate } from "./operations-fixtures"
 import { attempt, dispatchTaskUpdate, fulfillJson, installLiveApi, requestJournal, task, taskDetail } from "./tasks-fixtures"
 
 test("opens authoritative detail and sends current versions for cancel and retry", async ({ page }) => {
@@ -102,7 +103,7 @@ test("shows retry only for explicit safe failure evidence", async ({ page }) => 
   const guidance = page.getByText(/remote job is terminal/)
   await expect(guidance).toBeVisible()
   await guidance.scrollIntoViewIfNeeded()
-  const retry = page.getByRole("button", { name: "Retry Failed Stage" })
+  const retry = page.getByRole("button", { name: "Retry", exact: true })
   await retry.focus()
   await page.screenshot({
     path: "../.omo/evidence/videnoa-controller/task-19/playwright-report/screenshots/task-17/task-actions/safe-processing-retry.png",
@@ -112,6 +113,78 @@ test("shows retry only for explicit safe failure evidence", async ({ page }) => 
 
   // Then: the current optimistic version is sent.
   expect(retriedVersion).toBe(9)
+})
+
+test("retries a processing failure on another Worker from the Retry menu", async ({ page }) => {
+  // Given: a processing failure and three other Workers in different states.
+  await page.setViewportSize({ width: 1280, height: 900 })
+  const journal = requestJournal()
+  const failed = task(12, {
+    status: "failed",
+    version: 9,
+    failure: { failure_stage: "processing", failure_code: "processing_failed", message: "CUDA failure 100", retryable: true },
+  })
+  const capable = { workflows: [{ name: failed.workflow, kind: "workflow" as const }], invalid_workflows: [], refreshed_at: "2026-09-03T10:00:00Z" }
+  const workers = [
+    { ...workerTemplate, id: failed.worker_id ?? workerTemplate.id, name: "original-worker", online: true, capabilities: capable },
+    { ...workerTemplate, id: "d2719a65-16d5-4e97-a756-d8f782769145", name: "spare-worker", online: true, capabilities: capable },
+    { ...workerTemplate, id: "d2719a65-16d5-4e97-a756-d8f782769146", name: "disabled-worker", enabled: false, capabilities: capable },
+    { ...workerTemplate, id: "d2719a65-16d5-4e97-a756-d8f782769147", name: "other-models", online: true, capabilities: { ...capable, workflows: [{ name: "unrelated-workflow", kind: "workflow" as const }] } },
+  ]
+  await installLiveApi(page, journal, failed)
+  await page.route("**/api/workers", async (route) => fulfillJson(route, { items: workers, total: workers.length }))
+  await page.route(`**/api/tasks/${failed.id}?*`, async (route) => fulfillJson(route, taskDetail(failed)))
+  const bodies: unknown[] = []
+  await page.route(`**/api/tasks/${failed.id}/retry`, async (route) => {
+    bodies.push(route.request().postDataJSON())
+    await fulfillJson(route, { task_id: failed.id, attempt_id: null, status: "queued" })
+  })
+  await page.goto("/tasks")
+  await page.getByRole("button", { name: /Open task/ }).click()
+
+  // When: the Retry menu is opened.
+  await page.getByRole("button", { name: "Retry on another Worker" }).click()
+  const menu = page.getByRole("menu", { name: "Retry on another Worker" })
+
+  // Then: the original Worker is omitted and Workers that cannot run the workflow are disabled.
+  await expect(menu.getByRole("menuitem")).toHaveCount(3)
+  await expect(menu.getByRole("menuitem", { name: /original-worker/ })).toHaveCount(0)
+  await expect(menu.getByRole("menuitem", { name: /disabled-worker/ })).toBeDisabled()
+  await expect(menu.getByRole("menuitem", { name: /other-models/ })).toBeDisabled()
+  await expect(menu.getByRole("menuitem", { name: /spare-worker/ })).toBeFocused()
+  await page.screenshot({ path: "../.omo/evidence/videnoa-controller/retry-worker-menu/menu.png", animations: "disabled" })
+
+  // When: another Worker is chosen.
+  await menu.getByRole("menuitem", { name: /spare-worker/ }).click()
+
+  // Then: the retry names that Worker and the menu closes.
+  await expect(page.getByText("Retry queued for spare-worker.")).toBeVisible()
+  expect(bodies).toEqual([{ version: 9, worker_id: "d2719a65-16d5-4e97-a756-d8f782769145" }])
+  await expect(menu).toHaveCount(0)
+})
+
+test("closes the Retry menu with Escape before closing the detail", async ({ page }) => {
+  // Given: an open Retry menu.
+  const journal = requestJournal()
+  const failed = task(12, {
+    status: "failed",
+    failure: { failure_stage: "processing", failure_code: "processing_failed", message: "failed", retryable: true },
+  })
+  await installLiveApi(page, journal, failed)
+  await page.route("**/api/workers", async (route) => fulfillJson(route, { items: [], total: 0 }))
+  await page.route(`**/api/tasks/${failed.id}?*`, async (route) => fulfillJson(route, taskDetail(failed)))
+  await page.goto("/tasks")
+  await page.getByRole("button", { name: /Open task/ }).click()
+  await page.getByRole("button", { name: "Retry on another Worker" }).click()
+  await expect(page.getByText("No other Worker is registered.")).toBeVisible()
+
+  // When: Escape is pressed once.
+  await page.keyboard.press("Escape")
+
+  // Then: only the menu closes and focus returns to its button.
+  await expect(page.getByRole("menu")).toHaveCount(0)
+  await expect(page.getByRole("region", { name: "Task Detail" })).toBeVisible()
+  await expect(page.getByRole("button", { name: "Retry on another Worker" })).toBeFocused()
 })
 
 test("blocks retry for ambiguous failure evidence", async ({ page }) => {
@@ -134,7 +207,7 @@ test("blocks retry for ambiguous failure evidence", async ({ page }) => {
   await page.getByRole("button", { name: /Open task/ }).click()
 
   // Then: no retry action is exposed and manual remote verification guidance is visible.
-  await expect(page.getByRole("button", { name: "Retry Failed Stage" })).toHaveCount(0)
+  await expect(page.getByRole("button", { name: "Retry", exact: true })).toHaveCount(0)
   await expect(page.getByText(/Verify the remote job and workspace manually/)).toBeVisible()
 })
 

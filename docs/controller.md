@@ -341,6 +341,20 @@ Confirmation and cancellation recovery remain available while scheduling is paus
 Transfer and cleanup failures use bounded persisted retry. Downstream retries do
 not repeat successful AI work.
 
+Retrying a processing failure returns the task to `queued` for the same Worker
+instead of reserving a slot at once, so it waits when that Worker is busy. Before
+queueing, the Controller checks that the remote job is terminal and deletes the
+task workspace on that Worker; if the Worker cannot be reached, the retry is
+refused and the task stays failed. The failed attempt stays in the history and
+the next reservation creates a new one. The arrow next to Retry in the task
+detail lists the other Workers; choosing one queues the task for that Worker
+after the same cleanup on the original. Processing failures, upload failures and
+rejected submissions can move to another Worker; failures after processing
+cannot, because the output is on the original Worker. A Worker must be enabled
+and report the task's workflow as runnable to be chosen. A queued task waits for
+its Worker even while that Worker is offline; deleting the Worker lets any
+Worker take it, and cancelling the task removes it from the queue.
+
 Cancellation is accepted from queued through verifying. Publishing, remote
 cleanup, and terminal tasks reject cancellation. Publication ambiguity permits
 manual retry on the existing attempt; remote-state ambiguity remains non-retryable.
@@ -575,7 +589,9 @@ task; all normal path and request validation still applies.
 /api/tasks/{id}` returns the task plus a paginated attempts array.
 
 `POST /api/tasks/{id}/cancel` and `POST /api/tasks/{id}/retry` require the
-current `version`. `GET /api/status-counts` returns all lifecycle categories,
+current `version`. Retry also accepts an optional `worker_id` to queue the task
+for another Worker; the response's `attempt_id` is `null` when the task was
+queued, and the task's `requested_worker_id` names the Worker it waits for. `GET /api/status-counts` returns all lifecycle categories,
 including zero counts.
 
 ### Workers and Settings

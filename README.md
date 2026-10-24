@@ -142,7 +142,7 @@ The server speaks HTTP/1.1 only; cleartext HTTP/2 (h2c) is not accepted.
 
 - Rust 1.98.0 (pinned in `rust-toolchain.toml`)
 - Node.js 24 (the version CI and the Docker build use)
-- FFmpeg, ffprobe and mkvpropedit from the release media tools bundle
+- FFmpeg, ffprobe, mkvmerge and mkvpropedit from the release media tools bundle
   (FFmpeg 8.1), installed into `bin/` by `scripts/setup_dev_media_tools.sh`
   (see step 1); a system FFmpeg is only a fallback
 - NVIDIA GPU (required for CUDA or TensorRT acceleration)
@@ -162,8 +162,8 @@ The version output should start with `rustc 1.98.0`.
 
 Download from [misc files](https://github.com/ControlNet/videnoa/releases/tag/misc), then place shared libraries in `lib/` and models in `models/`.
 
-Install the release media tools bundle (FFmpeg 8.1, ffprobe, mkvpropedit) into
-`bin/` (gitignored):
+Install the release media tools bundle (FFmpeg 8.1, ffprobe, mkvmerge,
+mkvpropedit) into `bin/` (gitignored). MKV outputs require mkvmerge:
 
 ```bash
 bash scripts/setup_dev_media_tools.sh

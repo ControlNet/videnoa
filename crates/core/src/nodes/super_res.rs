@@ -255,11 +255,6 @@ impl FrameProcessor for SuperResPreprocess {
                 let mut r_buf = [0.0f32; CHUNK];
                 let mut g_buf = [0.0f32; CHUNK];
                 let mut b_buf = [0.0f32; CHUNK];
-                let source_max = if bit_depth > 8 {
-                    Some(infer_high_bit_source_max(bit_depth, &data))
-                } else {
-                    None
-                };
 
                 let mut offset = 0;
                 while offset < hw {
@@ -272,19 +267,18 @@ impl FrameProcessor for SuperResPreprocess {
                             b_buf[j] = data[src + 2] as f32 / 255.0;
                         } else {
                             let src = (offset + j) * 6;
-                            let source_max = source_max.expect("high bit-depth source max present");
-                            let r = quantize_high_bit_sample_to_u8(
-                                u16::from_le_bytes([data[src], data[src + 1]]) as u32,
-                                source_max,
-                            );
-                            let g = quantize_high_bit_sample_to_u8(
-                                u16::from_le_bytes([data[src + 2], data[src + 3]]) as u32,
-                                source_max,
-                            );
-                            let b = quantize_high_bit_sample_to_u8(
-                                u16::from_le_bytes([data[src + 4], data[src + 5]]) as u32,
-                                source_max,
-                            );
+                            let r = quantize_high_bit_sample_to_u8(u16::from_le_bytes([
+                                data[src],
+                                data[src + 1],
+                            ]));
+                            let g = quantize_high_bit_sample_to_u8(u16::from_le_bytes([
+                                data[src + 2],
+                                data[src + 3],
+                            ]));
+                            let b = quantize_high_bit_sample_to_u8(u16::from_le_bytes([
+                                data[src + 4],
+                                data[src + 5],
+                            ]));
                             r_buf[j] = r as f32 / 255.0;
                             g_buf[j] = g as f32 / 255.0;
                             b_buf[j] = b as f32 / 255.0;
@@ -1064,25 +1058,22 @@ fn cpu_rgb_to_nchw_into(
                 );
             }
 
-            let source_max = infer_high_bit_source_max(bit_depth, data);
             for y in 0..h {
                 for x in 0..w {
                     let src_idx = (y * w + x) * 3;
                     let pixel_idx = y * w + x;
-                    let r = quantize_high_bit_sample_to_u8(
-                        u16::from_le_bytes([data[src_idx * 2], data[src_idx * 2 + 1]]) as u32,
-                        source_max,
-                    );
-                    let g = quantize_high_bit_sample_to_u8(
-                        u16::from_le_bytes([data[(src_idx + 1) * 2], data[(src_idx + 1) * 2 + 1]])
-                            as u32,
-                        source_max,
-                    );
-                    let b = quantize_high_bit_sample_to_u8(
-                        u16::from_le_bytes([data[(src_idx + 2) * 2], data[(src_idx + 2) * 2 + 1]])
-                            as u32,
-                        source_max,
-                    );
+                    let r = quantize_high_bit_sample_to_u8(u16::from_le_bytes([
+                        data[src_idx * 2],
+                        data[src_idx * 2 + 1],
+                    ]));
+                    let g = quantize_high_bit_sample_to_u8(u16::from_le_bytes([
+                        data[(src_idx + 1) * 2],
+                        data[(src_idx + 1) * 2 + 1],
+                    ]));
+                    let b = quantize_high_bit_sample_to_u8(u16::from_le_bytes([
+                        data[(src_idx + 2) * 2],
+                        data[(src_idx + 2) * 2 + 1],
+                    ]));
                     slice[pixel_idx] = r as f32 / 255.0;
                     slice[hw + pixel_idx] = g as f32 / 255.0;
                     slice[2 * hw + pixel_idx] = b as f32 / 255.0;
@@ -1097,24 +1088,12 @@ fn cpu_rgb_to_nchw_into(
     Ok((padded, h, w))
 }
 
-fn infer_high_bit_source_max(bit_depth: u8, data: &[u8]) -> u32 {
-    let native_max = (1u32 << bit_depth) - 1;
-    let has_wide_samples = data
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .any(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]) as u32 > native_max);
-
-    if has_wide_samples {
-        u16::MAX as u32
-    } else {
-        native_max
-    }
-}
-
-fn quantize_high_bit_sample_to_u8(sample: u32, source_max: u32) -> u8 {
-    let clamped = sample.min(source_max);
-    (((clamped * 255) + source_max / 2) / source_max) as u8
+/// Rounds an FFmpeg `rgb48le` sample to 8 bits. That format spans the full
+/// 16-bit range whatever the source bit depth, so 10-bit video is never
+/// scaled by 1023.
+fn quantize_high_bit_sample_to_u8(sample: u16) -> u8 {
+    const RGB48_MAX: u32 = u16::MAX as u32;
+    ((u32::from(sample) * 255 + RGB48_MAX / 2) / RGB48_MAX) as u8
 }
 
 /// Reflection-pad NCHW array so H and W are multiples of [`PAD_ALIGN`].
@@ -1279,11 +1258,6 @@ fn cpu_rgb_to_f16_nchw_into(
     let mut r_buf = [0.0f32; CHUNK];
     let mut g_buf = [0.0f32; CHUNK];
     let mut b_buf = [0.0f32; CHUNK];
-    let source_max = if bit_depth > 8 {
-        Some(infer_high_bit_source_max(bit_depth, data))
-    } else {
-        None
-    };
 
     let mut offset = 0;
     while offset < hw {
@@ -1296,19 +1270,16 @@ fn cpu_rgb_to_f16_nchw_into(
                 b_buf[j] = data[src + 2] as f32 / 255.0;
             } else {
                 let src = (offset + j) * 6;
-                let source_max = source_max.expect("high bit-depth source max present");
-                let r = quantize_high_bit_sample_to_u8(
-                    u16::from_le_bytes([data[src], data[src + 1]]) as u32,
-                    source_max,
-                );
-                let g = quantize_high_bit_sample_to_u8(
-                    u16::from_le_bytes([data[src + 2], data[src + 3]]) as u32,
-                    source_max,
-                );
-                let b = quantize_high_bit_sample_to_u8(
-                    u16::from_le_bytes([data[src + 4], data[src + 5]]) as u32,
-                    source_max,
-                );
+                let r =
+                    quantize_high_bit_sample_to_u8(u16::from_le_bytes([data[src], data[src + 1]]));
+                let g = quantize_high_bit_sample_to_u8(u16::from_le_bytes([
+                    data[src + 2],
+                    data[src + 3],
+                ]));
+                let b = quantize_high_bit_sample_to_u8(u16::from_le_bytes([
+                    data[src + 4],
+                    data[src + 5],
+                ]));
                 r_buf[j] = r as f32 / 255.0;
                 g_buf[j] = g as f32 / 255.0;
                 b_buf[j] = b as f32 / 255.0;
@@ -1780,11 +1751,14 @@ mod tests {
     }
 
     #[test]
-    fn test_cpu_rgb_to_nchw_10bit_native_range_quantizes_to_8bit() {
+    fn test_cpu_rgb_to_nchw_10bit_dark_frame_stays_dark() {
+        // FFmpeg's rgb48le is full range whatever the source depth, so a
+        // near-black 10-bit frame has samples below 1023 out of 65535. It
+        // must stay near-black, not be stretched as if 1023 were white.
         let mut data = Vec::new();
         for _ in 0..(2 * 2) {
             data.extend_from_slice(&0u16.to_le_bytes());
-            data.extend_from_slice(&512u16.to_le_bytes());
+            data.extend_from_slice(&300u16.to_le_bytes());
             data.extend_from_slice(&1023u16.to_le_bytes());
         }
 
@@ -1793,8 +1767,8 @@ mod tests {
         assert_eq!(w, 2);
 
         assert!((arr[[0, 0, 0, 0]] - 0.0).abs() < 1e-6);
-        assert!((arr[[0, 1, 0, 0]] - 128.0 / 255.0).abs() < 1e-6);
-        assert!((arr[[0, 2, 0, 0]] - 1.0).abs() < 1e-6);
+        assert!((arr[[0, 1, 0, 0]] - 1.0 / 255.0).abs() < 1e-6);
+        assert!((arr[[0, 2, 0, 0]] - 4.0 / 255.0).abs() < 1e-6);
     }
 
     #[test]
@@ -2084,11 +2058,14 @@ mod tests {
     }
 
     #[test]
-    fn test_cpu_rgb_to_f16_nchw_10bit_native_range_quantizes_to_8bit() {
+    fn test_cpu_rgb_to_f16_nchw_10bit_dark_frame_stays_dark() {
+        // FFmpeg's rgb48le is full range whatever the source depth, so a
+        // near-black 10-bit frame has samples below 1023 out of 65535. It
+        // must stay near-black, not be stretched as if 1023 were white.
         let mut data = Vec::new();
         for _ in 0..(2 * 2) {
             data.extend_from_slice(&0u16.to_le_bytes());
-            data.extend_from_slice(&512u16.to_le_bytes());
+            data.extend_from_slice(&300u16.to_le_bytes());
             data.extend_from_slice(&1023u16.to_le_bytes());
         }
 
@@ -2097,12 +2074,9 @@ mod tests {
         assert_eq!(w, 2);
         assert_eq!(arr.shape(), &[1, 3, 4, 4]);
 
-        let r00 = arr[[0, 0, 0, 0]].to_f32();
-        let g00 = arr[[0, 1, 0, 0]].to_f32();
-        let b00 = arr[[0, 2, 0, 0]].to_f32();
-        assert!((r00 - 0.0).abs() < 0.01);
-        assert!((g00 - 128.0 / 255.0).abs() < 0.02);
-        assert!((b00 - 1.0).abs() < 0.01);
+        assert!(arr[[0, 0, 0, 0]].to_f32().abs() < 1e-4);
+        assert!((arr[[0, 1, 0, 0]].to_f32() - 1.0 / 255.0).abs() < 1e-4);
+        assert!((arr[[0, 2, 0, 0]].to_f32() - 4.0 / 255.0).abs() < 1e-4);
     }
 
     #[test]
@@ -2213,8 +2187,8 @@ mod tests {
         let mut data = Vec::new();
         for _ in 0..(2 * 2) {
             data.extend_from_slice(&0u16.to_le_bytes());
-            data.extend_from_slice(&512u16.to_le_bytes());
-            data.extend_from_slice(&1023u16.to_le_bytes());
+            data.extend_from_slice(&32768u16.to_le_bytes());
+            data.extend_from_slice(&65535u16.to_le_bytes());
         }
 
         let frame = Frame::CpuRgb {

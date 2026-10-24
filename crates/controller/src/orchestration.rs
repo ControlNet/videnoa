@@ -91,14 +91,23 @@ enum StageError {
 impl StageError {
     const fn retryable(&self) -> bool {
         match self {
+            // A lifecycle CAS miss only means another writer, such as an
+            // operator's cancel, moved the task on; the next pass reloads and
+            // converges.
             Self::Recovery(
                 crate::recovery::RecoveryError::Conflict
-                | crate::recovery::RecoveryError::LocalCleanup(_),
+                | crate::recovery::RecoveryError::LocalCleanup(_)
+                | crate::recovery::RecoveryError::Lifecycle(
+                    crate::lifecycle::LifecycleError::Conflict,
+                ),
             )
             | Self::Transfer(
                 crate::scheduler::TransferError::Conflict
                 | crate::scheduler::TransferError::Busy
-                | crate::scheduler::TransferError::RetryNotDue,
+                | crate::scheduler::TransferError::RetryNotDue
+                | crate::scheduler::TransferError::Lifecycle(
+                    crate::lifecycle::LifecycleError::Conflict,
+                ),
             ) => true,
             Self::Recovery(crate::recovery::RecoveryError::Remote(error))
             | Self::Transfer(crate::scheduler::TransferError::Remote(error)) => {

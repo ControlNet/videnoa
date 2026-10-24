@@ -74,6 +74,7 @@ FROM tasks t
 JOIN workers w
 JOIN worker_load load ON load.id = w.id
 WHERE t.status = 'queued' AND ? = 0
+  AND (t.requested_worker_id IS NULL OR t.requested_worker_id = w.id)
   AND w.enabled = 1 AND w.online = 1
   AND EXISTS (
       SELECT 1 FROM json_each(w.capabilities_json, '$.workflows') capability

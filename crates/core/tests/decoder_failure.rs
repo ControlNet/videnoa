@@ -91,8 +91,18 @@ fn executable(path: &Path, contents: &str) {
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn failed_decoder_job_is_reported_failed_after_emitting_a_real_frame() {
-    if !Path::new("/usr/bin/ffmpeg").exists() || !Path::new("/usr/bin/python3").exists() {
-        eprintln!("Skipping media fault injection: system FFmpeg and Python are required");
+    // The MKV output is muxed by mkvmerge, which the encoder checks up front.
+    let mkvmerge = Command::new("mkvmerge")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success());
+    if !Path::new("/usr/bin/ffmpeg").exists()
+        || !Path::new("/usr/bin/python3").exists()
+        || !mkvmerge
+    {
+        eprintln!(
+            "Skipping media fault injection: system FFmpeg, Python and mkvmerge are required"
+        );
         return;
     }
     let dir = TempDir::new().unwrap();

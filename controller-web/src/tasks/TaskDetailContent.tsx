@@ -28,6 +28,7 @@ export function TaskDetailContent({ detail, guidance, loadingMore, onLoadMore }:
           <Detail label="Input Size" value={formatBytes(detail.task.input_size)} />
           <Detail label="Cancel Requested" value={formatDate(detail.task.cancel_requested_at)} />
           <Detail label="Worker" value={detail.task.worker_id} mono />
+          {detail.task.requested_worker_id === null ? null : <Detail label="Queued For Worker" value={detail.task.requested_worker_id} mono />}
           <Detail label="Remote Job" value={detail.task.remote_job_id} mono />
           <Detail label="Created" value={formatDate(detail.task.created_at)} />
           <Detail label="Updated" value={formatDate(detail.task.updated_at)} />

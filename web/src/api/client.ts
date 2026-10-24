@@ -330,8 +330,13 @@ export function subscribeToProgress(
   const retryDelay = 2000;
   let ws: WebSocket | null = null;
   let closed = false;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
   function connect() {
+    retryTimer = null;
+    if (closed) {
+      return;
+    }
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     ws = new WebSocket(`${proto}//${window.location.host}/api/jobs/${jobId}/ws`);
 
@@ -366,7 +371,7 @@ export function subscribeToProgress(
       }
       if (retries < maxRetries) {
         retries++;
-        setTimeout(connect, retryDelay);
+        retryTimer = setTimeout(connect, retryDelay);
       } else {
         onClose();
       }
@@ -381,6 +386,10 @@ export function subscribeToProgress(
   return {
     close: () => {
       closed = true;
+      if (retryTimer !== null) {
+        clearTimeout(retryTimer);
+        retryTimer = null;
+      }
       ws?.close();
     },
   };

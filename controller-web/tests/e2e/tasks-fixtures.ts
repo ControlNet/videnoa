@@ -64,6 +64,7 @@ export function task(index: number, overrides: Partial<Task> = {}): Task {
     source_reference: null,
     input_size: 4_294_967_296 + index,
     worker_id: workerFor(index),
+    requested_worker_id: null,
     remote_job_id: status === "processing" ? "550e8400-e29b-41d4-a716-446655440099" : null,
     progress: {
       percent: completed ? 100 : index % 100,

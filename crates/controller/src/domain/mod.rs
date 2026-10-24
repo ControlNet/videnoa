@@ -16,7 +16,7 @@ mod values;
 #[path = "task.rs"]
 mod work_items;
 
-pub use actions::{CancelTaskResponse, RetryTaskResponse, TaskActionRequest};
+pub use actions::{CancelTaskResponse, RetryTaskRequest, RetryTaskResponse, TaskActionRequest};
 pub use auth::{LoginRequest, LoginResponse, LogoutResponse, SessionResponse};
 pub use enums::{
     ApiErrorCode, AuthMethod, FailureCode, FailureStage, FieldErrorCode, HealthStatus,

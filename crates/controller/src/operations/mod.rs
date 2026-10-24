@@ -51,6 +51,7 @@ pub struct OperationsState {
     payload_limits: PayloadLimits,
     listener: Option<ListenerHandle>,
     settings_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
+    retries_in_flight: tasks::RetriesInFlight,
     shutdown: Option<CancellationToken>,
 }
 
@@ -75,6 +76,7 @@ impl OperationsState {
             payload_limits: dependencies.payload_limits,
             listener: None,
             settings_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            retries_in_flight: tasks::RetriesInFlight::default(),
             shutdown: None,
         }
     }

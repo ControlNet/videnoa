@@ -60,7 +60,7 @@ async fn processing_retry_response_does_not_depend_on_post_commit_reload() -> Te
     let failed = fixture.store.task(task_id).await?.ok_or("task missing")?;
     install_post_update_corruption(&fixture).await?;
 
-    // When: the replacement attempt commits successfully.
+    // When: the requeue commits successfully.
     let retried = fixture
         .router
         .clone()
@@ -73,7 +73,7 @@ async fn processing_retry_response_does_not_depend_on_post_commit_reload() -> Te
 
     // Then: the response reports committed success without a fallible reload.
     assert_eq!(retried.status(), StatusCode::OK);
-    assert_eq!(json_body(retried).await?["status"], "reserved");
+    assert_eq!(json_body(retried).await?["status"], "queued");
     remote.server.abort();
     Ok(())
 }

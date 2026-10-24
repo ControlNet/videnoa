@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install the release media tools bundle (FFmpeg, ffprobe, mkvpropedit) into the
+# Install the release media tools bundle (FFmpeg, ffprobe, mkvmerge, mkvpropedit) into the
 # checkout's bin/ so development runs use the same tools as release packages.
 # runtime::command_for searches <cwd>/bin before PATH, so run Videnoa from the
 # repository root after installing.
