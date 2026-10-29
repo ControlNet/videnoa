@@ -226,10 +226,8 @@ async fn serve_stream(
             TunnelError::Protocol => 400,
             TunnelError::Unavailable => 503,
         };
-        send.write_all(
-            format!("HTTP/1.1 {status} Tunnel rejected\r\nContent-Length: 0\r\n\r\n").as_bytes(),
-        )
-        .await?;
+        let response = format!("HTTP/1.1 {status} Tunnel rejected\r\nContent-Length: 0\r\n\r\n");
+        respond(&mut send, response.as_bytes()).await?;
         send.finish()?;
         return Ok(());
     }
@@ -247,11 +245,23 @@ async fn serve_stream(
         .insert(local, remote);
     let _guard = PeerGuard(peers, local);
     let mut tcp = tokio::time::timeout(HANDSHAKE_TIMEOUT, socket.connect(target)).await??;
-    send.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-        .await?;
+    respond(&mut send, b"HTTP/1.1 200 Connection Established\r\n\r\n").await?;
     let mut stream = tokio::io::join(recv, send);
     tokio::io::copy_bidirectional(&mut stream, &mut tcp).await?;
     Ok(())
+}
+
+/// Writes a CONNECT response within the handshake deadline. A peer that grants
+/// no stream credit would otherwise stall the write, and the stream permit with
+/// it, forever; on timeout the stream is reset so the task can end.
+async fn respond(send: &mut iroh::endpoint::SendStream, response: &[u8]) -> Result<()> {
+    match tokio::time::timeout(HANDSHAKE_TIMEOUT, send.write_all(response)).await {
+        Ok(written) => Ok(written?),
+        Err(_) => {
+            let _ = send.reset(0u32.into());
+            anyhow::bail!("tunnel peer did not accept the CONNECT response")
+        }
+    }
 }
 
 /// Shared controller endpoint; one persistent identity and connection per peer.
@@ -571,6 +581,107 @@ mod public_network_tests {
         assert_eq!(&value, b"n0-test");
         origin.await??;
         client.shutdown().await;
+        server.shutdown().await;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod permit_exhaustion_tests {
+    use super::*;
+    use iroh::endpoint::{presets, QuicTransportConfig, VarInt};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn rejected_connects_to_a_zero_window_peer_release_their_stream_permits() -> Result<()> {
+        // Given: a worker tunnel whose loopback target echoes, and a synthetic
+        // test credential.
+        const PASSWORD: &str = "permit exhaustion test credential";
+        let auth: Authorizer = Arc::new(|_, supplied| {
+            Box::pin(async move {
+                if supplied == PASSWORD {
+                    Ok(())
+                } else {
+                    Err(TunnelError::Unauthorized)
+                }
+            })
+        });
+        let target_listener = TcpListener::bind("127.0.0.1:0").await?;
+        let target = target_listener.local_addr()?;
+        tokio::spawn(async move {
+            while let Ok((mut tcp, _)) = target_listener.accept().await {
+                tokio::spawn(async move {
+                    let (mut r, mut w) = tcp.split();
+                    let _ = tokio::io::copy(&mut r, &mut w).await;
+                });
+            }
+        });
+        let server = Server::with_endpoint(
+            Endpoint::bind(presets::Minimal).await?,
+            target,
+            auth,
+            PeerMap::default(),
+        )?;
+        let server_addr = server.addr();
+
+        // When: a peer without the password advertises a zero stream receive
+        // window, so no rejection can ever reach it, and sends more
+        // unauthenticated CONNECTs than there are stream permits. Its handles
+        // stay alive, so the rejection writes stay blocked.
+        let attacker = Endpoint::builder(presets::Minimal)
+            .transport_config(
+                QuicTransportConfig::builder()
+                    .stream_receive_window(VarInt::from_u32(0))
+                    .build(),
+            )
+            .bind()
+            .await?;
+        let mut conns = Vec::new();
+        let mut streams = Vec::new();
+        for _ in 0..4 {
+            let conn = attacker.connect(server_addr.clone(), ALPN).await?;
+            for _ in 0..80 {
+                let (mut send, recv) = conn.open_bi().await?;
+                send.write_all(
+                    format!("CONNECT {TARGET} HTTP/1.1\r\nHost: {TARGET}\r\n\r\n").as_bytes(),
+                )
+                .await?;
+                streams.push((send, recv));
+            }
+            conns.push(conn);
+        }
+
+        // Then: once the stalled rejections time out, a correctly
+        // authenticated tunnel works again while the attacker is still
+        // connected.
+        let root = tempfile::tempdir()?;
+        let legit = Client {
+            endpoint: Endpoint::bind(presets::Minimal).await?,
+            connections: Default::default(),
+            network: Network::default(),
+            _identity: Identity::open(root.path())?,
+        };
+        let deadline = tokio::time::Instant::now() + HANDSHAKE_TIMEOUT * 3;
+        let mut stream = loop {
+            match legit.tunnel(server_addr.clone(), PASSWORD).await {
+                Ok(stream) => break stream,
+                Err(_) if tokio::time::Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+                Err(error) => {
+                    return Err(error.context("stream permits stayed exhausted"));
+                }
+            }
+        };
+        stream.write_all(b"pong!").await?;
+        let mut buf = [0u8; 5];
+        stream.read_exact(&mut buf).await?;
+        assert_eq!(&buf, b"pong!");
+
+        drop(streams);
+        drop(conns);
+        attacker.close().await;
+        legit.shutdown().await;
         server.shutdown().await;
         Ok(())
     }
