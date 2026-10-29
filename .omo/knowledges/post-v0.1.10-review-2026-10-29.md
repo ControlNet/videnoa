@@ -105,3 +105,38 @@
 9. **Trivial.** Previews of deleted jobs stay in `runtimePreviewsByJobId`.
    Clear them in `deleteJobHistory`, but not on socket close, because the
    Print output panel of finished jobs relies on the map.
+
+## Fixes (2026-10-29)
+
+The user chose to fix 1, 2, 6, 7, 8, 9 and the npm advisories. Each fix has
+a test that failed on the old code.
+
+- **1 (`6fe2f14`).**
+  - `respond()` in `tunnel.rs` writes both CONNECT responses within
+    `HANDSHAKE_TIMEOUT` and resets the stream on expiry.
+  - Test: `tunnel::permit_exhaustion_tests::rejected_connects_to_a_zero_window_peer_release_their_stream_permits`.
+    A legitimate tunnel recovers within about 10 s while 320 zero-window
+    streams stay open.
+  - What is still possible: a peer that keeps opening slow handshakes can
+    still occupy permits for up to 10 s each. This is ordinary slowloris
+    exposure. Finding 7 (connection slots, cached connections) is unchanged
+    on purpose.
+- **2 (`a13b148`).**
+  - `same_origin_redirects` follows a redirect only within the same origin,
+    or from http to https on the same host. Any other redirect fails with
+    only the target host named.
+  - Tests are in `jellyfin::tests`.
+- **npm (`bd94a2a`).** `npm audit fix` changed only the lockfiles. Both apps
+  now report 0 vulnerabilities.
+- **Web 6-9**: done by a subagent, see `web-ui-fixes-bugs-6-9-2026-10-29.md`.
+  - `6d2001b`: previews are dropped when job history is deleted.
+  - `32d7eba`: failures show toasts; a 401 shows none.
+  - `c930448`: deleting a workflow needs confirmation; the editor's Escape
+    respects `defaultPrevented`.
+  - `8c0b251`: the editor follows only the job its canvas submitted
+    (`submittedJobId`).
+
+Not fixed, by the user's choice:
+- 3: release tag guard;
+- 4: Docker images rebuilt between smoke test and publish;
+- 5: licence notices, plus the TensorRT 12.1 question.
