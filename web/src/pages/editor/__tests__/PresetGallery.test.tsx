@@ -147,7 +147,9 @@ describe("PresetGallery", () => {
 			expect(screen.getByText("My Custom Flow")).toBeInTheDocument();
 		});
 
-		const deleteBtn = screen.getByRole("button", { name: "" });
+		const deleteBtn = screen.getByRole("button", {
+			name: "Delete workflow My Custom Flow",
+		});
 		expect(deleteBtn).toBeInTheDocument();
 	});
 

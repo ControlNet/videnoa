@@ -390,6 +390,11 @@ export const zhCNResources: NamespaceResources = {
 		"gallery.toast.workflowLoaded": "工作流已加载",
 		"gallery.toast.workflowDeleted": "工作流已删除",
 		"gallery.toast.deleteFailed": "删除工作流失败",
+		"gallery.delete.ariaLabel": "删除工作流 {{name}}",
+		"gallery.delete.title": "删除工作流？",
+		"gallery.delete.description": "“{{name}}”将从服务器上永久删除，此操作无法撤销。",
+		"gallery.delete.cancel": "取消",
+		"gallery.delete.confirm": "删除",
 	},
 	preview: {
 		"spinner.loadingAriaLabel": "加载中",

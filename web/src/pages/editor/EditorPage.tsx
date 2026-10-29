@@ -306,7 +306,9 @@ function EditorCanvas() {
 				e.preventDefault();
 				redo();
 			}
-			if (e.key === "Escape") {
+			// A nested dialog (e.g. a delete confirmation) that consumed Escape
+			// must not also close the modal underneath it.
+			if (e.key === "Escape" && !e.defaultPrevented) {
 				useUIStore.getState().closeModal();
 			}
 		}

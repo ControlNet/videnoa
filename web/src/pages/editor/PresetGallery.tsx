@@ -16,6 +16,7 @@ import {
 	Dialog,
 	DialogContent,
 	DialogDescription,
+	DialogFooter,
 	DialogHeader,
 	DialogTitle,
 } from "@/components/ui/dialog";
@@ -36,9 +37,16 @@ export function PresetGallery() {
 	const [presets, setPresets] = useState<Preset[]>([]);
 	const [workflows, setWorkflows] = useState<WorkflowEntry[]>([]);
 	const [loading, setLoading] = useState(false);
+	const [pendingDelete, setPendingDelete] = useState<WorkflowEntry | null>(
+		null,
+	);
+	const [deleting, setDeleting] = useState(false);
 
 	useEffect(() => {
-		if (!open) return;
+		if (!open) {
+			setPendingDelete(null);
+			return;
+		}
 		let cancelled = false;
 		setLoading(true);
 		void (async () => {
@@ -123,109 +131,148 @@ export function PresetGallery() {
 		[closeModal, loadWorkflow, t],
 	);
 
-	const handleDelete = useCallback(
-		async (filename: string, e: React.MouseEvent) => {
-			e.stopPropagation();
-			try {
-				await deleteWorkflow(filename);
-				setWorkflows((prev) => prev.filter((w) => w.filename !== filename));
-				toast.success(t("gallery.toast.workflowDeleted"));
-			} catch {
-				toast.error(t("gallery.toast.deleteFailed"));
-			}
-		},
-		[t],
-	);
+	const handleConfirmDelete = useCallback(async () => {
+		if (!pendingDelete) return;
+		const { filename } = pendingDelete;
+		setDeleting(true);
+		try {
+			await deleteWorkflow(filename);
+			setWorkflows((prev) => prev.filter((w) => w.filename !== filename));
+			toast.success(t("gallery.toast.workflowDeleted"));
+		} catch {
+			toast.error(t("gallery.toast.deleteFailed"));
+		} finally {
+			setDeleting(false);
+			setPendingDelete(null);
+		}
+	}, [pendingDelete, t]);
 
 	return (
-		<Dialog
-			open={open}
-			onOpenChange={(o) => {
-				if (!o) closeModal();
-			}}
-		>
-			<DialogContent className="max-w-3xl">
-				<DialogHeader>
-					<DialogTitle>{t("gallery.title")}</DialogTitle>
-					<DialogDescription>{t("gallery.description")}</DialogDescription>
-				</DialogHeader>
+		<>
+			<Dialog
+				open={open}
+				onOpenChange={(o) => {
+					if (!o) closeModal();
+				}}
+			>
+				<DialogContent className="max-w-3xl">
+					<DialogHeader>
+						<DialogTitle>{t("gallery.title")}</DialogTitle>
+						<DialogDescription>{t("gallery.description")}</DialogDescription>
+					</DialogHeader>
 
-				{loading ? (
-					<div className="flex items-center justify-center py-8">
-						<Loader2 className="size-5 animate-spin text-muted-foreground" />
-					</div>
-				) : (
-					<ScrollArea className="max-h-[500px]">
-						<div className="grid gap-2">
-							<p className="text-xs font-medium text-muted-foreground uppercase tracking-wide px-1">
-								{t("gallery.sections.builtInPresets")}
-							</p>
-							{presets.map((preset) => (
-								<Card
-									key={preset.id}
-									className="cursor-pointer hover:bg-secondary/40 transition-colors"
-									onClick={() => {
-										handleLoadPreset(preset);
-									}}
-								>
-									<CardHeader className="p-4">
-										<CardTitle className="text-sm">{preset.name}</CardTitle>
-										{preset.description && (
-											<CardDescription className="text-xs">
-												{preset.description}
-											</CardDescription>
-										)}
-									</CardHeader>
-								</Card>
-							))}
-							{presets.length === 0 && (
-								<p className="text-sm text-muted-foreground text-center py-4">
-									{t("gallery.empty.noPresets")}
+					{loading ? (
+						<div className="flex items-center justify-center py-8">
+							<Loader2 className="size-5 animate-spin text-muted-foreground" />
+						</div>
+					) : (
+						<ScrollArea className="max-h-[500px]">
+							<div className="grid gap-2">
+								<p className="text-xs font-medium text-muted-foreground uppercase tracking-wide px-1">
+									{t("gallery.sections.builtInPresets")}
 								</p>
-							)}
-
-							<p className="text-xs font-medium text-muted-foreground uppercase tracking-wide px-1 mt-3">
-								{t("gallery.sections.savedWorkflows")}
-							</p>
-							{workflows.map((wf) => (
-								<Card
-									key={wf.filename}
-									className="cursor-pointer hover:bg-secondary/40 transition-colors"
-									onClick={() => {
-										handleLoadWorkflow(wf);
-									}}
-								>
-									<CardHeader className="p-4 flex flex-row items-start justify-between gap-2">
-										<div className="min-w-0">
-											<CardTitle className="text-sm">{wf.name}</CardTitle>
-											{wf.description && (
+								{presets.map((preset) => (
+									<Card
+										key={preset.id}
+										className="cursor-pointer hover:bg-secondary/40 transition-colors"
+										onClick={() => {
+											handleLoadPreset(preset);
+										}}
+									>
+										<CardHeader className="p-4">
+											<CardTitle className="text-sm">{preset.name}</CardTitle>
+											{preset.description && (
 												<CardDescription className="text-xs">
-													{wf.description}
+													{preset.description}
 												</CardDescription>
 											)}
-										</div>
-										<Button
-											variant="ghost"
-											size="icon"
-											className="size-7 shrink-0 text-muted-foreground hover:text-destructive"
-											onClick={(e) => {
-												void handleDelete(wf.filename, e);
-											}}
-										>
-											<Trash2 className="size-3.5" />
-										</Button>
-									</CardHeader>
-								</Card>
-							))}
-							{workflows.length === 0 && (
-								<p className="text-sm text-muted-foreground text-center py-4">
-									{t("gallery.empty.noSavedWorkflows")}
+										</CardHeader>
+									</Card>
+								))}
+								{presets.length === 0 && (
+									<p className="text-sm text-muted-foreground text-center py-4">
+										{t("gallery.empty.noPresets")}
+									</p>
+								)}
+
+								<p className="text-xs font-medium text-muted-foreground uppercase tracking-wide px-1 mt-3">
+									{t("gallery.sections.savedWorkflows")}
 								</p>
-							)}
-						</div>
-					</ScrollArea>
-				)}
-			</DialogContent>
-		</Dialog>
+								{workflows.map((wf) => (
+									<Card
+										key={wf.filename}
+										className="cursor-pointer hover:bg-secondary/40 transition-colors"
+										onClick={() => {
+											handleLoadWorkflow(wf);
+										}}
+									>
+										<CardHeader className="p-4 flex flex-row items-start justify-between gap-2">
+											<div className="min-w-0">
+												<CardTitle className="text-sm">{wf.name}</CardTitle>
+												{wf.description && (
+													<CardDescription className="text-xs">
+														{wf.description}
+													</CardDescription>
+												)}
+											</div>
+											<Button
+												variant="ghost"
+												size="icon"
+												className="size-7 shrink-0 text-muted-foreground hover:text-destructive"
+												aria-label={t("gallery.delete.ariaLabel", { name: wf.name })}
+												onClick={(e) => {
+													e.stopPropagation();
+													setPendingDelete(wf);
+												}}
+											>
+												<Trash2 className="size-3.5" />
+											</Button>
+										</CardHeader>
+									</Card>
+								))}
+								{workflows.length === 0 && (
+									<p className="text-sm text-muted-foreground text-center py-4">
+										{t("gallery.empty.noSavedWorkflows")}
+									</p>
+								)}
+							</div>
+						</ScrollArea>
+					)}
+				</DialogContent>
+			</Dialog>
+			<Dialog
+				open={open && pendingDelete !== null}
+				onOpenChange={(o) => {
+					if (!o && !deleting) setPendingDelete(null);
+				}}
+			>
+				<DialogContent>
+					<DialogHeader>
+						<DialogTitle>{t("gallery.delete.title")}</DialogTitle>
+						<DialogDescription>
+							{t("gallery.delete.description", { name: pendingDelete?.name ?? "" })}
+						</DialogDescription>
+					</DialogHeader>
+					<DialogFooter>
+						<Button
+							variant="outline"
+							disabled={deleting}
+							onClick={() => {
+								setPendingDelete(null);
+							}}
+						>
+							{t("gallery.delete.cancel")}
+						</Button>
+						<Button
+							variant="destructive"
+							disabled={deleting}
+							onClick={() => void handleConfirmDelete()}
+						>
+							{t("gallery.delete.confirm")}
+						</Button>
+					</DialogFooter>
+				</DialogContent>
+			</Dialog>
+		</>
 	);
 }

@@ -1,7 +1,8 @@
-import { act, render } from "@testing-library/react";
+import { act, fireEvent, render } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useJobStore } from "@/stores/job-store";
 import { useNodeDefinitions } from "@/stores/node-definitions-store";
+import { useUIStore } from "@/stores/ui-store";
 import { useWorkflowStore } from "@/stores/workflow-store";
 import { EditorPage } from "../EditorPage";
 
@@ -388,5 +389,31 @@ describe("EditorPage drag-and-drop", () => {
 		render(<EditorPage />);
 
 		expect(jobStoreMocks.unsubscribeFromJob).toHaveBeenCalled();
+	});
+});
+
+describe("EditorPage Escape shortcut", () => {
+	it("closes the open modal on Escape", () => {
+		useUIStore.setState({ activeModal: "presets" });
+		render(<EditorPage />);
+
+		fireEvent.keyDown(document.body, { key: "Escape" });
+
+		expect(useUIStore.getState().activeModal).toBeNull();
+	});
+
+	it("leaves the modal open when a nested dialog already handled Escape", () => {
+		useUIStore.setState({ activeModal: "presets" });
+		render(<EditorPage />);
+		// Radix dismisses its top-most layer from a document capture listener
+		// and marks the event handled with preventDefault().
+		const dismissNestedDialog = (event: KeyboardEvent) => {
+			event.preventDefault();
+		};
+		document.addEventListener("keydown", dismissNestedDialog, { capture: true, once: true });
+
+		fireEvent.keyDown(document.body, { key: "Escape" });
+
+		expect(useUIStore.getState().activeModal).toBe("presets");
 	});
 });

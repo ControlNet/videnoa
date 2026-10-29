@@ -407,6 +407,11 @@ export const enResources: NamespaceResources = {
 		"gallery.toast.workflowLoaded": "Workflow loaded",
 		"gallery.toast.workflowDeleted": "Workflow deleted",
 		"gallery.toast.deleteFailed": "Failed to delete workflow",
+		"gallery.delete.ariaLabel": "Delete workflow {{name}}",
+		"gallery.delete.title": "Delete workflow?",
+		"gallery.delete.description": "\u201c{{name}}\u201d will be permanently deleted from the server. This cannot be undone.",
+		"gallery.delete.cancel": "Cancel",
+		"gallery.delete.confirm": "Delete",
 	},
 	preview: {
 		"spinner.loadingAriaLabel": "Loading",
