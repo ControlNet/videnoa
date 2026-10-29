@@ -127,6 +127,9 @@ export const enResources: NamespaceResources = {
 	},
 	jobs: {
 		"jobs.page.errors.refresh": "The job list could not be refreshed. Accepted jobs remain submitted. Retrying automatically.",
+		"jobs.page.errors.cancelFailed": "Failed to cancel job",
+		"jobs.page.errors.retryFailed": "Failed to retry job",
+		"jobs.page.errors.deleteFailed": "Failed to delete job history",
 		"jobs.page.title": "Jobs",
 		"jobs.page.summary.total_one": "{{count}} job total",
 		"jobs.page.summary.total_other": "{{count}} jobs total",

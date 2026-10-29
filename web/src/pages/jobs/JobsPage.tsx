@@ -14,12 +14,15 @@ import {
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { ApiError } from "@/api/client";
 import { PageContainer } from "@/components/layout/PageContainer";
+import { toast } from "@/components/shared/Toaster";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
+import { formatErrorWithPrefix } from "@/lib/presentation-error";
 import {
 	formatLocaleDateTime,
 	formatRelativeTime,
@@ -53,6 +56,14 @@ function getParamsSummary(
 	}
 
 	return t("jobs.page.history.params.summary", { count });
+}
+
+function notifyActionFailure(prefix: string, error: unknown): void {
+	// An expired session already swaps the page for the sign-in screen.
+	if (error instanceof ApiError && error.status === 401) {
+		return;
+	}
+	toast.error(formatErrorWithPrefix(prefix, error));
 }
 
 function getParamsJson(params: Job["params"]): string {
@@ -92,12 +103,12 @@ function ActiveJobCard({ job }: { job: Job }) {
 		setCancelling(true);
 		try {
 			await cancelJob(job.id);
-		} catch {
-			// store handles error state
+		} catch (error) {
+			notifyActionFailure(t("jobs.page.errors.cancelFailed"), error);
 		} finally {
 			setCancelling(false);
 		}
-	}, [cancelJob, job.id]);
+	}, [cancelJob, job.id, t]);
 
 	return (
 		<Card className="border-blue-500/30 bg-blue-500/5">
@@ -229,23 +240,23 @@ function JobRow({
 		setRetrying(true);
 		try {
 			await rerunJob(job.id);
-		} catch {
-			// store handles error state
+		} catch (error) {
+			notifyActionFailure(t("jobs.page.errors.retryFailed"), error);
 		} finally {
 			setRetrying(false);
 		}
-	}, [job.id, rerunJob]);
+	}, [job.id, rerunJob, t]);
 
 	const handleDelete = useCallback(async () => {
 		setDeleting(true);
 		try {
 			await deleteJobHistory(job.id);
-		} catch {
-			// store handles error state
+		} catch (error) {
+			notifyActionFailure(t("jobs.page.errors.deleteFailed"), error);
 		} finally {
 			setDeleting(false);
 		}
-	}, [deleteJobHistory, job.id]);
+	}, [deleteJobHistory, job.id, t]);
 
 	return (
 		<div className="group">
