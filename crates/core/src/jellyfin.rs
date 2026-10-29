@@ -67,6 +67,34 @@ pub struct MediaItem {
     pub overview: Option<String>,
 }
 
+/// Follows a redirect only to the origin the request started at, or from http
+/// to https on the same host. reqwest strips its standard credential headers on
+/// a cross-host hop but not `X-Emby-Token`, so any other redirect would hand the
+/// API key to that host.
+fn same_origin_redirects(attempt: reqwest::redirect::Attempt) -> reqwest::redirect::Action {
+    if attempt.previous().len() >= 10 {
+        return attempt.error("too many Jellyfin redirects");
+    }
+    let Some(origin) = attempt.previous().first() else {
+        return attempt.follow();
+    };
+    let target = attempt.url();
+    let same_host = origin.host_str() == target.host_str();
+    let same_origin = same_host
+        && origin.scheme() == target.scheme()
+        && origin.port_or_known_default() == target.port_or_known_default();
+    let upgrade = same_host && origin.scheme() == "http" && target.scheme() == "https";
+    if same_origin || upgrade {
+        attempt.follow()
+    } else {
+        // Name only the host: the redirect URL itself may carry credentials.
+        let host = target.host_str().unwrap_or("an unknown host").to_owned();
+        attempt.error(format!(
+            "Jellyfin redirected to another host ({host}); configure that URL directly"
+        ))
+    }
+}
+
 /// Authenticated Jellyfin REST API client.
 #[derive(Debug)]
 pub struct JellyfinClient {
@@ -88,6 +116,7 @@ impl JellyfinClient {
 
         let client = reqwest::Client::builder()
             .default_headers(headers)
+            .redirect(reqwest::redirect::Policy::custom(same_origin_redirects))
             .build()
             .context("failed to build HTTP client")?;
 
@@ -431,6 +460,85 @@ mod tests {
         let resp: ItemsResponse = serde_json::from_str(json).unwrap();
         assert_eq!(resp.items.len(), 0);
         assert_eq!(resp.total_record_count, 0);
+    }
+
+    type SeenToken = std::sync::Arc<std::sync::Mutex<Option<String>>>;
+
+    /// Serves `/Library/VirtualFolders` as an empty library list and records
+    /// the `X-Emby-Token` it was sent.
+    async fn library_server(seen: SeenToken) -> std::net::SocketAddr {
+        let app = axum::Router::new().route(
+            "/Library/VirtualFolders",
+            axum::routing::get(move |headers: axum::http::HeaderMap| async move {
+                let token = headers
+                    .get("X-Emby-Token")
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::to_owned);
+                *seen.lock().unwrap() = token;
+                axum::Json(serde_json::json!([]))
+            }),
+        );
+        serve(app).await
+    }
+
+    /// Answers every request with a 302 to `location`.
+    async fn redirect_server(location: String) -> std::net::SocketAddr {
+        let app = axum::Router::new()
+            .fallback(move || async move { axum::response::Redirect::to(&location) });
+        serve(app).await
+    }
+
+    async fn serve(app: axum::Router) -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        address
+    }
+
+    #[tokio::test]
+    async fn api_key_is_not_sent_to_another_origin_on_redirect() {
+        // Given: a Jellyfin URL that redirects to a server on another port.
+        let seen = SeenToken::default();
+        let other = library_server(seen.clone()).await;
+        let jellyfin = redirect_server(format!("http://{other}/Library/VirtualFolders")).await;
+        let client = JellyfinClient::new(&format!("http://{jellyfin}"), "synthetic-key").unwrap();
+
+        // When: the libraries are listed.
+        let result = client.get_libraries().await;
+
+        // Then: the redirect is refused and the other server never sees the key.
+        assert!(result.is_err());
+        assert_eq!(*seen.lock().unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn same_origin_redirects_are_still_followed() {
+        // Given: a Jellyfin server that redirects a path to itself.
+        let seen = SeenToken::default();
+        let seen_by_app = seen.clone();
+        let app = axum::Router::new()
+            .route(
+                "/jellyfin/Library/VirtualFolders",
+                axum::routing::get(move |headers: axum::http::HeaderMap| async move {
+                    *seen_by_app.lock().unwrap() = headers
+                        .get("X-Emby-Token")
+                        .and_then(|value| value.to_str().ok())
+                        .map(str::to_owned);
+                    axum::Json(serde_json::json!([]))
+                }),
+            )
+            .route(
+                "/Library/VirtualFolders",
+                axum::routing::get(|| async {
+                    axum::response::Redirect::permanent("/jellyfin/Library/VirtualFolders")
+                }),
+            );
+        let jellyfin = serve(app).await;
+        let client = JellyfinClient::new(&format!("http://{jellyfin}"), "synthetic-key").unwrap();
+
+        // When/Then: the redirect is followed with the key.
+        assert!(client.get_libraries().await.unwrap().is_empty());
+        assert_eq!(seen.lock().unwrap().as_deref(), Some("synthetic-key"));
     }
 
     fn serde_qs_manual(query: &ItemQuery) -> String {
