@@ -57,6 +57,7 @@ function ToolbarButton({
 					variant="ghost"
 					size="icon"
 					className="size-8"
+					aria-label={label}
 					onClick={onClick}
 					disabled={disabled}
 				>
@@ -98,7 +99,10 @@ export function EditorToolbar({ onAutoLayout, onFitView }: EditorToolbarProps) {
 			setRunDialogOpen(true);
 		} else {
 			try {
-				await useJobStore.getState().submitJob(workflow, { workflowName });
+				const jobId = await useJobStore
+					.getState()
+					.submitJob(workflow, { workflowName });
+				useWorkflowStore.getState().setSubmittedJobId(jobId);
 				toast.success(t("toolbar.toast.jobSubmitted"));
 				void navigate("/jobs");
 			} catch (err) {

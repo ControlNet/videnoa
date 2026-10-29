@@ -117,6 +117,7 @@ function EditorCanvas() {
 	const fetchJobs = useJobStore((s) => s.fetchJobs);
 	const subscribeToJob = useJobStore((s) => s.subscribeToJob);
 	const unsubscribeFromJob = useJobStore((s) => s.unsubscribeFromJob);
+	const submittedJobId = useWorkflowStore((s) => s.submittedJobId);
 
 	useEffect(() => {
 		void fetchJobs();
@@ -124,12 +125,16 @@ function EditorCanvas() {
 		return () => clearInterval(id);
 	}, [fetchJobs]);
 
+	// Only the job started from this canvas: another workflow's job may reuse
+	// the same node ids, and its previews would land on the wrong nodes.
 	const trackedJob = useMemo(
 		() =>
-			jobs.find((job) => job.status === "running") ??
-			jobs.find((job) => job.status === "queued") ??
-			null,
-		[jobs],
+			jobs.find(
+				(job) =>
+					job.id === submittedJobId &&
+					(job.status === "running" || job.status === "queued"),
+			) ?? null,
+		[jobs, submittedJobId],
 	);
 
 	useEffect(() => {

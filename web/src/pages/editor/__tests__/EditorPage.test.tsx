@@ -4,6 +4,7 @@ import { useJobStore } from "@/stores/job-store";
 import { useNodeDefinitions } from "@/stores/node-definitions-store";
 import { useUIStore } from "@/stores/ui-store";
 import { useWorkflowStore } from "@/stores/workflow-store";
+import type { Job } from "@/types";
 import { EditorPage } from "../EditorPage";
 
 const reactFlowMock = vi.hoisted(() => {
@@ -152,6 +153,18 @@ const VIDEO_INPUT_DESCRIPTOR = {
 	],
 };
 
+function makeJob(id: string, status: Job["status"]): Job {
+	return {
+		id,
+		status,
+		progress: null,
+		created_at: "2026-02-14T00:00:00Z",
+		started_at: null,
+		completed_at: null,
+		error: null,
+	};
+}
+
 function getOnDropHandler() {
 	const onDrop = reactFlowMock.props.onDrop;
 	expect(onDrop).toBeTypeOf("function");
@@ -171,6 +184,7 @@ beforeEach(() => {
 		past: [],
 		future: [],
 		currentFile: null,
+		submittedJobId: null,
 	});
 
 	jobStoreMocks.fetchJobs.mockResolvedValue(undefined);
@@ -359,20 +373,9 @@ describe("EditorPage drag-and-drop", () => {
 		expect(invalidWhenBool).toBe(false);
 	});
 
-	it("subscribes to running jobs and cleans up on unmount", () => {
-		useJobStore.setState({
-			jobs: [
-				{
-					id: "job-1",
-					status: "running",
-					progress: null,
-					created_at: "2026-02-14T00:00:00Z",
-					started_at: null,
-					completed_at: null,
-					error: null,
-				},
-			],
-		});
+	it("subscribes to the job submitted from this canvas and cleans up on unmount", () => {
+		useJobStore.setState({ jobs: [makeJob("job-1", "running")] });
+		useWorkflowStore.setState({ submittedJobId: "job-1" });
 
 		const view = render(<EditorPage />);
 
@@ -380,6 +383,39 @@ describe("EditorPage drag-and-drop", () => {
 		expect(jobStoreMocks.subscribeToJob).toHaveBeenCalledWith("job-1");
 
 		view.unmount();
+		expect(jobStoreMocks.unsubscribeFromJob).toHaveBeenCalled();
+	});
+
+	it("does not track a running job that was not submitted from this canvas", () => {
+		useJobStore.setState({ jobs: [makeJob("job-elsewhere", "running")] });
+
+		render(<EditorPage />);
+
+		expect(jobStoreMocks.subscribeToJob).not.toHaveBeenCalled();
+	});
+
+	it("tracks the canvas job even while another job runs", () => {
+		useJobStore.setState({
+			jobs: [makeJob("job-elsewhere", "running"), makeJob("job-1", "queued")],
+		});
+		useWorkflowStore.setState({ submittedJobId: "job-1" });
+
+		render(<EditorPage />);
+
+		expect(jobStoreMocks.subscribeToJob).toHaveBeenCalledTimes(1);
+		expect(jobStoreMocks.subscribeToJob).toHaveBeenCalledWith("job-1");
+	});
+
+	it("stops tracking the canvas job once it has finished", () => {
+		useJobStore.setState({
+			jobs: [makeJob("job-1", "completed")],
+			activeJobId: "job-1",
+		});
+		useWorkflowStore.setState({ submittedJobId: "job-1" });
+
+		render(<EditorPage />);
+
+		expect(jobStoreMocks.subscribeToJob).not.toHaveBeenCalled();
 		expect(jobStoreMocks.unsubscribeFromJob).toHaveBeenCalled();
 	});
 

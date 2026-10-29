@@ -1,8 +1,9 @@
 import type { Edge, Node } from '@xyflow/react';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import presetJson from '../../../../presets/anime-2x-interpolation-2x.json';
 import type { PipelineNodeData, Workflow, WorkflowPort } from '../../types';
+import { useJobStore } from '../job-store';
 import type { NodeDescriptor } from '../node-definitions-store';
 import { useNodeDefinitions } from '../node-definitions-store';
 import { useWorkflowStore } from '../workflow-store';
@@ -160,6 +161,7 @@ beforeEach(() => {
     edges: [],
     past: [],
     future: [],
+    submittedJobId: null,
   });
 });
 
@@ -495,5 +497,41 @@ describe('currentFile', () => {
     useWorkflowStore.getState().loadWorkflow(preset);
 
     expect(useWorkflowStore.getState().currentFile).toBeNull();
+  });
+});
+
+describe('submittedJobId', () => {
+  function associateRunningJob(): ReturnType<typeof vi.fn> {
+    const unsubscribeFromJob = vi.fn();
+    useJobStore.setState({ unsubscribeFromJob });
+    useWorkflowStore.getState().setSubmittedJobId('job-1');
+    return unsubscribeFromJob;
+  }
+
+  it('keeps the association when the canvas is saved under a file name', () => {
+    const unsubscribeFromJob = associateRunningJob();
+
+    useWorkflowStore.getState().setCurrentFile({ filename: 'a.json', name: 'A', description: '' });
+
+    expect(useWorkflowStore.getState().submittedJobId).toBe('job-1');
+    expect(unsubscribeFromJob).not.toHaveBeenCalled();
+  });
+
+  it('loadWorkflow drops the association and the runtime previews', () => {
+    const unsubscribeFromJob = associateRunningJob();
+
+    useWorkflowStore.getState().loadWorkflow(preset);
+
+    expect(useWorkflowStore.getState().submittedJobId).toBeNull();
+    expect(unsubscribeFromJob).toHaveBeenCalledTimes(1);
+  });
+
+  it('clear drops the association and the runtime previews', () => {
+    const unsubscribeFromJob = associateRunningJob();
+
+    useWorkflowStore.getState().clear();
+
+    expect(useWorkflowStore.getState().submittedJobId).toBeNull();
+    expect(unsubscribeFromJob).toHaveBeenCalledTimes(1);
   });
 });

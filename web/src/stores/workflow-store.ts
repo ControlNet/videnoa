@@ -9,6 +9,7 @@ import type {
   WorkflowInterface,
   WorkflowPort,
 } from '../types';
+import { useJobStore } from './job-store';
 import { useNodeDefinitions } from './node-definitions-store';
 
 const MAX_HISTORY = 50;
@@ -60,6 +61,10 @@ interface WorkflowState {
 
   currentFile: { filename: string; name: string; description: string } | null;
   setCurrentFile: (file: { filename: string; name: string; description: string } | null) => void;
+
+  /** Job submitted from this canvas; the editor shows runtime previews only for it. */
+  submittedJobId: string | null;
+  setSubmittedJobId: (jobId: string | null) => void;
 
   exportWorkflow: () => Workflow;
 }
@@ -383,6 +388,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   past: [],
   future: [],
   currentFile: null,
+  submittedJobId: null,
 
   setNodes: (nodes) => {
     const state = get();
@@ -512,7 +518,9 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
       nodes,
       edges,
       currentFile: null,
+      submittedJobId: null,
     });
+    useJobStore.getState().unsubscribeFromJob();
   },
 
   clear: () => {
@@ -523,10 +531,14 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
       nodes: [],
       edges: [],
       currentFile: null,
+      submittedJobId: null,
     });
+    useJobStore.getState().unsubscribeFromJob();
   },
 
   setCurrentFile: (file) => set({ currentFile: file }),
+
+  setSubmittedJobId: (jobId) => set({ submittedJobId: jobId }),
 
   undo: () => {
     const state = get();
