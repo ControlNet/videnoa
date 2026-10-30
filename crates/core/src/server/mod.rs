@@ -1298,16 +1298,45 @@ async fn api_route_not_found(Path(path): Path<String>) -> AppError {
     AppError::NotFound(format!("api endpoint not found: /api/{path}"))
 }
 
-async fn get_config(State(state): State<AppState>) -> Json<AppConfig> {
-    let config = state.inner.config.read().await.clone();
-    Json(config)
+/// Version tag of a config document: a hash of its JSON form, quoted as an
+/// HTTP entity tag.
+fn config_etag(config: &AppConfig) -> String {
+    use sha2::{Digest, Sha256};
+
+    let bytes = serde_json::to_vec(config).unwrap_or_default();
+    format!("\"{:x}\"", Sha256::digest(bytes))
 }
 
+fn with_config_etag(config: AppConfig) -> Response {
+    let etag = config_etag(&config);
+    ([(axum::http::header::ETAG, etag)], Json(config)).into_response()
+}
+
+async fn get_config(State(state): State<AppState>) -> Response {
+    let config = state.inner.config.read().await.clone();
+    with_config_etag(config)
+}
+
+/// Settings are saved as a whole document, so two editors (the Settings form
+/// and the desktop language switch) would revert each other. A PUT carrying
+/// `If-Match` is applied only to the version it was based on; without the
+/// header the write is unconditional, as before.
 async fn update_config(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(payload): Json<AppConfig>,
-) -> Result<Json<AppConfig>, AppError> {
+) -> Result<Response, AppError> {
     let _settings = state.inner.settings_lock.lock().await;
+    if let Some(if_match) = headers.get(axum::http::header::IF_MATCH) {
+        let current = config_etag(&*state.inner.config.read().await);
+        if if_match.to_str().ok().map(str::trim) != Some(current.as_str()) {
+            return Err(AppError::PreconditionFailed {
+                code: "config_changed",
+                message: "settings were changed elsewhere; reload them and apply the change again"
+                    .into(),
+            });
+        }
+    }
     if payload.iroh.enabled && !state.iroh_password_enabled()? {
         return Err(AppError::BadRequest(
             "Set a worker password before enabling iroh".into(),
@@ -1339,7 +1368,7 @@ async fn update_config(
         .reconcile_iroh()
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
-    Ok(Json(payload))
+    Ok(with_config_etag(payload))
 }
 
 async fn create_job(
@@ -3072,6 +3101,7 @@ pub enum AppError {
     Internal(String),
     TooManyRequests(String),
     Conflict { code: &'static str, message: String },
+    PreconditionFailed { code: &'static str, message: String },
     InvalidIdempotencyKey,
     IdempotencyConflict,
 }
@@ -3085,6 +3115,9 @@ impl IntoResponse for AppError {
             AppError::TooManyRequests(msg) => (StatusCode::TOO_MANY_REQUESTS, msg, None),
             AppError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg, None),
             AppError::Conflict { code, message } => (StatusCode::CONFLICT, message, Some(code)),
+            AppError::PreconditionFailed { code, message } => {
+                (StatusCode::PRECONDITION_FAILED, message, Some(code))
+            }
             AppError::InvalidIdempotencyKey => (
                 StatusCode::BAD_REQUEST,
                 "invalid idempotency key".to_string(),
@@ -7213,6 +7246,78 @@ mod tests {
             "expected client error, got {}",
             resp.status()
         );
+    }
+
+    /// The Settings form and the desktop language switch both PUT the whole
+    /// document; without a version check the later write silently reverts
+    /// the earlier one.
+    #[tokio::test]
+    async fn test_update_config_rejects_a_stale_if_match() {
+        let state = test_state();
+        let mut app = app_router(state.clone());
+
+        let req = Request::builder()
+            .uri("/api/config")
+            .body(Body::empty())
+            .unwrap();
+        let resp = send_request(&mut app, req).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let etag = resp
+            .headers()
+            .get(axum::http::header::ETAG)
+            .expect("GET /api/config should carry an ETag")
+            .to_str()
+            .unwrap()
+            .to_string();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let config: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        let put = |config: &serde_json::Value, if_match: Option<&str>| {
+            let mut req = Request::builder()
+                .method("PUT")
+                .uri("/api/config")
+                .header("content-type", "application/json");
+            if let Some(if_match) = if_match {
+                req = req.header(axum::http::header::IF_MATCH, if_match);
+            }
+            req.body(Body::from(serde_json::to_vec(config).unwrap()))
+                .unwrap()
+        };
+
+        let mut language_switch = config.clone();
+        language_switch["locale"] = serde_json::json!("zh-CN");
+        let resp = send_request(&mut app, put(&language_switch, Some(&etag))).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let next_etag = resp
+            .headers()
+            .get(axum::http::header::ETAG)
+            .expect("PUT /api/config should carry the new ETag")
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert_ne!(next_etag, etag);
+
+        let mut settings_form = config.clone();
+        settings_form["paths"]["models_dir"] = serde_json::json!("models_custom");
+        let resp = send_request(&mut app, put(&settings_form, Some(&etag))).await;
+        assert_eq!(resp.status(), StatusCode::PRECONDITION_FAILED);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["code"], "config_changed");
+        assert_eq!(state.inner.config.read().await.locale, "zh-CN");
+        assert_eq!(
+            state.inner.config.read().await.paths.models_dir,
+            PathBuf::from("models")
+        );
+
+        // Callers that do not send If-Match keep the old last-write-wins
+        // behaviour.
+        let resp = send_request(&mut app, put(&settings_form, None)).await;
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[tokio::test]
