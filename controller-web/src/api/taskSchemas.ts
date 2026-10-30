@@ -1,5 +1,7 @@
 import { z } from "zod"
 
+import { rowsOf } from "./schemas"
+
 export const taskStatusSchema = z.enum([
   "queued",
   "reserved",
@@ -29,7 +31,6 @@ export const taskProgressSchema = z
     bytes_transferred: z.number().int().nonnegative().nullable(),
     bytes_total: z.number().int().nonnegative().nullable(),
   })
-  .strict()
 
 export const failureStageSchema = z.enum([
   "reservation",
@@ -67,7 +68,6 @@ export const taskFailureSchema = z
     message: z.string(),
     retryable: z.boolean(),
   })
-  .strict()
 
 export const taskSchema = z
   .object({
@@ -96,7 +96,6 @@ export const taskSchema = z
     completed_at: z.iso.datetime().nullable(),
     allowed_actions: z.array(z.string()).default([]),
   })
-  .strict()
 
 export const taskCreateRequestSchema = z
   .object({
@@ -122,18 +121,15 @@ export const taskAttemptSchema = z
     remote_input_path: z.string().nullable(),
     remote_output_path: z.string().nullable(),
     progress: taskProgressSchema,
-    retry: z
-      .object({
-        retry_count: z.number().int().nonnegative(),
-        next_retry_at: z.iso.datetime().nullable(),
-      })
-      .strict(),
+    retry: z.object({
+      retry_count: z.number().int().nonnegative(),
+      next_retry_at: z.iso.datetime().nullable(),
+    }),
     failure: taskFailureSchema.nullable(),
     created_at: z.iso.datetime(),
     started_at: z.iso.datetime().nullable(),
     completed_at: z.iso.datetime().nullable(),
   })
-  .strict()
 
 export const taskDetailSchema = z
   .object({
@@ -143,7 +139,6 @@ export const taskDetailSchema = z
     limit: z.number().int().positive().max(500),
     offset: z.number().int().nonnegative(),
   })
-  .strict()
 
 export const cancelTaskResponseSchema = z
   .object({
@@ -151,7 +146,6 @@ export const cancelTaskResponseSchema = z
     status: taskStatusSchema,
     cancel_requested_at: z.iso.datetime(),
   })
-  .strict()
 
 export const retryTaskResponseSchema = z
   .object({
@@ -159,32 +153,28 @@ export const retryTaskResponseSchema = z
     attempt_id: z.string().uuid().nullable(),
     status: taskStatusSchema,
   })
-  .strict()
 
 export const taskCreateResponseSchema = taskSchema
 
 export const taskListSchema = z
   .object({
-    items: z.array(taskSchema),
+    items: rowsOf(taskSchema),
     total: z.number().int().nonnegative(),
     limit: z.number().int().positive().max(100),
     offset: z.number().int().nonnegative(),
   })
-  .strict()
 
 export const taskStatusCountsSchema = z
   .object({
-    items: z.array(z.object({ status: taskStatusSchema, count: z.number().int().nonnegative() }).strict()),
+    items: rowsOf(z.object({ status: taskStatusSchema, count: z.number().int().nonnegative() })),
     total: z.number().int().nonnegative(),
   })
-  .strict()
 
 export const taskUpdatedEventSchema = z
   .object({
     type: z.literal("task_updated"),
-    data: z.object({ event_id: z.string().uuid(), task: taskSchema }).strict(),
+    data: z.object({ event_id: z.string().uuid(), task: taskSchema }),
   })
-  .strict()
 
 export type Task = z.infer<typeof taskSchema>
 export type FailureCode = z.infer<typeof failureCodeSchema>

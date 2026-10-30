@@ -79,15 +79,33 @@ describe("worker API schemas", () => {
     expect(parsed.items[0]?.capabilities.invalid_workflows).toEqual([invalid])
   })
 
-  it("rejects unknown worker summary fields", () => {
-    // Given: a server response that drifted beyond the closed Rust DTO.
-    const payload = { items: [{ ...worker, secret: "must-not-cross" }], total: 1 }
+  it("drops worker fields a newer Controller adds", () => {
+    // Given: a worker summary with a field this UI does not know.
+    const payload = { items: [{ ...worker, added_later: "not-for-the-ui" }], total: 1 }
 
-    // When: the strict boundary parses it.
-    const parsed = workerListSchema.safeParse(payload)
+    // When: the boundary parses it.
+    const parsed = workerListSchema.parse(payload)
 
-    // Then: contract drift cannot silently reach the UI.
-    expect(parsed.success).toBe(false)
+    // Then: the worker is read and the unknown field does not reach the UI.
+    expect(parsed.items).toHaveLength(1)
+    expect("added_later" in (parsed.items[0] ?? {})).toBe(false)
+  })
+
+  it("keeps the worker rows it can read when one row is unreadable", () => {
+    // Given: a list with one worker on a transport this UI does not know.
+    const other = { ...worker, id: "550e8400-e29b-41d4-a716-446655440001", transport: "carrier-pigeon" }
+
+    // When: the list crosses the boundary.
+    const parsed = workerListSchema.parse({ items: [worker, other], total: 2 })
+
+    // Then: only that row is left out.
+    expect(parsed.items.map((item) => item.id)).toEqual([worker.id])
+  })
+
+  it("still refuses unknown fields in a request it sends", () => {
+    const request = { name: "render-east", api_url: "https://worker.example/api/", enabled: true, compute_slots: 2, extra: 1 }
+
+    expect(workerCreateRequestSchema.safeParse(request).success).toBe(false)
   })
 
   it.each([

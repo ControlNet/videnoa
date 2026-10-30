@@ -5,12 +5,12 @@ const positiveU16Schema = z.number().int().min(1).max(65_535)
 const sessionDurationSchema = z.number().int().min(1)
 const durationSchema = z.number().int().min(1).max(604_800)
 
-export const serverSettingsSchema = z
-  .object({
-    host: z.union([z.ipv4(), z.ipv6()]),
-    port: positiveU16Schema,
-  })
-  .strict()
+// Settings groups are read loosely from responses (a newer Controller may add
+// a field) and sent strictly: settingsUpdateRequestSchema uses `.strict()`.
+export const serverSettingsSchema = z.object({
+  host: z.union([z.ipv4(), z.ipv6()]),
+  port: positiveU16Schema,
+})
 
 export const authSettingsSchema = z
   .object({
@@ -24,35 +24,28 @@ export const authSettingsSchema = z
     path: ["session_idle_seconds"],
   })
 
-export const schedulerStatusSchema = z
-  .object({
-    paused: z.boolean(),
-    default_compute_slots: positiveU16Schema,
-    prefetch_per_worker: z.number().int().min(0).max(65_535),
-    max_concurrent_uploads: positiveU16Schema,
-    max_concurrent_downloads: positiveU16Schema,
-  })
-  .strict()
+export const schedulerStatusSchema = z.object({
+  paused: z.boolean(),
+  default_compute_slots: positiveU16Schema,
+  prefetch_per_worker: z.number().int().min(0).max(65_535),
+  max_concurrent_uploads: positiveU16Schema,
+  max_concurrent_downloads: positiveU16Schema,
+})
 
-export const timeoutSettingsSchema = z
-  .object({
-    health_seconds: durationSchema,
-    poll_seconds: durationSchema,
-    transfer_seconds: durationSchema,
-  })
-  .strict()
+export const timeoutSettingsSchema = z.object({
+  health_seconds: durationSchema,
+  poll_seconds: durationSchema,
+  transfer_seconds: durationSchema,
+})
 
-export const retrySettingsSchema = z
-  .object({
-    initial_seconds: durationSchema,
-    maximum_seconds: durationSchema,
-    max_attempts: z.number().int().min(1).max(100),
-  })
-  .strict()
-  .refine((retry) => retry.initial_seconds <= retry.maximum_seconds, {
-    message: "Initial delay must not exceed maximum delay.",
-    path: ["initial_seconds"],
-  })
+const retrySettingsObject = z.object({
+  initial_seconds: durationSchema,
+  maximum_seconds: durationSchema,
+  max_attempts: z.number().int().min(1).max(100),
+})
+const retryInOrder = (retry: z.infer<typeof retrySettingsObject>) => retry.initial_seconds <= retry.maximum_seconds
+const retryOrderIssue = { message: "Initial delay must not exceed maximum delay.", path: ["initial_seconds"] }
+export const retrySettingsSchema = retrySettingsObject.refine(retryInOrder, retryOrderIssue)
 
 // Mirrors the Controller check: each relay is an absolute http or https URL.
 const relayUrlSchema = z.string().refine((value) => {
@@ -67,11 +60,11 @@ export const settingsUpdateRequestSchema = z
   .object({
     version: unsignedIntegerSchema,
     paths: z.object({ data_root: z.string().min(1), cache_root: z.string().min(1) }).strict(),
-    server: serverSettingsSchema,
+    server: serverSettingsSchema.strict(),
     auth: authSettingsSchema,
-    scheduler: schedulerStatusSchema,
-    timeouts: timeoutSettingsSchema,
-    retry: retrySettingsSchema,
+    scheduler: schedulerStatusSchema.strict(),
+    timeouts: timeoutSettingsSchema.strict(),
+    retry: retrySettingsObject.strict().refine(retryInOrder, retryOrderIssue),
     iroh: z.object({ relay_urls: z.array(relayUrlSchema), use_public_relays: z.boolean() }).strict().optional(),
   })
   .strict()
@@ -79,12 +72,10 @@ export const settingsUpdateRequestSchema = z
 export const settingsResponseSchema = z
   .object({
     version: unsignedIntegerSchema,
-    paths: z
-      .object({
-        data_root: z.string(),
-        cache_root: z.string(),
-      })
-      .strict(),
+    paths: z.object({
+      data_root: z.string(),
+      cache_root: z.string(),
+    }),
     restart_required: z.boolean(),
     server: serverSettingsSchema,
     secure_cookie: z.boolean(),
@@ -93,23 +84,20 @@ export const settingsResponseSchema = z
     scheduler: schedulerStatusSchema,
     timeouts: timeoutSettingsSchema,
     retry: retrySettingsSchema,
-    iroh: z.object({ relay_urls: z.array(z.string()), use_public_relays: z.boolean(), restart_required: z.boolean() }).strict(),
+    iroh: z.object({ relay_urls: z.array(z.string()), use_public_relays: z.boolean(), restart_required: z.boolean() }),
   })
-  .strict()
 
 export const schedulerUpdatedEventSchema = z
   .object({
     type: z.literal("scheduler_updated"),
-    data: z.object({ event_id: z.string().uuid(), scheduler: schedulerStatusSchema }).strict(),
+    data: z.object({ event_id: z.string().uuid(), scheduler: schedulerStatusSchema }),
   })
-  .strict()
 
 export const readinessSchema = z
   .object({
     status: z.enum(["ready", "not_ready"]),
-    checks: z.array(z.object({ name: z.string(), ready: z.boolean(), message: z.string().nullable() }).strict()),
+    checks: z.array(z.object({ name: z.string(), ready: z.boolean(), message: z.string().nullable() })),
   })
-  .strict()
 
 export type Readiness = z.infer<typeof readinessSchema>
 export type ServerSettings = z.infer<typeof serverSettingsSchema>
