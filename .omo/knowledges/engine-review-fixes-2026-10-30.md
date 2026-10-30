@@ -104,15 +104,37 @@ lifecycle work for E is done separately.
     used.
   - `VideoCompileContext` detects these lazily, only for the TensorRT
     backend. Tests inject them, because CI has no ORT.
-- **Atomic placement** (`backend::open_trt_cache_entry`).
-  - The engine is built in `<key>.tmp-<pid>-<nanos>` and renamed into place
-    under `File::lock` on `<key>.lock`. A waiting process loads the result.
-  - Abandoned tmp dirs are removed under the lock.
-  - Assumption: the TensorRT EP writes the engine during session creation.
-- **Broken entries.** If loading fails with "could not deserialize
-  engine", the entry is renamed to `<key>.broken-<ms>` and built again,
-  once. The entry is re-checked under the lock first.
+- **Where the EP builds the engine** (ORT 1.23.2,
+  `tensorrt_execution_provider.cc`):
+  - Static input shapes, or explicit `trt_profile_*` shapes: the engine is
+    loaded or built while the session is created.
+  - Dynamic input shapes with no explicit profiles: it is loaded or built
+    in compute, at the first `Run()`. The EP also writes a `.profile` file.
+  - All shipped SR and FI models have symbolic H and W, and `build_session`
+    sets no profiles. So the build happens at the first frame, not at
+    session creation.
+- **Placement** (`backend::open_trt_cache_entry`).
+  - The session is always opened on the final entry. Build-aside-and-rename
+    was tried and dropped. The session is created before the engine
+    exists, so the temporary directory was deleted while still empty, and
+    the engine was never cached.
+  - Session creation holds `File::lock` on `<key>.lock`. That gives one
+    build per entry for static-shape models only. For dynamic shapes the
+    lock covers only session creation, not the build at the first run.
+- **Broken entries.** If session creation fails with "could not
+  deserialize engine", the entry is renamed to `<key>.broken-<ms>` and the
+  session is created once more.
+  - The EP reports a bad engine this way only for static shapes.
+  - For dynamic shapes a truncated engine fails the first `Run()` with
+    "TensorRT EP Failed to Build Engine." That is not recovered
+    automatically: delete the entry by hand.
+  - Key versioning still prevents the common cause, an engine left by a
+    TensorRT or ORT upgrade.
 - **Upgrade cost.** Every existing engine is rebuilt once after the
   upgrade. Old directories stay on disk until deleted by hand.
-- Tests: `backend::tests::*trt_cache*`, plus
-  `concurrent_opens_build_a_trt_cache_entry_once`. No GPU is used.
+- Tests: `backend::tests::*trt_cache*`. No GPU is used.
+- **GPU check before release.**
+  1. With an empty `trt_cache/`, run one TensorRT job.
+  2. Afterwards `trt_cache/trt-…/` must hold `*.engine` and `*.profile`.
+  3. A second job must not rebuild: there is no multi-minute stall at the
+     first frame.

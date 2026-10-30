@@ -263,8 +263,9 @@ pub fn build_session(config: &SessionConfig<'_>) -> Result<Session> {
 }
 
 /// Create a session with the TensorRT EP (CUDA EP fallback) whose engine
-/// cache is `cache_dir`. A missing engine is built and written there while the
-/// session is created, which can take several minutes.
+/// cache is `cache_dir`. A missing engine is built and written there, which
+/// can take several minutes: while the session is created for static input
+/// shapes, at the first run for dynamic ones (see [`open_trt_cache_entry`]).
 fn commit_tensorrt_session(
     builder: SessionBuilder,
     config: &SessionConfig<'_>,
@@ -514,57 +515,46 @@ pub fn model_trt_cache_dir(
 /// Open a session whose TensorRT engine cache is the keyed directory `entry`.
 /// `open` creates the session with the engine cache at the path it is given.
 ///
-/// - An existing entry is loaded. If its engine cannot be deserialized, the
-///   entry is moved aside to `<entry>.broken-<unix-ms>` and built again, once.
-/// - A missing entry is built in a sibling `<entry>.tmp-<pid>-<nanos>` and
-///   renamed into place, so a crash or a failed build never leaves a partial
-///   entry under the final name.
-/// - Building, and moving an entry aside, hold an exclusive lock on
-///   `<entry>.lock`, so processes that share the cache directory never build
-///   the same entry at the same time; the second one waits and loads it.
+/// The session is always opened on `entry` itself. For a model with dynamic
+/// input shapes (all shipped SR and FI models) and no explicit TensorRT
+/// profiles, the TensorRT EP loads or builds the engine at the first run,
+/// after the session exists, so the engine cannot be built aside and renamed
+/// into place. For a model with static input shapes, the EP loads or builds
+/// it while the session is created.
 ///
-/// This relies on the TensorRT EP writing the engine while the session is
-/// created (it builds at session creation, which is what takes minutes).
+/// - Session creation holds an exclusive lock on `<entry>.lock`, so processes
+///   that share the cache never create sessions on the same entry at the
+///   same time. For static shapes this means one build; the next opener waits
+///   and loads it.
+/// - If the session cannot be created because the cached engine does not
+///   deserialize, the entry is moved aside to `<entry>.broken-<unix-ms>` and
+///   the session is created once more on a fresh entry. The EP reports a bad
+///   engine this way only for static shapes; for dynamic shapes the error
+///   comes from the first run.
 pub(crate) fn open_trt_cache_entry<T>(
     entry: &Path,
     mut open: impl FnMut(&Path) -> Result<T>,
 ) -> Result<T> {
-    let mut found_broken = false;
-    if trt_cache_entry_exists(entry) {
-        match open(entry) {
-            Ok(session) => return Ok(session),
-            Err(error) if is_engine_load_error(&error) => {
-                warn!(
-                    entry = %entry.display(),
-                    error = %format!("{error:#}"),
-                    "Cached TensorRT engine cannot be loaded; building it again"
-                );
-                found_broken = true;
-            }
-            Err(error) => return Err(error),
-        }
-    }
-
     let _lock = lock_trt_cache_entry(entry)?;
-    if trt_cache_entry_exists(entry) {
-        if !found_broken {
-            // Another process built it while this one waited for the lock.
-            return open(entry);
+    create_trt_cache_entry(entry)?;
+    match open(entry) {
+        Err(error) if is_engine_load_error(&error) => {
+            warn!(
+                entry = %entry.display(),
+                error = %format!("{error:#}"),
+                "Cached TensorRT engine cannot be loaded; building it again"
+            );
+            set_aside_trt_cache_entry(entry)?;
+            create_trt_cache_entry(entry)?;
+            open(entry)
         }
-        // Another process may have replaced the broken entry meanwhile.
-        match open(entry) {
-            Ok(session) => return Ok(session),
-            Err(error) if is_engine_load_error(&error) => set_aside_trt_cache_entry(entry)?,
-            Err(error) => return Err(error),
-        }
+        result => result,
     }
-    build_trt_cache_entry(entry, open)
 }
 
-/// Entries are only ever renamed into place complete, so any content means
-/// the entry was built.
-fn trt_cache_entry_exists(entry: &Path) -> bool {
-    std::fs::read_dir(entry).is_ok_and(|mut contents| contents.next().is_some())
+fn create_trt_cache_entry(entry: &Path) -> Result<()> {
+    std::fs::create_dir_all(entry)
+        .with_context(|| format!("failed to create TRT cache entry: {}", entry.display()))
 }
 
 /// `<entry>.<suffix>`, next to `entry`.
@@ -598,7 +588,7 @@ fn lock_trt_cache_entry(entry: &Path) -> Result<std::fs::File> {
         Err(std::fs::TryLockError::WouldBlock) => {
             info!(
                 entry = %entry.display(),
-                "Waiting for another process to finish building this TensorRT engine"
+                "Waiting for another process to finish opening this TensorRT engine"
             );
             lock.lock().with_context(|| {
                 format!("failed to lock TRT cache entry: {}", lock_path.display())
@@ -630,66 +620,6 @@ fn set_aside_trt_cache_entry(entry: &Path) -> Result<()> {
         "Moved unusable TensorRT engine cache aside"
     );
     Ok(())
-}
-
-/// Build `entry` in a temporary sibling and rename it into place. The caller
-/// holds the entry lock.
-fn build_trt_cache_entry<T>(entry: &Path, mut open: impl FnMut(&Path) -> Result<T>) -> Result<T> {
-    remove_abandoned_trt_builds(entry);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_nanos());
-    let build_dir = trt_cache_sibling(entry, &format!("tmp-{}-{nanos}", std::process::id()));
-    std::fs::create_dir_all(&build_dir).with_context(|| {
-        format!(
-            "failed to create TRT cache build directory: {}",
-            build_dir.display()
-        )
-    })?;
-
-    let session = open(&build_dir);
-    if session.is_ok() && trt_cache_entry_exists(&build_dir) {
-        // An empty directory left at the final name would fail the rename on
-        // Windows; remove_dir leaves a non-empty one alone.
-        let _ = std::fs::remove_dir(entry);
-        if let Err(error) = std::fs::rename(&build_dir, entry) {
-            // The session is already open; the next run builds the engine again.
-            warn!(
-                entry = %entry.display(),
-                error = %error,
-                "Failed to place the built TensorRT engine in the cache"
-            );
-        }
-    }
-    if let Err(error) = std::fs::remove_dir_all(&build_dir) {
-        if error.kind() != std::io::ErrorKind::NotFound {
-            warn!(
-                dir = %build_dir.display(),
-                error = %error,
-                "Failed to remove TRT cache build directory"
-            );
-        }
-    }
-    session
-}
-
-/// Remove build directories of `entry` left by a process that died while
-/// building it. The caller holds the entry lock, so none of them is in use.
-fn remove_abandoned_trt_builds(entry: &Path) {
-    let (Some(parent), Some(name)) = (entry.parent(), entry.file_name()) else {
-        return;
-    };
-    let mut prefix = name.to_os_string();
-    prefix.push(".tmp-");
-    let prefix = prefix.to_string_lossy().into_owned();
-    let Ok(siblings) = std::fs::read_dir(parent) else {
-        return;
-    };
-    for sibling in siblings.flatten() {
-        if sibling.file_name().to_string_lossy().starts_with(&prefix) {
-            let _ = std::fs::remove_dir_all(sibling.path());
-        }
-    }
 }
 
 #[cfg(test)]
@@ -892,21 +822,22 @@ mod tests {
     }
 
     #[test]
-    fn trt_cache_entry_is_built_aside_and_renamed_into_place() {
+    fn trt_cache_session_is_opened_on_the_entry_itself() {
+        // The TensorRT EP writes the engine at the first run for models with
+        // dynamic input shapes, after the session exists, so the session
+        // must point at the final entry.
         let temp = tempfile::tempdir().unwrap();
         let entry = temp.path().join("key");
         let mut opened = Vec::new();
 
         open_trt_cache_entry(&entry, |dir| {
             opened.push(dir.to_path_buf());
-            assert!(!entry.exists(), "the final entry must not exist mid-build");
+            assert!(dir.is_dir(), "the entry must exist before the session");
             write_engine(dir, "engine")
         })
-        .expect("build should succeed");
+        .expect("open should succeed");
 
-        assert_eq!(opened.len(), 1);
-        assert_ne!(opened[0], entry, "the engine must be built in a sibling");
-        assert_eq!(opened[0].parent(), entry.parent());
+        assert_eq!(opened, vec![entry.clone()]);
         assert_eq!(
             std::fs::read_to_string(entry.join("model.engine")).unwrap(),
             "engine"
@@ -932,21 +863,6 @@ mod tests {
     }
 
     #[test]
-    fn failed_trt_build_leaves_no_entry() {
-        let temp = tempfile::tempdir().unwrap();
-        let entry = temp.path().join("key");
-
-        let error = open_trt_cache_entry(&entry, |dir| -> Result<()> {
-            write_engine(dir, "partial")?;
-            anyhow::bail!("out of memory")
-        })
-        .expect_err("the build error must be returned");
-
-        assert_eq!(error.to_string(), "out of memory");
-        assert_eq!(siblings(&entry), vec!["key.lock"]);
-    }
-
-    #[test]
     fn undeserializable_trt_cache_entry_is_moved_aside_and_rebuilt_once() {
         let temp = tempfile::tempdir().unwrap();
         let entry = temp.path().join("key");
@@ -966,10 +882,7 @@ mod tests {
         })
         .expect("the entry should be rebuilt");
 
-        // Loaded, reloaded under the lock, then built once.
-        assert_eq!(opened.len(), 3);
-        assert_eq!(&opened[..2], &[entry.clone(), entry.clone()]);
-        assert_ne!(opened[2], entry);
+        assert_eq!(opened, vec![entry.clone(), entry.clone()]);
         assert_eq!(
             std::fs::read_to_string(entry.join("model.engine")).unwrap(),
             "rebuilt"
@@ -981,6 +894,26 @@ mod tests {
     }
 
     #[test]
+    fn trt_cache_entry_that_stays_undeserializable_is_not_retried_again() {
+        let temp = tempfile::tempdir().unwrap();
+        let entry = temp.path().join("key");
+        std::fs::create_dir_all(&entry).unwrap();
+        write_engine(&entry, "stale").unwrap();
+        let mut calls = 0;
+
+        open_trt_cache_entry(&entry, |dir| -> Result<()> {
+            calls += 1;
+            anyhow::bail!(
+                "TensorRT EP could not deserialize engine from cache: {}",
+                dir.display()
+            )
+        })
+        .expect_err("the second failure must be returned");
+
+        assert_eq!(calls, 2);
+    }
+
+    #[test]
     fn other_errors_on_an_existing_trt_cache_entry_keep_it() {
         let temp = tempfile::tempdir().unwrap();
         let entry = temp.path().join("key");
@@ -988,66 +921,52 @@ mod tests {
         write_engine(&entry, "cached").unwrap();
         let mut calls = 0;
 
-        open_trt_cache_entry(&entry, |_| -> Result<()> {
+        let error = open_trt_cache_entry(&entry, |_| -> Result<()> {
             calls += 1;
             anyhow::bail!("CUDA out of memory")
         })
         .expect_err("the error must be returned");
 
+        assert_eq!(error.to_string(), "CUDA out of memory");
         assert_eq!(calls, 1);
-        assert_eq!(siblings(&entry), vec!["key"]);
+        assert_eq!(siblings(&entry), vec!["key", "key.lock"]);
     }
 
     #[test]
-    fn abandoned_trt_builds_are_removed_before_building() {
-        let temp = tempfile::tempdir().unwrap();
-        let entry = temp.path().join("key");
-        let abandoned = temp.path().join("key.tmp-1-1");
-        std::fs::create_dir_all(&abandoned).unwrap();
-        write_engine(&abandoned, "partial").unwrap();
-        std::fs::create_dir_all(temp.path().join("other.tmp-1-1")).unwrap();
-
-        open_trt_cache_entry(&entry, |dir| write_engine(dir, "engine")).unwrap();
-
-        assert_eq!(siblings(&entry), vec!["key", "key.lock", "other.tmp-1-1"]);
-    }
-
-    #[test]
-    fn concurrent_opens_build_a_trt_cache_entry_once() {
+    fn concurrent_opens_of_a_trt_cache_entry_take_turns() {
         let temp = tempfile::tempdir().unwrap();
         let entry = temp.path().join("key");
         let builds = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let building = Arc::new(std::sync::Barrier::new(2));
+        let opening = Arc::new(std::sync::Barrier::new(2));
+
+        // Builds the engine unless it is already in the entry, as the
+        // TensorRT EP does for a model with static input shapes.
+        let open = |builds: &std::sync::atomic::AtomicUsize, dir: &Path| -> Result<()> {
+            if !dir.join("model.engine").exists() {
+                builds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                write_engine(dir, "engine")?;
+            }
+            Ok(())
+        };
 
         let first = {
             let entry = entry.clone();
             let builds = Arc::clone(&builds);
-            let building = Arc::clone(&building);
+            let opening = Arc::clone(&opening);
             thread::spawn(move || {
                 open_trt_cache_entry(&entry, |dir| {
-                    builds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    building.wait();
+                    opening.wait();
                     // Hold the lock while the second opener reaches it.
                     thread::sleep(Duration::from_millis(200));
-                    write_engine(dir, "engine")
+                    open(&builds, dir)
                 })
             })
         };
-        building.wait();
-        let mut loaded_from = None;
-        open_trt_cache_entry(&entry, |dir| {
-            if dir != entry {
-                builds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                write_engine(dir, "engine")?;
-            }
-            loaded_from = Some(dir.to_path_buf());
-            Ok(())
-        })
-        .unwrap();
+        opening.wait();
+        open_trt_cache_entry(&entry, |dir| open(&builds, dir)).unwrap();
         first.join().unwrap().unwrap();
 
         assert_eq!(builds.load(std::sync::atomic::Ordering::SeqCst), 1);
-        assert_eq!(loaded_from, Some(entry.clone()));
     }
 
     #[test]
