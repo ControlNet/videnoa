@@ -59,6 +59,14 @@ export class ApiError extends Error {
   }
 }
 
+/** The server's machine-readable error `code`, when the error carries one. */
+export function apiErrorCode(error: unknown): string | null {
+  if (!(error instanceof ApiError)) return null;
+  const { body } = error;
+  if (typeof body !== 'object' || body === null || !('code' in body)) return null;
+  return typeof body.code === 'string' ? body.code : null;
+}
+
 // ─── Generic request wrapper ─────────────────────────────────────────────────
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
@@ -415,12 +423,23 @@ export function listWorkflows(): Promise<WorkflowEntry[]> {
   return request<WorkflowEntry[]>('/api/workflows');
 }
 
+export interface SaveWorkflowOptions {
+  /** File to write, as listed by `listWorkflows`; derived from `name` when absent. */
+  filename?: string;
+  /** Replace an existing file. Without it the server answers 409 `workflow_exists`. */
+  overwrite?: boolean;
+}
+
 export function saveWorkflow(
   name: string,
   description: string,
   workflow: Workflow,
+  options?: SaveWorkflowOptions,
 ): Promise<WorkflowEntry> {
-  return request<WorkflowEntry>('/api/workflows', jsonBody({ name, description, workflow }));
+  return request<WorkflowEntry>(
+    '/api/workflows',
+    jsonBody({ name, description, workflow, ...options }),
+  );
 }
 
 export function getWorkflowInterface(filename: string): Promise<WorkflowInterface> {
