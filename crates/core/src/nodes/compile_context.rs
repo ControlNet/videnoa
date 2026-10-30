@@ -1,4 +1,4 @@
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -17,7 +17,8 @@ use crate::streaming_executor::{FrameInterpolator, FrameSink, PipelineStage};
 use crate::types::{Frame, PortData, PortType};
 
 use crate::nodes::backend::{
-    model_trt_cache_dir, read_device_id, InferenceBackend, TrtCacheIdentity, TrtTileIdentity,
+    model_trt_cache_dir, read_device_id, InferenceBackend, TrtCacheIdentity, TrtRuntimeIdentity,
+    TrtTileIdentity,
 };
 use crate::nodes::frame_interpolation::{
     FrameInterpolationNode, FrameInterpolationPostprocess, ModelFormat,
@@ -193,6 +194,8 @@ pub struct VideoCompileContext {
     /// Cancellation of the execution being compiled, checked before each
     /// model load (every inference lane loads its own session).
     cancellation: RefCell<Option<tokio::sync::watch::Receiver<bool>>>,
+    /// Runtime part of the TensorRT cache key, detected on first use.
+    trt_runtime: OnceCell<TrtRuntimeIdentity>,
 }
 
 impl Drop for VideoCompileContext {
@@ -347,6 +350,7 @@ impl VideoCompileContext {
             trt_cache_dir,
             frame_pool: FramePool::shared(),
             cancellation: RefCell::new(None),
+            trt_runtime: OnceCell::new(),
         }
     }
 
@@ -507,7 +511,10 @@ impl VideoCompileContext {
             input_w,
             tile,
         };
-        model_trt_cache_dir(&self.trt_cache_dir, model_path, identity).map(Some)
+        let runtime = self
+            .trt_runtime
+            .get_or_init(|| TrtRuntimeIdentity::current().clone());
+        model_trt_cache_dir(&self.trt_cache_dir, model_path, identity, runtime).map(Some)
     }
 
     fn create_superres_stages(
@@ -2036,6 +2043,7 @@ mod tests {
         std::fs::write(&model_path, b"test model identity")
             .expect("temporary model should be written");
         let context = VideoCompileContext::new(root.join("cache"));
+        set_test_trt_runtime(&context);
         context.output_width.set(1920);
         context.output_height.set(1080);
         let inputs = HashMap::from([
@@ -2118,12 +2126,23 @@ mod tests {
         assert!(!ctx.is_interpolator_type("VideoInput"));
     }
 
+    /// Tests must not load ONNX Runtime or TensorRT to key the cache.
+    fn set_test_trt_runtime(ctx: &VideoCompileContext) {
+        ctx.trt_runtime
+            .set(TrtRuntimeIdentity {
+                tensorrt: "100900".to_string(),
+                onnxruntime: "a83fc4d58c".to_string(),
+            })
+            .expect("the runtime identity is set once, before first use");
+    }
+
     #[test]
     fn video_compile_context_cache_namespace_follows_the_selected_device() {
         let temp = tempfile::tempdir().expect("create temporary cache fixture");
         let model_path = temp.path().join("model.onnx");
         std::fs::write(&model_path, b"model").expect("write model fixture");
         let ctx = VideoCompileContext::new(temp.path().join("trt-cache"));
+        set_test_trt_runtime(&ctx);
         ctx.output_width.set(1920);
         ctx.output_height.set(1080);
         let inputs_on = |device_id: Option<i64>| {
@@ -2163,6 +2182,7 @@ mod tests {
         let model_path = temp.path().join("rife.onnx");
         std::fs::write(&model_path, b"rife-model").expect("write model fixture");
         let ctx = VideoCompileContext::new(temp.path().join("trt-cache"));
+        set_test_trt_runtime(&ctx);
         let inputs = HashMap::from([
             ("model_path".to_string(), PortData::Path(model_path)),
             ("backend".to_string(), PortData::Str("tensorrt".to_string())),
@@ -2208,6 +2228,7 @@ mod tests {
         let model_path = temp.path().join("superres.onnx");
         std::fs::write(&model_path, b"superres-model").expect("write model fixture");
         let ctx = VideoCompileContext::new(temp.path().join("trt-cache"));
+        set_test_trt_runtime(&ctx);
         ctx.output_width.set(1920);
         ctx.output_height.set(1080);
         let mut inputs = HashMap::from([
@@ -2238,6 +2259,7 @@ mod tests {
         let model_path = temp.path().join("superres.onnx");
         std::fs::write(&model_path, b"superres-model").expect("write model fixture");
         let ctx = VideoCompileContext::new(temp.path().join("trt-cache"));
+        set_test_trt_runtime(&ctx);
         let inputs = HashMap::from([
             ("model_path".to_string(), PortData::Path(model_path)),
             ("backend".to_string(), PortData::Str("tensorrt".to_string())),
