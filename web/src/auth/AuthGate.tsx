@@ -6,7 +6,7 @@ import { useJobStore } from '@/stores/job-store';
 import { useUIStore } from '@/stores/ui-store';
 import { resolveStartupLocale } from '@/i18n';
 import { PasswordField } from './PasswordField';
-import { authRequest, onPasswordChangeElsewhere, useAuthStore } from './store';
+import { type AuthErrorKey, authErrorKey, authRequest, onPasswordChangeElsewhere, useAuthStore } from './store';
 import { setCsrfToken } from './transport';
 
 export function AuthGate({ children }: { children: ReactNode }) {
@@ -14,7 +14,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const { t, i18n } = useTranslation('common');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
-  const [loginError, setLoginError] = useState<string | null>(null);
+  const [loginError, setLoginError] = useState<AuthErrorKey | null>(null);
   useEffect(() => { void refresh(); }, [refresh]);
   useEffect(() => {
     const expired = () => {
@@ -53,7 +53,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
         {!session ? <div className="space-y-4"><p role="status">{t(error ? 'auth.requestFailed' : 'auth.checking')}</p>{error && <Button onClick={() => void refresh()}>{t('auth.retry')}</Button>}</div> :
           <form className="space-y-5" onSubmit={(event) => {
             event.preventDefault(); setBusy(true); setLoginError(null);
-            void authRequest('/api/auth/login', 'POST', { password }).then((next) => { setPassword(''); accept(next); }).catch((err: unknown) => setLoginError(err instanceof Error ? err.message : 'requestFailed')).finally(() => setBusy(false));
+            void authRequest('/api/auth/login', 'POST', { password }).then((next) => { setPassword(''); accept(next); }).catch((err: unknown) => setLoginError(authErrorKey(err))).finally(() => setBusy(false));
           }}>
             <PasswordField id="login-password" label={t('auth.password')} value={password} onChange={setPassword} />
             {loginError && <p role="alert" className="text-sm text-destructive">{t(`auth.${loginError}`)}</p>}

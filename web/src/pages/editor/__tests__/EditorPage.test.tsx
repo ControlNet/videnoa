@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { i18n } from "@/i18n";
 import { useJobStore } from "@/stores/job-store";
 import { useNodeDefinitions } from "@/stores/node-definitions-store";
 import { useUIStore } from "@/stores/ui-store";
@@ -512,5 +513,16 @@ describe("EditorPage unsaved changes", () => {
 			useWorkflowStore.getState().markSaved();
 		});
 		expect(unload().defaultPrevented).toBe(false);
+	});
+});
+
+describe("EditorPage empty canvas", () => {
+	it("shows the empty-canvas hints in the selected language", async () => {
+		await i18n.changeLanguage("zh-CN");
+		render(<EditorPage />);
+
+		expect(screen.getByText("从侧边栏拖入节点以构建管线")).toBeInTheDocument();
+		expect(screen.getByText("或加载一个预设开始")).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "加载预设" })).toBeInTheDocument();
 	});
 });

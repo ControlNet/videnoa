@@ -1,6 +1,6 @@
 import type { NamespaceResources } from "@/i18n/locales/types";
 
-export const enResources: NamespaceResources = {
+export const enResources = {
 	common: {
         "auth.loginTitle": "Sign in to continue",
         "auth.password": "Password",
@@ -174,6 +174,7 @@ export const enResources: NamespaceResources = {
 		"jobs.page.history.details.duration": "Duration:",
 		"jobs.page.history.details.params": "Params JSON:",
 		"jobs.page.history.details.error": "Error:",
+		"jobs.page.history.details.printOutput": "Print output",
 
 		"jobs.dialog.title": "Run Workflow",
 		"jobs.dialog.description":
@@ -252,6 +253,7 @@ export const enResources: NamespaceResources = {
     "iroh.copiedShort": "Copied",
     "iroh.title": "Remote access",
     "iroh.copy": "Copy Endpoint ID",
+    "iroh.endpointId": "Endpoint ID",
     "iroh.copied": "Copied",
     "iroh.error": "Iroh status unavailable or startup failed.",
     "iroh.running": "Iroh is running",
@@ -405,6 +407,13 @@ export const enResources: NamespaceResources = {
 		"node.definitionsUnavailable": "Node definitions are not loaded.",
 		"node.unsupportedParams": "Unsupported params",
 		"node.unsupportedParamsHint": "This node ignores them when it runs.",
+		"node.selectModel": "Select model",
+		"node.addPort": "Add Port",
+		"node.runtimePreview": "Runtime Preview",
+		"node.previewTruncated": "Truncated to {{max}} chars",
+		"canvas.empty.title": "Drag nodes from the sidebar to build a pipeline",
+		"canvas.empty.hint": "Or load a preset to get started",
+		"canvas.empty.loadPreset": "Load a Preset",
 		"node.interfaceLoadFailed": "Could not load the interface of {{path}}",
 		"unsaved.title": "Discard unsaved changes?",
 		"unsaved.description": "The canvas has changes that are not saved. They will be lost.",
@@ -463,4 +472,4 @@ export const enResources: NamespaceResources = {
 		"empty.noFramesDescription": "Enter a video path above and click Extract Frames",
 		"empty.imagePlaceholderAriaLabel": "Image placeholder",
 	},
-};
+} satisfies NamespaceResources;

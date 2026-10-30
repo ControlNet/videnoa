@@ -214,6 +214,7 @@ function ModelSelector({
   value: string;
   onChange: (path: string, model?: ModelEntry) => void;
 }) {
+  const { t } = useTranslation('editor');
   const { models } = useModelCache();
 
   const modelType = nodeType === 'FrameInterpolation' ? 'FrameInterpolation' : 'SuperResolution';
@@ -243,7 +244,7 @@ function ModelSelector({
       }}
     >
       <SelectTrigger className="h-6 w-[150px] text-[10px] bg-background/50 border-border/50">
-        <SelectValue placeholder="Select model" />
+        <SelectValue placeholder={t('node.selectModel')} />
       </SelectTrigger>
       <SelectContent>
         {filtered.map((m) => (
@@ -466,6 +467,7 @@ function DynamicPortEditor({
   nodeType: string;
   ports: DynamicPort[];
 }) {
+  const { t } = useTranslation('editor');
   const updateNodeParams = useWorkflowStore((s) => s.updateNodeParams);
   const updateNodeInternals = useUpdateNodeInternals();
 
@@ -564,7 +566,7 @@ function DynamicPortEditor({
         className="flex items-center gap-1 px-3 py-1 text-[11px] text-muted-foreground hover:text-foreground w-full rounded-md hover:bg-secondary/30"
       >
         <Plus className="size-3" />
-        <span>Add Port</span>
+        <span>{t('node.addPort')}</span>
       </button>
     </div>
   );
@@ -959,7 +961,7 @@ function CustomNodeComponent({ id, data }: NodeProps) {
       {nodeType === 'Print' && (
         <div className="border-t border-border/40 px-2 py-1.5" data-testid="print-runtime-preview">
           <p className="text-[9px] uppercase tracking-wide text-muted-foreground/80">
-            Runtime Preview
+            {t('node.runtimePreview')}
           </p>
           <pre
             className="mt-1 max-h-24 overflow-auto rounded border border-border/40 bg-background/60 px-1.5 py-1 text-[10px] leading-4 text-foreground/90 whitespace-pre-wrap break-words"
@@ -972,7 +974,7 @@ function CustomNodeComponent({ id, data }: NodeProps) {
               className="mt-1 text-[9px] text-muted-foreground"
               data-testid="print-runtime-preview-truncated"
             >
-              Truncated to {runtimePreview.preview_max_chars} chars
+              {t('node.previewTruncated', { max: runtimePreview.preview_max_chars })}
             </p>
           )}
         </div>

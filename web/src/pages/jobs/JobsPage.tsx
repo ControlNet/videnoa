@@ -433,7 +433,9 @@ function JobRow({
 						)}
 						{printRuntimePreviews.length > 0 && (
 							<div className="col-span-2 mt-2 space-y-2">
-								<p className="text-muted-foreground">Print output</p>
+								<p className="text-muted-foreground">
+									{t("jobs.page.history.details.printOutput")}
+								</p>
 								<div className="space-y-2">
 									{printRuntimePreviews.map((preview) => (
 										<div

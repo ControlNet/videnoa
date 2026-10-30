@@ -6,7 +6,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { CheckRow, Field, SettingsGrid, SettingsSection, settingsInputClass } from '@/pages/settings/section';
 import type { AuthConfig } from '@/types';
 import { PasswordField } from './PasswordField';
-import { announcePasswordChange, authRequest, useAuthStore } from './store';
+import { type AuthErrorKey, announcePasswordChange, authErrorKey, authRequest, useAuthStore } from './store';
 
 /**
  * Changing the password and choosing how long a session lives are two different
@@ -19,7 +19,7 @@ export function PasswordSettings() {
   const [password, setPassword] = useState('');
   const [confirmation, setConfirmation] = useState('');
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<AuthErrorKey | null>(null);
   const [success, setSuccess] = useState(false);
   const [confirmDisable, setConfirmDisable] = useState(false);
   const enabled = session?.password_enabled === true;
@@ -32,7 +32,7 @@ export function PasswordSettings() {
       window.dispatchEvent(new Event("videnoa-password-changed"));
       announcePasswordChange();
       accept(next); setPassword(''); setConfirmation(''); setConfirmDisable(false); setSuccess(true);
-    } catch (err) { setError(err instanceof Error ? err.message : 'requestFailed'); }
+    } catch (err) { setError(authErrorKey(err)); }
     finally { setBusy(false); }
   }
 

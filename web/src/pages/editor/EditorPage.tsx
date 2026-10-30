@@ -510,10 +510,10 @@ function EditorCanvas() {
 							</div>
 							<div>
 								<p className="text-sm font-medium text-foreground/80">
-									Drag nodes from the sidebar to build a pipeline
+									{t("canvas.empty.title")}
 								</p>
 								<p className="text-xs text-muted-foreground mt-1">
-									Or load a preset to get started
+									{t("canvas.empty.hint")}
 								</p>
 							</div>
 							<Button
@@ -524,7 +524,7 @@ function EditorCanvas() {
 								}}
 							>
 								<Sparkles className="h-3.5 w-3.5" />
-								Load a Preset
+								{t("canvas.empty.loadPreset")}
 							</Button>
 						</div>
 					</div>

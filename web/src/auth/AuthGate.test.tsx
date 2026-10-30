@@ -1,5 +1,6 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { PasswordSettings } from './AccessSettings';
 import { AuthGate } from './AuthGate';
 import { announcePasswordChange, useAuthStore } from './store';
 import { authenticatedFetch, setCsrfToken } from './transport';
@@ -119,4 +120,26 @@ it('tells other tabs about a password change so they refresh their session', asy
   announcePasswordChange();
   await vi.waitFor(() => expect(received).toEqual(['password-changed']));
   otherTab.close();
+});
+
+// A network failure rejects with e.g. "Failed to fetch", which used to be
+// rendered as the raw i18n key "auth.Failed to fetch".
+it('shows a generic message when sign-in fails unexpectedly', async () => {
+  const fetcher = vi.fn().mockResolvedValueOnce(Response.json({ password_enabled: true, authenticated: false }))
+    .mockRejectedValueOnce(new TypeError('Failed to fetch'));
+  vi.stubGlobal('fetch', fetcher);
+  render(<AuthGate><div>Protected editor</div></AuthGate>);
+  fireEvent.change(await screen.findByLabelText('Password'), { target: { value: 'test-only-password' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('Unable to complete the request. Please retry.');
+});
+
+it('shows a generic message when a password change fails unexpectedly', async () => {
+  useAuthStore.setState({ session: { password_enabled: true, authenticated: true }, error: null });
+  vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
+  render(<PasswordSettings />);
+  fireEvent.change(screen.getByLabelText('New password'), { target: { value: 'test-only-password' } });
+  fireEvent.change(screen.getByLabelText('Confirm password'), { target: { value: 'test-only-password' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Change password' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('Unable to complete the request. Please retry.');
 });

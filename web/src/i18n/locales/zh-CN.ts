@@ -1,6 +1,12 @@
-import type { NamespaceResources } from "@/i18n/locales/types";
+import type { enResources } from "@/i18n/locales/en";
+import type { I18nNamespace } from "@/i18n/locales/types";
 
-export const zhCNResources: NamespaceResources = {
+/** Exactly the English keys: a missing or extra key is a compile error. */
+type MatchingResources = {
+	[N in I18nNamespace]: Record<keyof (typeof enResources)[N], string>;
+};
+
+export const zhCNResources: MatchingResources = {
 	common: {
         "auth.loginTitle": "登录以继续",
         "auth.password": "密码",
@@ -170,6 +176,7 @@ export const zhCNResources: NamespaceResources = {
 		"jobs.page.history.details.duration": "时长：",
 		"jobs.page.history.details.params": "参数 JSON：",
 		"jobs.page.history.details.error": "错误：",
+		"jobs.page.history.details.printOutput": "打印输出",
 
 		"jobs.dialog.title": "运行工作流",
 		"jobs.dialog.description": "选择一个工作流并配置其输入参数。",
@@ -246,6 +253,7 @@ export const zhCNResources: NamespaceResources = {
     "iroh.copiedShort": "已复制",
     "iroh.title": "远程访问",
     "iroh.copy": "复制 Endpoint ID",
+    "iroh.endpointId": "Endpoint ID",
     "iroh.copied": "已复制",
     "iroh.error": "无法获取 iroh 状态或启动失败。",
     "iroh.running": "Iroh 正在运行",
@@ -388,6 +396,13 @@ export const zhCNResources: NamespaceResources = {
 		"node.definitionsUnavailable": "节点定义尚未加载。",
 		"node.unsupportedParams": "不支持的参数",
 		"node.unsupportedParamsHint": "运行时节点会忽略这些参数。",
+		"node.selectModel": "选择模型",
+		"node.addPort": "添加端口",
+		"node.runtimePreview": "运行时预览",
+		"node.previewTruncated": "已截断为 {{max}} 个字符",
+		"canvas.empty.title": "从侧边栏拖入节点以构建管线",
+		"canvas.empty.hint": "或加载一个预设开始",
+		"canvas.empty.loadPreset": "加载预设",
 		"node.interfaceLoadFailed": "无法加载 {{path}} 的接口",
 		"unsaved.title": "放弃未保存的修改？",
 		"unsaved.description": "画布上有尚未保存的修改，继续将会丢失。",

@@ -86,12 +86,12 @@ export function IrohSettings({ enabled, savedEnabled, onChange, relayUrls, saved
         disabled={!passwordEnabled && !enabled}
         onChange={(event) => { onChange(event.target.checked); }}
       />
-      <Field id="settings-iroh-endpoint" label="Endpoint ID" className="sm:col-span-4">
+      <Field id="settings-iroh-endpoint" label={t('iroh.endpointId')} className="sm:col-span-4">
         <div className="flex gap-1.5">
           <Input
             ref={idInput}
             id="settings-iroh-endpoint"
-            aria-label="Endpoint ID"
+            aria-label={t('iroh.endpointId')}
             className={`${settingsInputClass} text-muted-foreground`}
             readOnly
             value={status?.endpoint_id ?? ''}

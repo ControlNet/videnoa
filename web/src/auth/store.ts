@@ -59,6 +59,15 @@ export function onPasswordChangeElsewhere(onChange: () => void): () => void {
   return () => { passwordChangeListeners.delete(onChange); };
 }
 
+const AUTH_ERROR_KEYS = ['unauthorized', 'rateLimited', 'requestFailed', 'passwordInvalid'] as const;
+export type AuthErrorKey = (typeof AUTH_ERROR_KEYS)[number];
+
+/** The `auth.*` message key for a failed auth request; anything unexpected is `requestFailed`. */
+export function authErrorKey(error: unknown): AuthErrorKey {
+  const message = error instanceof Error ? error.message : '';
+  return AUTH_ERROR_KEYS.find((key) => key === message) ?? 'requestFailed';
+}
+
 export async function authRequest(url: string, method = 'GET', body?: unknown): Promise<Session> {
   const response = await authenticatedFetch(url, {
     method,

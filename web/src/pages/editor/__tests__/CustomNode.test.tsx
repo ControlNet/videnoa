@@ -1,10 +1,11 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import type React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { getWorkflowInterface } from '@/api/client';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { i18n } from '@/i18n';
 import { useJobStore } from '@/stores/job-store';
 import { useNodeDefinitions } from '@/stores/node-definitions-store';
-import { getWorkflowInterface } from '@/api/client';
 import { useWorkflowStore } from '@/stores/workflow-store';
 import { CustomNode, defaultPixelFormat, modelSelectionParams } from '../CustomNode';
 
@@ -16,6 +17,7 @@ vi.mock('@xyflow/react', () => ({
     Left: 'left',
     Right: 'right',
   },
+  useUpdateNodeInternals: () => () => undefined,
 }));
 
 vi.mock('@/api/client', () => ({
@@ -399,5 +401,41 @@ describe('modelSelectionParams', () => {
     expect(modelSelectionParams('FrameInterpolation', 'models/rife.onnx', model(4))).toEqual({
       model_path: 'models/rife.onnx',
     });
+  });
+});
+
+describe('CustomNode translations', () => {
+  it('shows the Print preview labels in the selected language', async () => {
+    await i18n.changeLanguage('zh-CN');
+    useJobStore.setState({
+      runtimePreviewsByNodeId: {
+        'print-1': {
+          node_id: 'print-1',
+          node_type: 'Print',
+          value_preview: 'abc',
+          truncated: true,
+          preview_max_chars: 3,
+          updated_at_ms: 1,
+        },
+      },
+    });
+
+    await renderNode('Print', 'print-1');
+
+    expect(screen.getByText('运行时预览')).toBeInTheDocument();
+    expect(screen.getByTestId('print-runtime-preview-truncated')).toHaveTextContent(
+      '已截断为 3 个字符',
+    );
+  });
+
+  it('shows the add-port button of workflow IO nodes in the selected language', async () => {
+    await i18n.changeLanguage('zh-CN');
+    useNodeDefinitions.setState({
+      descriptors: [{ ...VIDEO_INPUT_DESCRIPTOR, node_type: 'WorkflowInput', display_name: 'Workflow Input' }],
+    });
+
+    await renderNode('WorkflowInput', 'wi-1', { ports: '[]' });
+
+    expect(screen.getByRole('button', { name: '添加端口' })).toBeInTheDocument();
   });
 });
