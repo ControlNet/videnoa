@@ -76,9 +76,9 @@ Fixes for findings E (server half), P, N, M, R and Q of
 - Desktop: data dir is `<local app data>/com.videnoa.app` unless
   `VIDENOA_DATA_DIR` is set; an old `<exe_dir>/data` is renamed there once
   (kept in place if the rename fails). `crates/desktop/src/data_dir.rs`.
-- Not done: the Settings page shows `server.host`/`server.port` from the
-  config, which the desktop ignores (it binds 127.0.0.1 on a random port);
-  showing the real address needs a web change.
+- The desktop ignores `server.host`/`server.port` (it binds 127.0.0.1 on a
+  random port); the Settings page marks them not applicable there since
+  `wave2-leftovers-2026-10-30.md`.
 - Tests: `a_relative_workflows_dir_resolves_against_the_data_dir`,
   `job_model_paths_resolve_against_the_configured_models_dir`; `config.rs`:
   `relative_state_paths_resolve_against_the_data_dir`,

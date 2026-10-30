@@ -83,6 +83,5 @@ Test files: `stores/__tests__/workflow-store.test.ts`,
 
 ## Not changed
 
-- `WorkflowPathPicker` still turns a failed preset/workflow list into an
-  empty select (same pattern, not in the reviewed list).
+- `WorkflowPathPicker` was fixed later (`wave2-leftovers-2026-10-30.md`).
 - `compile.rs` and `config.rs` untouched (other owners).
