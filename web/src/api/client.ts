@@ -577,21 +577,17 @@ export interface FsEntry {
   path: string;
 }
 
-export async function listDirectory(
+export function listDirectory(
   base: string = 'models',
   prefix: string = '',
 ): Promise<FsEntry[]> {
   const params = new URLSearchParams({ base });
   if (prefix) params.set('prefix', prefix);
-  const res = await authenticatedFetch(`/api/fs/list?${params.toString()}`);
-  if (!res.ok) return [];
-  return res.json();
+  return request<FsEntry[]>(`/api/fs/list?${params.toString()}`);
 }
 
-export async function browseDirectory(path: string = ''): Promise<FsEntry[]> {
+export function browseDirectory(path: string = ''): Promise<FsEntry[]> {
   const params = new URLSearchParams();
   if (path) params.set('path', path);
-  const res = await authenticatedFetch(`/api/fs/browse?${params.toString()}`);
-  if (!res.ok) return [];
-  return res.json();
+  return request<FsEntry[]>(`/api/fs/browse?${params.toString()}`);
 }

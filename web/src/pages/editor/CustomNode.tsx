@@ -733,6 +733,7 @@ function CustomNodeComponent({ id, data }: NodeProps) {
   const [interfaceOutputs, setInterfaceOutputs] = useState<WorkflowPort[]>(() =>
     isWorkflowNode ? parseInterfacePorts(params, 'interface_outputs') : [],
   );
+  const [interfaceError, setInterfaceError] = useState(false);
 
   useEffect(() => {
     if (!isWorkflowNode) return;
@@ -746,6 +747,7 @@ function CustomNodeComponent({ id, data }: NodeProps) {
     fetchInterface
       .then((iface) => {
         if (cancelled) return;
+        setInterfaceError(false);
         setInterfaceInputs(iface.inputs);
         setInterfaceOutputs(iface.outputs);
         if (workflowPath && typeof workflowPath === 'string') {
@@ -757,8 +759,9 @@ function CustomNodeComponent({ id, data }: NodeProps) {
       })
       .catch(() => {
         if (cancelled) return;
-        setInterfaceInputs([]);
-        setInterfaceOutputs([]);
+        // Keep the ports last stored with the node: dropping them would drop
+        // the handles its connections hang off.
+        setInterfaceError(true);
       });
 
     return () => { cancelled = true; };
@@ -836,6 +839,16 @@ function CustomNodeComponent({ id, data }: NodeProps) {
           <X className="size-3" />
         </button>
       </div>
+
+      {isWorkflowNode && interfaceError && (
+        <div
+          role="alert"
+          className="flex items-center gap-1.5 border-b border-border/40 px-2 py-1.5 text-[10px] text-destructive"
+        >
+          <TriangleAlert className="size-3 shrink-0" />
+          <span>{t('node.interfaceLoadFailed', { path: paramText(params.workflow_path) })}</span>
+        </div>
+      )}
 
       {hasStreamPorts && (
         <div className="py-1.5">

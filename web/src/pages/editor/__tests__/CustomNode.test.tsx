@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { useJobStore } from '@/stores/job-store';
 import { useNodeDefinitions } from '@/stores/node-definitions-store';
+import { getWorkflowInterface } from '@/api/client';
 import { useWorkflowStore } from '@/stores/workflow-store';
 import { CustomNode, defaultPixelFormat, modelSelectionParams } from '../CustomNode';
 
@@ -197,6 +198,37 @@ describe('CustomNode drift from the worker', () => {
       obj: { a: true },
       text: '[1]',
     });
+  });
+});
+
+describe('CustomNode sub-workflow interface', () => {
+  const WORKFLOW_DESCRIPTOR = {
+    node_type: 'Workflow',
+    display_name: 'Workflow',
+    category: 'utility',
+    accent_color: '#0EA5E9',
+    icon: 'workflow',
+    inputs: [],
+    outputs: [],
+  };
+
+  // A failed interface fetch used to wipe the node's ports, dropping the
+  // handles its connections hang off, with nothing telling the user why.
+  it('keeps the stored ports and shows an error when the interface cannot be loaded', async () => {
+    useNodeDefinitions.setState({ descriptors: [WORKFLOW_DESCRIPTOR] });
+    vi.mocked(getWorkflowInterface).mockRejectedValueOnce(new Error('HTTP 500'));
+
+    await renderNode('Workflow', 'wf-1', {
+      workflow_path: 'sub.json',
+      interface_inputs: JSON.stringify([{ name: 'clip', port_type: 'Path' }]),
+      interface_outputs: JSON.stringify([{ name: 'result', port_type: 'Path' }]),
+    });
+
+    expect(screen.getByTestId('handle-target-clip')).toBeInTheDocument();
+    expect(screen.getByTestId('handle-source-result')).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Could not load the interface of sub.json',
+    );
   });
 });
 

@@ -31,6 +31,28 @@ import type { PipelineNodeData, Preset } from "@/types";
 import { computeLayout } from "./auto-layout";
 import { DiscardChangesDialog } from "./DiscardChangesDialog";
 
+function LoadError({
+	message,
+	retryLabel,
+	onRetry,
+}: {
+	message: string;
+	retryLabel: string;
+	onRetry: () => void;
+}) {
+	return (
+		<div
+			role="alert"
+			className="flex items-center justify-center gap-2 py-4 text-sm text-destructive"
+		>
+			<span>{message}</span>
+			<Button variant="outline" size="sm" onClick={onRetry}>
+				{retryLabel}
+			</Button>
+		</div>
+	);
+}
+
 export function PresetGallery() {
 	const { t } = useTranslation("editor");
 	const activeModal = useUIStore((s) => s.activeModal);
@@ -42,6 +64,12 @@ export function PresetGallery() {
 	const [presets, setPresets] = useState<Preset[]>([]);
 	const [workflows, setWorkflows] = useState<WorkflowEntry[]>([]);
 	const [loading, setLoading] = useState(false);
+	/** Which list failed to load; a failure must not read as an empty list. */
+	const [loadErrors, setLoadErrors] = useState({
+		presets: false,
+		workflows: false,
+	});
+	const [reloadKey, setReloadKey] = useState(0);
 	const [pendingDelete, setPendingDelete] = useState<WorkflowEntry | null>(
 		null,
 	);
@@ -66,27 +94,27 @@ export function PresetGallery() {
 		let cancelled = false;
 		setLoading(true);
 		void (async () => {
-			try {
-				const [p, w] = await Promise.all([listPresets(), listWorkflows()]);
-				if (!cancelled) {
-					setPresets(p);
-					setWorkflows(w);
-				}
-			} catch {
-				if (!cancelled) {
-					setPresets([]);
-					setWorkflows([]);
-				}
-			} finally {
-				if (!cancelled) {
-					setLoading(false);
-				}
-			}
+			const [p, w] = await Promise.allSettled([
+				listPresets(),
+				listWorkflows(),
+			]);
+			if (cancelled) return;
+			setPresets(p.status === "fulfilled" ? p.value : []);
+			setWorkflows(w.status === "fulfilled" ? w.value : []);
+			setLoadErrors({
+				presets: p.status === "rejected",
+				workflows: w.status === "rejected",
+			});
+			setLoading(false);
 		})();
 		return () => {
 			cancelled = true;
 		};
-	}, [open]);
+	}, [open, reloadKey]);
+
+	const retry = useCallback(() => {
+		setReloadKey((k) => k + 1);
+	}, []);
 
 	const handleLoadPreset = useCallback(
 		(preset: Preset) => {
@@ -207,10 +235,18 @@ export function PresetGallery() {
 										</CardHeader>
 									</Card>
 								))}
-								{presets.length === 0 && (
-									<p className="text-sm text-muted-foreground text-center py-4">
-										{t("gallery.empty.noPresets")}
-									</p>
+								{loadErrors.presets ? (
+									<LoadError
+										message={t("gallery.error.presets")}
+										retryLabel={t("gallery.error.retry")}
+										onRetry={retry}
+									/>
+								) : (
+									presets.length === 0 && (
+										<p className="text-sm text-muted-foreground text-center py-4">
+											{t("gallery.empty.noPresets")}
+										</p>
+									)
 								)}
 
 								<p className="text-xs font-medium text-muted-foreground uppercase tracking-wide px-1 mt-3">
@@ -250,10 +286,18 @@ export function PresetGallery() {
 										</CardHeader>
 									</Card>
 								))}
-								{workflows.length === 0 && (
-									<p className="text-sm text-muted-foreground text-center py-4">
-										{t("gallery.empty.noSavedWorkflows")}
-									</p>
+								{loadErrors.workflows ? (
+									<LoadError
+										message={t("gallery.error.workflows")}
+										retryLabel={t("gallery.error.retry")}
+										onRetry={retry}
+									/>
+								) : (
+									workflows.length === 0 && (
+										<p className="text-sm text-muted-foreground text-center py-4">
+											{t("gallery.empty.noSavedWorkflows")}
+										</p>
+									)
 								)}
 							</div>
 						</ScrollArea>
