@@ -189,11 +189,7 @@ async fn deletion_conflicts_only_while_tasks_are_active() -> TestResult {
         .ok_or_else(|| std::io::Error::other("attempt missing"))?;
     assert_eq!(attempt.attempt.worker_id, None);
     assert_eq!(
-        attempt
-            .attempt
-            .worker_name
-            .as_ref()
-            .map(|name| name.as_str()),
+        attempt.attempt.worker_name.as_ref().map(WorkerName::as_str),
         Some("worker-a")
     );
     Ok(())

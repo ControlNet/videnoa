@@ -2,7 +2,7 @@
 //!
 //! Each fixture is a `sqlite3 .dump` of a database that the migrations of that
 //! release tag created (`git show <tag>:crates/controller/migrations/...`, run by
-//! SQLx), seeded with representative rows. The recorded migration checksums make
+//! `SQLx`), seeded with representative rows. The recorded migration checksums make
 //! an edited released migration fail here, as it would for a real user.
 
 use std::error::Error;
@@ -11,7 +11,7 @@ use std::path::Path;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use tempfile::TempDir;
 use videnoa_controller::domain::{
-    FailureCode, PageRequest, TaskId, TaskListQuery, TaskStatus, WorkerId,
+    FailureCode, PageRequest, TaskId, TaskListQuery, TaskStatus, WorkerId, WorkerName,
 };
 use videnoa_controller::persistence::{Database, DatabaseOptions, Store, WorkerDeleteOutcome};
 
@@ -162,11 +162,7 @@ async fn deleting_the_worker_a_released_retry_pinned_unpins_the_task() -> TestRe
         .ok_or("released attempt is missing")?;
     assert_eq!(attempt.attempt.worker_id, None);
     assert_eq!(
-        attempt
-            .attempt
-            .worker_name
-            .as_ref()
-            .map(|name| name.as_str()),
+        attempt.attempt.worker_name.as_ref().map(WorkerName::as_str),
         Some("retired-worker")
     );
     // The Worker with an active task stays.
