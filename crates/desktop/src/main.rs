@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod data_dir;
+
 use std::net::TcpListener;
 use std::path::Path;
 
@@ -7,7 +9,7 @@ use tauri::{webview::WebviewWindowBuilder, WebviewUrl};
 use tracing::{error, info, warn};
 use tracing_subscriber::prelude::*;
 
-use videnoa_core::config::{config_path, data_dir, initialize_data_dir, AppConfig};
+use videnoa_core::config::{config_path, initialize_data_dir, AppConfig};
 use videnoa_core::logging::{
     compose_logging_init_plan, install_panic_hook, FileSinkPlan, LoggingInitOptions,
     PanicHookInstallPlan, RuntimeLogMode, DEFAULT_LOG_FILTER,
@@ -174,8 +176,14 @@ fn main() {
     // SAFETY: configure malloc before Tauri and the native inference libraries start threads.
     unsafe { videnoa_core::runtime::configure_host_memory() };
     videnoa_core::runtime::setup_runtime_libs();
-    let startup_data_dir = data_dir(None);
+    let data_dir::DesktopDataDir {
+        path: startup_data_dir,
+        note: data_dir_note,
+    } = data_dir::resolve();
     init_logging(startup_data_dir.clone());
+    if let Some(note) = data_dir_note {
+        warn!(data_dir = %startup_data_dir.display(), "{note}");
+    }
     videnoa_core::runtime::log_runtime_lib_status();
 
     tauri::Builder::default()

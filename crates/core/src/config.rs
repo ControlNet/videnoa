@@ -12,8 +12,15 @@ pub const FALLBACK_LOCALE: &str = "en";
 /// without it is version 1. Saving never lowers the version found on disk,
 /// and keys this build does not know are kept (see [`AppConfig::save_to_path`]),
 /// so running an older build does not erase a newer build's settings.
-pub const CONFIG_VERSION: i64 = 1;
+///
+/// 2. A relative `paths.workflows_dir` is relative to the data directory
+///    instead of the working directory (see [`AppConfig::load_from_path`]).
+pub const CONFIG_VERSION: i64 = 2;
 const CONFIG_VERSION_KEY: &str = "version";
+/// The version 1 default of `paths.workflows_dir`, relative to the working
+/// directory. It meant `<cwd>/data/workflows`, the workflows folder of the
+/// default data directory.
+const LEGACY_WORKFLOWS_DIR: &str = "data/workflows";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -155,9 +162,146 @@ impl Default for PathsConfig {
             models_dir: PathBuf::from("models"),
             trt_cache_dir: PathBuf::from("trt_cache"),
             presets_dir: PathBuf::from("presets"),
-            workflows_dir: PathBuf::from("data/workflows"),
+            workflows_dir: PathBuf::from("workflows"),
         }
     }
+}
+
+/// Where relative paths point.
+///
+/// - Mutable state (`workflows_dir`) lives under the data directory.
+/// - Shipped assets (`models_dir`, `presets_dir`, `trt_cache_dir`) are
+///   relative to the asset base: the first of the working directory, the
+///   executable's directory and its parent that contains `presets_dir`;
+///   the working directory when none does. Docker (WORKDIR /app) and a
+///   run from the repository resolve against the working directory, a
+///   release bundle started from elsewhere against its own folder.
+impl PathsConfig {
+    pub fn resolved_workflows_dir(&self, data_dir: &Path) -> PathBuf {
+        resolve_relative_to(data_dir, &self.workflows_dir)
+    }
+
+    pub fn resolved_models_dir(&self) -> PathBuf {
+        self.resolve_asset(&self.models_dir)
+    }
+
+    pub fn resolved_presets_dir(&self) -> PathBuf {
+        self.resolve_asset(&self.presets_dir)
+    }
+
+    pub fn resolved_trt_cache_dir(&self) -> PathBuf {
+        self.resolve_asset(&self.trt_cache_dir)
+    }
+
+    fn resolve_asset(&self, path: &Path) -> PathBuf {
+        if path.is_absolute() {
+            return path.to_path_buf();
+        }
+        asset_base_dir(&self.presets_dir).join(path)
+    }
+
+    /// Where a `model_path` written in a workflow points. A relative path is
+    /// looked up in `models_dir`, also without a leading `models/` (bundled
+    /// presets write `models/<file>`), then against the asset base. If no
+    /// such file exists it is returned unchanged, so it resolves against the
+    /// working directory as it always did and the node reports it.
+    pub fn resolve_model_path(&self, path: &Path) -> PathBuf {
+        if path.is_absolute() {
+            return path.to_path_buf();
+        }
+        let models_dir = self.resolved_models_dir();
+        let mut candidates = vec![models_dir.join(path)];
+        if let Ok(rest) = path.strip_prefix("models") {
+            candidates.push(models_dir.join(rest));
+        }
+        candidates.push(asset_base_dir(&self.presets_dir).join(path));
+        candidates
+            .into_iter()
+            .find(|candidate| candidate.is_file())
+            .unwrap_or_else(|| path.to_path_buf())
+    }
+
+    /// Applies [`Self::resolve_model_path`] to every `model_path` param of a
+    /// workflow document (`{"nodes": [{"params": {...}}, ...]}`).
+    pub fn resolve_model_paths_in(&self, workflow: &mut serde_json::Value) {
+        let Some(nodes) = workflow
+            .get_mut("nodes")
+            .and_then(serde_json::Value::as_array_mut)
+        else {
+            return;
+        };
+        for node in nodes {
+            let Some(model_path) = node.pointer_mut("/params/model_path") else {
+                continue;
+            };
+            if let Some(raw) = model_path.as_str() {
+                let resolved = self.resolve_model_path(Path::new(raw));
+                *model_path = serde_json::Value::String(resolved.to_string_lossy().into_owned());
+            }
+        }
+    }
+}
+
+/// See [`PathsConfig`]: the base directory of relative shipped-asset paths.
+pub fn asset_base_dir(presets_dir: &Path) -> PathBuf {
+    let cwd = env::current_dir().ok();
+    let exe_dir = env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf));
+    let candidates: Vec<PathBuf> = cwd
+        .iter()
+        .cloned()
+        .chain(exe_dir.iter().cloned())
+        .chain(
+            exe_dir
+                .iter()
+                .filter_map(|dir| dir.parent().map(Path::to_path_buf)),
+        )
+        .collect();
+    first_dir_containing(&candidates, presets_dir)
+        .or(cwd)
+        .unwrap_or_default()
+}
+
+fn first_dir_containing(candidates: &[PathBuf], relative: &Path) -> Option<PathBuf> {
+    candidates
+        .iter()
+        .find(|candidate| candidate.join(relative).is_dir())
+        .cloned()
+}
+
+/// Copies the workflows saved under the version 1 default location,
+/// `<cwd>/data/workflows`, into `workflows_dir` when that resolves somewhere
+/// else under a custom data directory and does not exist yet. The old files
+/// stay where they are. Returns the number of files copied.
+pub fn migrate_legacy_workflows_dir(
+    paths: &PathsConfig,
+    data_dir: &Path,
+    cwd: &Path,
+) -> Result<usize> {
+    if paths.workflows_dir.is_absolute() {
+        return Ok(0);
+    }
+    let legacy = cwd.join(LEGACY_WORKFLOWS_DIR);
+    let target = paths.resolved_workflows_dir(data_dir);
+    if !legacy.is_dir() || target.exists() {
+        return Ok(0);
+    }
+    fs::create_dir_all(&target)
+        .with_context(|| format!("failed to create workflows directory: {}", target.display()))?;
+    let mut copied = 0;
+    for entry in fs::read_dir(&legacy)
+        .with_context(|| format!("failed to read legacy workflows: {}", legacy.display()))?
+    {
+        let entry = entry?;
+        if entry.file_type()?.is_file() {
+            fs::copy(entry.path(), target.join(entry.file_name())).with_context(|| {
+                format!("failed to copy legacy workflow {}", entry.path().display())
+            })?;
+            copied += 1;
+        }
+    }
+    Ok(copied)
 }
 
 impl Default for ServerConfig {
@@ -195,9 +339,13 @@ impl AppConfig {
                 "config.toml was written by a newer build; settings this build does not know are kept unchanged"
             );
         }
-        toml::Value::Table(table)
+        let mut config: Self = toml::Value::Table(table)
             .try_into()
-            .with_context(|| format!("failed to parse config TOML: {}", path.display()))
+            .with_context(|| format!("failed to parse config TOML: {}", path.display()))?;
+        if version < 2 {
+            config.paths.workflows_dir = migrate_v1_workflows_dir(&config.paths.workflows_dir);
+        }
+        Ok(config)
     }
 
     pub fn save_to_path(&self, path: &Path) -> Result<()> {
@@ -257,6 +405,19 @@ impl AppConfig {
         }
         table.insert(CONFIG_VERSION_KEY.to_owned(), toml::Value::Integer(version));
         toml::to_string_pretty(&table).context("failed to serialize config TOML")
+    }
+}
+
+/// Version 1 resolved a relative `workflows_dir` against the working
+/// directory. Its default becomes the data-relative default; any other
+/// relative value is pinned to the working directory it meant.
+fn migrate_v1_workflows_dir(workflows_dir: &Path) -> PathBuf {
+    if workflows_dir == Path::new(LEGACY_WORKFLOWS_DIR) {
+        return PathsConfig::default().workflows_dir;
+    }
+    match env::current_dir() {
+        Ok(cwd) if workflows_dir.is_relative() => cwd.join(workflows_dir),
+        _ => workflows_dir.to_path_buf(),
     }
 }
 
@@ -361,7 +522,7 @@ mod tests {
         assert_eq!(cfg.paths.models_dir, PathBuf::from("models"));
         assert_eq!(cfg.paths.trt_cache_dir, PathBuf::from("trt_cache"));
         assert_eq!(cfg.paths.presets_dir, PathBuf::from("presets"));
-        assert_eq!(cfg.paths.workflows_dir, PathBuf::from("data/workflows"));
+        assert_eq!(cfg.paths.workflows_dir, PathBuf::from("workflows"));
 
         assert_eq!(cfg.server.port, 3000);
         assert_eq!(cfg.server.host, "0.0.0.0");
@@ -485,6 +646,143 @@ mod tests {
         assert!(saved["iroh"].get("relay_urls").is_none(), "{saved}");
 
         fs::remove_dir_all(&temp).ok();
+    }
+
+    #[test]
+    fn relative_state_paths_resolve_against_the_data_dir() {
+        let paths = PathsConfig::default();
+        assert_eq!(
+            paths.resolved_workflows_dir(Path::new("/srv/videnoa")),
+            PathBuf::from("/srv/videnoa/workflows")
+        );
+        let custom = PathsConfig {
+            workflows_dir: PathBuf::from("/elsewhere/workflows"),
+            ..PathsConfig::default()
+        };
+        assert_eq!(
+            custom.resolved_workflows_dir(Path::new("/srv/videnoa")),
+            PathBuf::from("/elsewhere/workflows")
+        );
+    }
+
+    #[test]
+    fn a_version_1_config_keeps_pointing_at_its_workflows() {
+        let temp = unique_temp_dir();
+        fs::create_dir_all(&temp).expect("create temp dir");
+        let path = temp.join("config.toml");
+
+        // The old default becomes the data-relative default.
+        fs::write(&path, "[paths]\nworkflows_dir = \"data/workflows\"\n").expect("write");
+        let config = AppConfig::load_from_path(&path).expect("load v1 default");
+        assert_eq!(config.paths.workflows_dir, PathBuf::from("workflows"));
+
+        // Another relative value keeps meaning the working directory.
+        fs::write(&path, "[paths]\nworkflows_dir = \"my-workflows\"\n").expect("write");
+        let config = AppConfig::load_from_path(&path).expect("load v1 custom");
+        assert_eq!(
+            config.paths.workflows_dir,
+            env::current_dir().unwrap().join("my-workflows")
+        );
+
+        // A version 2 file is taken as written.
+        fs::write(
+            &path,
+            "version = 2\n[paths]\nworkflows_dir = \"my-workflows\"\n",
+        )
+        .expect("write");
+        let config = AppConfig::load_from_path(&path).expect("load v2");
+        assert_eq!(config.paths.workflows_dir, PathBuf::from("my-workflows"));
+
+        fs::remove_dir_all(&temp).ok();
+    }
+
+    #[test]
+    fn legacy_workflows_are_copied_into_a_custom_data_dir_once() {
+        // Given: workflows saved by an older build under <cwd>/data/workflows
+        // while the data directory was elsewhere.
+        let root = unique_temp_dir();
+        let cwd = root.join("cwd");
+        let data_dir = root.join("state");
+        fs::create_dir_all(cwd.join("data/workflows")).expect("create legacy dir");
+        fs::write(cwd.join("data/workflows/mine.json"), "{}").expect("write workflow");
+        let paths = PathsConfig::default();
+
+        // When: the new build starts.
+        let copied = migrate_legacy_workflows_dir(&paths, &data_dir, &cwd).expect("migrate");
+
+        // Then: the workflow is in the data directory and the original stays.
+        assert_eq!(copied, 1);
+        assert!(data_dir.join("workflows/mine.json").is_file());
+        assert!(cwd.join("data/workflows/mine.json").is_file());
+        // Once the new directory exists nothing is copied again.
+        fs::write(cwd.join("data/workflows/later.json"), "{}").expect("write workflow");
+        assert_eq!(
+            migrate_legacy_workflows_dir(&paths, &data_dir, &cwd).expect("rerun"),
+            0
+        );
+        // With the default data directory both locations are the same.
+        assert_eq!(
+            migrate_legacy_workflows_dir(&paths, &cwd.join("data"), &cwd).expect("same dir"),
+            0
+        );
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn asset_paths_resolve_against_the_first_dir_with_presets() {
+        let root = unique_temp_dir();
+        let cwd = root.join("home");
+        let bundle = root.join("bundle");
+        fs::create_dir_all(&cwd).expect("create cwd");
+        fs::create_dir_all(bundle.join("presets")).expect("create bundle presets");
+        let candidates = [cwd.clone(), bundle.clone()];
+
+        assert_eq!(
+            first_dir_containing(&candidates, Path::new("presets")),
+            Some(bundle.clone())
+        );
+        fs::create_dir_all(cwd.join("presets")).expect("create cwd presets");
+        assert_eq!(
+            first_dir_containing(&candidates, Path::new("presets")),
+            Some(cwd.clone())
+        );
+        assert_eq!(first_dir_containing(&candidates, Path::new("none")), None);
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn workflow_model_paths_resolve_against_models_dir() {
+        let root = unique_temp_dir();
+        let models = root.join("my-models");
+        fs::create_dir_all(&models).expect("create models dir");
+        fs::write(models.join("x2.onnx"), b"model").expect("write model");
+        let paths = PathsConfig {
+            models_dir: models.clone(),
+            ..PathsConfig::default()
+        };
+
+        // Bundled presets write `models/<file>`; bare names work too.
+        assert_eq!(
+            paths.resolve_model_path(Path::new("models/x2.onnx")),
+            models.join("x2.onnx")
+        );
+        assert_eq!(
+            paths.resolve_model_path(Path::new("x2.onnx")),
+            models.join("x2.onnx")
+        );
+        // Unknown files and absolute paths are left alone.
+        assert_eq!(
+            paths.resolve_model_path(Path::new("models/missing.onnx")),
+            PathBuf::from("models/missing.onnx")
+        );
+        assert_eq!(
+            paths.resolve_model_path(Path::new("/abs/x2.onnx")),
+            PathBuf::from("/abs/x2.onnx")
+        );
+
+        fs::remove_dir_all(&root).ok();
     }
 
     #[test]

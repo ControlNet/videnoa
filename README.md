@@ -82,13 +82,14 @@ container and `./data/config.toml` on the host. If you override `--data-dir` or
 `data/controller.toml`; its persistence mount is shown in the Controller example.
 
 ```toml
+version = 2
 locale = "en"
 
 [paths]
 models_dir = "models"
 trt_cache_dir = "trt_cache"
 presets_dir = "presets"
-workflows_dir = "data/workflows"
+workflows_dir = "workflows"
 
 [server]
 port = 3000
@@ -126,6 +127,26 @@ CLI flags override config values (`--host`, `--port`, `--data-dir`). For the
 server port the precedence is `--port`, then the `PORT` environment variable,
 then `server.port` from the config. `videnoa run` (CLI) reads the same config
 and stores TensorRT engines in `paths.trt_cache_dir`.
+
+Relative paths have fixed anchors, independent of where Videnoa is started from:
+
+- `workflows_dir` (saved workflows) is relative to the data directory.
+  Workflows an older release saved in `./data/workflows` are copied over on
+  first start when the data directory is elsewhere; the originals stay.
+- `models_dir`, `presets_dir` and `trt_cache_dir` are relative to the first of
+  the working directory, the executable's directory, and its parent that
+  contains `presets_dir` (Docker's `/app`, the repository root, or the release
+  folder).
+- A relative `model_path` in a workflow is looked up in `models_dir`, also
+  without a leading `models/`.
+
+The desktop app keeps its data directory in the platform's local app-data
+folder (`%LOCALAPPDATA%\com.videnoa.app` on Windows,
+`~/.local/share/com.videnoa.app` on Linux) unless `VIDENOA_DATA_DIR` is set,
+and moves a `data` folder found beside its executable there once.
+
+`config.toml` records a `version`. Keys this release does not know (written by
+a newer one) are kept when settings are saved.
 
 The HTTP server closes an HTTP/1.1 connection whose request head (request line
 and headers) does not arrive within 30 seconds, including the next request on an

@@ -19,3 +19,4 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 tauri = { version = "2" }
 url = { workspace = true }
 sys-locale = "0.3"
+dirs = "6"

@@ -579,7 +579,9 @@ fn parse_dynamic_args(args: &[String], workflow_ports: &[String]) -> HashMap<Str
 /// the server reads, so `paths.trt_cache_dir` applies to CLI runs as well.
 fn cli_compile_context(data_dir: &Path) -> Result<VideoCompileContext> {
     let config = AppConfig::load_from_path(&config_path(data_dir))?;
-    Ok(VideoCompileContext::new(config.paths.trt_cache_dir))
+    Ok(VideoCompileContext::new(
+        config.paths.resolved_trt_cache_dir(),
+    ))
 }
 
 async fn run_workflow(
@@ -644,7 +646,11 @@ async fn run_workflow(
         all_params.insert(key.to_string(), value.to_string());
     }
 
-    let workflow_value = inject_params_into_workflow_input(&workflow_value, &all_params)?;
+    let mut workflow_value = inject_params_into_workflow_input(&workflow_value, &all_params)?;
+    // Model paths resolve against `paths.models_dir`, as they do for jobs.
+    AppConfig::load_from_path(&config_path(&data_dir))?
+        .paths
+        .resolve_model_paths_in(&mut workflow_value);
 
     let graph: PipelineGraph = serde_json::from_value(workflow_value)
         .with_context(|| format!("Failed to parse workflow JSON: {}", workflow_path.display()))?;
@@ -904,7 +910,7 @@ mod cli_compile_context_tests {
         let ctx = cli_compile_context(&data_dir).expect("compile context should build");
         assert_eq!(
             ctx.trt_cache_dir(),
-            AppConfig::default().paths.trt_cache_dir.as_path()
+            AppConfig::default().paths.resolved_trt_cache_dir()
         );
     }
 }

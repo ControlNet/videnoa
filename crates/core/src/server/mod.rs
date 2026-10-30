@@ -182,6 +182,7 @@ impl AppState {
         config_path: PathBuf,
         data_dir: PathBuf,
     ) -> Self {
+        migrate_legacy_workflows(&config, &data_dir);
         let auth =
             auth::AuthService::open(&data_dir, config.auth.clone()).map_err(|e| e.to_string());
         let jobs = DashMap::new();
@@ -288,43 +289,45 @@ impl AppState {
             .map_err(|e| AppError::Internal(e.clone()))
     }
 
-    /// Resolve workflows_dir relative to process current working directory.
+    /// Resolve workflows_dir relative to the data directory.
     pub async fn resolve_workflows_dir(&self) -> PathBuf {
         let config = self.inner.config.read().await;
-
-        let base_dir = match std::env::current_dir() {
-            Ok(cwd) => cwd,
-            Err(cwd_err) => {
-                warn!(
-                    error = %cwd_err,
-                    data_dir = %self.inner.data_dir.display(),
-                    "Failed to resolve current directory; falling back to executable directory for workflows_dir"
-                );
-
-                match std::env::current_exe() {
-                    Ok(exe_path) => match exe_path.parent() {
-                        Some(exe_dir) => exe_dir.to_path_buf(),
-                        None => {
-                            warn!(
-                                executable = %exe_path.display(),
-                                "Executable path has no parent directory; using workflows_dir value as provided"
-                            );
-                            return config.paths.workflows_dir.clone();
-                        }
-                    },
-                    Err(exe_err) => {
-                        warn!(
-                            error = %exe_err,
-                            "Failed to resolve executable path; using workflows_dir value as provided"
-                        );
-                        return config.paths.workflows_dir.clone();
-                    }
-                }
-            }
-        };
-
-        crate::config::resolve_relative_to(&base_dir, &config.paths.workflows_dir)
+        config.paths.resolved_workflows_dir(&self.inner.data_dir)
     }
+}
+
+/// Copies workflows an older build saved under `<cwd>/data/workflows` into
+/// the data directory's workflows folder; see
+/// [`crate::config::migrate_legacy_workflows_dir`].
+fn migrate_legacy_workflows(config: &AppConfig, data_dir: &StdPath) {
+    let Ok(cwd) = std::env::current_dir() else {
+        return;
+    };
+    match crate::config::migrate_legacy_workflows_dir(&config.paths, data_dir, &cwd) {
+        Ok(0) => {}
+        Ok(copied) => info!(
+            copied,
+            from = %cwd.join("data/workflows").display(),
+            to = %config.paths.resolved_workflows_dir(data_dir).display(),
+            "Copied saved workflows into the data directory; the originals were left in place"
+        ),
+        Err(error) => warn!(
+            error = %format!("{error:#}"),
+            "Failed to copy saved workflows from the old location into the data directory"
+        ),
+    }
+}
+
+/// The workflow with each relative `model_path` param resolved against
+/// `paths.models_dir` (see [`crate::config::PathsConfig::resolve_model_path`]).
+/// Only the executed copy changes; a job keeps the workflow as submitted.
+fn resolve_workflow_model_paths(
+    workflow: &PipelineGraph,
+    paths: &crate::config::PathsConfig,
+) -> Result<PipelineGraph> {
+    let mut document = serde_json::to_value(workflow)?;
+    paths.resolve_model_paths_in(&mut document);
+    Ok(serde_json::from_value(document)?)
 }
 
 pub fn load_builtin_presets(dir: &StdPath) -> DashMap<String, Preset> {
@@ -1754,7 +1757,7 @@ async fn resolve_run_workflow_file(
     }
 
     let config = state.inner.config.read().await;
-    let presets_path = config.paths.presets_dir.join(&filename);
+    let presets_path = config.paths.resolved_presets_dir().join(&filename);
     if presets_path.exists() {
         return Ok(ResolvedWorkflowFile {
             path: presets_path,
@@ -2120,7 +2123,7 @@ async fn inspect_model(
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
 
     let config = state.inner.config.read().await;
-    let models_dir = &config.paths.models_dir;
+    let models_dir = config.paths.resolved_models_dir();
     let path = models_dir.join(&filename);
 
     if !path.exists() {
@@ -2371,7 +2374,7 @@ async fn get_workflow_interface(
     let workflows_dir = state.resolve_workflows_dir().await;
     let config = state.inner.config.read().await;
     let workflows_path = workflows_dir.join(&filename);
-    let presets_path = config.paths.presets_dir.join(&filename);
+    let presets_path = config.paths.resolved_presets_dir().join(&filename);
 
     let contents = if workflows_path.exists() {
         std::fs::read_to_string(&workflows_path)
@@ -2406,8 +2409,8 @@ async fn list_fs(
 
     let base_name = params.base.as_deref().unwrap_or("models");
     let base_dir: PathBuf = match base_name {
-        "models" => config.paths.models_dir.clone(),
-        "presets" => config.paths.presets_dir.clone(),
+        "models" => config.paths.resolved_models_dir(),
+        "presets" => config.paths.resolved_presets_dir(),
         "workflows" => workflows_resolved,
         _ => {
             return Err(AppError::Forbidden(format!(
@@ -3010,7 +3013,11 @@ async fn process_frame(
     let filename = format!("processed-{}.png", Uuid::new_v4());
     let output = session.path().join(&filename);
     let result_slot = session.reserve_result()?;
-    let trt_cache = state.inner.config.read().await.paths.trt_cache_dir.clone();
+    let (graph, trt_cache) = {
+        let config = state.inner.config.read().await;
+        let graph = resolve_workflow_model_paths(&graph, &config.paths)?;
+        (graph, config.paths.resolved_trt_cache_dir())
+    };
     // Jobs are ahead of a preview in the GPU's FIFO; report that instead of
     // waiting behind every one of them.
     let permit = match tokio::time::timeout(
@@ -3175,7 +3182,8 @@ async fn run_job(state: AppState, job_id: String) {
             )
         };
         let inner = Arc::clone(&state.inner);
-        let trt_cache_dir = state.inner.config.read().await.paths.trt_cache_dir.clone();
+        let paths = state.inner.config.read().await.paths.clone();
+        let trt_cache_dir = paths.resolved_trt_cache_dir();
 
         // Clone the broadcast sender before entering the blocking closure
         // to avoid holding the DashMap read lock across the block_in_place boundary.
@@ -3192,6 +3200,7 @@ async fn run_job(state: AppState, job_id: String) {
                 if let Some(params) = job_params.as_ref() {
                     workflow.inject_workflow_input_params(params);
                 }
+                let workflow = resolve_workflow_model_paths(&workflow, &paths)?;
                 let compile_ctx = VideoCompileContext::new(trt_cache_dir);
                 let fps_baseline = Mutex::new(None::<ProgressFpsBaseline>);
                 let ws_tx_for_progress = ws_tx.clone();
@@ -3464,11 +3473,11 @@ pub fn app_state_with_config(
 ) -> AppState {
     let mut node_registry = NodeRegistry::new();
     register_all_nodes(&mut node_registry);
-    let mut model_registry = ModelRegistry::with_builtin_models(config.paths.models_dir.clone());
+    let mut model_registry = ModelRegistry::with_builtin_models(config.paths.resolved_models_dir());
     if let Err(e) = model_registry.discover() {
         tracing::warn!(error = %e, "Failed to discover models on disk");
     }
-    let presets = load_builtin_presets(&config.paths.presets_dir);
+    let presets = load_builtin_presets(&config.paths.resolved_presets_dir());
     AppState::new(
         node_registry,
         model_registry,
@@ -4266,6 +4275,38 @@ mod tests {
             _ctx: &crate::node::ExecutionContext,
         ) -> Result<std::collections::HashMap<String, crate::types::PortData>> {
             panic!("injected node panic");
+        }
+    }
+
+    /// Fails when run unless its `model_path` param names an existing file.
+    struct ModelPathNode {
+        model_path: PathBuf,
+    }
+
+    impl crate::node::Node for ModelPathNode {
+        fn node_type(&self) -> &str {
+            "test_model"
+        }
+
+        fn input_ports(&self) -> Vec<crate::node::PortDefinition> {
+            vec![]
+        }
+
+        fn output_ports(&self) -> Vec<crate::node::PortDefinition> {
+            vec![]
+        }
+
+        fn execute(
+            &mut self,
+            _inputs: &std::collections::HashMap<String, crate::types::PortData>,
+            _ctx: &crate::node::ExecutionContext,
+        ) -> Result<std::collections::HashMap<String, crate::types::PortData>> {
+            anyhow::ensure!(
+                self.model_path.is_file(),
+                "model not found: {}",
+                self.model_path.display()
+            );
+            Ok(std::collections::HashMap::new())
         }
     }
 
@@ -6018,7 +6059,7 @@ mod tests {
         let data_dir = test_data_dir();
         let state = test_state_with_data_dir(data_dir.clone());
         let mut app = app_router(state.clone());
-        let job_id = create_job_id(&mut app, delay_workflow_json(600)).await;
+        let job_id = create_job_id(&mut app, delay_workflow_json(2_000)).await;
         assert!(wait_for_persisted_status(&data_dir, &job_id, "running").await);
 
         // When: it is cancelled.
@@ -6110,6 +6151,66 @@ mod tests {
         assert!(wait_for_persisted_status(&data_dir, &job_id, "failed").await);
         assert_eq!(state.inner.gpu_semaphore.available_permits(), 1);
         assert!(!state.inner.progress_senders.contains_key(&job_id));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn job_model_paths_resolve_against_the_configured_models_dir() {
+        // Given: a models_dir outside the working directory holding a model,
+        // and a node that fails at run time unless its model_path names an
+        // existing file.
+        let models_dir = test_data_dir().join("models");
+        std::fs::create_dir_all(&models_dir).unwrap();
+        std::fs::write(models_dir.join("upscaler.onnx"), b"model").unwrap();
+        let mut node_registry = NodeRegistry::new();
+        node_registry.register("test_model", |params| {
+            let model_path = params
+                .get("model_path")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            Ok(Box::new(ModelPathNode {
+                model_path: PathBuf::from(model_path),
+            }))
+        });
+        let config = AppConfig {
+            paths: crate::config::PathsConfig {
+                models_dir: models_dir.clone(),
+                ..AppConfig::default().paths
+            },
+            ..AppConfig::default()
+        };
+        let state = AppState::new(
+            node_registry,
+            ModelRegistry::with_builtin_models(models_dir.clone()),
+            DashMap::new(),
+            config,
+            test_config_path(),
+            test_data_dir(),
+        );
+        let mut app = app_router(state.clone());
+
+        // When: jobs name the model relative to models_dir, with and without
+        // the "models/" prefix the bundled presets use.
+        for model_path in ["upscaler.onnx", "models/upscaler.onnx"] {
+            let workflow = serde_json::json!({
+                "nodes": [{
+                    "id": "model",
+                    "node_type": "test_model",
+                    "params": {"model_path": model_path}
+                }],
+                "connections": []
+            });
+            let job_id = create_job_id(&mut app, workflow).await;
+
+            // Then: the node sees the file under models_dir, and the stored
+            // workflow keeps the path as submitted.
+            let status = wait_for_job_terminal_status(&state, &job_id).await;
+            let (_, job) = get_job_json(&mut app, &job_id).await;
+            assert_eq!(status, JobStatus::Completed, "{model_path}: {job}");
+            let stored =
+                serde_json::to_value(&state.inner.jobs.get(&job_id).unwrap().workflow).unwrap();
+            assert_eq!(stored["nodes"][0]["params"]["model_path"], model_path);
+        }
+        let _ = std::fs::remove_dir_all(models_dir.parent().unwrap());
     }
 
     #[tokio::test]
@@ -8243,18 +8344,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_relative_workflows_resolution_uses_current_dir() {
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let workflows_rel = PathBuf::from(format!(
-            "target/videnoa-wf-cwd-{}-{timestamp}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&workflows_rel);
-
+    async fn a_relative_workflows_dir_resolves_against_the_data_dir() {
+        let workflows_rel = PathBuf::from(format!("my-workflows-{}", Uuid::new_v4()));
         let state = workflow_test_state(workflows_rel.clone());
+        let data_dir = state.inner.data_dir.clone();
         let mut app = app_router(state);
 
         let body = serde_json::json!({
@@ -8272,13 +8365,18 @@ mod tests {
         let resp = send_request(&mut app, req).await;
         assert_eq!(resp.status(), StatusCode::CREATED);
 
-        let expected_file = workflows_rel.join("Resolved Workflow.json");
+        let expected_file = data_dir.join(&workflows_rel).join("Resolved Workflow.json");
         assert!(
             expected_file.exists(),
             "Workflow file should be at {}",
             expected_file.display()
         );
+        assert!(
+            !workflows_rel.exists(),
+            "a relative workflows_dir must not follow the process working directory"
+        );
 
+        let _ = std::fs::remove_dir_all(data_dir.join(&workflows_rel));
         let _ = std::fs::remove_dir_all(&workflows_rel);
     }
 
