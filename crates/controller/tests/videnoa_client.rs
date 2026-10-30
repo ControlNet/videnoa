@@ -33,8 +33,8 @@ use videnoa_controller::domain::{
 };
 use videnoa_controller::remote::{
     sibling_output_path, CacheInvalidation, CapabilityCache, Compatibility, CompatibilityEntry,
-    CompatibilityEvidence, FileApiPath, MonotonicClock, PayloadLimits, RemoteTimeouts, RunOutcome,
-    RunValidation, VidenoaClient, VidenoaClientError,
+    CompatibilityEvidence, ErrorCode, FileApiPath, MonotonicClock, PayloadLimits, RemoteTimeouts,
+    RunOutcome, RunValidation, VidenoaClient, VidenoaClientError,
 };
 
 type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -659,6 +659,7 @@ async fn json_and_status_failures_are_bounded_typed_and_redacted() -> TestResult
             VidenoaClientError::ClientStatus {
                 status: 418,
                 reason: None,
+                code: None,
             },
         ),
         (503, VidenoaClientError::ServerStatus { status: 503 }),
@@ -838,6 +839,7 @@ async fn rejected_run_carries_only_the_bounded_worker_reason() -> TestResult {
             VidenoaClientError::ClientStatus {
                 status,
                 reason: reason.clone(),
+                code: None,
             },
             "case {index}"
         );
@@ -846,6 +848,139 @@ async fn rejected_run_carries_only_the_bounded_worker_reason() -> TestResult {
             None => assert!(!format!("{error:?} {error}").contains("sensitive-marker")),
         }
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_rejected_run_is_classified_by_its_code_before_its_status() -> TestResult {
+    // Given: a protocol-2 Worker that answers runs with coded rejections.
+    let server = MockVidenoa::start().await?;
+    let client = test_client(
+        &server,
+        Duration::from_secs(5),
+        Duration::from_secs(1),
+        JSON_LIMIT,
+    )?;
+    let params = BTreeMap::new();
+    let workflow = WorkflowName::new("eligible-workflow.json");
+    let unreadable = "failed to read workflow: Permission denied (os error 13)";
+    let cases = [
+        // A 500 that retrying cannot fix is a rejection, with its reason.
+        (
+            500,
+            format!(r#"{{"error":"{unreadable}","code":"workflow_unreadable"}}"#),
+            VidenoaClientError::ClientStatus {
+                status: 500,
+                reason: Some(unreadable.to_owned()),
+                code: Some(ErrorCode::WorkflowUnreadable),
+            },
+        ),
+        (
+            404,
+            r#"{"error":"workflow not found: gone","code":"workflow_not_found"}"#.to_owned(),
+            VidenoaClientError::ClientStatus {
+                status: 404,
+                reason: Some("workflow not found: gone".to_owned()),
+                code: Some(ErrorCode::WorkflowNotFound),
+            },
+        ),
+        // A full queue or a shutdown is worth retrying whatever the status.
+        (
+            503,
+            r#"{"error":"job queue is full","code":"queue_full"}"#.to_owned(),
+            VidenoaClientError::ServerStatus { status: 503 },
+        ),
+        (
+            503,
+            r#"{"error":"worker is shutting down","code":"shutting_down"}"#.to_owned(),
+            VidenoaClientError::ServerStatus { status: 503 },
+        ),
+        // Without a known code the status decides, as with protocol 1.
+        (
+            500,
+            r#"{"error":"boom","code":"added_by_a_newer_worker"}"#.to_owned(),
+            VidenoaClientError::ServerStatus { status: 500 },
+        ),
+        (
+            404,
+            r#"{"error":"api endpoint not found"}"#.to_owned(),
+            VidenoaClientError::NotFound,
+        ),
+        // The Worker cannot parse this Controller's request at all.
+        (
+            422,
+            "Failed to deserialize the JSON body".to_owned(),
+            VidenoaClientError::ClientStatus {
+                status: 422,
+                reason: Some(
+                    "the worker cannot read this Controller's run request; update the worker"
+                        .to_owned(),
+                ),
+                code: None,
+            },
+        ),
+    ];
+    for (index, (status, body, expected)) in cases.into_iter().enumerate() {
+        server
+            .set_fault(Fault::Response(ResponseFault {
+                route: Route::Run,
+                status,
+                body: body.into_bytes(),
+            }))
+            .await;
+        let key: SubmissionKey = format!("00000000-0000-4000-8000-0000000008{index:02}").parse()?;
+
+        // When: the Controller submits.
+        let error = client
+            .run(&workflow, key, &params)
+            .await
+            .expect_err("scripted rejection must fail");
+
+        // Then: a known code decides retryability; the status is the fallback.
+        assert_eq!(error, expected, "case {index}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn run_validation_reads_the_same_codes() -> TestResult {
+    let server = MockVidenoa::start().await?;
+    let client = test_client(
+        &server,
+        Duration::from_secs(5),
+        Duration::from_secs(1),
+        JSON_LIMIT,
+    )?;
+    let workflow = WorkflowName::new("eligible-workflow.json");
+    // A missing workflow is invalid, while a bare 404 still means a Worker
+    // without the route (covered with the other validation answers).
+    server
+        .set_fault(Fault::Response(ResponseFault {
+            route: Route::RunValidate,
+            status: 404,
+            body: br#"{"error":"workflow not found: gone","code":"workflow_not_found"}"#.to_vec(),
+        }))
+        .await;
+    assert_eq!(
+        client.validate_run(&workflow).await?,
+        RunValidation::Invalid {
+            reason: "workflow not found: gone".to_owned()
+        }
+    );
+    server
+        .set_fault(Fault::Response(ResponseFault {
+            route: Route::RunValidate,
+            status: 422,
+            body: b"Failed to deserialize the JSON body".to_vec(),
+        }))
+        .await;
+    assert_eq!(
+        client.validate_run(&workflow).await?,
+        RunValidation::Invalid {
+            reason: "the worker cannot read this Controller's run request; update the worker"
+                .to_owned()
+        }
+    );
     Ok(())
 }
 

@@ -150,6 +150,7 @@ mod tests {
                         &VidenoaClientError::ClientStatus {
                             status,
                             reason: None,
+                            code: None,
                         },
                         stage,
                     ),
@@ -172,6 +173,7 @@ mod tests {
             VidenoaClientError::ClientStatus {
                 status: 429,
                 reason: None,
+                code: None,
             },
             VidenoaClientError::ServerStatus { status: 503 },
         ] {

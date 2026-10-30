@@ -93,6 +93,7 @@ impl Lease {
             TunnelError::Unauthorized => VidenoaClientError::ClientStatus {
                 status: 401,
                 reason: None,
+                code: None,
             },
             TunnelError::RateLimited => VidenoaClientError::RateLimited,
             TunnelError::Protocol => VidenoaClientError::Incompatible,
@@ -139,6 +140,7 @@ fn classify(error: &anyhow::Error) -> VidenoaClientError {
         Some(TunnelError::Unauthorized) => VidenoaClientError::ClientStatus {
             status: 401,
             reason: None,
+            code: None,
         },
         Some(TunnelError::RateLimited) => VidenoaClientError::RateLimited,
         Some(TunnelError::Protocol) => VidenoaClientError::Incompatible,
@@ -281,6 +283,7 @@ mod tests {
             Err(VidenoaClientError::ClientStatus {
                 status: 401,
                 reason: None,
+                code: None,
             })
         );
         drop(rejected);

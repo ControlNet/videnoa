@@ -1,3 +1,5 @@
+use videnoa_protocol::ErrorCode;
+
 #[derive(Debug, thiserror::Error)]
 pub enum ClientConfigError {
     #[error("remote client timeouts must be greater than zero")]
@@ -20,8 +22,11 @@ pub enum VidenoaClientError {
     ClientStatus {
         status: u16,
         /// The Worker's bounded rejection reason; set only for a rejected
-        /// submission (`POST /api/run` answered 400 with a JSON `error`).
+        /// submission (`POST /api/run` answered with a JSON `error`).
         reason: Option<String>,
+        /// The Worker's machine-readable code (protocol 2), when it is one
+        /// this Controller knows.
+        code: Option<ErrorCode>,
     },
     #[error("remote service failed with HTTP {status}")]
     ServerStatus { status: u16 },
@@ -122,6 +127,7 @@ mod tests {
             VidenoaClientError::ClientStatus {
                 status: 400,
                 reason: None,
+                code: None,
             },
             VidenoaClientError::UnexpectedStatus { status: 300 },
             VidenoaClientError::MalformedPayload,
@@ -149,10 +155,12 @@ mod tests {
             VidenoaClientError::ClientStatus {
                 status: 401,
                 reason: None,
+                code: None,
             },
             VidenoaClientError::ClientStatus {
                 status: 403,
                 reason: None,
+                code: None,
             },
             VidenoaClientError::UnexpectedStatus { status: 302 },
             VidenoaClientError::Incompatible,
@@ -163,6 +171,7 @@ mod tests {
             VidenoaClientError::ClientStatus {
                 status: 400,
                 reason: Some("invalid workflow".to_owned()),
+                code: None,
             },
             VidenoaClientError::MalformedPayload,
             VidenoaClientError::OversizedPayload { limit: 1 },

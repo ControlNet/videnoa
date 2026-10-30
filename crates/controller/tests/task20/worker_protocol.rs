@@ -4,12 +4,14 @@
 use std::time::Duration;
 
 use chrono::Utc;
-use videnoa_controller::domain::TaskStatus;
+use videnoa_controller::domain::{FailureCode, FailureStage, TaskStatus};
 use videnoa_controller::remote::PROTOCOL_VERSION;
 
+use crate::mock_videnoa::journal::Route;
 use crate::mock_videnoa::server::MockVidenoa;
 use crate::remote_scope::{
-    deferred, durable_task, durable_worker, processing_task, wait_for_worker_record,
+    deferred, durable_task, durable_worker, fault, processing_task, wait_for_durable,
+    wait_for_worker_record,
 };
 use crate::support::{ControllerFixture, TestResult};
 
@@ -89,5 +91,43 @@ async fn a_processing_task_waits_while_its_worker_speaks_a_newer_protocol() -> T
     );
     assert!(!durable_worker(&fixture, &task).await?.online);
     assert_eq!(worker.active_job_count().await, 1);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_worker_500_that_retrying_cannot_fix_fails_the_submission() -> TestResult {
+    // Given: a worker that cannot read the saved workflow, and says so with a code.
+    let worker = MockVidenoa::start_persistent().await?;
+    let fixture = ControllerFixture::start().await?;
+    let reason = "failed to read workflow: Permission denied (os error 13)";
+    fault(
+        &worker,
+        Route::Run,
+        500,
+        format!(r#"{{"error":"{reason}","code":"workflow_unreadable"}}"#).into_bytes(),
+    )
+    .await;
+    fixture
+        .register_worker(&worker, "unreadable-workflow")
+        .await?;
+
+    // When: the task is submitted.
+    let task = fixture
+        .create_task("unreadable-workflow", b"input-video")
+        .await?;
+    wait_for_durable(&fixture, &task, |record| {
+        record.status == TaskStatus::Failed
+    })
+    .await?;
+
+    // Then: it fails once, terminally, with the worker's reason, and no job exists.
+    let detail = fixture.task(&task).await?;
+    let failure = detail.task.failure.ok_or("failed task has no failure")?;
+    assert_eq!(failure.failure_stage, FailureStage::Submission);
+    assert_eq!(failure.failure_code, FailureCode::RemoteSubmissionFailed);
+    assert!(!failure.retryable);
+    assert!(failure.message.ends_with(reason), "{}", failure.message);
+    assert_eq!(worker.counters().await.get(Route::Run), 1);
+    assert_eq!(worker.job_count().await, 0);
     Ok(())
 }

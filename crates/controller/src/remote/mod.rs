@@ -29,4 +29,5 @@ pub use dto::{
 };
 pub use paths::{sibling_output_path, FileApiPath};
 pub use request_failure::{ClientConfigError, VidenoaClientError};
+pub use videnoa_protocol::ErrorCode;
 pub use workflow_eligibility::{Compatibility, CompatibilityCatalog, CompatibilityEntry};

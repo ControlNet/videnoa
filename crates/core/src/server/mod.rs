@@ -401,9 +401,10 @@ impl AppState {
             .shutting_down
             .load(std::sync::atomic::Ordering::SeqCst)
         {
-            return Err(AppError::ServiceUnavailable(
-                "worker is shutting down".to_owned(),
-            ));
+            return Err(
+                AppError::ServiceUnavailable("worker is shutting down".to_owned())
+                    .with_code(ErrorCode::ShuttingDown),
+            );
         }
         Ok(())
     }
@@ -415,7 +416,8 @@ impl AppState {
         if running + queued + additional > MAX_ACTIVE_JOBS {
             return Err(AppError::ServiceUnavailable(format!(
                 "job queue is full ({running} running, {queued} queued, limit {MAX_ACTIVE_JOBS}); retry after some jobs finish"
-            )));
+            ))
+            .with_code(ErrorCode::QueueFull));
         }
         Ok(())
     }
@@ -1666,7 +1668,8 @@ async fn run_workflow_by_name(
         payload.params.map(|params| params.into_iter().collect());
     let idempotency_key =
         IdempotencyKey::from_headers(&headers).map_err(|_| AppError::InvalidIdempotencyKey)?;
-    let workflow_name = validate_run_workflow_name(payload.workflow_name.as_deref())?;
+    let workflow_name = validate_run_workflow_name(payload.workflow_name.as_deref())
+        .map_err(|error| error.with_code(ErrorCode::WorkflowNameInvalid))?;
     let fingerprint = RequestFingerprint::for_run(&workflow_name, params.as_ref())
         .map_err(|_| AppError::Internal("failed to fingerprint run request".to_string()))?;
     if let Some(key) = idempotency_key.as_ref() {
@@ -1705,7 +1708,8 @@ async fn validate_run_workflow(
     State(state): State<AppState>,
     Json(payload): Json<RunWorkflowRequest>,
 ) -> Result<StatusCode, AppError> {
-    let workflow_name = validate_run_workflow_name(payload.workflow_name.as_deref())?;
+    let workflow_name = validate_run_workflow_name(payload.workflow_name.as_deref())
+        .map_err(|error| error.with_code(ErrorCode::WorkflowNameInvalid))?;
     load_run_workflow(&state, &workflow_name).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1717,16 +1721,21 @@ async fn load_run_workflow(
 ) -> Result<(PipelineGraph, &'static str), AppError> {
     let resolved = resolve_run_workflow_file(state, workflow_name).await?;
 
-    let workflow_document = std::fs::read_to_string(&resolved.path)
-        .map_err(|e| AppError::Internal(format!("failed to read workflow: {e}")))?;
-    let parsed_document: serde_json::Value = serde_json::from_str(&workflow_document)
-        .map_err(|e| AppError::BadRequest(format!("invalid JSON: {e}")))?;
+    let workflow_document = std::fs::read_to_string(&resolved.path).map_err(|e| {
+        AppError::Internal(format!("failed to read workflow: {e}"))
+            .with_code(ErrorCode::WorkflowUnreadable)
+    })?;
+    let parsed_document: serde_json::Value =
+        serde_json::from_str(&workflow_document).map_err(|e| {
+            AppError::BadRequest(format!("invalid JSON: {e}")).with_code(ErrorCode::WorkflowInvalid)
+        })?;
     let workflow_value = parsed_document
         .get("workflow")
         .cloned()
         .unwrap_or(parsed_document);
 
-    let workflow = parse_and_validate_workflow(state, workflow_value)?;
+    let workflow = parse_and_validate_workflow(state, workflow_value)
+        .map_err(|error| error.with_code(ErrorCode::WorkflowInvalid))?;
     Ok((workflow, resolved.workflow_source))
 }
 
@@ -1798,7 +1807,7 @@ fn jobs_persistence(state: &AppState) -> Result<&JobsPersistence, AppError> {
         .inner
         .jobs_persistence
         .as_ref()
-        .map_err(|e| AppError::Internal(e.clone()))
+        .map_err(|e| AppError::Internal(e.clone()).with_code(ErrorCode::JobStoreUnavailable))
 }
 
 fn prepare_job(submission: JobSubmission) -> (Job, CreateJobResponse) {
@@ -1853,7 +1862,8 @@ async fn resolve_run_workflow_file(
     workflow_name: &str,
 ) -> Result<ResolvedWorkflowFile, AppError> {
     let filename = format!("{workflow_name}.json");
-    sanitize_workflow_filename(&filename)?;
+    sanitize_workflow_filename(&filename)
+        .map_err(|error| error.with_code(ErrorCode::WorkflowNameInvalid))?;
 
     let workflows_dir = state.resolve_workflows_dir().await;
     let workflows_path = workflows_dir.join(&filename);
@@ -1873,9 +1883,10 @@ async fn resolve_run_workflow_file(
         });
     }
 
-    Err(AppError::NotFound(format!(
-        "workflow not found: {workflow_name}"
-    )))
+    Err(
+        AppError::NotFound(format!("workflow not found: {workflow_name}"))
+            .with_code(ErrorCode::WorkflowNotFound),
+    )
 }
 
 fn validate_run_workflow_name(raw_name: Option<&str>) -> Result<String, AppError> {
@@ -3471,6 +3482,32 @@ pub enum AppError {
     },
 }
 
+impl AppError {
+    /// Attaches a machine-readable code, keeping the status and message.
+    /// Variants that already carry a code keep it.
+    fn with_code(self, code: ErrorCode) -> Self {
+        let (status, message) = match self {
+            AppError::BadRequest(message) => (StatusCode::BAD_REQUEST, message),
+            AppError::Forbidden(message) => (StatusCode::FORBIDDEN, message),
+            AppError::NotFound(message) => (StatusCode::NOT_FOUND, message),
+            AppError::Internal(message) => (StatusCode::INTERNAL_SERVER_ERROR, message),
+            AppError::TooManyRequests(message) => (StatusCode::TOO_MANY_REQUESTS, message),
+            AppError::ServiceUnavailable(message) => (StatusCode::SERVICE_UNAVAILABLE, message),
+            AppError::Rejected {
+                status,
+                code: None,
+                message,
+            } => (status, message),
+            coded => return coded,
+        };
+        AppError::Rejected {
+            status,
+            code: Some(code),
+            message,
+        }
+    }
+}
+
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, message, code) = match self {
@@ -4656,6 +4693,7 @@ mod tests {
                 .contains("queue is full"),
             "{json}"
         );
+        assert_eq!(json["code"], "queue_full", "{json}");
         let (status, _) = post_json(
             &mut app,
             "/api/batch",
@@ -5668,6 +5706,116 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&workflows_dir);
         let _ = std::fs::remove_dir_all(&presets_dir);
+    }
+
+    /// A Controller decides by the code, not the HTTP status, whether a
+    /// rejected run can succeed if retried.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_rejections_carry_a_machine_readable_code() {
+        let state = test_state();
+        let mut app = app_router(state.clone());
+        let workflows_dir = unique_temp_dir("videnoa-coded-workflows");
+        let presets_dir = unique_temp_dir("videnoa-coded-presets");
+        std::fs::create_dir_all(&workflows_dir).expect("create workflows dir");
+        std::fs::create_dir_all(&presets_dir).expect("create presets dir");
+        set_workflow_lookup_dirs(&state, workflows_dir.clone(), presets_dir.clone()).await;
+        write_json_file(
+            &workflows_dir.join("valid.json"),
+            &serde_json::json!({"workflow": valid_workflow_json()}),
+        );
+        write_json_file(
+            &workflows_dir.join("broken.json"),
+            &serde_json::json!({"workflow": {"invalid": true}}),
+        );
+        // A directory where the workflow file should be cannot be read.
+        std::fs::create_dir_all(workflows_dir.join("unreadable.json")).expect("create dir");
+
+        for (uri, name, status, code) in [
+            (
+                "/api/run",
+                "valid.json",
+                StatusCode::BAD_REQUEST,
+                "workflow_name_invalid",
+            ),
+            (
+                "/api/run/validate",
+                "missing",
+                StatusCode::NOT_FOUND,
+                "workflow_not_found",
+            ),
+            (
+                "/api/run",
+                "missing",
+                StatusCode::NOT_FOUND,
+                "workflow_not_found",
+            ),
+            (
+                "/api/run",
+                "broken",
+                StatusCode::BAD_REQUEST,
+                "workflow_invalid",
+            ),
+            (
+                "/api/run/validate",
+                "broken",
+                StatusCode::BAD_REQUEST,
+                "workflow_invalid",
+            ),
+            (
+                "/api/run",
+                "unreadable",
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "workflow_unreadable",
+            ),
+        ] {
+            let (actual, body) =
+                post_json(&mut app, uri, serde_json::json!({"workflow_name": name})).await;
+            assert_eq!(actual, status, "{uri} {name}: {body}");
+            assert_eq!(body["code"], code, "{uri} {name}: {body}");
+        }
+
+        state.begin_shutdown();
+        let (status, body) = post_json(
+            &mut app,
+            "/api/run",
+            serde_json::json!({"workflow_name": "valid"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        assert_eq!(body["code"], "shutting_down", "{body}");
+        assert!(state.inner.jobs.is_empty());
+
+        let _ = std::fs::remove_dir_all(&workflows_dir);
+        let _ = std::fs::remove_dir_all(&presets_dir);
+    }
+
+    /// A worker whose job store did not open refuses idempotent runs with a
+    /// code that says retrying will not help.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn idempotent_runs_without_a_job_store_say_so() {
+        let data_dir = test_data_dir();
+        std::fs::create_dir_all(data_dir.join("jobs.db")).expect("block the job store");
+        let state = test_state_with_data_dir(data_dir.clone());
+        assert!(state.ensure_jobs_ready().is_err());
+        let mut app = app_router(state);
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/run")
+            .header("content-type", "application/json")
+            .header("Idempotency-Key", "store-down")
+            .body(Body::from(r#"{"workflow_name":"valid"}"#))
+            .unwrap();
+        let resp = send_request(&mut app, req).await;
+        let status = resp.status();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{json}");
+        assert_eq!(json["code"], "job_store_unavailable", "{json}");
+
+        let _ = std::fs::remove_dir_all(&data_dir);
     }
 
     #[tokio::test]
