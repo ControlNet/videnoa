@@ -145,10 +145,12 @@ async fn advance_task(
     transfers: TransferExecutor,
     _stage: StagePermit,
 ) -> StageOutcome {
-    StageOutcome {
-        task_id,
-        result: advance_task_inner(task_id, &reconciler, &transfers).await,
+    let result = advance_task_inner(task_id, &reconciler, &transfers).await;
+    // A stage that just failed the task for good leaves files no retry reads.
+    if let Err(error) = transfers.release_unneeded_workspace(task_id).await {
+        tracing::warn!(%task_id, %error, "Unneeded task temporary files were not released");
     }
+    StageOutcome { task_id, result }
 }
 
 async fn advance_task_inner(

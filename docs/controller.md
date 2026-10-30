@@ -368,7 +368,14 @@ fails with `worker_unavailable` at `remote_cleanup` and a message saying that th
 Worker did not confirm the job stopped or the folder was deleted, releases its
 Controller temporary files and its Worker capacity, and nothing is sent to the
 Worker. Abandon requires a requested cancellation; once the Worker's tasks are
-all terminal, the Worker can be deleted. Publication ambiguity permits
+all terminal, the Worker can be deleted.
+
+A task that fails in a way no retry can resume (for example `output_exists` or
+`remote_state_ambiguous`) releases its Controller temporary files, including a
+downloaded output, as soon as the failure is recorded; startup releases any such
+files a crash left behind. Failures that Retry can resume keep them, because
+download, verification and publication retries reuse the verified output. The
+destination file and the Worker's task folder are not touched. Publication ambiguity permits
 manual retry on the existing attempt; remote-state ambiguity remains non-retryable.
 
 ## No-Clobber and Ambiguity

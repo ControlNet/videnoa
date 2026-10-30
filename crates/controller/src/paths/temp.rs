@@ -64,6 +64,34 @@ impl PathCapabilities {
     }
 }
 
+impl PathCapabilities {
+    /// Lists the tasks that have a workspace directory in the temp root. The
+    /// temp root may be shared with other Controller data, so only directories
+    /// named by a task id are returned.
+    pub(crate) fn temp_task_ids(&self) -> Result<Vec<TaskId>, PathError> {
+        self.temp.ensure_current()?;
+        let root = self.temp.clone_directory()?;
+        let display = self.temp.display_path();
+        let entries = root.entries().map_err(|source| io_error(display, source))?;
+        let mut tasks = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|source| io_error(display, source))?;
+            let is_directory = entry
+                .file_type()
+                .map_err(|source| io_error(display, source))?
+                .is_dir();
+            let task = entry
+                .file_name()
+                .to_str()
+                .and_then(|name| name.parse::<TaskId>().ok());
+            if let (true, Some(task)) = (is_directory, task) {
+                tasks.push(task);
+            }
+        }
+        Ok(tasks)
+    }
+}
+
 impl TempWorkspace {
     pub(crate) fn artifact(&self, leaf: impl AsRef<Path>) -> Result<TempArtifact, PathError> {
         let leaf = leaf.as_ref();

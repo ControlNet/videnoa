@@ -28,6 +28,8 @@ mod orchestration;
 mod outage_matrix;
 #[path = "task20/pause.rs"]
 mod pause;
+#[path = "task20/release.rs"]
+mod release;
 #[path = "task20/remote_isolation.rs"]
 mod remote_isolation;
 #[path = "task20/remote_scope.rs"]
