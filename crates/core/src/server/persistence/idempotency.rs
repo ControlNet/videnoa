@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use anyhow::{anyhow, Context, Result};
 use rusqlite::{params, OptionalExtension, TransactionBehavior};
 
-use super::{parse_status, parse_timestamp, status_to_str, JobsPersistence};
+use super::{cancel_reason_to_str, parse_status, parse_timestamp, status_to_str, JobsPersistence};
 use crate::server::{idempotency::RequestFingerprint, CreateJobResponse, Job};
 
 pub(crate) enum IdempotentJobClaim {
@@ -58,9 +58,11 @@ impl JobsPersistence {
                         "INSERT INTO jobs (
                             id, status, workflow_json, created_at, started_at, completed_at,
                             progress_json, error, params_json, workflow_name, workflow_source,
-                            rerun_of_job_id, updated_at, idempotency_key, request_fingerprint
+                            rerun_of_job_id, updated_at, idempotency_key, request_fingerprint,
+                            cancel_requested_at, cancel_reason
                          ) VALUES (
-                            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15
+                            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+                            ?16, ?17
                          )",
                         params![
                             row.id,
@@ -78,6 +80,8 @@ impl JobsPersistence {
                             chrono::Utc::now().to_rfc3339(),
                             key,
                             fingerprint,
+                            row.cancel_requested_at.map(|value| value.to_rfc3339()),
+                            row.cancel_reason.map(cancel_reason_to_str),
                         ],
                     )?;
                     IdempotentJobClaim::Created

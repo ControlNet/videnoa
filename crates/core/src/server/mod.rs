@@ -79,7 +79,7 @@ struct AppStateInner {
     settings_lock: tokio::sync::Mutex<()>,
     auth: std::result::Result<auth::AuthService, String>,
     jobs: DashMap<String, Job>,
-    jobs_persistence: Option<JobsPersistence>,
+    jobs_persistence: std::result::Result<JobsPersistence, String>,
     gpu_semaphore: Arc<Semaphore>,
     node_registry: NodeRegistry,
     model_registry: ModelRegistry,
@@ -155,6 +155,17 @@ impl AppStateInner {
 }
 
 impl AppState {
+    /// Fails when the job store could not be opened or restored. The worker
+    /// must not start then: with in-memory jobs only, a restart would lose
+    /// every job a Controller is polling.
+    pub fn ensure_jobs_ready(&self) -> Result<()> {
+        self.inner
+            .jobs_persistence
+            .as_ref()
+            .map(|_| ())
+            .map_err(|e| anyhow::anyhow!(e.clone()))
+    }
+
     pub fn ensure_auth_ready(&self) -> Result<()> {
         self.inner
             .auth
@@ -183,41 +194,25 @@ impl AppState {
             );
         }
 
-        let jobs_persistence = match JobsPersistence::new(&data_dir) {
-            Ok(persistence) => Some(persistence),
-            Err(err) => {
-                warn!(
-                    error = %err,
-                    data_dir = %data_dir.display(),
-                    "Failed to initialize jobs persistence; running with in-memory job state only"
-                );
-                None
+        let jobs_persistence = JobsPersistence::new(&data_dir).and_then(|persistence| {
+            let restored_jobs = persistence.load_jobs_for_startup()?;
+            info!(
+                restored_count = restored_jobs.len(),
+                db_path = %persistence.db_path().display(),
+                "Restored persisted jobs into runtime state"
+            );
+            for job in restored_jobs {
+                jobs.insert(job.id.clone(), job);
             }
-        };
-
-        if let Some(persistence) = &jobs_persistence {
-            match persistence.load_jobs_for_startup() {
-                Ok(restored_jobs) => {
-                    let restored_count = restored_jobs.len();
-                    for job in restored_jobs {
-                        jobs.insert(job.id.clone(), job);
-                    }
-
-                    info!(
-                        restored_count,
-                        db_path = %persistence.db_path().display(),
-                        "Restored persisted jobs into runtime state"
-                    );
-                }
-                Err(err) => {
-                    warn!(
-                        error = %err,
-                        db_path = %persistence.db_path().display(),
-                        "Failed to restore persisted jobs; continuing with empty runtime jobs"
-                    );
-                }
-            }
-        }
+            Ok(persistence)
+        });
+        let jobs_persistence = jobs_persistence.map_err(|err| {
+            error!(error = %format!("{err:#}"), data_dir = %data_dir.display(), "Job store unavailable");
+            format!(
+                "job store unavailable in {}: {err:#}",
+                data_dir.display()
+            )
+        });
 
         let preview_cache =
             preview_cache::PreviewCache::open(&data_dir).map_err(|e| format!("{e:#}"));
@@ -245,17 +240,18 @@ impl AppState {
     }
 
     fn persist_job_snapshot(&self, job: &Job) -> Result<()> {
-        if let Some(persistence) = &self.inner.jobs_persistence {
-            persistence.upsert_job(job)?;
-        }
-        Ok(())
+        self.job_store()?.upsert_job(job)
     }
 
     fn persist_job_transition(&self, job: &Job) -> Result<()> {
-        if let Some(persistence) = &self.inner.jobs_persistence {
-            persistence.update_job(job)?;
-        }
-        Ok(())
+        self.job_store()?.update_job(job)
+    }
+
+    fn job_store(&self) -> Result<&JobsPersistence> {
+        self.inner
+            .jobs_persistence
+            .as_ref()
+            .map_err(|e| anyhow::anyhow!(e.clone()))
     }
 
     /// Running, queued and cancelling (active, cancel requested) job counts.
@@ -1629,14 +1625,17 @@ fn parse_and_validate_workflow(
 ) -> Result<PipelineGraph, AppError> {
     let workflow: PipelineGraph =
         serde_json::from_value(workflow_json).map_err(|e| AppError::BadRequest(e.to_string()))?;
+    validate_workflow(state, &workflow)?;
+    Ok(workflow)
+}
 
+/// The checks every submission passes before it becomes a job.
+fn validate_workflow(state: &AppState, workflow: &PipelineGraph) -> Result<(), AppError> {
     workflow
         .validate(&state.inner.node_registry)
-        .and_then(|()| validate_video_workflow(&workflow, &state.inner.node_registry))
-        .and_then(|()| validate_workflow_encoders(&workflow))
-        .map_err(|e| AppError::BadRequest(format!("workflow validation failed: {e:#}")))?;
-
-    Ok(workflow)
+        .and_then(|()| validate_video_workflow(workflow, &state.inner.node_registry))
+        .and_then(|()| validate_workflow_encoders(workflow))
+        .map_err(|e| AppError::BadRequest(format!("workflow validation failed: {e:#}")))
 }
 
 struct JobSubmission {
@@ -1688,7 +1687,7 @@ fn jobs_persistence(state: &AppState) -> Result<&JobsPersistence, AppError> {
         .inner
         .jobs_persistence
         .as_ref()
-        .ok_or_else(|| AppError::Internal("durable jobs persistence is unavailable".to_string()))
+        .map_err(|e| AppError::Internal(e.clone()))
 }
 
 fn prepare_job(submission: JobSubmission) -> (Job, CreateJobResponse) {
@@ -1889,7 +1888,7 @@ async fn create_batch(
     // ones already stored so the batch leaves nothing behind.
     for (index, (_, job, _)) in prepared.iter().enumerate() {
         if let Err(error) = state.persist_job_snapshot(job) {
-            if let Some(persistence) = &state.inner.jobs_persistence {
+            if let Ok(persistence) = &state.inner.jobs_persistence {
                 for (_, stored, _) in &prepared[..index] {
                     if let Err(rollback_error) = persistence.delete_job(&stored.id) {
                         error!(
@@ -1964,6 +1963,9 @@ async fn rerun_job(
             source_job.workflow_source.clone(),
         )
     };
+    // The stored workflow may predate this build (removed node types, encoder
+    // changes), so it is checked like a new submission.
+    validate_workflow(&state, &workflow)?;
 
     let created = create_and_spawn_job(
         &state,
@@ -1989,27 +1991,40 @@ async fn delete_job_history(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, AppError> {
+    let persistence = jobs_persistence(&state)?;
     let mut entry = match state.inner.jobs.entry(id.clone()) {
         dashmap::mapref::entry::Entry::Occupied(entry) => entry,
         dashmap::mapref::entry::Entry::Vacant(_) => {
-            return Err(AppError::NotFound(format!("job not found: {id}")));
+            // A row that could not be loaded at startup is not listed, but it
+            // can still be removed. Every active job is in memory, so this
+            // never deletes one.
+            let rows = persistence.delete_job(&id).map_err(|e| {
+                AppError::Internal(format!("failed to delete job history row: {e:#}"))
+            })?;
+            if rows == 0 {
+                return Err(AppError::NotFound(format!("job not found: {id}")));
+            }
+            info!(job_id = %id, "Unloadable job history row deleted");
+            return Ok(StatusCode::NO_CONTENT);
         }
     };
     if !entry.get().status.is_terminal() {
         entry.get_mut().request_cancel(CancelReason::User);
+        // Recorded so a restart before the executor exits keeps the reason.
+        if let Err(err) = persistence.update_job(entry.get()) {
+            error!(job_id = %id, error = ?err, "Failed to persist cancel request");
+        }
         info!(job_id = %id, "Job cancellation requested");
         return Ok(StatusCode::NO_CONTENT);
     }
     // Hold the runtime entry until durable deletion succeeds.
-    if let Some(persistence) = &state.inner.jobs_persistence {
-        let rows = persistence
-            .delete_job(&id)
-            .map_err(|e| AppError::Internal(format!("failed to delete job history row: {e:#}")))?;
-        if rows != 1 {
-            return Err(AppError::Internal(format!(
-                "expected exactly one persisted row deleted for job {id}, deleted {rows}"
-            )));
-        }
+    let rows = persistence
+        .delete_job(&id)
+        .map_err(|e| AppError::Internal(format!("failed to delete job history row: {e:#}")))?;
+    if rows != 1 {
+        return Err(AppError::Internal(format!(
+            "expected exactly one persisted row deleted for job {id}, deleted {rows}"
+        )));
     }
     entry.remove();
     state.inner.progress_senders.remove(&id);
@@ -6638,6 +6653,81 @@ mod tests {
         );
         drop(stream);
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn delete_removes_a_persisted_job_that_could_not_be_loaded() {
+        // Given: a row that a newer build wrote and this one cannot read.
+        let data_dir = test_data_dir();
+        let state = test_state_with_data_dir(data_dir.clone());
+        let mut app = app_router(state.clone());
+        let conn = Connection::open(data_dir.join("jobs.db")).unwrap();
+        conn.execute_batch(
+            "INSERT INTO jobs (id, status, workflow_json, created_at, workflow_name,
+                               workflow_source, updated_at)
+             VALUES ('unreadable', 'paused', '{}', '2026-10-01T00:00:00+00:00', 'x',
+                     'api_jobs', '2026-10-01T00:00:00+00:00');",
+        )
+        .unwrap();
+
+        // Then: it is not listed, but DELETE removes it.
+        assert_eq!(
+            get_job_json(&mut app, "unreadable").await.0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            delete_job(&mut app, "unreadable").await,
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(persisted_job_status(&data_dir, "unreadable"), None);
+        assert_eq!(
+            delete_job(&mut app, "unreadable").await,
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    #[tokio::test]
+    async fn rerun_validates_the_stored_workflow_like_a_new_submission() {
+        // Given: a failed job whose stored workflow no longer validates, for
+        // example because a node type was removed in an upgrade.
+        let state = test_state();
+        let mut app = app_router(state.clone());
+        let mut source = build_test_job("stale-workflow".into(), JobStatus::Failed, None);
+        source.workflow = serde_json::from_value(serde_json::json!({
+            "nodes": [{"id": "gone", "node_type": "RemovedNode", "params": {}}],
+            "connections": []
+        }))
+        .unwrap();
+        insert_test_job(&state, source);
+
+        // When/then: rerun is rejected up front and creates no job.
+        let (status, json) = post_json(
+            &mut app,
+            "/api/jobs/stale-workflow/rerun",
+            serde_json::Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+        assert!(
+            json["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("workflow validation failed"),
+            "{json}"
+        );
+        assert_eq!(state.inner.jobs.len(), 1);
+    }
+
+    #[test]
+    fn the_worker_refuses_to_start_without_its_job_store() {
+        // Given: a data directory whose jobs.db cannot be opened.
+        let data_dir = test_data_dir();
+        std::fs::create_dir_all(data_dir.join("jobs.db")).unwrap();
+
+        // Then: startup reports it instead of running with in-memory jobs.
+        let state = test_state_with_data_dir(data_dir);
+        let error = state.ensure_jobs_ready().unwrap_err().to_string();
+        assert!(error.contains("job store"), "{error}");
     }
 
     #[tokio::test]

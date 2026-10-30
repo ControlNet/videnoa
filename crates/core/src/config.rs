@@ -8,6 +8,12 @@ use serde::{Deserialize, Serialize};
 const CONFIG_FILE_NAME: &str = "config.toml";
 const ENV_DATA_DIR: &str = "VIDENOA_DATA_DIR";
 pub const FALLBACK_LOCALE: &str = "en";
+/// Version written to `config.toml` as the top-level `version` key. A file
+/// without it is version 1. Saving never lowers the version found on disk,
+/// and keys this build does not know are kept (see [`AppConfig::save_to_path`]),
+/// so running an older build does not erase a newer build's settings.
+pub const CONFIG_VERSION: i64 = 1;
+const CONFIG_VERSION_KEY: &str = "version";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -177,7 +183,20 @@ impl AppConfig {
             return Ok(Self::default());
         }
 
-        toml::from_str(&raw)
+        let table: toml::Table = raw
+            .parse()
+            .with_context(|| format!("failed to parse config TOML: {}", path.display()))?;
+        let version = config_version(&table);
+        if version > CONFIG_VERSION {
+            tracing::warn!(
+                version,
+                supported = CONFIG_VERSION,
+                path = %path.display(),
+                "config.toml was written by a newer build; settings this build does not know are kept unchanged"
+            );
+        }
+        toml::Value::Table(table)
+            .try_into()
             .with_context(|| format!("failed to parse config TOML: {}", path.display()))
     }
 
@@ -188,7 +207,7 @@ impl AppConfig {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create config directory: {}", parent.display()))?;
 
-        let encoded = toml::to_string_pretty(self).context("failed to serialize config TOML")?;
+        let encoded = self.encode_over(path)?;
         use std::io::Write;
         let temporary = parent.join(format!(".config-{}.tmp", uuid::Uuid::new_v4()));
         let result = (|| -> Result<()> {
@@ -208,6 +227,73 @@ impl AppConfig {
         result.with_context(|| format!("failed to write config file: {}", path.display()))?;
 
         Ok(())
+    }
+
+    /// Serializes this config for writing over the file at `path`. Keys in
+    /// that file that this build does not know are carried over, and its
+    /// version is kept when it is newer than [`CONFIG_VERSION`].
+    fn encode_over(&self, path: &Path) -> Result<String> {
+        let mut table = encode_table(self)?;
+        let existing = fs::read_to_string(path)
+            .ok()
+            .and_then(|raw| raw.parse::<toml::Table>().ok());
+        let mut version = CONFIG_VERSION;
+        if let Some(existing) = existing {
+            version = version.max(config_version(&existing));
+            // Keys this build knows are those it writes back after reading the
+            // file; everything else in the file belongs to another build.
+            match toml::Value::Table(existing.clone())
+                .try_into::<AppConfig>()
+                .map_err(anyhow::Error::from)
+                .and_then(|known| encode_table(&known))
+            {
+                Ok(known) => keep_unknown_keys(&mut table, &existing, &known),
+                Err(error) => tracing::warn!(
+                    %error,
+                    path = %path.display(),
+                    "Existing config is unreadable; unknown keys in it are not kept"
+                ),
+            }
+        }
+        table.insert(CONFIG_VERSION_KEY.to_owned(), toml::Value::Integer(version));
+        toml::to_string_pretty(&table).context("failed to serialize config TOML")
+    }
+}
+
+fn encode_table(config: &AppConfig) -> Result<toml::Table> {
+    match toml::Value::try_from(config).context("failed to serialize config TOML")? {
+        toml::Value::Table(table) => Ok(table),
+        other => anyhow::bail!(
+            "config serialized to a {} instead of a table",
+            other.type_str()
+        ),
+    }
+}
+
+/// The `version` key of a config file; 1 when it has none.
+fn config_version(table: &toml::Table) -> i64 {
+    table
+        .get(CONFIG_VERSION_KEY)
+        .and_then(toml::Value::as_integer)
+        .unwrap_or(1)
+}
+
+/// Copies into `target` every key of `existing` that is absent from `known`
+/// (what this build writes for that file), recursing into tables both know.
+/// A known key missing from `target` was cleared on purpose and stays absent.
+fn keep_unknown_keys(target: &mut toml::Table, existing: &toml::Table, known: &toml::Table) {
+    for (key, value) in existing {
+        match (known.get(key), value) {
+            (None, _) => {
+                target.entry(key.clone()).or_insert_with(|| value.clone());
+            }
+            (Some(toml::Value::Table(known_section)), toml::Value::Table(existing_section)) => {
+                if let Some(toml::Value::Table(target_section)) = target.get_mut(key) {
+                    keep_unknown_keys(target_section, existing_section, known_section);
+                }
+            }
+            (Some(_), _) => {}
+        }
     }
 }
 
@@ -337,6 +423,68 @@ mod tests {
             server.allowed_hosts = vec![invalid.into()];
             assert!(server.validate().is_err(), "{invalid}");
         }
+    }
+
+    #[test]
+    fn saving_keeps_keys_this_build_does_not_know() {
+        // Given: a config written by a newer build, with a key in a known
+        // section and a whole section this build does not know.
+        let temp = unique_temp_dir();
+        fs::create_dir_all(&temp).expect("create temp dir");
+        let path = temp.join("config.toml");
+        fs::write(
+            &path,
+            "version = 99\nlocale = \"zh-CN\"\n\n[server]\nport = 4000\nallowed_hosts = [\"nas.lan\"]\n\n[future]\nmode = \"fast\"\n",
+        )
+        .expect("write newer config");
+
+        // When: this build loads it, changes a known value and saves it.
+        let mut config = AppConfig::load_from_path(&path).expect("load newer config");
+        assert_eq!(config.server.port, 4000);
+        config.locale = "en".to_string();
+        config.save_to_path(&path).expect("save config");
+
+        // Then: the change is written and the unknown keys are kept.
+        let saved: toml::Table = fs::read_to_string(&path)
+            .expect("read saved config")
+            .parse()
+            .expect("saved config is TOML");
+        assert_eq!(saved["locale"].as_str(), Some("en"));
+        assert_eq!(saved["server"]["port"].as_integer(), Some(4000));
+        assert_eq!(
+            saved["server"]["allowed_hosts"].as_array().map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(saved["future"]["mode"].as_str(), Some("fast"));
+        // The newer version stays, so that build does not migrate it again.
+        assert_eq!(saved["version"].as_integer(), Some(99));
+
+        fs::remove_dir_all(&temp).ok();
+    }
+
+    #[test]
+    fn saved_config_records_its_version_and_cleared_known_keys_stay_cleared() {
+        let temp = unique_temp_dir();
+        fs::create_dir_all(&temp).expect("create temp dir");
+        let path = temp.join("config.toml");
+        fs::write(
+            &path,
+            "[iroh]\nenabled = true\nrelay_urls = [\"https://relay.example.test\"]\n",
+        )
+        .expect("write config");
+
+        let mut config = AppConfig::load_from_path(&path).expect("load config");
+        config.iroh.relay_urls.clear();
+        config.save_to_path(&path).expect("save config");
+
+        let saved: toml::Table = fs::read_to_string(&path)
+            .expect("read saved config")
+            .parse()
+            .expect("saved config is TOML");
+        assert_eq!(saved["version"].as_integer(), Some(CONFIG_VERSION));
+        assert!(saved["iroh"].get("relay_urls").is_none(), "{saved}");
+
+        fs::remove_dir_all(&temp).ok();
     }
 
     #[test]

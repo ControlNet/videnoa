@@ -210,6 +210,7 @@ fn main() {
 
             let state = app_state_with_config(config, cfg_path, data_dir.clone());
             state.ensure_auth_ready()?;
+            state.ensure_jobs_ready()?;
 
             #[cfg(debug_assertions)]
             let static_path = {
