@@ -353,8 +353,61 @@ impl Default for PipelineGraph {
     }
 }
 
+/// Version of the saved workflow format this build reads and writes.
+///
+/// Bump it when the format changes in a way older builds would misread, and
+/// add the step from the previous version to [`migrate_workflow`].
+pub const WORKFLOW_SCHEMA_VERSION: u32 = 1;
+
+/// The version of a workflow saved before `schema_version` existed.
+const LEGACY_WORKFLOW_SCHEMA_VERSION: u32 = 1;
+
+/// The `schema_version` of a workflow document; legacy when absent.
+fn workflow_schema_version(document: &serde_json::Value) -> Result<u32> {
+    match document.get("schema_version") {
+        None => Ok(LEGACY_WORKFLOW_SCHEMA_VERSION),
+        Some(value) => value
+            .as_u64()
+            .filter(|version| *version >= 1)
+            .and_then(|version| u32::try_from(version).ok())
+            .ok_or_else(|| {
+                anyhow!("workflow schema_version must be a positive integer, got {value}")
+            }),
+    }
+}
+
+/// Bring a workflow document saved as `version` to the current format.
+///
+/// All workflow migrations live here, one step per version, e.g.
+/// `1 => migrate_v1_to_v2(document)?`. Version 1 is the current format, so
+/// there is no step yet.
+fn migrate_workflow(document: serde_json::Value, version: u32) -> Result<serde_json::Value> {
+    if version > WORKFLOW_SCHEMA_VERSION {
+        bail!(
+            "workflow schema_version {version} is newer than this version of Videnoa supports \
+             ({WORKFLOW_SCHEMA_VERSION}); upgrade Videnoa to open it"
+        );
+    }
+    Ok(document)
+}
+
+/// A copy of a workflow document with the current `schema_version`, for a
+/// document that does not state one (the editor sends the current format).
+pub fn versioned_workflow(document: &serde_json::Value) -> serde_json::Value {
+    let mut document = document.clone();
+    if let Some(object) = document.as_object_mut() {
+        object
+            .entry("schema_version")
+            .or_insert_with(|| serde_json::json!(WORKFLOW_SCHEMA_VERSION));
+    }
+    document
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct PipelineGraphSerde {
+    /// Read by `migrate_workflow` before this struct is deserialized.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    schema_version: Option<u32>,
     nodes: Vec<NodeInstance>,
     connections: Vec<PipelineConnectionSerde>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -412,6 +465,7 @@ impl Serialize for PipelineGraph {
         });
 
         PipelineGraphSerde {
+            schema_version: Some(WORKFLOW_SCHEMA_VERSION),
             nodes,
             connections,
             interface: self.interface.clone(),
@@ -425,7 +479,12 @@ impl<'de> Deserialize<'de> for PipelineGraph {
     where
         D: Deserializer<'de>,
     {
-        let serialized = PipelineGraphSerde::deserialize(deserializer)?;
+        let document = serde_json::Value::deserialize(deserializer)?;
+        let document = workflow_schema_version(&document)
+            .and_then(|version| migrate_workflow(document, version))
+            .map_err(D::Error::custom)?;
+        let serialized: PipelineGraphSerde =
+            serde_json::from_value(document).map_err(D::Error::custom)?;
         let mut graph = PipelineGraph::new();
         graph.interface = serialized.interface;
 
@@ -1054,6 +1113,73 @@ mod tests {
         let reserialized = serde_json::to_value(&restored).expect("graph should reserialize");
 
         assert_eq!(serialized, reserialized);
+    }
+
+    #[test]
+    fn test_workflow_without_schema_version_loads_as_version_1_and_saves_it() {
+        let legacy = serde_json::json!({
+            "nodes": [{"id": "a", "node_type": "Print", "params": {}}],
+            "connections": []
+        });
+
+        let graph: PipelineGraph =
+            serde_json::from_value(legacy).expect("a legacy workflow must still load");
+        let saved = serde_json::to_value(&graph).expect("graph should serialize");
+
+        assert_eq!(saved["schema_version"], serde_json::json!(1));
+        assert_eq!(WORKFLOW_SCHEMA_VERSION, 1);
+    }
+
+    #[test]
+    fn test_workflow_with_newer_schema_version_is_rejected() {
+        let newer = serde_json::json!({
+            "schema_version": WORKFLOW_SCHEMA_VERSION + 1,
+            "nodes": [],
+            "connections": []
+        });
+
+        let err = serde_json::from_value::<PipelineGraph>(newer)
+            .expect_err("a workflow from a newer version must not load silently");
+
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "workflow schema_version {} is newer than this version of Videnoa supports \
+                 ({WORKFLOW_SCHEMA_VERSION}); upgrade Videnoa to open it",
+                WORKFLOW_SCHEMA_VERSION + 1
+            )
+        );
+    }
+
+    #[test]
+    fn test_workflow_with_invalid_schema_version_is_rejected() {
+        for invalid in [
+            serde_json::json!("1"),
+            serde_json::json!(0),
+            serde_json::json!(-1),
+        ] {
+            let document = serde_json::json!({
+                "schema_version": invalid,
+                "nodes": [],
+                "connections": []
+            });
+            let err = serde_json::from_value::<PipelineGraph>(document)
+                .expect_err("an invalid schema_version must be rejected");
+            assert!(err.to_string().contains("schema_version"), "{err}");
+        }
+    }
+
+    #[test]
+    fn test_versioned_workflow_stamps_the_current_version() {
+        let stamped = versioned_workflow(&serde_json::json!({"nodes": [], "connections": []}));
+        assert_eq!(
+            stamped["schema_version"],
+            serde_json::json!(WORKFLOW_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            versioned_workflow(&serde_json::json!(null)),
+            serde_json::json!(null)
+        );
     }
 
     #[test]

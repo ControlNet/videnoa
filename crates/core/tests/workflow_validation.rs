@@ -163,3 +163,32 @@ async fn nested_video_workflow_is_rejected_at_submission() {
     assert!(message.contains("node 'wf'"), "{message}");
     assert!(message.contains("VideoFrames"), "{message}");
 }
+
+#[tokio::test]
+async fn saved_workflow_records_its_schema_version() {
+    let dir = TempDir::new().unwrap();
+    let mut config = AppConfig::default();
+    config.paths.workflows_dir = dir.path().join("workflows");
+    let app = api_router(app_state_with_config(
+        config,
+        dir.path().join("config.toml"),
+        dir.path().join("data"),
+    ));
+    let workflow =
+        json!({"nodes": [{"id": "p", "node_type": "Print", "params": {}}], "connections": []});
+
+    let (status, body) = request(
+        &app,
+        "POST",
+        "/api/workflows",
+        json!({"name": "versioned", "description": "", "workflow": workflow}),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let saved: Value = serde_json::from_slice(
+        &std::fs::read(dir.path().join("workflows").join("versioned.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(saved["workflow"]["schema_version"], json!(1), "{saved:#}");
+}

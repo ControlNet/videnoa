@@ -2069,7 +2069,7 @@ async fn save_workflow(
     let doc = serde_json::json!({
         "name": trimmed,
         "description": payload.description,
-        "workflow": payload.workflow,
+        "workflow": crate::graph::versioned_workflow(&payload.workflow),
     });
 
     let path = dir.join(&filename);
