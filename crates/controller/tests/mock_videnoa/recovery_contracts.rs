@@ -95,7 +95,8 @@ async fn contradictory_remote_identity_is_nonretryable_ambiguity() -> TestResult
         .reconcile_startup(fixture.now)
         .await?;
 
-    // Then: contradictory evidence fails closed without replaying submission.
+    // Then: contradictory evidence fails closed without replaying submission,
+    // and the still-running job at the task's job ID is not left orphaned.
     let task = fixture.load_task(state.task_id).await?;
     assert_eq!(task.status, TaskStatus::Failed);
     assert_eq!(
@@ -103,6 +104,8 @@ async fn contradictory_remote_identity_is_nonretryable_ambiguity() -> TestResult
         Some(FailureCode::RemoteStateAmbiguous)
     );
     assert_eq!(server.counters().await.get(Route::Run), 1);
+    assert_eq!(server.counters().await.get(Route::JobCancel), 1);
+    assert_eq!(server.active_job_count().await, 0);
     Ok(())
 }
 

@@ -37,6 +37,8 @@ pub enum DeleteOutcome {
     NotFound,
     ServerError,
     Success,
+    Unauthorized,
+    RateLimited,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

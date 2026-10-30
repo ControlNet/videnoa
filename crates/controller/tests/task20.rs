@@ -28,6 +28,8 @@ mod outage_matrix;
 mod pause;
 #[path = "task20/remote_isolation.rs"]
 mod remote_isolation;
+#[path = "task20/remote_scope.rs"]
+mod remote_scope;
 #[path = "task20/retry.rs"]
 mod retry;
 #[path = "task20/shutdown.rs"]

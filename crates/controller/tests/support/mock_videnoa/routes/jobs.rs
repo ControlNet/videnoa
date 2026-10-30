@@ -62,6 +62,14 @@ pub(crate) async fn cancel(
     let Ok((parts, body)) = body_bytes(request, MAX_JSON_BYTES).await else {
         return error_response(StatusCode::BAD_REQUEST, "invalid_body");
     };
+    if let Some(fault) = state.take_response_fault(Route::JobCancel).await {
+        let sequence = state.inner.lock().await.begin(Route::JobCancel);
+        let status =
+            StatusCode::from_u16(fault.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        let journal = journal_request(&parts, &body, Route::JobCancel, sequence, BTreeMap::new());
+        record(&state, journal, status, JournalOutcome::FaultStatus).await;
+        return raw_json_response(status, fault.body);
+    }
     let (sequence, found) = {
         let mut inner = state.inner.lock().await;
         let sequence = inner.begin(Route::JobCancel);

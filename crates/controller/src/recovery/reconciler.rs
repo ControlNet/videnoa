@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 
 use crate::domain::{FailureCode, FailureStage, TaskStatus};
 use crate::lifecycle::{AdvanceCommand, Lifecycle, LifecycleFailure, LifecycleService};
-use crate::persistence::{AttemptRecord, Store, SubmissionOwner, TaskRecord};
+use crate::persistence::{AttemptRecord, Store, SubmissionOwner, TaskRecord, WorkerRecord};
 use crate::remote::VidenoaClient;
 
 use super::{
@@ -19,6 +19,12 @@ const RECOVERY_PAGE_SIZE: NonZeroU16 = match NonZeroU16::new(256) {
     Some(value) => value,
     None => NonZeroU16::MIN,
 };
+
+/// The worker a task is assigned to, with a client for it.
+pub(super) struct AssignedWorker {
+    pub(super) record: WorkerRecord,
+    pub(super) client: VidenoaClient,
+}
 
 #[derive(Clone)]
 pub struct Reconciler {
@@ -144,21 +150,23 @@ impl Reconciler {
             self.config.limits,
             worker.password.as_ref(),
         )?;
-        match client.health().await {
-            Ok(_) => {}
-            Err(error) if error.is_transient() => {
-                self.defer_worker(&worker, task.id, now, stage, report)
-                    .await?;
-                return Ok(());
-            }
-            Err(error) => return Err(error.into()),
-        }
-        if task.cancel_requested_at.is_some() {
+        if let Err(error) = client.health().await {
+            // No health reply is evidence about this task: whatever the
+            // worker answered, its tasks wait for it.
             return self
-                .reconcile_cancellation(task, attempt, &client, now, stage, report)
+                .defer_for_worker(&worker, task.id, &error, now, stage, report)
                 .await;
         }
-        self.dispatch(task, attempt, &client, now, stage, report)
+        let worker = AssignedWorker {
+            record: worker,
+            client,
+        };
+        if task.cancel_requested_at.is_some() {
+            return self
+                .reconcile_cancellation(task, attempt, &worker, now, stage, report)
+                .await;
+        }
+        self.dispatch(task, attempt, &worker, now, stage, report)
             .await
     }
 
@@ -166,7 +174,7 @@ impl Reconciler {
         &self,
         task: TaskRecord,
         attempt: AttemptRecord,
-        client: &VidenoaClient,
+        worker: &AssignedWorker,
         now: DateTime<Utc>,
         stage: &StagePermit,
         report: &mut RecoveryReport,
@@ -181,11 +189,11 @@ impl Reconciler {
             }
             crate::lifecycle::RecoveryAction::BeginSubmission
             | crate::lifecycle::RecoveryAction::ReconcileSubmission => {
-                self.reconcile_submission(task, attempt, client, now, stage, report)
+                self.reconcile_submission(task, attempt, worker, now, stage, report)
                     .await?;
             }
             crate::lifecycle::RecoveryAction::PollProcessing => {
-                self.reconcile_processing(task, attempt, client, now, stage, report)
+                self.reconcile_processing(task, attempt, worker, now, stage, report)
                     .await?;
             }
             crate::lifecycle::RecoveryAction::BeginDownload

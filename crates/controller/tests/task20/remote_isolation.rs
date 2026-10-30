@@ -69,7 +69,7 @@ async fn rejected_submission_fails_only_its_task_while_other_work_completes() ->
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn malformed_poll_fails_only_its_task_while_other_work_completes() -> TestResult {
+async fn malformed_poll_keeps_polling_while_other_work_completes() -> TestResult {
     // Given: one processing task is paused before a malformed poll response.
     let bad_worker = MockVidenoa::start_persistent().await?;
     let good_worker = MockVidenoa::start_persistent().await?;
@@ -105,16 +105,15 @@ async fn malformed_poll_fails_only_its_task_while_other_work_completes() -> Test
     bad_worker.release(bad_poll).await?;
     good_worker.release(good_run).await?;
 
-    // Then: remote ambiguity is durable and the unrelated task completes normally.
-    let failed = wait_for_status(&fixture, &bad_task, TaskStatus::Failed).await?;
-    let failure = failed
-        .task
-        .failure
-        .ok_or_else(|| std::io::Error::other("failed task has no durable failure"))?;
-    assert_eq!(failure.failure_stage, FailureStage::Processing);
-    assert_eq!(failure.failure_code, FailureCode::RemoteStateAmbiguous);
-    assert!(!failure.retryable);
-    assert_completed_pipeline(&fixture, &good_worker, &good_task, b"good-output").await
+    // Then: the unreadable status is no evidence about the job, so the task
+    // keeps polling it while the unrelated task completes normally.
+    assert_completed_pipeline(&fixture, &good_worker, &good_task, b"good-output").await?;
+    assert_eq!(
+        fixture.task(&bad_task).await?.task.status,
+        TaskStatus::Processing
+    );
+    complete_mock_job(&bad_worker, &bad_task, b"bad-output").await?;
+    assert_completed_pipeline(&fixture, &bad_worker, &bad_task, b"bad-output").await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]

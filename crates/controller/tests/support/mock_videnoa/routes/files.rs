@@ -281,6 +281,10 @@ pub(crate) async fn delete(
         });
         let (status, outcome) = match result {
             DeleteOutcome::ClientError => (StatusCode::BAD_REQUEST, JournalOutcome::FaultStatus),
+            DeleteOutcome::Unauthorized => (StatusCode::UNAUTHORIZED, JournalOutcome::FaultStatus),
+            DeleteOutcome::RateLimited => {
+                (StatusCode::TOO_MANY_REQUESTS, JournalOutcome::FaultStatus)
+            }
             DeleteOutcome::NotFound => {
                 inner.persistent.files.retain(|candidate, _| {
                     candidate != &path && !candidate.starts_with(&format!("{path}/"))

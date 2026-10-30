@@ -42,7 +42,7 @@ impl ProbeFailure {
 
     pub(super) const fn message(&self) -> &'static str {
         match self {
-            Self::Authentication => "worker authentication failed; check the saved worker password",
+            Self::Authentication => super::AUTHENTICATION_FAILED,
             Self::Client => "worker remote client initialization failed",
             Self::Health => "worker health check failed",
             Self::Capabilities => "worker capability refresh failed",
@@ -105,13 +105,7 @@ pub(super) async fn probe(
 }
 
 fn classify_error(error: &VidenoaClientError, fallback: ProbeFailure) -> ProbeFailure {
-    if matches!(
-        error,
-        VidenoaClientError::ClientStatus {
-            status: 401 | 403,
-            ..
-        }
-    ) {
+    if error.is_authentication() {
         ProbeFailure::Authentication
     } else if *error == VidenoaClientError::Incompatible {
         ProbeFailure::Incompatible

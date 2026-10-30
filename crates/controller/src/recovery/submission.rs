@@ -6,18 +6,20 @@ use crate::lifecycle::{
     SubmissionCancellationReconciliation, SubmissionEvidence,
 };
 use crate::persistence::{AttemptRecord, TaskRecord};
-use crate::remote::{FileApiPath, VidenoaClient, VidenoaClientError};
+use crate::remote::{FileApiPath, VidenoaClientError};
 
 use super::paths::{remote_paths, submission_params};
 use super::submission_ownership::SubmissionOwnership;
-use super::{Reconciler, RecoveryCommandKind, RecoveryError, RecoveryReport, StagePermit};
+use super::{
+    AssignedWorker, Reconciler, RecoveryCommandKind, RecoveryError, RecoveryReport, StagePermit,
+};
 
 impl Reconciler {
     pub(super) async fn reconcile_submission(
         &self,
         mut task: TaskRecord,
         mut attempt: AttemptRecord,
-        client: &VidenoaClient,
+        worker: &AssignedWorker,
         now: DateTime<Utc>,
         stage: &StagePermit,
         report: &mut RecoveryReport,
@@ -64,7 +66,8 @@ impl Reconciler {
             return Ok(());
         }
         let (input, output) = remote_paths(&attempt)?;
-        let submitted = match client
+        let submitted = match worker
+            .client
             .run(
                 &task.request.workflow,
                 attempt.attempt.submission_key,
@@ -73,6 +76,11 @@ impl Reconciler {
             .await
         {
             Ok(submitted) => submitted,
+            Err(error) if error.is_worker_level() => {
+                return self
+                    .defer_submission(&attempt, &worker.record, error, now, stage, report)
+                    .await;
+            }
             Err(error) => {
                 return self
                     .resolve_submission_failure(&task, &attempt, error, now, stage, report)
@@ -110,14 +118,14 @@ impl Reconciler {
         &self,
         task: TaskRecord,
         attempt: AttemptRecord,
-        client: &VidenoaClient,
+        worker: &AssignedWorker,
         now: DateTime<Utc>,
         stage: &StagePermit,
         report: &mut RecoveryReport,
     ) -> Result<(), RecoveryError> {
         match task.status {
             TaskStatus::Submitting => {
-                self.cancel_submission(task, attempt, client, now, stage, report)
+                self.cancel_submission(task, attempt, worker, now, stage, report)
                     .await
             }
             TaskStatus::Processing => {
@@ -125,11 +133,16 @@ impl Reconciler {
                     .attempt
                     .remote_job_id
                     .ok_or(RecoveryError::MissingRemoteEvidence)?;
-                match client.cancel_job(remote_job_id).await {
+                match worker.client.cancel_job(remote_job_id).await {
                     Ok(()) | Err(VidenoaClientError::NotFound) => {}
-                    Err(error) => return Err(error.into()),
+                    Err(error) => {
+                        // The cancel stays requested; the next pass retries it.
+                        return self
+                            .defer_remote(&worker.record, task.id, error, now, stage, report)
+                            .await;
+                    }
                 }
-                self.finish_cancellation(task, attempt, client, now, stage, report)
+                self.finish_cancellation(task, attempt, worker, now, stage, report)
                     .await
             }
             TaskStatus::Reserved
@@ -138,7 +151,7 @@ impl Reconciler {
             | TaskStatus::RemoteCompleted
             | TaskStatus::Downloading
             | TaskStatus::Verifying => {
-                self.finish_cancellation(task, attempt, client, now, stage, report)
+                self.finish_cancellation(task, attempt, worker, now, stage, report)
                     .await
             }
             TaskStatus::Queued
@@ -154,7 +167,7 @@ impl Reconciler {
         &self,
         task: TaskRecord,
         mut attempt: AttemptRecord,
-        client: &VidenoaClient,
+        worker: &AssignedWorker,
         now: DateTime<Utc>,
         stage: &StagePermit,
         report: &mut RecoveryReport,
@@ -164,7 +177,8 @@ impl Reconciler {
             return Ok(());
         }
         let (input, output) = remote_paths(&attempt)?;
-        let reconciliation = match client
+        let reconciliation = match worker
+            .client
             .run(
                 &task.request.workflow,
                 attempt.attempt.submission_key,
@@ -177,16 +191,24 @@ impl Reconciler {
                 remote_input_path: input.clone(),
                 remote_output_path: output.clone(),
             }),
+            Err(error) if error.is_transient() || error == VidenoaClientError::RateLimited => {
+                self.retry_submission(&attempt, now, stage, &error).await?;
+                report.defer(task.id);
+                return Ok(());
+            }
+            // Rejected credentials do not mean the job was never accepted.
+            Err(error) if error.is_authentication() => {
+                return self
+                    .defer_submission(&attempt, &worker.record, error, now, stage, report)
+                    .await;
+            }
             Err(VidenoaClientError::NotFound | VidenoaClientError::ClientStatus { .. }) => {
                 SubmissionCancellationReconciliation::NotAccepted
             }
             Err(error) => {
-                if error.is_transient() || matches!(error, VidenoaClientError::RateLimited) {
-                    self.retry_submission(&attempt, now, stage, &error).await?;
-                    report.defer(task.id);
-                    return Ok(());
-                }
-                return Err(error.into());
+                return self
+                    .defer_submission(&attempt, &worker.record, error, now, stage, report)
+                    .await;
             }
         };
         let remote_job_id = match &reconciliation {
@@ -208,9 +230,15 @@ impl Reconciler {
             return Err(error.into());
         }
         if let Some(job_id) = remote_job_id {
-            match client.cancel_job(job_id).await {
+            match worker.client.cancel_job(job_id).await {
                 Ok(()) | Err(VidenoaClientError::NotFound) => {}
-                Err(error) => return Err(error.into()),
+                Err(error) => {
+                    // The confirmed job is durable now; the next pass cancels
+                    // it from Processing.
+                    return self
+                        .defer_remote(&worker.record, task.id, error, now, stage, report)
+                        .await;
+                }
             }
         }
         let task = self
@@ -223,7 +251,7 @@ impl Reconciler {
             .current_attempt(task.id)
             .await?
             .ok_or(RecoveryError::MissingAttempt)?;
-        self.finish_cancellation(task, attempt, client, now, stage, report)
+        self.finish_cancellation(task, attempt, worker, now, stage, report)
             .await
     }
 
@@ -231,7 +259,7 @@ impl Reconciler {
         &self,
         task: TaskRecord,
         attempt: AttemptRecord,
-        client: &VidenoaClient,
+        worker: &AssignedWorker,
         now: DateTime<Utc>,
         stage: &StagePermit,
         report: &mut RecoveryReport,
@@ -240,17 +268,19 @@ impl Reconciler {
             .await
             .map_err(RecoveryError::LocalCleanup)?;
         let workspace = FileApiPath::parse(&task.id.to_string())?;
-        match client.delete_file(&workspace).await {
+        match worker.client.delete_file(&workspace).await {
             Ok(()) | Err(VidenoaClientError::NotFound) => {}
             Err(
-                error @ (VidenoaClientError::ServerStatus { .. }
-                | VidenoaClientError::Network
-                | VidenoaClientError::Timeout
-                | VidenoaClientError::Stall
-                | VidenoaClientError::LocalIo
+                error @ (VidenoaClientError::LocalIo
                 | VidenoaClientError::InvalidFilePath
                 | VidenoaClientError::EndpointUrl),
             ) => return Err(error.into()),
+            // The worker, not the cleanup, failed: cancellation retries later.
+            Err(error) if error.is_worker_level() => {
+                return self
+                    .defer_remote(&worker.record, task.id, error, now, stage, report)
+                    .await;
+            }
             Err(error) => {
                 let _write = stage.begin_write();
                 LifecycleService::new(self.store.clone())

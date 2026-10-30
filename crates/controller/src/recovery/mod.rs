@@ -17,6 +17,7 @@ mod worker;
 pub use command::RecoveryCommandKind;
 pub use model::{DeferredRecovery, RecoveryConfig, RecoveryReport, RecoveryTrace};
 pub(crate) use processing::remote_job_identity_matches;
+use reconciler::AssignedWorker;
 pub use reconciler::Reconciler;
 pub use restart_error::RecoveryError;
 pub use termination::{DrainOutcome, ShutdownCoordinator, ShutdownError, StagePermit, WritePermit};
