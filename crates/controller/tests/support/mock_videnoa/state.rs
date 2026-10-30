@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use super::checkpoints::{Checkpoint, CheckpointHub};
-use super::domain::{is_active, mock_time, JobProgress, JobStatus};
+use super::domain::{is_active, mock_time, CancelReason, JobProgress, JobStatus};
 use super::faults::{Fault, FaultState, ResponseFault};
 use super::journal::{JournalEntry, LogicalTimestamp, Route, RouteCounters};
 use super::persistence::{self, PersistentState};
@@ -178,6 +178,30 @@ impl SharedState {
             JobStatus::Completed | JobStatus::Failed | JobStatus::Cancelled
         ) {
             job.response.completed_at = Some(mock_time("2026-09-02T00:00:02Z"));
+        }
+        self.persist_locked(&state).await
+    }
+
+    /// Records a cancel request on a job, as the Worker does when a client
+    /// deletes an active job or it shuts down; `settled` also ends the job.
+    pub async fn request_cancel(
+        &self,
+        id: &str,
+        reason: CancelReason,
+        settled: bool,
+    ) -> Result<(), HarnessError> {
+        let mut state = self.inner.lock().await;
+        let job = state
+            .persistent
+            .jobs
+            .get_mut(id)
+            .ok_or_else(|| HarnessError::JobNotFound(id.to_owned()))?;
+        job.response.cancel_requested = true;
+        job.response.cancel_requested_at = Some(mock_time("2026-09-02T00:00:03Z"));
+        job.response.cancel_reason = Some(reason);
+        if settled {
+            job.response.status = JobStatus::Cancelled;
+            job.response.completed_at = Some(mock_time("2026-09-02T00:00:04Z"));
         }
         self.persist_locked(&state).await
     }

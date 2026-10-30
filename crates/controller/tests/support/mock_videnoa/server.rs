@@ -6,7 +6,7 @@ use tempfile::TempDir;
 use tokio::net::TcpListener;
 
 use super::checkpoints::{Checkpoint, CheckpointTicket};
-use super::domain::{JobProgress, JobStatus};
+use super::domain::{CancelReason, JobProgress, JobStatus};
 use super::faults::{Fault, OfflineMode, RestartMode, RestartOutcome};
 use super::journal::{sanitize_entries, JournalEntry, RouteCounters};
 use super::persistence::{self, PersistentState};
@@ -119,6 +119,20 @@ impl MockVidenoa {
         progress: Option<JobProgress>,
     ) -> Result<(), HarnessError> {
         self.state.set_job(id, status, progress).await
+    }
+
+    /// Records a cancel request on a job with `reason`; `settled` also ends it.
+    #[allow(
+        dead_code,
+        reason = "Shared harness cancel requests are exercised by Task 20"
+    )]
+    pub async fn request_cancel(
+        &self,
+        id: &str,
+        reason: CancelReason,
+        settled: bool,
+    ) -> Result<(), HarnessError> {
+        self.state.request_cancel(id, reason, settled).await
     }
 
     pub async fn complete_job(

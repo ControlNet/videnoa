@@ -3,7 +3,7 @@ use serde_json::Value;
 
 use crate::lifecycle::{LifecycleFailure, LifecycleService, RemoteAmbiguityStage};
 use crate::persistence::{AttemptRecord, TaskRecord};
-use crate::remote::{Job, JobStatus, VidenoaClientError};
+use crate::remote::{CancelReason, Job, JobStatus, VidenoaClientError};
 use crate::scheduler::TransferCheckpointPoint;
 
 use super::remote_failure::cancel_abandoned_job;
@@ -82,9 +82,7 @@ impl Reconciler {
                                     .unwrap_or_else(|| "remote processing failed".to_owned()),
                             )
                         } else {
-                            LifecycleFailure::restart_cancelled(
-                                "remote job was cancelled during worker restart",
-                            )
+                            cancelled_failure(job.cancel_reason)
                         };
                         let _write = stage.begin_write();
                         service.fail(&task, Some(&attempt), failure, now).await?;
@@ -113,6 +111,23 @@ impl Reconciler {
             }
         }
         Ok(())
+    }
+}
+
+/// Why a job this Controller did not cancel ended cancelled, as the Worker
+/// reports it (protocol 2). Without a reason it is the one cause older
+/// Workers had: a restart.
+fn cancelled_failure(reason: Option<CancelReason>) -> LifecycleFailure {
+    match reason {
+        Some(CancelReason::User) => {
+            LifecycleFailure::processing("remote job was cancelled on the worker")
+        }
+        Some(CancelReason::Shutdown) => LifecycleFailure::restart_cancelled(
+            "remote job was cancelled when the worker shut down",
+        ),
+        Some(CancelReason::Restart | CancelReason::Unknown) | None => {
+            LifecycleFailure::restart_cancelled("remote job was cancelled during worker restart")
+        }
     }
 }
 

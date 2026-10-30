@@ -4,9 +4,10 @@
 use std::time::Duration;
 
 use chrono::Utc;
-use videnoa_controller::domain::{FailureCode, FailureStage, TaskStatus};
+use videnoa_controller::domain::{FailureCode, FailureStage, Task, TaskStatus};
 use videnoa_controller::remote::PROTOCOL_VERSION;
 
+use crate::mock_videnoa::domain::CancelReason;
 use crate::mock_videnoa::journal::Route;
 use crate::mock_videnoa::server::MockVidenoa;
 use crate::remote_scope::{
@@ -92,6 +93,59 @@ async fn a_processing_task_waits_while_its_worker_speaks_a_newer_protocol() -> T
     assert!(!durable_worker(&fixture, &task).await?.online);
     assert_eq!(worker.active_job_count().await, 1);
     Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_job_cancelled_on_the_worker_says_who_cancelled_it() -> TestResult {
+    for (reason, message) in [
+        (CancelReason::User, "remote job was cancelled on the worker"),
+        (
+            CancelReason::Shutdown,
+            "remote job was cancelled when the worker shut down",
+        ),
+        (
+            CancelReason::Restart,
+            "remote job was cancelled during worker restart",
+        ),
+    ] {
+        // Given: a processing task whose job is cancelled on the worker.
+        let worker = MockVidenoa::start_persistent().await?;
+        let mut fixture = ControllerFixture::start().await?;
+        let task = processing_task(&worker, &fixture, "worker-cancelled").await?;
+        fixture.crash().await?;
+        let job_id = remote_job_id(&fixture, &task).await?;
+        worker.request_cancel(&job_id, reason, true).await?;
+
+        // When: reconciliation polls it.
+        fixture
+            .reconciler()?
+            .reconcile_task_id(task.id, Utc::now())
+            .await?;
+
+        // Then: the failure names the cause the worker reported.
+        let failure = fixture
+            .store
+            .current_attempt(task.id)
+            .await?
+            .and_then(|attempt| attempt.attempt.failure)
+            .ok_or("attempt has no failure")?;
+        assert_eq!(failure.message, message, "{reason:?}");
+        assert_eq!(
+            durable_task(&fixture, &task).await?.status,
+            TaskStatus::Failed
+        );
+    }
+    Ok(())
+}
+
+async fn remote_job_id(fixture: &ControllerFixture, task: &Task) -> TestResult<String> {
+    Ok(fixture
+        .store
+        .current_attempt(task.id)
+        .await?
+        .and_then(|attempt| attempt.attempt.remote_job_id)
+        .ok_or("remote job id missing")?
+        .to_string())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

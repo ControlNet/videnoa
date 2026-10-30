@@ -5,9 +5,9 @@ use serde::{Deserialize, Serialize};
 // The mock speaks the real Worker's wire types, so a drift between what the
 // Worker writes and what the Controller reads fails to compile here.
 pub use videnoa_protocol::{
-    CreateJobResponse, ErrorCode, ErrorResponse, FileStatResponse, HealthResponse, HealthStatus,
-    JobProgress, JobResponse, JobStatus, PresetResponse, RunWorkflowRequest, UploadResponse,
-    WorkflowEntry, WorkflowInterface, WorkflowPort, PROTOCOL_VERSION,
+    CancelReason, CreateJobResponse, ErrorCode, ErrorResponse, FileStatResponse, HealthResponse,
+    HealthStatus, JobProgress, JobResponse, JobStatus, PresetResponse, RunWorkflowRequest,
+    UploadResponse, WorkflowEntry, WorkflowInterface, WorkflowPort, PROTOCOL_VERSION,
 };
 
 pub const fn is_active(status: JobStatus) -> bool {
