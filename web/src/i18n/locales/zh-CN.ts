@@ -126,6 +126,8 @@ export const zhCNResources: MatchingResources = {
 		"workflowPathPicker.loadingPlaceholder": "加载中...",
 		"workflowPathPicker.selectPlaceholder": "选择工作流",
 		"workflowPathPicker.empty": "没有可用接口的工作流",
+		"workflowPathPicker.error": "无法加载工作流列表",
+		"workflowPathPicker.retry": "重试",
 		"dialog.close": "关闭",
 		loading: "加载中…",
 		notAvailable: "—",

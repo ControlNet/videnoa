@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { i18n, initializeI18n } from "@/i18n";
 import { WorkflowPathPicker } from "../WorkflowPathPicker";
@@ -60,5 +60,46 @@ describe("WorkflowPathPicker", () => {
 
 		openPicker("选择工作流路径");
 		expect(await screen.findByText("没有可用接口的工作流")).toBeInTheDocument();
+	});
+
+	it("an empty list that loaded is not an error", async () => {
+		render(<WorkflowPathPicker value="" onChange={vi.fn()} />);
+
+		await waitFor(() => {
+			expect(screen.getByText("Select workflow")).toBeInTheDocument();
+		});
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+	});
+
+	// A failed list must not read as "no workflows with interfaces".
+	it("says the list failed to load and retries it", async () => {
+		vi.mocked(listWorkflows)
+			.mockRejectedValueOnce(new Error("HTTP 500"))
+			.mockResolvedValueOnce([
+				{
+					filename: "upscale.json",
+					name: "Upscale",
+					description: "",
+					workflow: { nodes: [], connections: [] },
+					has_interface: true,
+				},
+			]);
+
+		render(<WorkflowPathPicker value="" onChange={vi.fn()} />);
+
+		const alert = await screen.findByRole("alert");
+		expect(alert).toHaveTextContent("Could not load the workflow list");
+		openPicker("Select workflow path");
+		expect(screen.queryByText("No workflows with interfaces")).not.toBeInTheDocument();
+		fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+
+		fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
+
+		await waitFor(() => {
+			expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+		});
+		expect(listWorkflows).toHaveBeenCalledTimes(2);
+		openPicker("Select workflow path");
+		expect(await screen.findByRole("option", { name: "Upscale" })).toBeInTheDocument();
 	});
 });

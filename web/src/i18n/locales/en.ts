@@ -122,6 +122,8 @@ export const enResources = {
 		"workflowPathPicker.loadingPlaceholder": "Loading...",
 		"workflowPathPicker.selectPlaceholder": "Select workflow",
 		"workflowPathPicker.empty": "No workflows with interfaces",
+		"workflowPathPicker.error": "Could not load the workflow list",
+		"workflowPathPicker.retry": "Retry",
 		"dialog.close": "Close",
 		loading: "Loading…",
 		notAvailable: "—",
