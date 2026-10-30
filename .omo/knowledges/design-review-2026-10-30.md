@@ -348,3 +348,88 @@ All probes are in the session scratchpad and are not committed:
 - `engine-probe/ws/crates/core/tests/engine_probe.rs`;
 - `fe/webcopy/src/review/design-review.test.tsx`;
 - `worker-probe/`.
+
+## Fixes (2026-10-30)
+
+The user asked for everything to be fixed. Subagents fixed the findings in
+isolated worktrees, in two waves, writing a failing test first for each
+finding. Claude merged the results onto `dev`, ran the workspace gates and CI,
+and pushed.
+
+| Finding | Commits | Knowledge note |
+|---|---|---|
+| A, B | f20c965 | `remote-error-scope-2026-10-30.md` |
+| C | 90ea465, 146a688, 17fbb85 | remote-error-scope, `web-editor-review-fixes-2026-10-30.md` |
+| D | fcb4ae5, 3db624c, b19478f, 2141a7d | web-editor-review-fixes |
+| E | 5c28717, 8e74316, df3044f (Controller waits for the stop) | `engine-review-fixes-2026-10-30.md`, `worker-lifecycle-fixes-2026-10-30.md` |
+| F | 9aa240c, e236eb5, 6beb6b5, b9edf91, 7df0e28 | `worker-protocol-2026-10-30.md` |
+| G | 699e740, 9a21559, 905faac, 80ea862 | engine-review-fixes, web-editor-review-fixes |
+| H | df253a6, 12d4f71 (sink consumers run after the stream) | engine-review-fixes, `wave2-leftovers-2026-10-30.md` |
+| I | 135694a, 01f18ef | engine-review-fixes |
+| J | b0bd64f | `controller-task-lifecycle-ops-2026-10-30.md` |
+| K | 5d75ba2, e2edeb7, 5dccddc | controller-task-lifecycle-ops |
+| L | 3c33161 | remote-error-scope |
+| M | 19b88fc | worker-lifecycle-fixes |
+| N | 1215bda | worker-lifecycle-fixes |
+| O | 6306a86, plus `host_not_allowed` reporting in 2f8bcc3 and bb2748f | `worker-host-check-2026-10-30.md` |
+| P | 2e291dd | worker-lifecycle-fixes |
+| Q | ead04bc, 5aeefcb | worker-lifecycle-fixes |
+| R | a7ecbf7, 994f0ec | worker-lifecycle-fixes, wave2-leftovers |
+| S | e6ea43f | worker-protocol |
+| T | c70e7e4 | web-editor-review-fixes |
+| Settings saved as a whole document | 3fb599e, e53e20d | web-editor-review-fixes |
+| Print output only broadcast live | adecf4d | web-editor-review-fixes |
+| i18n | e88a0e4 | web-editor-review-fixes |
+| Silent failures | 551650c, f38a4bb, adc2d5e | web-editor-review-fixes, wave2-leftovers |
+| Cancelling a Submitting task probes with `/api/run` | ff015e6 | worker-protocol |
+| State vocabulary copied in many places | 6c50e35, e8f02ad, 721b3c8 | controller-task-lifecycle-ops |
+| Transport skew looks like an outage | ada37f7 | remote-error-scope |
+| Wave-1 carry-overs: per-task cooldown, cancel reason | 9dfff40, a31e40f | worker-protocol |
+
+### Integration fixes made while merging
+
+- **5a29312: test node and the unknown-param check.** A test node had to
+  declare its param once the unknown-param check existed.
+- **5aeefcb: shutdown race and job-store fsyncs (`.omo/knowledges/worker-lifecycle-fixes-2026-10-30.md`).**
+  - `begin_shutdown` could let a queued job complete without a cancel
+    request while it was writing to a slow disk.
+  - The job store now keeps one connection open, which cut fsyncs.
+- **3079847 and 0fe7550: Windows-only test failures.**
+  - An open SQLite file cannot be deleted on Windows.
+  - A test cancelled the job before the hold node had started.
+- **b4235ad: formatting of `include!`-ed modules.** CI runs `rustfmt` on
+  each file, because `cargo fmt` does not follow `include!`.
+- **4c0309f: Docker smoke health check.** Health has more fields now, so the
+  smoke test checks only `status`.
+- **051d0e2: protocol crate tests in CI.**
+
+### Verified on a GPU
+
+TensorRT cache:
+- An empty cache directory produced `trt-100900_ort-a83fc4d58c_device-0_…/`
+  holding `*.engine` and `*.profile`. The run took 167 s.
+- The second run reused it and took 9 s.
+
+### Open items
+
+- **Dynamic-shape TensorRT engines:** they are built at the first `Run()`.
+  - Building in a temporary directory and renaming it into place is not
+    possible.
+  - The cross-process lock does not cover that build.
+  - A truncated engine is not recovered automatically.
+- **On Unix, FFmpeg can outlive the worker** if the worker exits, until the
+  next start removes the files it left.
+- **Cancel-lookup race:** a run still in flight from a crashed Controller can
+  arrive after the lookup reported "not accepted".
+- **Retention residue:** retention can purge a discarded task whose Worker
+  folder was kept because the Worker was offline. That folder then has no
+  record pointing to it.
+- **Release notes:** the behaviour changes are listed in each knowledge note
+  under "behaviour changes". Notable ones:
+  - Host allowlist in open access.
+  - Unknown params are rejected.
+  - TensorRT engines are rebuilt once after the upgrade.
+  - The desktop data dir has moved.
+  - Batch idempotency keys expire after 7 days.
+  - The worker needs Controller v0.1.9 or later.
+  - Protocol 2.
