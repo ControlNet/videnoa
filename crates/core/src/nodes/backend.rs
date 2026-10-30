@@ -3,13 +3,14 @@
 //! Provides [`InferenceBackend`] enum and [`build_session`] helper to create
 //! `ort::Session` with the appropriate execution providers and optional TRT engine caching.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, RecvTimeoutError};
 use std::sync::{Arc, Once, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use ort::{
     environment::Environment,
     ep::{CUDAExecutionProvider, ExecutionProvider, TensorRTExecutionProvider},
@@ -19,6 +20,9 @@ use ort::{
 };
 use sha2::{Digest, Sha256};
 use tracing::{debug, error, info, warn};
+
+use crate::node::PortDefinition;
+use crate::types::{PortData, PortType};
 
 /// Inference backend selection.
 ///
@@ -54,6 +58,31 @@ pub struct SessionConfig<'a> {
     pub model_path: &'a Path,
     pub backend: &'a InferenceBackend,
     pub trt_cache_dir: Option<&'a Path>,
+    /// CUDA device the session runs on, for both the TensorRT and CUDA EPs.
+    pub device_id: i32,
+}
+
+/// The `device_id` input of an inference node: the CUDA device to run on,
+/// 0 when unset.
+pub fn read_device_id(inputs: &HashMap<String, PortData>) -> Result<i32> {
+    match inputs.get("device_id") {
+        None => Ok(0),
+        Some(PortData::Int(value)) => i32::try_from(*value)
+            .ok()
+            .filter(|id| *id >= 0)
+            .ok_or_else(|| anyhow!("device_id must be a non-negative Int, got {value}")),
+        Some(_) => bail!("device_id must be an Int"),
+    }
+}
+
+/// The `device_id` input port shared by the inference nodes.
+pub fn device_id_port() -> PortDefinition {
+    PortDefinition {
+        name: "device_id".to_string(),
+        port_type: PortType::Int,
+        required: false,
+        default_value: Some(serde_json::json!(0)),
+    }
 }
 
 fn output_memory_contract(cuda_pinned: bool) -> (AllocationDevice, MemoryType) {
@@ -214,6 +243,7 @@ pub fn build_session(config: &SessionConfig<'_>) -> Result<Session> {
 
             debug!(
                 backend = "tensorrt",
+                device_id = config.device_id,
                 cache_dir = %cache_dir.display(),
                 "Building session with TensorRT EP (CUDA EP fallback)"
             );
@@ -253,9 +283,11 @@ pub fn build_session(config: &SessionConfig<'_>) -> Result<Session> {
                         .with_engine_cache(true)
                         .with_engine_cache_path(&cache_path)
                         .with_fp16(true)
-                        .with_device_id(0)
+                        .with_device_id(config.device_id)
                         .build(),
-                    CUDAExecutionProvider::default().build(),
+                    CUDAExecutionProvider::default()
+                        .with_device_id(config.device_id)
+                        .build(),
                 ])
                 .map_err(|error| -> ort::Error { error.into() })?
                 .commit_from_file(config.model_path)
@@ -317,10 +349,15 @@ pub fn build_session(config: &SessionConfig<'_>) -> Result<Session> {
                 warn!("CUDA EP is not available — inference will fall back to CPU");
             }
 
-            debug!(backend = "cuda", "Building session with CUDA EP");
+            debug!(
+                backend = "cuda",
+                device_id = config.device_id,
+                "Building session with CUDA EP"
+            );
 
             builder
                 .with_execution_providers([CUDAExecutionProvider::default()
+                    .with_device_id(config.device_id)
                     .build()
                     .error_on_failure()])
                 .map_err(|error| -> ort::Error { error.into() })?
@@ -576,12 +613,28 @@ mod tests {
     }
 
     #[test]
+    fn read_device_id_defaults_to_zero_and_rejects_invalid_ids() {
+        let device = |value: PortData| HashMap::from([("device_id".to_string(), value)]);
+
+        assert_eq!(read_device_id(&HashMap::new()).unwrap(), 0);
+        assert_eq!(read_device_id(&device(PortData::Int(1))).unwrap(), 1);
+        for invalid in [
+            PortData::Int(-1),
+            PortData::Int(i64::from(i32::MAX) + 1),
+            PortData::Str("1".to_string()),
+        ] {
+            read_device_id(&device(invalid)).expect_err("invalid device_id must be rejected");
+        }
+    }
+
+    #[test]
     fn test_session_config_tensorrt() {
         let trt_cache_dir = std::env::temp_dir().join("trt_cache");
         let config = SessionConfig {
             model_path: Path::new("model.onnx"),
             backend: &InferenceBackend::Tensorrt,
             trt_cache_dir: Some(trt_cache_dir.as_path()),
+            device_id: 0,
         };
         assert_eq!(config.backend, &InferenceBackend::Tensorrt);
         assert_eq!(config.trt_cache_dir.unwrap(), trt_cache_dir.as_path());

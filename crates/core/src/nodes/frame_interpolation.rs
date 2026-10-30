@@ -32,8 +32,8 @@ use crate::streaming_executor::FrameInterpolator;
 use crate::types::{Frame, PortData, PortType};
 
 use crate::nodes::backend::{
-    build_session, ensure_inference_output_memory, inference_output_memory_info,
-    pinned_input_allocator, InferenceBackend, SessionConfig,
+    build_session, device_id_port, ensure_inference_output_memory, inference_output_memory_info,
+    pinned_input_allocator, read_device_id, InferenceBackend, SessionConfig,
 };
 use crate::nodes::nchw_layout::crop_planes_into;
 use crate::nodes::worker_count::WorkerCount;
@@ -79,6 +79,7 @@ pub struct FrameInterpolationNode {
     multiplier: u32,
     num_workers: WorkerCount,
     backend: InferenceBackend,
+    device_id: i32,
     use_iobinding: bool,
     trt_cache_dir: Option<PathBuf>,
     model_format: ModelFormat,
@@ -105,6 +106,7 @@ impl FrameInterpolationNode {
             multiplier: 2,
             num_workers: WorkerCount::ONE,
             backend: InferenceBackend::default(),
+            device_id: 0,
             use_iobinding: true,
             trt_cache_dir: None,
             model_format: ModelFormat::ThreeInput,
@@ -419,6 +421,7 @@ impl Node for FrameInterpolationNode {
                 required: false,
                 default_value: Some(serde_json::json!(2)),
             },
+            device_id_port(),
             PortDefinition {
                 name: "backend".to_string(),
                 port_type: PortType::Str,
@@ -460,6 +463,7 @@ impl Node for FrameInterpolationNode {
         if let Some(PortData::Str(b)) = inputs.get("backend") {
             self.backend = InferenceBackend::from_str_lossy(b);
         }
+        self.device_id = read_device_id(inputs)?;
 
         if let Some(value) = inputs.get("num_workers") {
             self.num_workers = WorkerCount::parse(value)?;
@@ -467,6 +471,7 @@ impl Node for FrameInterpolationNode {
 
         debug!(
             model = %model_path.display(),
+            device_id = self.device_id,
             multiplier = self.multiplier,
             num_workers = self.num_workers.get(),
             backend = %self.backend,
@@ -478,6 +483,7 @@ impl Node for FrameInterpolationNode {
             model_path: &model_path,
             backend: &self.backend,
             trt_cache_dir: self.trt_cache_dir.as_deref(),
+            device_id: self.device_id,
         };
 
         let session = build_session(&config)?;
@@ -2025,7 +2031,7 @@ mod tests {
         assert_eq!(node.node_type(), "FrameInterpolation");
 
         let inputs = node.input_ports();
-        assert_eq!(inputs.len(), 4);
+        assert_eq!(inputs.len(), 5);
         assert_eq!(inputs[0].name, "model_path");
         assert_eq!(inputs[0].port_type, PortType::Path);
         assert!(inputs[0].required);
@@ -2035,14 +2041,19 @@ mod tests {
         assert!(!inputs[1].required);
         assert_eq!(inputs[1].default_value, Some(serde_json::json!(2)));
 
-        assert_eq!(inputs[2].name, "backend");
-        assert_eq!(inputs[2].port_type, PortType::Str);
+        assert_eq!(inputs[2].name, "device_id");
+        assert_eq!(inputs[2].port_type, PortType::Int);
         assert!(!inputs[2].required);
+        assert_eq!(inputs[2].default_value, Some(serde_json::json!(0)));
 
-        assert_eq!(inputs[3].name, "num_workers");
-        assert_eq!(inputs[3].port_type, PortType::Int);
+        assert_eq!(inputs[3].name, "backend");
+        assert_eq!(inputs[3].port_type, PortType::Str);
         assert!(!inputs[3].required);
-        assert_eq!(inputs[3].default_value, Some(serde_json::json!(1)));
+
+        assert_eq!(inputs[4].name, "num_workers");
+        assert_eq!(inputs[4].port_type, PortType::Int);
+        assert!(!inputs[4].required);
+        assert_eq!(inputs[4].default_value, Some(serde_json::json!(1)));
 
         let outputs = node.output_ports();
         assert!(outputs.is_empty());

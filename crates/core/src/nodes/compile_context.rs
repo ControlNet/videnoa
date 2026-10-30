@@ -17,7 +17,7 @@ use crate::streaming_executor::{FrameInterpolator, FrameSink, PipelineStage};
 use crate::types::{Frame, PortData, PortType};
 
 use crate::nodes::backend::{
-    model_trt_cache_dir, InferenceBackend, TrtCacheIdentity, TrtTileIdentity,
+    model_trt_cache_dir, read_device_id, InferenceBackend, TrtCacheIdentity, TrtTileIdentity,
 };
 use crate::nodes::frame_interpolation::{
     FrameInterpolationNode, FrameInterpolationPostprocess, ModelFormat,
@@ -501,7 +501,8 @@ impl VideoCompileContext {
             None => None,
         };
         let identity = TrtCacheIdentity {
-            device_id: 0,
+            device_id: usize::try_from(read_device_id(inputs)?)
+                .context("device_id exceeds usize")?,
             input_h,
             input_w,
             tile,
@@ -2115,6 +2116,44 @@ mod tests {
         assert!(!ctx.is_interpolator_type("RIFE"));
         assert!(!ctx.is_interpolator_type("SuperResolution"));
         assert!(!ctx.is_interpolator_type("VideoInput"));
+    }
+
+    #[test]
+    fn video_compile_context_cache_namespace_follows_the_selected_device() {
+        let temp = tempfile::tempdir().expect("create temporary cache fixture");
+        let model_path = temp.path().join("model.onnx");
+        std::fs::write(&model_path, b"model").expect("write model fixture");
+        let ctx = VideoCompileContext::new(temp.path().join("trt-cache"));
+        ctx.output_width.set(1920);
+        ctx.output_height.set(1080);
+        let inputs_on = |device_id: Option<i64>| {
+            let mut inputs = HashMap::from([
+                ("model_path".to_string(), PortData::Path(model_path.clone())),
+                ("backend".to_string(), PortData::Str("tensorrt".to_string())),
+            ]);
+            if let Some(device_id) = device_id {
+                inputs.insert("device_id".to_string(), PortData::Int(device_id));
+            }
+            inputs
+        };
+        let namespace = |device_id| {
+            ctx.resolve_trt_cache_dir(&inputs_on(device_id), 32)
+                .expect("resolve cache namespace")
+                .expect("TensorRT uses a cache namespace")
+                .file_name()
+                .expect("cache namespace has a name")
+                .to_string_lossy()
+                .into_owned()
+        };
+
+        assert!(namespace(None).contains("device-0_"), "{}", namespace(None));
+        assert!(
+            namespace(Some(1)).contains("device-1_"),
+            "{}",
+            namespace(Some(1))
+        );
+        ctx.resolve_trt_cache_dir(&inputs_on(Some(-1)), 32)
+            .expect_err("a negative device_id must be rejected");
     }
 
     #[test]

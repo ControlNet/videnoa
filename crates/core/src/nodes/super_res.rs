@@ -24,8 +24,8 @@ use crate::node::{ExecutionContext, FrameProcessor, Node, PortDefinition};
 use crate::types::{Frame, PortData, PortType};
 
 use crate::nodes::backend::{
-    build_session, ensure_inference_output_memory, inference_output_memory_info, InferenceBackend,
-    SessionConfig,
+    build_session, device_id_port, ensure_inference_output_memory, inference_output_memory_info,
+    read_device_id, InferenceBackend, SessionConfig,
 };
 use crate::nodes::fp16_rgb::{f16_nchw_to_rgb_into, NchwCrop, Quantization};
 use crate::nodes::nchw_layout::{crop_planes_into, reflect_pad_planes_into};
@@ -56,6 +56,7 @@ pub struct SuperResNode {
     tile_size: u32,
     num_workers: WorkerCount,
     backend: InferenceBackend,
+    device_id: i32,
     use_iobinding: bool,
     trt_cache_dir: Option<PathBuf>,
     input_name: Option<String>,
@@ -78,6 +79,7 @@ impl SuperResNode {
             tile_size: 0,
             num_workers: WorkerCount::ONE,
             backend: InferenceBackend::default(),
+            device_id: 0,
             use_iobinding: true,
             trt_cache_dir: None,
             input_name: None,
@@ -627,6 +629,7 @@ impl Node for SuperResNode {
                 required: false,
                 default_value: Some(serde_json::json!(0)),
             },
+            device_id_port(),
             PortDefinition {
                 name: "backend".to_string(),
                 port_type: PortType::Str,
@@ -678,6 +681,7 @@ impl Node for SuperResNode {
         if let Some(PortData::Str(b)) = inputs.get("backend") {
             self.backend = InferenceBackend::from_str_lossy(b);
         }
+        self.device_id = read_device_id(inputs)?;
 
         if let Some(value) = inputs.get("num_workers") {
             self.num_workers = WorkerCount::parse(value)?;
@@ -685,6 +689,7 @@ impl Node for SuperResNode {
 
         debug!(
             model = %model_path.display(),
+            device_id = self.device_id,
             scale = self.scale,
             tile_size = self.tile_size,
             num_workers = self.num_workers.get(),
@@ -697,6 +702,7 @@ impl Node for SuperResNode {
             model_path: &model_path,
             backend: &self.backend,
             trt_cache_dir: self.trt_cache_dir.as_deref(),
+            device_id: self.device_id,
         };
 
         let session = build_session(&config)?;
@@ -1884,7 +1890,7 @@ mod tests {
         assert_eq!(node.node_type(), "SuperResolution");
 
         let inputs = node.input_ports();
-        assert_eq!(inputs.len(), 5);
+        assert_eq!(inputs.len(), 6);
         assert_eq!(inputs[0].name, "model_path");
         assert_eq!(inputs[0].port_type, PortType::Path);
         assert!(inputs[0].required);
@@ -1897,14 +1903,19 @@ mod tests {
         assert_eq!(inputs[2].port_type, PortType::Int);
         assert!(!inputs[2].required);
 
-        assert_eq!(inputs[3].name, "backend");
-        assert_eq!(inputs[3].port_type, PortType::Str);
+        assert_eq!(inputs[3].name, "device_id");
+        assert_eq!(inputs[3].port_type, PortType::Int);
         assert!(!inputs[3].required);
+        assert_eq!(inputs[3].default_value, Some(serde_json::json!(0)));
 
-        assert_eq!(inputs[4].name, "num_workers");
-        assert_eq!(inputs[4].port_type, PortType::Int);
+        assert_eq!(inputs[4].name, "backend");
+        assert_eq!(inputs[4].port_type, PortType::Str);
         assert!(!inputs[4].required);
-        assert_eq!(inputs[4].default_value, Some(serde_json::json!(1)));
+
+        assert_eq!(inputs[5].name, "num_workers");
+        assert_eq!(inputs[5].port_type, PortType::Int);
+        assert!(!inputs[5].required);
+        assert_eq!(inputs[5].default_value, Some(serde_json::json!(1)));
 
         let outputs = node.output_ports();
         assert!(outputs.is_empty());
