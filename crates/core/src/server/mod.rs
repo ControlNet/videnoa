@@ -694,6 +694,10 @@ pub fn api_router(state: AppState) -> Router {
             "/api/auth/password",
             axum::routing::put(auth::set_password).delete(auth::disable),
         )
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth::check_host,
+        ))
         .with_state(state)
 }
 
@@ -1310,6 +1314,10 @@ async fn update_config(
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
     payload
         .auth
+        .validate()
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+    payload
+        .server
         .validate()
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
     let auth = state
@@ -4065,6 +4073,7 @@ mod tests {
             server: crate::config::ServerConfig {
                 port: 4321,
                 host: "127.0.0.1".to_string(),
+                allowed_hosts: vec!["nas.local".to_string()],
             },
             locale: "zh-CN".to_string(),
             performance: crate::config::PerformanceConfig {

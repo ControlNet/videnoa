@@ -57,6 +57,23 @@ pub struct PathsConfig {
 pub struct ServerConfig {
     pub port: u16,
     pub host: String,
+    /// Extra `Host` names accepted while no password is set (DNS-rebinding defence).
+    /// IP addresses, `localhost` and this machine's own name are always accepted.
+    pub allowed_hosts: Vec<String>,
+}
+impl ServerConfig {
+    pub fn validate(&self) -> Result<()> {
+        for name in &self.allowed_hosts {
+            anyhow::ensure!(
+                !name.is_empty()
+                    && name
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_')),
+                "server.allowed_hosts entries must be host names without scheme or port, such as \"nas.local\""
+            );
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -142,6 +159,7 @@ impl Default for ServerConfig {
         Self {
             port: 3000,
             host: "0.0.0.0".to_string(),
+            allowed_hosts: Vec::new(),
         }
     }
 }
@@ -295,6 +313,30 @@ mod tests {
             toml::from_str::<AppConfig>(&encoded).expect("roundtrip"),
             relays
         );
+    }
+
+    #[test]
+    fn server_allowed_hosts_are_optional_and_must_be_bare_names() {
+        let legacy: AppConfig =
+            toml::from_str("[server]\nport = 3000\nhost = \"0.0.0.0\"\n").expect("legacy server");
+        assert!(legacy.server.allowed_hosts.is_empty());
+        legacy.server.validate().expect("empty list is valid");
+
+        let mut server = ServerConfig {
+            allowed_hosts: vec!["nas.local".into(), "Media_Box-2".into()],
+            ..ServerConfig::default()
+        };
+        server.validate().expect("bare names are valid");
+        for invalid in [
+            "",
+            "nas.local:3000",
+            "http://nas.local",
+            "nas local",
+            "nas/",
+        ] {
+            server.allowed_hosts = vec![invalid.into()];
+            assert!(server.validate().is_err(), "{invalid}");
+        }
     }
 
     #[test]

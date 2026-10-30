@@ -23,6 +23,12 @@ The following remain public, including when a password is enabled:
 - `/api/jobs/{id}/ws`, including progress and textual node value previews.
 - Authentication status/login and static WebUI assets.
 
+Without a password, every request, including the public routes above and
+initial password setup, must name a trusted `Host`: an IP address, `localhost`
+or `*.localhost`, this machine's own host name, or an entry of
+`server.allowed_hosts`. Other hosts get HTTP 403, which blocks DNS rebinding.
+See the Configuration section of the README.
+
 WebSockets are intentionally unauthenticated and are not closed when the
 password changes. Other business endpoints, including files and preview images,
 are authenticated. The WebUI does not mount its business screens until the

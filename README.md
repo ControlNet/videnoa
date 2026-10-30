@@ -93,10 +93,34 @@ workflows_dir = "data/workflows"
 [server]
 port = 3000
 host = "0.0.0.0"
+allowed_hosts = []
 
 [performance]
 profiling_enabled = false
 ```
+
+While no Worker password is set, the Worker accepts a request only when its
+`Host` names an IP address (for example `192.168.1.20:3000`), `localhost` or a
+`*.localhost` name, this machine's own host name (its full name, first label, or
+`<first label>.local`), or a name listed in `server.allowed_hosts`. Other names
+get HTTP 403, including on WebSockets, `/api/health` and first-password setup;
+this stops a web page that rebinds its own domain to the Worker's address
+(DNS rebinding) from using the open API. If you reach a passwordless Worker
+through any other DNS name, for example `http://nas.local:3000` when the
+machine's own name is different (always the case inside Docker, where the
+container has its own host name), or register it in the Controller by such a
+name, add the name without scheme or port:
+
+```toml
+[server]
+allowed_hosts = ["nas.local", "videnoa.home.arpa"]
+```
+
+Matching ignores case and port. Restart the Worker after editing
+`config.toml`; changes saved through `PUT /api/config` apply immediately.
+Alternatively set a password: with a password, every host
+name is accepted as before, because session cookies and Bearer credentials
+already stop rebinding.
 
 CLI flags override config values (`--host`, `--port`, `--data-dir`). For the
 server port the precedence is `--port`, then the `PORT` environment variable,
