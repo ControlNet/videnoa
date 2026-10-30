@@ -4,8 +4,8 @@ use axum::Json;
 use chrono::Utc;
 
 use crate::domain::{
-    AbandonTaskResponse, CancelTaskResponse, RemoteJobId, RetryTaskRequest, RetryTaskResponse,
-    TaskActionRequest, TaskId, WorkerId, WorkflowName,
+    AbandonTaskResponse, CancelTaskResponse, DiscardTaskResponse, RemoteJobId, RetryTaskRequest,
+    RetryTaskResponse, TaskActionRequest, TaskId, WorkerId, WorkflowName,
 };
 use crate::lifecycle::{
     Lifecycle, RemoteTerminalStatus, RequeueRetryCommand, ResumeStage, RetryMode,
@@ -74,6 +74,88 @@ pub(super) async fn abandon(
     }))
 }
 
+/// Gives up on a failed task: it can no longer be retried, and its files are
+/// released. The Controller's temporary files always go; the task folder on
+/// the Worker goes only when the Worker is online and the task's job, if any,
+/// has ended. The published destination is never touched.
+pub(super) async fn discard(
+    State(state): State<OperationsState>,
+    id: Result<Path<TaskId>, PathRejection>,
+    payload: Result<Json<TaskActionRequest>, JsonRejection>,
+) -> Result<Json<DiscardTaskResponse>, OperationsError> {
+    let Path(id) = id.map_err(|_| OperationsError::InvalidRequest)?;
+    let Json(request) = payload.map_err(|_| OperationsError::InvalidRequest)?;
+    // A running retry deletes and recreates the Worker folder.
+    let _in_flight = state.retries_in_flight.claim(id)?;
+    let task = task(&state, id).await?;
+    require_version(task.version, request.version)?;
+    let attempt = state
+        .store
+        .current_attempt(id)
+        .await
+        .map_err(|_| OperationsError::Internal)?;
+    let committed = state
+        .lifecycle
+        .discard(&task, Utc::now())
+        .await
+        .map_err(|error| OperationsError::from_lifecycle(&error))?;
+    if let Err(error) = crate::scheduler::remove_task_workspace(&state.paths, id).await {
+        tracing::warn!(task_id = %id, %error, "Discarded task kept its temporary files");
+    }
+    let worker_folder_deleted = match attempt {
+        Some(attempt) => delete_worker_folder(&state, &task, &attempt).await,
+        None => true,
+    };
+    Ok(Json(DiscardTaskResponse {
+        task_id: id,
+        status: committed.status(),
+        worker_folder_deleted,
+    }))
+}
+
+/// Deletes a discarded task's folder on the Worker of its attempt when that
+/// is safe. Returns whether the folder is known to be gone.
+async fn delete_worker_folder(
+    state: &OperationsState,
+    task: &crate::persistence::TaskRecord,
+    attempt: &crate::persistence::AttemptRecord,
+) -> bool {
+    let Some(worker_id) = attempt.attempt.worker_id else {
+        return false;
+    };
+    let worker = match state.workers.worker(worker_id).await {
+        Ok(Some(worker)) if worker.online => worker,
+        Ok(_) | Err(_) => return false,
+    };
+    let Ok(client) = VidenoaClient::new_with_password(
+        worker.api_url,
+        state.scheduler.runtime_settings().remote_timeouts(),
+        state.payload_limits,
+        worker.password.as_ref(),
+    ) else {
+        return false;
+    };
+    if let Some(remote_job_id) = attempt.attempt.remote_job_id {
+        // A job that may still run reads and writes the folder.
+        if terminal_job(&client, task, attempt, remote_job_id)
+            .await
+            .is_err()
+        {
+            return false;
+        }
+    }
+    let Ok(workspace) = FileApiPath::parse(&task.id.to_string()) else {
+        return false;
+    };
+    match client.delete_file(&workspace).await {
+        Ok(()) | Err(VidenoaClientError::NotFound) => true,
+        Err(error) => {
+            tracing::warn!(task_id = %task.id, %error, "Discarded task kept its Worker folder");
+            false
+        }
+    }
+}
+
 pub(super) async fn retry(
     State(state): State<OperationsState>,
     id: Result<Path<TaskId>, PathRejection>,
@@ -94,6 +176,9 @@ pub(super) async fn retry(
         .failure
         .as_ref()
         .ok_or(OperationsError::Conflict("task has no retryable failure"))?;
+    if task.discarded_at.is_some() {
+        return Err(OperationsError::Conflict("task was discarded"));
+    }
     if attempt.attempt.worker_id.is_none() {
         // Its Worker was deleted: no output, workspace or job can be checked.
         return Err(OperationsError::Conflict(

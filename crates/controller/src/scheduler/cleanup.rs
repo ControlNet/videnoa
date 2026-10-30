@@ -111,16 +111,19 @@ impl TransferExecutor {
 }
 
 /// Whether nothing can read a task's Controller temporary files again: it
-/// finished, or it failed in a way no retry can resume. A failure that can be
-/// resumed keeps them, because download, verification and publication retries
-/// reuse the verified output.
+/// finished, was discarded, or failed in a way no retry can resume. A failure
+/// that can be resumed keeps them, because download, verification and
+/// publication retries reuse the verified output.
 pub(crate) fn local_files_unneeded(task: &crate::persistence::TaskRecord) -> bool {
     match task.status {
         TaskStatus::Completed | TaskStatus::Cancelled => true,
-        TaskStatus::Failed => task
-            .failure
-            .as_ref()
-            .is_none_or(|failure| Lifecycle::retry_mode(failure) == RetryMode::Blocked),
+        TaskStatus::Failed => {
+            task.discarded_at.is_some()
+                || task
+                    .failure
+                    .as_ref()
+                    .is_none_or(|failure| Lifecycle::retry_mode(failure) == RetryMode::Blocked)
+        }
         TaskStatus::Queued
         | TaskStatus::Reserved
         | TaskStatus::Uploading

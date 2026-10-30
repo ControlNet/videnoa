@@ -17,7 +17,8 @@ mod values;
 mod work_items;
 
 pub use actions::{
-    AbandonTaskResponse, CancelTaskResponse, RetryTaskRequest, RetryTaskResponse, TaskActionRequest,
+    AbandonTaskResponse, CancelTaskResponse, DiscardTaskResponse, RetryTaskRequest,
+    RetryTaskResponse, TaskActionRequest,
 };
 pub use auth::{LoginRequest, LoginResponse, LogoutResponse, SessionResponse};
 pub use enums::{

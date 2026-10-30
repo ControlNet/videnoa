@@ -1,3 +1,6 @@
+use chrono::{DateTime, Utc};
+
+use crate::domain::TaskId;
 use crate::lifecycle::{RequeueRetryWrite, RetryWrite};
 
 use super::codec::{encode_json, sqlite_u64, task_status, timestamp};
@@ -21,7 +24,7 @@ impl Store {
                 verified_at_ms = CASE WHEN ? = 'verifying' THEN ? ELSE verified_at_ms END,
                 publishing_started_at_ms = CASE WHEN ? = 'publishing' THEN ? ELSE publishing_started_at_ms END,
                 remote_cleanup_started_at_ms = CASE WHEN ? = 'remote_cleanup' THEN ? ELSE remote_cleanup_started_at_ms END
-             WHERE id = ? AND status = 'failed' AND version = ?",
+             WHERE id = ? AND status = 'failed' AND version = ? AND discarded_at_ms IS NULL",
         )
         .bind(status)
         .bind(occurred_at)
@@ -74,7 +77,7 @@ impl Store {
                 failure_retryable = NULL, retry_count = 0, next_retry_at_ms = NULL,
                 cancel_requested_at_ms = NULL, progress_json = ?, version = version + 1,
                 updated_at_ms = ?
-             WHERE id = ? AND status = 'failed' AND version = ?
+             WHERE id = ? AND status = 'failed' AND version = ? AND discarded_at_ms IS NULL
                AND EXISTS (
                    SELECT 1 FROM task_attempts
                    WHERE id = ? AND task_id = ? AND status = 'failed' AND version = ?
@@ -96,6 +99,32 @@ impl Store {
         tracing::info!(task_id = %write.task_id, failed_attempt_id = %write.attempt.id, requested_worker_id = %write.requested_worker_id, "Task requeued for retry");
         Ok(CasOutcome::Applied {
             new_version: write.task_version + 1,
+        })
+    }
+
+    pub(crate) async fn discard_failed_task(
+        &self,
+        task_id: TaskId,
+        task_version: u64,
+        occurred_at: DateTime<Utc>,
+    ) -> Result<CasOutcome, PersistenceError> {
+        let occurred_at = timestamp(occurred_at);
+        let result = sqlx::query(
+            "UPDATE tasks SET discarded_at_ms = ?, version = version + 1, updated_at_ms = ?
+             WHERE id = ? AND status = 'failed' AND version = ? AND discarded_at_ms IS NULL",
+        )
+        .bind(occurred_at)
+        .bind(occurred_at)
+        .bind(task_id.to_string())
+        .bind(sqlite_u64("task_version", task_version)?)
+        .execute(self.database.pool())
+        .await?;
+        if result.rows_affected() != 1 {
+            return Ok(CasOutcome::Conflict);
+        }
+        tracing::info!(%task_id, "Failed task discarded");
+        Ok(CasOutcome::Applied {
+            new_version: task_version + 1,
         })
     }
 }

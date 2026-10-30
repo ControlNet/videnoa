@@ -22,6 +22,14 @@ impl ControllerFixture {
         self.task_action_status(task, "abandon").await
     }
 
+    pub async fn discard_status(&self, task: &Task) -> TestResult<reqwest::StatusCode> {
+        self.task_action_status(task, "discard").await
+    }
+
+    pub async fn retry_status(&self, task: &Task) -> TestResult<reqwest::StatusCode> {
+        self.task_action_status(task, "retry").await
+    }
+
     /// Deletes a Worker at its current version. Health probes keep bumping an
     /// offline Worker's version, so a stale-version conflict reads it again.
     pub async fn delete_worker_status(

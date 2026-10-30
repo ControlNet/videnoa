@@ -82,6 +82,9 @@ pub struct Task {
     pub attempt_count: u32,
     pub failure: Option<FailureInfo>,
     pub cancel_requested_at: Option<DateTime<Utc>>,
+    /// When an operator discarded this failed task; it can no longer be retried.
+    #[serde(default)]
+    pub discarded_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,

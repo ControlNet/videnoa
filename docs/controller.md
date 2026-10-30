@@ -368,15 +368,23 @@ fails with `worker_unavailable` at `remote_cleanup` and a message saying that th
 Worker did not confirm the job stopped or the folder was deleted, releases its
 Controller temporary files and its Worker capacity, and nothing is sent to the
 Worker. Abandon requires a requested cancellation; once the Worker's tasks are
-all terminal, the Worker can be deleted.
+all terminal, the Worker can be deleted. Publication ambiguity permits manual
+retry on the existing attempt; remote-state ambiguity remains non-retryable.
 
 A task that fails in a way no retry can resume (for example `output_exists` or
 `remote_state_ambiguous`) releases its Controller temporary files, including a
 downloaded output, as soon as the failure is recorded; startup releases any such
 files a crash left behind. Failures that Retry can resume keep them, because
 download, verification and publication retries reuse the verified output. The
-destination file and the Worker's task folder are not touched. Publication ambiguity permits
-manual retry on the existing attempt; remote-state ambiguity remains non-retryable.
+destination file and the Worker's task folder are not touched.
+
+`POST /api/tasks/{id}/discard` with `{"version": N}` gives up on a failed task
+that the operator will not retry. The task stays `failed`, gains
+`discarded_at`, and rejects Retry and another Discard with 409. Its Controller
+temporary files are released, and its task folder on the Worker is deleted when
+the Worker is online and the task's job, if any, has ended; the response's
+`worker_folder_deleted` says whether that folder is known to be gone. The
+published destination is never touched.
 
 ## No-Clobber and Ambiguity
 
@@ -607,7 +615,7 @@ task; all normal path and request validation still applies.
 `source`, `failure_stage`, `search`, `sort`, and `direction`. `GET
 /api/tasks/{id}` returns the task plus a paginated attempts array.
 
-`POST /api/tasks/{id}/cancel` and `POST /api/tasks/{id}/retry` require the
+`POST /api/tasks/{id}/cancel`, `retry`, `abandon` and `discard` require the
 current `version`. Retry also accepts an optional `worker_id` to queue the task
 for another Worker; the response's `attempt_id` is `null` when the task was
 queued, and the task's `requested_worker_id` names the Worker it waits for. `GET /api/status-counts` returns all lifecycle categories,

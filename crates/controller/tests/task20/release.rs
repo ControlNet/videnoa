@@ -6,8 +6,11 @@ use std::time::Duration;
 use videnoa_controller::domain::{FailureCode, Task, TaskDetailResponse, TaskStatus};
 
 use crate::mock_videnoa::checkpoints::Checkpoint;
+use crate::mock_videnoa::domain::JobStatus;
 use crate::mock_videnoa::server::MockVidenoa;
 use crate::support::{complete_mock_job, ControllerFixture, TestResult};
+
+const FIRST_JOB_ID: &str = "00000000-0000-4000-8000-000000000001";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn output_collision_releases_the_verified_output() -> TestResult {
@@ -71,6 +74,48 @@ async fn startup_releases_files_a_crash_left_behind() -> TestResult {
     // Then: the failed task's files are released; unknown files are kept.
     wait_for_absent(&workspace).await?;
     assert!(tokio::fs::try_exists(&unknown).await?);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn discarding_a_failed_task_releases_its_worker_folder_and_ends_retry() -> TestResult {
+    // Given: a retryable processing failure that keeps its uploaded input.
+    let worker = MockVidenoa::start_persistent().await?;
+    let fixture = ControllerFixture::start().await?;
+    fixture.register_worker(&worker, "discard").await?;
+    let task = fixture.create_task("discard", b"input-video").await?;
+    wait_for_status(&fixture, &task, TaskStatus::Processing).await?;
+    worker
+        .set_job(FIRST_JOB_ID, JobStatus::Failed, None)
+        .await?;
+    let failed = wait_for_status(&fixture, &task, TaskStatus::Failed).await?;
+    assert_eq!(
+        failed.task.failure.map(|failure| failure.failure_code),
+        Some(FailureCode::ProcessingFailed)
+    );
+    assert!(worker.file_count().await > 0);
+
+    // When: the operator discards it.
+    assert_eq!(
+        fixture.discard_status(&task).await?,
+        reqwest::StatusCode::OK
+    );
+
+    // Then: the Worker folder is gone, the task stays failed, and neither
+    // retry nor a second discard is accepted.
+    assert_eq!(worker.file_count().await, 0);
+    let discarded = fixture.task(&task).await?;
+    assert_eq!(discarded.task.status, TaskStatus::Failed);
+    assert!(discarded.task.discarded_at.is_some());
+    assert!(!fixture.temp_root.join(task.id.to_string()).exists());
+    assert_eq!(
+        fixture.retry_status(&task).await?,
+        reqwest::StatusCode::CONFLICT
+    );
+    assert_eq!(
+        fixture.discard_status(&task).await?,
+        reqwest::StatusCode::CONFLICT
+    );
     Ok(())
 }
 

@@ -90,6 +90,7 @@ export const taskSchema = z
     attempt_count: z.number().int().nonnegative(),
     failure: taskFailureSchema.nullable(),
     cancel_requested_at: z.iso.datetime().nullable(),
+    discarded_at: z.iso.datetime().nullish(),
     created_at: z.iso.datetime(),
     updated_at: z.iso.datetime(),
     completed_at: z.iso.datetime().nullable(),

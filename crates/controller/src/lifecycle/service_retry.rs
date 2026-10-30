@@ -38,6 +38,9 @@ impl LifecycleService {
         attempt: &AttemptRecord,
         occurred_at: DateTime<Utc>,
     ) -> Result<CommittedCommand, LifecycleError> {
+        if task.discarded_at.is_some() {
+            return Err(LifecycleError::IllegalCommand);
+        }
         let failure = task
             .failure
             .as_ref()
@@ -73,6 +76,9 @@ impl LifecycleService {
         command: &RequeueRetryCommand,
         occurred_at: DateTime<Utc>,
     ) -> Result<CommittedCommand, LifecycleError> {
+        if task.discarded_at.is_some() {
+            return Err(LifecycleError::IllegalCommand);
+        }
         let failure = task
             .failure
             .as_ref()
@@ -113,6 +119,27 @@ impl LifecycleService {
         };
         let version = applied(self.store().requeue_failed_task(&write).await?)?;
         Ok(self.committed(task.id, TaskStatus::Queued, version, DurableAction::None))
+    }
+
+    /// Gives up on a failed task for good: it stays failed and no retry can
+    /// follow, so its remaining files may be released.
+    ///
+    /// # Errors
+    /// Returns an error unless the task failed and was not discarded, or on CAS conflict.
+    pub async fn discard(
+        &self,
+        task: &TaskRecord,
+        occurred_at: DateTime<Utc>,
+    ) -> Result<CommittedCommand, LifecycleError> {
+        if task.status != TaskStatus::Failed || task.discarded_at.is_some() {
+            return Err(LifecycleError::IllegalCommand);
+        }
+        let version = applied(
+            self.store()
+                .discard_failed_task(task.id, task.version, occurred_at)
+                .await?,
+        )?;
+        Ok(self.committed(task.id, TaskStatus::Failed, version, DurableAction::None))
     }
 }
 

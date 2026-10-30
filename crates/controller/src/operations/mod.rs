@@ -121,6 +121,7 @@ pub(crate) fn router(state: OperationsState) -> Router {
         .route("/api/tasks/{id}/cancel", post(tasks::cancel))
         .route("/api/tasks/{id}/retry", post(tasks::retry))
         .route("/api/tasks/{id}/abandon", post(tasks::abandon))
+        .route("/api/tasks/{id}/discard", post(tasks::discard))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_mutation,
