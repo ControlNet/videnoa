@@ -4413,6 +4413,10 @@ mod tests {
             "test_model"
         }
 
+        fn accepts_config_param(&self, key: &str) -> bool {
+            key == "model_path"
+        }
+
         fn input_ports(&self) -> Vec<crate::node::PortDefinition> {
             vec![]
         }
