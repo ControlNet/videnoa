@@ -379,6 +379,8 @@ export const zhCNResources: NamespaceResources = {
 		"toolbar.replaceDialog.description": "已存在名为「{{name}}」的工作流，替换后其内容将被覆盖。",
 		"toolbar.replaceDialog.cancel": "取消",
 		"toolbar.replaceDialog.confirm": "替换",
+		"nodeDefinitions.loadFailed": "无法加载节点定义：{{error}}",
+		"nodeDefinitions.retry": "重试",
 		"node.remove": "删除节点",
 		"node.removeParam": "删除参数 {{name}}",
 		"node.unsupportedType": "当前 worker 没有这种类型的节点。",

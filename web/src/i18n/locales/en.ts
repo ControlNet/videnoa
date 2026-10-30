@@ -396,6 +396,8 @@ export const enResources: NamespaceResources = {
 		"toolbar.replaceDialog.description": "A saved workflow named “{{name}}” already exists. Replacing it overwrites its graph.",
 		"toolbar.replaceDialog.cancel": "Cancel",
 		"toolbar.replaceDialog.confirm": "Replace",
+		"nodeDefinitions.loadFailed": "Could not load node definitions: {{error}}",
+		"nodeDefinitions.retry": "Retry",
 		"node.remove": "Remove node",
 		"node.removeParam": "Remove param {{name}}",
 		"node.unsupportedType": "This worker has no node of this type.",

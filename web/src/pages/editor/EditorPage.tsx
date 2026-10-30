@@ -17,6 +17,7 @@ import {
 } from "@xyflow/react";
 import { Layers, Sparkles } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { v4 as uuidv4 } from "uuid";
 import { Button } from "@/components/ui/button";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -98,12 +99,23 @@ function isTensorPassthrough(
 }
 
 function EditorCanvas() {
+	const { t } = useTranslation("editor");
 	const reactFlowWrapper = useRef<HTMLDivElement>(null);
 	const { screenToFlowPosition, fitView } = useReactFlow();
 
 	useEffect(() => {
-		useNodeDefinitions.getState().fetch();
+		void useNodeDefinitions.getState().fetch();
+		// The worker may have been upgraded (or the last load failed) while
+		// this tab was in the background.
+		const reload = () => {
+			void useNodeDefinitions.getState().fetch({ force: true });
+		};
+		window.addEventListener("focus", reload);
+		return () => {
+			window.removeEventListener("focus", reload);
+		};
 	}, []);
+	const definitionsError = useNodeDefinitions((s) => s.error);
 
 	const nodes = useWorkflowStore((s) => s.nodes);
 	const edges = useWorkflowStore((s) => s.edges);
@@ -400,6 +412,26 @@ function EditorCanvas() {
 					onAutoLayout={handleAutoLayout}
 					onFitView={handleFitView}
 				/>
+				{definitionsError && (
+					<div
+						role="alert"
+						className="absolute top-14 left-1/2 -translate-x-1/2 z-10 flex items-center gap-2 rounded-md border border-destructive/50 bg-card/95 px-3 py-1.5 text-xs text-destructive shadow-lg"
+					>
+						<span>
+							{t("nodeDefinitions.loadFailed", { error: definitionsError })}
+						</span>
+						<Button
+							variant="outline"
+							size="sm"
+							className="h-6 px-2 text-xs"
+							onClick={() => {
+								void useNodeDefinitions.getState().fetch({ force: true });
+							}}
+						>
+							{t("nodeDefinitions.retry")}
+						</Button>
+					</div>
+				)}
 				<ReactFlow
 					nodes={nodes}
 					edges={styledEdges}

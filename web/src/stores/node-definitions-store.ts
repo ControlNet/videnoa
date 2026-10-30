@@ -26,15 +26,19 @@ interface NodeDefinitionsState {
   descriptors: NodeDescriptor[];
   loading: boolean;
   error: string | null;
-  fetch: () => Promise<void>;
+  /**
+   * Load the definitions once; `force` reloads them (the worker may have been
+   * upgraded, or the last load failed). A failed reload keeps the loaded ones.
+   */
+  fetch: (options?: { force?: boolean }) => Promise<void>;
 }
 
 export const useNodeDefinitions = create<NodeDefinitionsState>((set, get) => ({
   descriptors: [],
   loading: false,
   error: null,
-  fetch: async () => {
-    if (get().descriptors.length > 0) return;
+  fetch: async (options) => {
+    if (get().descriptors.length > 0 && !options?.force) return;
     set({ loading: true, error: null });
     try {
       const resp = await authenticatedFetch('/api/nodes');

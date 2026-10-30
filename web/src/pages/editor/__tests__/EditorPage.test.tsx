@@ -1,4 +1,4 @@
-import { act, fireEvent, render } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useJobStore } from "@/stores/job-store";
 import { useNodeDefinitions } from "@/stores/node-definitions-store";
@@ -451,6 +451,38 @@ describe("EditorPage Escape shortcut", () => {
 		fireEvent.keyDown(document.body, { key: "Escape" });
 
 		expect(useUIStore.getState().activeModal).toBe("presets");
+	});
+});
+
+describe("EditorPage node definitions", () => {
+	it("shows a failed /api/nodes load and retries it", () => {
+		const fetchDefinitions = vi.fn().mockResolvedValue(undefined);
+		useNodeDefinitions.setState({
+			descriptors: [],
+			error: "HTTP 500",
+			fetch: fetchDefinitions,
+		});
+		render(<EditorPage />);
+
+		expect(screen.getByRole("alert")).toHaveTextContent(
+			"Could not load node definitions: HTTP 500",
+		);
+		fetchDefinitions.mockClear();
+		fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+		expect(fetchDefinitions).toHaveBeenCalledWith({ force: true });
+	});
+
+	it("reloads node definitions when the window regains focus", () => {
+		const fetchDefinitions = vi.fn().mockResolvedValue(undefined);
+		useNodeDefinitions.setState({ fetch: fetchDefinitions });
+		render(<EditorPage />);
+		fetchDefinitions.mockClear();
+
+		act(() => {
+			window.dispatchEvent(new Event("focus"));
+		});
+
+		expect(fetchDefinitions).toHaveBeenCalledWith({ force: true });
 	});
 });
 
