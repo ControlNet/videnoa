@@ -6,6 +6,7 @@ import { PasswordSettings, SessionSettings } from "@/auth/AccessSettings";
 import { toast } from "@/components/shared/Toaster";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { isDesktopRuntime } from "@/lib/runtime-desktop";
 import type { AppConfig } from "@/types";
 import { DEFAULT_AUTH_CONFIG } from "@/types";
 import { IrohSettings } from "./IrohSettings";
@@ -43,6 +44,7 @@ export function SettingsPage() {
 	const [saving, setSaving] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [saveSuccess, setSaveSuccess] = useState(false);
+	const isDesktop = useMemo(() => isDesktopRuntime(), []);
 
 	const normalizeConfig = useCallback((data: AppConfig): AppConfig => {
 		return {
@@ -306,18 +308,30 @@ export function SettingsPage() {
 					<SettingsSection
 						id="settings-server"
 						title={t("sections.server.title")}
-						note={t("sections.server.description")}
+						note={
+							isDesktop
+								? t("sections.server.desktopDescription")
+								: t("sections.server.description")
+						}
 					>
-						<dl className="grid max-w-md grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-[12.5px]">
-							<dt className="text-muted-foreground">
-								{t("sections.server.fields.port")}
-							</dt>
-							<dd className="font-mono">{formState.server.port}</dd>
-							<dt className="text-muted-foreground">
-								{t("sections.server.fields.host")}
-							</dt>
-							<dd className="font-mono">{formState.server.host}</dd>
-						</dl>
+						{/* The desktop app binds 127.0.0.1 on a port chosen at start
+						    and ignores these keys; they stay in the saved config. */}
+						{isDesktop ? (
+							<p className="max-w-md text-[12.5px] text-muted-foreground">
+								{t("sections.server.desktopHint")}
+							</p>
+						) : (
+							<dl className="grid max-w-md grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-[12.5px]">
+								<dt className="text-muted-foreground">
+									{t("sections.server.fields.port")}
+								</dt>
+								<dd className="font-mono">{formState.server.port}</dd>
+								<dt className="text-muted-foreground">
+									{t("sections.server.fields.host")}
+								</dt>
+								<dd className="font-mono">{formState.server.host}</dd>
+							</dl>
+						)}
 					</SettingsSection>
 				</div>
 			</div>

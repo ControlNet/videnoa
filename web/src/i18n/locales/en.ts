@@ -345,6 +345,9 @@ export const enResources = {
 			"Changes apply immediately after saving.",
 		"sections.performance.title": "Diagnostics",
 		"sections.server.description": "Read-only \u00b7 requires restart",
+		"sections.server.desktopDescription": "Not applicable",
+		"sections.server.desktopHint":
+			"Not used by the desktop app: it listens on 127.0.0.1 on a port chosen at each start. server.host and server.port apply when Videnoa runs as a standalone server.",
 		"sections.server.fields.host": "host",
 		"sections.server.fields.port": "port",
 		"sections.server.title": "Server",

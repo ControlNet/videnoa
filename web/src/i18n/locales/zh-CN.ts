@@ -334,6 +334,9 @@ export const zhCNResources: MatchingResources = {
 		"sections.performance.fields.profilingEnabledHint": "保存后立即生效。",
 		"sections.performance.title": "诊断",
 		"sections.server.description": "只读 · 需重启生效",
+		"sections.server.desktopDescription": "不适用",
+		"sections.server.desktopHint":
+			"桌面版不使用这些设置：它在每次启动时监听 127.0.0.1 上随机选择的端口。server.host 和 server.port 仅在 Videnoa 作为独立服务器运行时生效。",
 		"sections.server.fields.host": "host",
 		"sections.server.fields.port": "port",
 		"sections.server.title": "服务器",

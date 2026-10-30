@@ -1,6 +1,6 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, getConfig, updateConfig } from "@/api/client";
 import { i18n, initializeI18n } from "@/i18n";
 import type { AppConfig } from "@/types";
@@ -224,5 +224,57 @@ describe("SettingsPage profiling toggle", () => {
 		).toBeInTheDocument();
 		expect(screen.getByLabelText(/^Models/)).toHaveValue("models");
 		expect(screen.getByLabelText("Profiling telemetry")).toBeChecked();
+	});
+});
+
+describe("SettingsPage server section", () => {
+	afterEach(() => {
+		delete (globalThis as { __TAURI__?: unknown }).__TAURI__;
+	});
+
+	function renderPage() {
+		render(
+			<MemoryRouter>
+				<SettingsPage />
+			</MemoryRouter>,
+		);
+	}
+
+	it("shows the configured host and port in the browser", async () => {
+		vi.mocked(getConfig).mockResolvedValue({ config: makeConfig(), etag: '"v1"' });
+
+		renderPage();
+
+		const server = await screen.findByRole("region", { name: "Server" });
+		await waitFor(() => {
+			expect(within(server).getByText("3000")).toBeInTheDocument();
+		});
+		expect(within(server).getByText("0.0.0.0")).toBeInTheDocument();
+	});
+
+	// The desktop app binds 127.0.0.1 on a port chosen at start and ignores
+	// server.host/server.port, so showing them would be misleading.
+	it("marks host and port as not applicable in the desktop app and keeps them on save", async () => {
+		(globalThis as { __TAURI__?: unknown }).__TAURI__ = { window: { appWindow: {} } };
+		vi.mocked(getConfig).mockResolvedValue({ config: makeConfig(), etag: '"v1"' });
+		vi.mocked(updateConfig).mockImplementation(async (config) => ({ config, etag: '"v2"' }));
+
+		renderPage();
+
+		const models = await screen.findByLabelText(/^Models/);
+		const server = screen.getByRole("region", { name: "Server" });
+		expect(within(server).getByText(/Not used by the desktop app/)).toBeInTheDocument();
+		expect(within(server).queryByText("3000")).not.toBeInTheDocument();
+		expect(within(server).queryByText("0.0.0.0")).not.toBeInTheDocument();
+
+		fireEvent.change(models, { target: { value: "other-models" } });
+		fireEvent.click(screen.getByRole("button", { name: "Save" }));
+		await waitFor(() => {
+			expect(updateConfig).toHaveBeenCalledTimes(1);
+		});
+		expect(updateConfig).toHaveBeenCalledWith(
+			expect.objectContaining({ server: { port: 3000, host: "0.0.0.0" } }),
+			'"v1"',
+		);
 	});
 });
