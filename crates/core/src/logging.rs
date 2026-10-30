@@ -690,7 +690,7 @@ fn write_panic_artifact_file(
     Ok(artifact_path)
 }
 
-fn panic_payload_to_string(payload: &(dyn Any + Send)) -> String {
+pub(crate) fn panic_payload_to_string(payload: &(dyn Any + Send)) -> String {
     if let Some(payload) = payload.downcast_ref::<&str>() {
         (*payload).to_string()
     } else if let Some(payload) = payload.downcast_ref::<String>() {

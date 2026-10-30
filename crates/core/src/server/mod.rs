@@ -3081,83 +3081,93 @@ async fn run_job(state: AppState, job_id: String) {
 
         let job_id_for_closure = job_id.clone();
 
-        if let Some(params) = job_params.as_ref() {
-            workflow.inject_workflow_input_params(params);
-        }
         // All workflows use declared input types and the same cancellation path.
         // The streaming executor uses block_in_place internally as well.
         tokio::task::block_in_place(move || {
-            let compile_ctx = VideoCompileContext::new(trt_cache_dir);
-            let fps_baseline = Mutex::new(None::<ProgressFpsBaseline>);
-            let ws_tx_for_progress = ws_tx.clone();
-            let ws_tx_for_debug = ws_tx.clone();
+            // A panic anywhere below (param injection, compile, a scalar node, a
+            // callback) must still end the job; otherwise it stays `running`.
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if let Some(params) = job_params.as_ref() {
+                    workflow.inject_workflow_input_params(params);
+                }
+                let compile_ctx = VideoCompileContext::new(trt_cache_dir);
+                let fps_baseline = Mutex::new(None::<ProgressFpsBaseline>);
+                let ws_tx_for_progress = ws_tx.clone();
+                let ws_tx_for_debug = ws_tx.clone();
 
-            let inner_for_cb = Arc::clone(&inner);
-            let inner_for_debug = Arc::clone(&inner);
-            let job_id_for_debug = job_id_for_closure.clone();
-            let progress_cb: ProgressCallback =
-                Box::new(move |current_frame, total_frames, _hint| {
-                    let now = Instant::now();
-                    let fps = {
-                        let mut baseline_guard = match fps_baseline.lock() {
-                            Ok(guard) => guard,
-                            Err(poisoned) => poisoned.into_inner(),
+                let inner_for_cb = Arc::clone(&inner);
+                let inner_for_debug = Arc::clone(&inner);
+                let job_id_for_debug = job_id_for_closure.clone();
+                let progress_cb: ProgressCallback =
+                    Box::new(move |current_frame, total_frames, _hint| {
+                        let now = Instant::now();
+                        let fps = {
+                            let mut baseline_guard = match fps_baseline.lock() {
+                                Ok(guard) => guard,
+                                Err(poisoned) => poisoned.into_inner(),
+                            };
+                            let (next_baseline, next_fps) = estimate_input_fps_from_second_frame(
+                                *baseline_guard,
+                                current_frame,
+                                now,
+                            );
+                            *baseline_guard = next_baseline;
+                            next_fps as f64
                         };
-                        let (next_baseline, next_fps) = estimate_input_fps_from_second_frame(
-                            *baseline_guard,
+                        let eta = total_frames.and_then(|total| {
+                            if fps > 0.0 && current_frame < total {
+                                Some((total - current_frame) as f64 / fps)
+                            } else {
+                                None
+                            }
+                        });
+
+                        let update = ProgressUpdate {
                             current_frame,
-                            now,
-                        );
-                        *baseline_guard = next_baseline;
-                        next_fps as f64
-                    };
-                    let eta = total_frames.and_then(|total| {
-                        if fps > 0.0 && current_frame < total {
-                            Some((total - current_frame) as f64 / fps)
-                        } else {
-                            None
+                            total_frames,
+                            fps: fps as f32,
+                            eta_seconds: eta,
+                        };
+
+                        if let Some(mut job) = inner_for_cb.jobs.get_mut(&job_id_for_closure) {
+                            job.progress = Some(update.clone());
+                        }
+
+                        if let Some(tx) = &ws_tx_for_progress {
+                            let _ = tx.send(JobWsEvent::from(update));
                         }
                     });
 
-                    let update = ProgressUpdate {
-                        current_frame,
-                        total_frames,
-                        fps: fps as f32,
-                        eta_seconds: eta,
-                    };
-
-                    if let Some(mut job) = inner_for_cb.jobs.get_mut(&job_id_for_closure) {
-                        job.progress = Some(update.clone());
+                let mut debug_throttle =
+                    NodeDebugEventThrottle::new(Duration::from_millis(PRINT_PREVIEW_THROTTLE_MS));
+                let mut node_debug_cb = move |event: NodeDebugValueEvent| {
+                    // Recorded before throttling, so the replayed value is the latest.
+                    inner_for_debug.record_debug_value(&job_id_for_debug, &event);
+                    if !debug_throttle.should_emit(&event.node_id, Instant::now()) {
+                        return;
                     }
-
-                    if let Some(tx) = &ws_tx_for_progress {
-                        let _ = tx.send(JobWsEvent::from(update));
+                    if let Some(tx) = &ws_tx_for_debug {
+                        let _ = tx.send(JobWsEvent::from(event));
                     }
-                });
+                };
 
-            let mut debug_throttle =
-                NodeDebugEventThrottle::new(Duration::from_millis(PRINT_PREVIEW_THROTTLE_MS));
-            let mut node_debug_cb = move |event: NodeDebugValueEvent| {
-                // Recorded before throttling, so the replayed value is the latest.
-                inner_for_debug.record_debug_value(&job_id_for_debug, &event);
-                if !debug_throttle.should_emit(&event.node_id, Instant::now()) {
-                    return;
-                }
-                if let Some(tx) = &ws_tx_for_debug {
-                    let _ = tx.send(JobWsEvent::from(event));
-                }
-            };
+                let (cancel_watch_rx, _cancel_bridge) = job_cancellation_watch(cancel_token);
 
-            let (cancel_watch_rx, _cancel_bridge) = job_cancellation_watch(cancel_token);
-
-            SequentialExecutor::execute_with_context_and_debug_hook(
-                &workflow,
-                &inner.node_registry,
-                Some(&compile_ctx),
-                Some(progress_cb),
-                Some(cancel_watch_rx),
-                Some(&mut node_debug_cb),
-            )
+                SequentialExecutor::execute_with_context_and_debug_hook(
+                    &workflow,
+                    &inner.node_registry,
+                    Some(&compile_ctx),
+                    Some(progress_cb),
+                    Some(cancel_watch_rx),
+                    Some(&mut node_debug_cb),
+                )
+            }))
+            .unwrap_or_else(|payload| {
+                Err(anyhow::anyhow!(
+                    "job panicked: {}",
+                    crate::logging::panic_payload_to_string(payload.as_ref())
+                ))
+            })
         })
     };
 
@@ -3864,6 +3874,7 @@ mod tests {
                 .unwrap_or(0);
             Ok(Box::new(DelayNode { sleep_ms }))
         });
+        node_registry.register("test_panic", |_params| Ok(Box::new(PanicNode)));
 
         let model_registry = ModelRegistry::with_builtin_models(test_models_dir());
         AppState::new(
@@ -4119,6 +4130,31 @@ mod tests {
             _ctx: &crate::node::ExecutionContext,
         ) -> Result<std::collections::HashMap<String, crate::types::PortData>> {
             Ok(std::collections::HashMap::new())
+        }
+    }
+
+    /// Panics when executed, standing in for a bug in a node or in session setup.
+    struct PanicNode;
+
+    impl crate::node::Node for PanicNode {
+        fn node_type(&self) -> &str {
+            "test_panic"
+        }
+
+        fn input_ports(&self) -> Vec<crate::node::PortDefinition> {
+            vec![]
+        }
+
+        fn output_ports(&self) -> Vec<crate::node::PortDefinition> {
+            vec![]
+        }
+
+        fn execute(
+            &mut self,
+            _inputs: &std::collections::HashMap<String, crate::types::PortData>,
+            _ctx: &crate::node::ExecutionContext,
+        ) -> Result<std::collections::HashMap<String, crate::types::PortData>> {
+            panic!("injected node panic");
         }
     }
 
@@ -5708,6 +5744,35 @@ mod tests {
         assert_eq!(job["error"], "job cancelled at user request");
         assert!(wait_for_persisted_status(&data_dir, &job_id, "cancelled").await);
         drop(gate);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_panicking_job_is_recorded_as_failed() {
+        // Given: a job whose node panics.
+        let data_dir = test_data_dir();
+        let state = test_state_with_data_dir(data_dir.clone());
+        let mut app = app_router(state.clone());
+        let workflow = serde_json::json!({
+            "nodes": [{"id": "boom", "node_type": "test_panic", "params": {}}],
+            "connections": []
+        });
+
+        // When: it runs.
+        let job_id = create_job_id(&mut app, workflow).await;
+
+        // Then: it fails with the panic message instead of staying running,
+        // the failure is persisted, and the GPU permit is free again.
+        assert_eq!(
+            wait_for_job_terminal_status(&state, &job_id).await,
+            JobStatus::Failed
+        );
+        let (_, job) = get_job_json(&mut app, &job_id).await;
+        let error = job["error"].as_str().unwrap_or_default();
+        assert!(error.contains("job panicked"), "{error}");
+        assert!(error.contains("injected node panic"), "{error}");
+        assert!(wait_for_persisted_status(&data_dir, &job_id, "failed").await);
+        assert_eq!(state.inner.gpu_semaphore.available_permits(), 1);
+        assert!(!state.inner.progress_senders.contains_key(&job_id));
     }
 
     #[tokio::test]
