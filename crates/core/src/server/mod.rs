@@ -349,13 +349,29 @@ impl AppState {
         if self.inner.shutting_down.swap(true, Ordering::SeqCst) {
             return;
         }
-        for mut job in self.inner.jobs.iter_mut() {
-            if job.status.is_terminal() {
-                continue;
-            }
-            job.request_cancel(CancelReason::Shutdown);
-            if let Err(err) = self.persist_job_transition(&job) {
-                error!(job_id = %job.id, error = ?err, "Failed to persist shutdown cancel request");
+        // Cancel every job first, then write. Writing while iterating held
+        // the job map's locks across disk I/O, so on a slow disk a queued job
+        // not yet reached could start, or even complete, mid-shutdown.
+        let requests: Vec<(String, CancelRequest)> = self
+            .inner
+            .jobs
+            .iter_mut()
+            .filter_map(|mut job| {
+                if job.status.is_terminal() {
+                    return None;
+                }
+                job.request_cancel(CancelReason::Shutdown);
+                Some((job.id.clone(), job.cancel_request?))
+            })
+            .collect();
+        let Ok(store) = self.job_store() else {
+            return;
+        };
+        for (job_id, request) in requests {
+            // Only the cancel columns: the executor may already have written
+            // a newer status.
+            if let Err(err) = store.record_cancel_request(&job_id, &request) {
+                error!(%job_id, error = ?err, "Failed to persist shutdown cancel request");
             }
         }
     }
@@ -4120,6 +4136,15 @@ mod tests {
             Ok(Box::new(DelayNode { sleep_ms }))
         });
         node_registry.register("test_panic", |_params| Ok(Box::new(PanicNode)));
+        node_registry.register("test_hold", |params| {
+            let name = params
+                .get("gate")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            Ok(Box::new(HoldNode {
+                gate: TestGate::named(name),
+            }))
+        });
 
         let model_registry = ModelRegistry::with_builtin_models(test_models_dir());
         AppState::new(
@@ -4242,6 +4267,84 @@ mod tests {
                     "port_type": "VideoFrames"
                 }
             ]
+        })
+    }
+
+    /// A gate a test opens to let a [`HoldNode`] finish. Unlike a timed
+    /// delay, it keeps an executor running for exactly as long as the test
+    /// needs, however slow the machine is.
+    struct TestGate {
+        open: Mutex<bool>,
+        opened: std::sync::Condvar,
+    }
+
+    impl TestGate {
+        fn named(name: &str) -> Arc<Self> {
+            static GATES: OnceLock<Mutex<HashMap<String, Arc<TestGate>>>> = OnceLock::new();
+            GATES
+                .get_or_init(Default::default)
+                .lock()
+                .unwrap()
+                .entry(name.to_owned())
+                .or_insert_with(|| {
+                    Arc::new(TestGate {
+                        open: Mutex::new(false),
+                        opened: std::sync::Condvar::new(),
+                    })
+                })
+                .clone()
+        }
+
+        fn open(&self) {
+            *self.open.lock().unwrap() = true;
+            self.opened.notify_all();
+        }
+    }
+
+    /// Runs until its gate opens, ignoring cancellation, like a first
+    /// TensorRT engine build.
+    struct HoldNode {
+        gate: Arc<TestGate>,
+    }
+
+    impl crate::node::Node for HoldNode {
+        fn node_type(&self) -> &str {
+            "test_hold"
+        }
+
+        fn accepts_config_param(&self, key: &str) -> bool {
+            key == "gate"
+        }
+
+        fn input_ports(&self) -> Vec<crate::node::PortDefinition> {
+            vec![]
+        }
+
+        fn output_ports(&self) -> Vec<crate::node::PortDefinition> {
+            vec![]
+        }
+
+        fn execute(
+            &mut self,
+            _inputs: &std::collections::HashMap<String, crate::types::PortData>,
+            _ctx: &crate::node::ExecutionContext,
+        ) -> Result<std::collections::HashMap<String, crate::types::PortData>> {
+            let open = self.gate.open.lock().unwrap();
+            let (open, _) = self
+                .gate
+                .opened
+                .wait_timeout_while(open, Duration::from_secs(120), |open| !*open)
+                .unwrap();
+            anyhow::ensure!(*open, "test gate was never opened");
+            Ok(std::collections::HashMap::new())
+        }
+    }
+
+    /// A workflow whose only node runs until the named gate opens.
+    fn gate_workflow_json(gate: &str) -> serde_json::Value {
+        serde_json::json!({
+            "nodes": [{"id": "hold", "node_type": "test_hold", "params": {"gate": gate}}],
+            "connections": []
         })
     }
 
@@ -4479,9 +4582,14 @@ mod tests {
             .unwrap()
     }
 
+    /// Upper bound of the waits below. They return as soon as the condition
+    /// holds; the bound only has to outlast the job store's fsyncs, which
+    /// take seconds when the whole suite (and other builds) share one disk.
+    const WAIT_BUDGET: Duration = Duration::from_secs(30);
+
     async fn wait_for_job_terminal_status(state: &AppState, job_id: &str) -> JobStatus {
-        const MAX_POLLS: usize = 80;
         const POLL_INTERVAL_MS: u64 = 50;
+        const MAX_POLLS: usize = (WAIT_BUDGET.as_millis() / POLL_INTERVAL_MS as u128) as usize;
 
         for _ in 0..MAX_POLLS {
             if let Some(job) = state.inner.jobs.get(job_id) {
@@ -4499,8 +4607,8 @@ mod tests {
     }
 
     async fn wait_for_persisted_status(data_dir: &StdPath, job_id: &str, expected: &str) -> bool {
-        const MAX_POLLS: usize = 80;
         const POLL_INTERVAL_MS: u64 = 25;
+        const MAX_POLLS: usize = (WAIT_BUDGET.as_millis() / POLL_INTERVAL_MS as u128) as usize;
 
         for _ in 0..MAX_POLLS {
             if persisted_job_status(data_dir, job_id).as_deref() == Some(expected) {
@@ -6188,7 +6296,8 @@ mod tests {
         let data_dir = test_data_dir();
         let state = test_state_with_data_dir(data_dir.clone());
         let mut app = app_router(state.clone());
-        let job_id = create_job_id(&mut app, delay_workflow_json(2_000)).await;
+        let gate = Uuid::new_v4().to_string();
+        let job_id = create_job_id(&mut app, gate_workflow_json(&gate)).await;
         assert!(wait_for_persisted_status(&data_dir, &job_id, "running").await);
 
         // When: it is cancelled.
@@ -6206,6 +6315,7 @@ mod tests {
 
         // When its executor exits, it becomes `cancelled` with the reason, and
         // the GPU permit is free by the time that is visible.
+        TestGate::named(&gate).open();
         assert_eq!(
             wait_for_job_terminal_status(&state, &job_id).await,
             JobStatus::Cancelled
@@ -7054,16 +7164,19 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn shutdown_stops_active_jobs_and_refuses_new_work() {
-        // Given: a running job and a queued one.
+        // Given: a running job and a queued one behind it.
         let data_dir = test_data_dir();
         let state = test_state_with_data_dir(data_dir.clone());
         let mut app = app_router(state.clone());
-        let running = create_job_id(&mut app, delay_workflow_json(2_000)).await;
-        let queued = create_job_id(&mut app, delay_workflow_json(2_000)).await;
+        let gate = Uuid::new_v4().to_string();
+        let running = create_job_id(&mut app, gate_workflow_json(&gate)).await;
+        let queued = create_job_id(&mut app, delay_workflow_json(0)).await;
         assert!(wait_for_persisted_status(&data_dir, &running, "running").await);
 
-        // When: the worker begins to shut down.
+        // When: the worker begins to shut down, and the running executor
+        // exits afterwards.
         state.begin_shutdown();
+        TestGate::named(&gate).open();
 
         // Then: new jobs are refused, and both jobs end as cancelled by the
         // shutdown once their executors exit.
@@ -7089,11 +7202,12 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_job_that_outlives_the_shutdown_grace_keeps_its_cancel_reason() {
-        // Given: a running job whose node ignores cancellation for a while.
+        // Given: a running job whose node ignores cancellation.
         let data_dir = test_data_dir();
         let state = test_state_with_data_dir(data_dir.clone());
         let mut app = app_router(state.clone());
-        let job_id = create_job_id(&mut app, delay_workflow_json(1_500)).await;
+        let gate = Uuid::new_v4().to_string();
+        let job_id = create_job_id(&mut app, gate_workflow_json(&gate)).await;
         assert!(wait_for_persisted_status(&data_dir, &job_id, "running").await);
 
         // When: the shutdown grace ends first.
@@ -7115,6 +7229,58 @@ mod tests {
             .unwrap();
         assert_eq!(status, "running");
         assert_eq!(reason.as_deref(), Some("shutdown"));
+        TestGate::named(&gate).open();
+    }
+
+    #[test]
+    fn shutdown_cancels_every_job_before_it_writes_to_disk() {
+        // Given: two active jobs and a job store whose writes are stalled,
+        // as on a busy disk.
+        let state = test_state();
+        let jobs: Vec<Job> = [JobStatus::Running, JobStatus::Queued]
+            .into_iter()
+            .map(|status| build_test_job(format!("stall-{}", Uuid::new_v4()), status, None))
+            .collect();
+        for job in &jobs {
+            insert_test_job(&state, job.clone());
+        }
+        let tokens: Vec<CancellationToken> =
+            jobs.iter().map(|job| job.cancel_token.clone()).collect();
+        let store = state.job_store().unwrap().clone();
+        let stall = store.lock_connection();
+
+        // When: the shutdown begins.
+        let shutting_down = state.clone();
+        let shutdown = std::thread::spawn(move || shutting_down.begin_shutdown());
+
+        // Then: every job is cancelled at once, before any write completes,
+        // so none can start or finish normally while the disk is slow.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !tokens.iter().all(CancellationToken::is_cancelled) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let all_cancelled = tokens.iter().all(CancellationToken::is_cancelled);
+        drop(stall);
+        shutdown.join().unwrap();
+        assert!(
+            all_cancelled,
+            "a stalled write delayed the shutdown's cancellation"
+        );
+
+        // And the requests reach the store once it accepts writes again,
+        // without changing the jobs' status there.
+        let conn = Connection::open(state.inner.data_dir.join("jobs.db")).unwrap();
+        for job in &jobs {
+            let (status, reason): (String, Option<String>) = conn
+                .query_row(
+                    "SELECT status, cancel_reason FROM jobs WHERE id = ?1",
+                    [&job.id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(serde_json::json!(status), serde_json::json!(job.status));
+            assert_eq!(reason.as_deref(), Some("shutdown"));
+        }
     }
 
     #[test]

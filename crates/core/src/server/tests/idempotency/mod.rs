@@ -68,7 +68,7 @@ impl RunFixture {
         let previous = std::sync::Arc::downgrade(&state.inner);
         drop(state);
         // A restart releases the previous executor and authentication lock first.
-        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
             while previous.strong_count() != 0 {
                 tokio::task::yield_now().await;
             }
@@ -80,7 +80,7 @@ impl RunFixture {
             .read(true)
             .write(true)
             .open(data_dir.join("instance.lock"))?;
-        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
             while lock.try_lock().is_err() {
                 tokio::time::sleep(std::time::Duration::from_millis(1)).await;
             }

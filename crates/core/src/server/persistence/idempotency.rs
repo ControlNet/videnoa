@@ -153,8 +153,10 @@ impl JobsPersistence {
         }))
     }
 
-    pub(super) fn migrate_idempotency_schema(connection: &mut rusqlite::Connection) -> Result<()> {
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    /// Runs inside the schema migration's transaction.
+    pub(super) fn migrate_idempotency_schema(
+        transaction: &rusqlite::Transaction<'_>,
+    ) -> Result<()> {
         let mut statement = transaction.prepare("PRAGMA table_info(jobs)")?;
         let columns = statement
             .query_map([], |row| row.get::<_, String>(1))?
@@ -185,7 +187,6 @@ impl JobsPersistence {
                 [],
             )
             .with_context(|| "failed to enforce unique idempotency key")?;
-        transaction.commit()?;
         Ok(())
     }
 }

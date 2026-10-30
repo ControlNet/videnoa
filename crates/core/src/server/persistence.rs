@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
@@ -52,6 +53,10 @@ struct PersistedJobRow {
 #[derive(Debug, Clone)]
 pub(crate) struct JobsPersistence {
     db_path: PathBuf,
+    /// One connection for the life of the store. A connection per operation
+    /// made every write also checkpoint and delete the WAL when it closed,
+    /// several extra fsyncs and file creations per job transition.
+    connection: Arc<Mutex<Connection>>,
 }
 
 impl JobsPersistence {
@@ -63,8 +68,15 @@ impl JobsPersistence {
             )
         })?;
 
+        let db_path = data_dir.join("jobs.db");
+        let connection = Connection::open(&db_path)
+            .with_context(|| format!("failed to open jobs db: {}", db_path.display()))?;
+        connection
+            .busy_timeout(std::time::Duration::from_secs(5))
+            .context("failed to set jobs db busy timeout")?;
         let persistence = Self {
-            db_path: data_dir.join("jobs.db"),
+            db_path,
+            connection: Arc::new(Mutex::new(connection)),
         };
         persistence.initialize_schema()?;
         Ok(persistence)
@@ -101,6 +113,37 @@ impl JobsPersistence {
             )?;
             Ok(())
         })
+    }
+
+    /// Records a cancel request without touching the job's other columns, so
+    /// it can be written after the job's lock is released without
+    /// overwriting a newer status.
+    pub(crate) fn record_cancel_request(
+        &self,
+        job_id: &str,
+        request: &CancelRequest,
+    ) -> Result<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "UPDATE jobs SET cancel_requested_at = ?2, cancel_reason = ?3, updated_at = ?4
+                 WHERE id = ?1",
+                params![
+                    job_id,
+                    request.requested_at.to_rfc3339(),
+                    cancel_reason_to_str(request.reason),
+                    Utc::now().to_rfc3339(),
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Holds the store's connection, so a test can stall every write.
+    #[cfg(test)]
+    pub(crate) fn lock_connection(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.connection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     #[cfg(test)]
@@ -337,7 +380,13 @@ impl JobsPersistence {
         self.with_connection(|conn| {
             conn.execute_batch("PRAGMA journal_mode = WAL;")
                 .with_context(|| format!("failed to open jobs db: {}", self.db_path.display()))?;
-            let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+            // Pending migrations run in order in one transaction: a new
+            // database costs one commit, and a failed step leaves the file as
+            // it was.
+            let transaction =
+                conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let version: i64 =
+                transaction.query_row("PRAGMA user_version", [], |row| row.get(0))?;
             if version > SCHEMA_VERSION {
                 bail!(
                     "jobs db {} has schema version {version}, newer than this build supports \
@@ -345,26 +394,26 @@ impl JobsPersistence {
                     self.db_path.display()
                 );
             }
-            // Migrations run in order. Each one is idempotent and records its
-            // version last, so one interrupted by a crash simply runs again.
             if version < 1 {
-                self.migrate_to_v1(conn)?;
+                self.migrate_to_v1(&transaction)?;
             }
             if version < 2 {
-                Self::migrate_to_v2(conn).with_context(|| {
+                Self::migrate_to_v2(&transaction).with_context(|| {
                     format!(
                         "failed to migrate jobs db to schema version 2: {}",
                         self.db_path.display()
                     )
                 })?;
             }
+            transaction.commit()?;
             Ok(())
         })
     }
 
-    fn migrate_to_v1(&self, conn: &mut Connection) -> Result<()> {
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS jobs (
+    fn migrate_to_v1(&self, transaction: &rusqlite::Transaction<'_>) -> Result<()> {
+        transaction
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS jobs (
                     id TEXT PRIMARY KEY,
                     status TEXT NOT NULL,
                     workflow_json TEXT NOT NULL,
@@ -383,42 +432,41 @@ impl JobsPersistence {
                  );
                  CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at DESC);
                  CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);",
-        )
-        .with_context(|| {
-            format!(
-                "failed to initialize jobs persistence schema: {}",
-                self.db_path.display()
             )
-        })?;
-        Self::migrate_idempotency_schema(conn).map_err(|error| {
+            .with_context(|| {
+                format!(
+                    "failed to initialize jobs persistence schema: {}",
+                    self.db_path.display()
+                )
+            })?;
+        Self::migrate_idempotency_schema(transaction).map_err(|error| {
             anyhow::anyhow!(
                 "failed to migrate jobs idempotency schema at {}: {error:#}",
                 self.db_path.display()
             )
         })?;
-        conn.execute_batch("PRAGMA user_version = 1;")?;
+        transaction.execute_batch("PRAGMA user_version = 1;")?;
         Ok(())
     }
 
-    fn migrate_to_v2(conn: &mut Connection) -> Result<()> {
-        let transaction =
-            conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let columns = table_columns(&transaction)?;
+    fn migrate_to_v2(transaction: &rusqlite::Transaction<'_>) -> Result<()> {
+        let columns = table_columns(transaction)?;
         for column in ["cancel_requested_at", "cancel_reason"] {
             if !columns.iter().any(|existing| existing == column) {
                 transaction.execute(&format!("ALTER TABLE jobs ADD COLUMN {column} TEXT"), [])?;
             }
         }
         transaction.execute_batch("PRAGMA user_version = 2;")?;
-        transaction.commit()?;
         Ok(())
     }
 
     fn with_connection<T>(&self, op: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
-        let mut conn = Connection::open(&self.db_path)
-            .with_context(|| format!("failed to open jobs db: {}", self.db_path.display()))?;
-        conn.busy_timeout(std::time::Duration::from_secs(5))
-            .context("failed to set jobs db busy timeout")?;
+        // A panic while holding the lock leaves no open transaction behind
+        // (rusqlite rolls back on drop), so the connection stays usable.
+        let mut conn = self
+            .connection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         op(&mut conn)
     }
 
