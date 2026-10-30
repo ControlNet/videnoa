@@ -75,11 +75,11 @@ impl RunFixture {
         })
         .await?;
         // Arc's strong count reaches zero before its fields finish dropping.
-        // Wait for the SQLite connection and its instance lock to finish closing.
+        // Wait for the stores and the instance lock, released last, to close.
         let lock = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
-            .open(data_dir.join("auth.lock"))?;
+            .open(data_dir.join("instance.lock"))?;
         tokio::time::timeout(std::time::Duration::from_secs(3), async {
             while lock.try_lock().is_err() {
                 tokio::time::sleep(std::time::Duration::from_millis(1)).await;

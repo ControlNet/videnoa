@@ -30,6 +30,7 @@ pub mod iroh;
 mod persistence;
 mod preview;
 mod preview_cache;
+mod staged_outputs;
 
 #[cfg(test)]
 #[path = "tests/files/mod.rs"]
@@ -98,6 +99,41 @@ struct AppStateInner {
     workspace_root: PathBuf,
     preview_cache: std::result::Result<Arc<preview_cache::PreviewCache>, String>,
     performance_series: Mutex<VecDeque<RuntimePerformanceSeriesSample>>,
+    /// Set by [`AppState::begin_shutdown`]; new jobs and previews are refused.
+    shutting_down: std::sync::atomic::AtomicBool,
+    /// Held for the life of the state. Declared last so it is released only
+    /// after every store above has closed: once `instance.lock` is free, a
+    /// new instance can open the data directory.
+    #[allow(dead_code)]
+    instance_lock: std::result::Result<std::fs::File, String>,
+}
+
+const INSTANCE_LOCK_FILE: &str = "instance.lock";
+
+/// Locks `<data_dir>/instance.lock` for this process; fails when another
+/// instance holds it.
+fn acquire_instance_lock(data_dir: &StdPath) -> Result<std::fs::File> {
+    use anyhow::Context as _;
+    std::fs::create_dir_all(data_dir)
+        .with_context(|| format!("failed to create data directory {}", data_dir.display()))?;
+    let path = data_dir.join(INSTANCE_LOCK_FILE);
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .with_context(|| format!("failed to open {}", path.display()))?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(std::fs::TryLockError::WouldBlock) => anyhow::bail!(
+            "another Videnoa instance is using the data directory {}; stop it first, or give this instance its own --data-dir or VIDENOA_DATA_DIR",
+            data_dir.display()
+        ),
+        Err(std::fs::TryLockError::Error(error)) => {
+            Err(error).with_context(|| format!("failed to lock {}", path.display()))
+        }
+    }
 }
 
 const PRINT_PREVIEW_THROTTLE_MS: u64 = 150;
@@ -182,9 +218,22 @@ impl AppState {
         config_path: PathBuf,
         data_dir: PathBuf,
     ) -> Self {
-        migrate_legacy_workflows(&config, &data_dir);
-        let auth =
-            auth::AuthService::open(&data_dir, config.auth.clone()).map_err(|e| e.to_string());
+        // One instance per data directory. Taken before anything in it is
+        // opened or written, so a second instance cannot touch the live
+        // instance's jobs (startup reconciliation rewrites running rows).
+        let instance_lock = acquire_instance_lock(&data_dir).map_err(|e| format!("{e:#}"));
+        let not_owned = instance_lock.as_ref().err().cloned();
+        if let Some(error) = &not_owned {
+            error!(%error, "Data directory is in use");
+        } else {
+            migrate_legacy_workflows(&config, &data_dir);
+        }
+        let auth = match &not_owned {
+            Some(error) => Err(error.clone()),
+            None => {
+                auth::AuthService::open(&data_dir, config.auth.clone()).map_err(|e| e.to_string())
+            }
+        };
         let jobs = DashMap::new();
         let workspace_root = data_dir.join("workspace");
         if let Err(err) = std::fs::create_dir_all(&workspace_root) {
@@ -195,13 +244,29 @@ impl AppState {
             );
         }
 
-        let jobs_persistence = JobsPersistence::new(&data_dir).and_then(|persistence| {
-            let restored_jobs = persistence.load_jobs_for_startup()?;
+        let jobs_persistence = match &not_owned {
+            Some(error) => Err(anyhow::anyhow!(error.clone())),
+            None => JobsPersistence::new(&data_dir),
+        };
+        let jobs_persistence = jobs_persistence.and_then(|persistence| {
+            let (restored_jobs, interrupted) =
+                persistence.load_jobs_for_startup_with_interrupted()?;
             info!(
                 restored_count = restored_jobs.len(),
                 db_path = %persistence.db_path().display(),
                 "Restored persisted jobs into runtime state"
             );
+            if !interrupted.is_empty() {
+                let removed = staged_outputs::sweep_interrupted_jobs(
+                    restored_jobs
+                        .iter()
+                        .filter(|job| interrupted.contains(&job.id)),
+                );
+                info!(
+                    interrupted = interrupted.len(),
+                    removed, "Cleaned up after jobs the previous run left running"
+                );
+            }
             for job in restored_jobs {
                 jobs.insert(job.id.clone(), job);
             }
@@ -215,8 +280,10 @@ impl AppState {
             )
         });
 
-        let preview_cache =
-            preview_cache::PreviewCache::open(&data_dir).map_err(|e| format!("{e:#}"));
+        let preview_cache = match &not_owned {
+            Some(error) => Err(error.clone()),
+            None => preview_cache::PreviewCache::open(&data_dir).map_err(|e| format!("{e:#}")),
+        };
         Self {
             inner: Arc::new(AppStateInner {
                 auth,
@@ -236,6 +303,8 @@ impl AppState {
                 workspace_root,
                 preview_cache,
                 performance_series: Mutex::new(VecDeque::new()),
+                shutting_down: std::sync::atomic::AtomicBool::new(false),
+                instance_lock,
             }),
         }
     }
@@ -271,8 +340,63 @@ impl AppState {
         (running, queued, cancelling)
     }
 
+    /// Starts an orderly stop. New jobs and previews are refused with 503,
+    /// and every queued or running job is asked to stop with reason
+    /// `shutdown`. The request is persisted, so a job whose executor does not
+    /// exit in time is restored with that reason on the next start.
+    pub fn begin_shutdown(&self) {
+        use std::sync::atomic::Ordering;
+        if self.inner.shutting_down.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        for mut job in self.inner.jobs.iter_mut() {
+            if job.status.is_terminal() {
+                continue;
+            }
+            job.request_cancel(CancelReason::Shutdown);
+            if let Err(err) = self.persist_job_transition(&job) {
+                error!(job_id = %job.id, error = ?err, "Failed to persist shutdown cancel request");
+            }
+        }
+    }
+
+    /// Waits up to `grace` for every job's executor to exit and returns the
+    /// ids of the jobs still running then. Those stay `running` in the job
+    /// store, with their cancel request; the next start marks them cancelled
+    /// and removes the staged outputs they left behind.
+    pub async fn wait_for_jobs_to_stop(&self, grace: Duration) -> Vec<String> {
+        let deadline = Instant::now() + grace;
+        loop {
+            let active: Vec<String> = self
+                .inner
+                .jobs
+                .iter()
+                .filter(|job| !job.status.is_terminal())
+                .map(|job| job.id.clone())
+                .collect();
+            if active.is_empty() || Instant::now() >= deadline {
+                return active;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    fn ensure_not_shutting_down(&self) -> Result<(), AppError> {
+        if self
+            .inner
+            .shutting_down
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(AppError::ServiceUnavailable(
+                "worker is shutting down".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Refuses `additional` new jobs when they would exceed [`MAX_ACTIVE_JOBS`].
     fn ensure_queue_capacity(&self, additional: usize) -> Result<(), AppError> {
+        self.ensure_not_shutting_down()?;
         let (running, queued, _) = self.active_job_counts();
         if running + queued + additional > MAX_ACTIVE_JOBS {
             return Err(AppError::ServiceUnavailable(format!(
@@ -3018,6 +3142,7 @@ async fn process_frame(
         let graph = resolve_workflow_model_paths(&graph, &config.paths)?;
         (graph, config.paths.resolved_trt_cache_dir())
     };
+    state.ensure_not_shutting_down()?;
     // Jobs are ahead of a preview in the GPU's FIFO; report that instead of
     // waiting behind every one of them.
     let permit = match tokio::time::timeout(
@@ -6556,6 +6681,7 @@ mod tests {
         initial_state
             .persist_job_snapshot(&stale_running_job)
             .expect("persist running snapshot");
+        drop(initial_state);
 
         let restored_state = test_state_with_data_dir(data_dir.clone());
         let restored_job = restored_state
@@ -6817,6 +6943,174 @@ mod tests {
             "{json}"
         );
         assert_eq!(state.inner.jobs.len(), 1);
+    }
+
+    #[test]
+    fn a_second_instance_leaves_a_live_instance_s_data_dir_alone() {
+        // Given: a live instance with a running job in its store.
+        let data_dir = test_data_dir();
+        let live = test_state_with_data_dir(data_dir.clone());
+        let job_id = format!("live-{}", Uuid::new_v4());
+        let running = build_test_job(job_id.clone(), JobStatus::Running, None);
+        live.persist_job_snapshot(&running).unwrap();
+
+        // When: a second instance starts on the same data directory.
+        let second = test_state_with_data_dir(data_dir.clone());
+
+        // Then: it refuses to start and has not reconciled the live job.
+        for error in [
+            second.ensure_auth_ready().unwrap_err().to_string(),
+            second.ensure_jobs_ready().unwrap_err().to_string(),
+        ] {
+            assert!(error.contains("another Videnoa instance"), "{error}");
+        }
+        assert_eq!(
+            persisted_job_status(&data_dir, &job_id).as_deref(),
+            Some("running")
+        );
+
+        // Once the live instance is gone, the next one takes over.
+        drop(second);
+        drop(live);
+        let next = test_state_with_data_dir(data_dir.clone());
+        next.ensure_jobs_ready().unwrap();
+        assert_eq!(
+            next.inner.jobs.get(&job_id).unwrap().status,
+            JobStatus::Cancelled
+        );
+    }
+
+    #[test]
+    fn a_restart_removes_staged_outputs_of_jobs_that_were_running() {
+        // Given: a job that was running when the worker stopped, writing
+        // "Episode 01.mkv" (wired in from a workflow input), with its staged
+        // file left beside the output, and a finished job's staged file.
+        let data_dir = test_data_dir();
+        let media = data_dir.join("media");
+        std::fs::create_dir_all(&media).unwrap();
+        let staged = media.join(".Episode 01.a1B2c3.videnoa-video.mkv");
+        let kept = [
+            media.join("Episode 01.mkv"),
+            media.join(".Episode 02.a1B2c3.videnoa-video.mkv"),
+            media.join(".Episode 01.a1B2c3.videnoa-video.mkv.part"),
+        ];
+        for file in kept.iter().chain([&staged]) {
+            std::fs::write(file, b"partial").unwrap();
+        }
+        let workflow = |output: Option<&StdPath>| -> PipelineGraph {
+            let mut out_params = serde_json::json!({});
+            if let Some(output) = output {
+                out_params["output_path"] = output.to_string_lossy().into();
+            }
+            serde_json::from_value(serde_json::json!({
+                "nodes": [
+                    {"id": "in", "node_type": "WorkflowInput", "params": {}},
+                    {"id": "out", "node_type": "VideoOutput", "params": out_params}
+                ],
+                "connections": [{
+                    "from_node": "in", "from_port": "output",
+                    "to_node": "out", "to_port": "output_path",
+                    "port_type": "Path"
+                }]
+            }))
+            .unwrap()
+        };
+        let state = test_state_with_data_dir(data_dir.clone());
+        let mut running = build_test_job(
+            format!("running-{}", Uuid::new_v4()),
+            JobStatus::Running,
+            Some(HashMap::from([(
+                "output".to_string(),
+                serde_json::json!(media.join("Episode 01.mkv")),
+            )])),
+        );
+        running.workflow = workflow(None);
+        let mut finished = build_test_job(
+            format!("finished-{}", Uuid::new_v4()),
+            JobStatus::Failed,
+            None,
+        );
+        finished.workflow = workflow(Some(&media.join("Episode 02.mkv")));
+        state.persist_job_snapshot(&running).unwrap();
+        state.persist_job_snapshot(&finished).unwrap();
+        drop(state);
+
+        // When: the worker starts again.
+        let restarted = test_state_with_data_dir(data_dir.clone());
+        restarted.ensure_jobs_ready().unwrap();
+
+        // Then: only the interrupted job's staged file is gone.
+        assert!(!staged.exists());
+        for file in &kept {
+            assert!(file.exists(), "{} must be kept", file.display());
+        }
+        drop(restarted);
+        std::fs::remove_dir_all(&data_dir).ok();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shutdown_stops_active_jobs_and_refuses_new_work() {
+        // Given: a running job and a queued one.
+        let data_dir = test_data_dir();
+        let state = test_state_with_data_dir(data_dir.clone());
+        let mut app = app_router(state.clone());
+        let running = create_job_id(&mut app, delay_workflow_json(2_000)).await;
+        let queued = create_job_id(&mut app, delay_workflow_json(2_000)).await;
+        assert!(wait_for_persisted_status(&data_dir, &running, "running").await);
+
+        // When: the worker begins to shut down.
+        state.begin_shutdown();
+
+        // Then: new jobs are refused, and both jobs end as cancelled by the
+        // shutdown once their executors exit.
+        let (status, json) = post_json(
+            &mut app,
+            "/api/jobs",
+            serde_json::json!({ "workflow": delay_workflow_json(0) }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{json}");
+        assert!(state
+            .wait_for_jobs_to_stop(Duration::from_secs(10))
+            .await
+            .is_empty());
+        for id in [&running, &queued] {
+            let (_, job) = get_job_json(&mut app, id).await;
+            assert_eq!(job["status"], "cancelled", "{job}");
+            assert_eq!(job["cancel_reason"], "shutdown", "{job}");
+            assert_eq!(job["error"], "job interrupted by worker shutdown", "{job}");
+            assert!(wait_for_persisted_status(&data_dir, id, "cancelled").await);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_job_that_outlives_the_shutdown_grace_keeps_its_cancel_reason() {
+        // Given: a running job whose node ignores cancellation for a while.
+        let data_dir = test_data_dir();
+        let state = test_state_with_data_dir(data_dir.clone());
+        let mut app = app_router(state.clone());
+        let job_id = create_job_id(&mut app, delay_workflow_json(1_500)).await;
+        assert!(wait_for_persisted_status(&data_dir, &job_id, "running").await);
+
+        // When: the shutdown grace ends first.
+        state.begin_shutdown();
+        let left = state
+            .wait_for_jobs_to_stop(Duration::from_millis(100))
+            .await;
+
+        // Then: the job is reported as still running, and its row records the
+        // shutdown so the next start restores it with that reason.
+        assert_eq!(left, vec![job_id.clone()]);
+        let conn = Connection::open(data_dir.join("jobs.db")).unwrap();
+        let (status, reason): (String, Option<String>) = conn
+            .query_row(
+                "SELECT status, cancel_reason FROM jobs WHERE id = ?1",
+                [&job_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "running");
+        assert_eq!(reason.as_deref(), Some("shutdown"));
     }
 
     #[test]

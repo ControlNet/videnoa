@@ -103,7 +103,17 @@ impl JobsPersistence {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn load_jobs_for_startup(&self) -> Result<Vec<Job>> {
+        self.load_jobs_for_startup_with_interrupted()
+            .map(|(jobs, _)| jobs)
+    }
+
+    /// Loads every job, marking those left queued or running by the previous
+    /// instance as cancelled, and returns them with the ids of the jobs that
+    /// were `running`. Their executors may have left staged output files
+    /// behind.
+    pub(crate) fn load_jobs_for_startup_with_interrupted(&self) -> Result<(Vec<Job>, Vec<String>)> {
         self.with_connection(|conn| {
             let mut stmt = conn.prepare(
                 "SELECT
@@ -134,6 +144,7 @@ impl JobsPersistence {
             let startup_now = Utc::now();
             let mut jobs = Vec::new();
             let mut skipped = Vec::new();
+            let mut interrupted = Vec::new();
 
             for row_result in raw_rows {
                 let (id, decoded) = row_result?;
@@ -148,6 +159,9 @@ impl JobsPersistence {
 
                 if matches!(row.status, JobStatus::Queued | JobStatus::Running) {
                     let previous_status = row.status;
+                    if previous_status == JobStatus::Running {
+                        interrupted.push(row.id.clone());
+                    }
                     row.status = JobStatus::Cancelled;
                     row.completed_at = Some(row.completed_at.unwrap_or(startup_now));
                     row.error = Some(startup_reconciliation_error(previous_status, row.error.as_deref()));
@@ -228,11 +242,12 @@ impl JobsPersistence {
                 );
             }
 
-            Ok(jobs)
+            Ok((jobs, interrupted))
         })
     }
 
-    /// Decodes one `jobs` row selected by [`Self::load_jobs_for_startup`].
+    /// Decodes one `jobs` row selected by
+    /// [`Self::load_jobs_for_startup_with_interrupted`].
     fn decode_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PersistedJobRow> {
         let status_raw: String = row.get(1)?;
         let status = parse_status(&status_raw).ok_or_else(|| {

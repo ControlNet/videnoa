@@ -43,6 +43,14 @@ directory and other Worker data. Reuse these host directories when recreating or
 upgrading the container. TensorRT builds engine caches on first use and reuses
 `./trt_cache` on subsequent runs.
 
+`docker stop` (SIGTERM) and Ctrl-C stop the Worker in order: it refuses new
+jobs, cancels running ones (reported as `cancelled` with `cancel_reason`
+`shutdown`), waits up to 6 seconds for them to stop, and exits within Docker's
+default 10-second grace period. A second Ctrl-C exits without waiting. A job
+that was still running at exit is marked cancelled on the next start, and the
+hidden staged files it left beside its output (`.<name>.XXXXXX.videnoa-*`)
+are removed.
+
 If workflows need access to existing host media, additionally mount the media
 directory by adding `-v "$HOME/Videos:/media"` before the image name, then use
 `/media/...` paths in the Worker. This media mount is separate from `/app/data`.
@@ -147,6 +155,9 @@ and moves a `data` folder found beside its executable there once.
 
 `config.toml` records a `version`. Keys this release does not know (written by
 a newer one) are kept when settings are saved.
+
+Only one Worker can use a data directory at a time; a second one started on
+the same directory exits with an error and leaves it untouched.
 
 The HTTP server closes an HTTP/1.1 connection whose request head (request line
 and headers) does not arrive within 30 seconds, including the next request on an
