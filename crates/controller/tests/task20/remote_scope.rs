@@ -127,6 +127,35 @@ async fn rejected_remote_cancel_defers_instead_of_stopping_the_controller() -> T
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_worker_refusing_the_host_name_says_so_instead_of_blaming_the_password() -> TestResult {
+    // Given: a worker without a password that does not allow the host name
+    // this Controller uses for it.
+    let worker = MockVidenoa::start().await?;
+    let reason = "Host \"render.lan:3000\" is not allowed while no password is set. Add its \
+                  host name to server.allowed_hosts in config.toml and restart, or set a password.";
+    let body = serde_json::json!({"error": reason, "code": "host_not_allowed"});
+    fault(&worker, Route::Health, 403, serde_json::to_vec(&body)?).await;
+    let fixture = ControllerFixture::start().await?;
+    let registered = fixture
+        .register_worker_without_wait(&worker, "host-refused", true)
+        .await?;
+
+    // When: the health service probes it.
+    let record = wait_for_worker_record(&fixture, registered.id, |record| {
+        record.last_error.is_some()
+    })
+    .await?;
+
+    // Then: it is offline with the worker's own reason, and probes continue.
+    assert!(!record.online);
+    let message = record.last_error.unwrap_or_default();
+    assert!(message.contains("server.allowed_hosts"), "{message}");
+    assert_ne!(message, AUTHENTICATION_FAILED);
+    assert!(record.next_health_check_at.is_some());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_rejected_request_about_one_job_backs_off_only_its_task() -> TestResult {
     // Given: a processing task reconciled only by this test.
     let worker = MockVidenoa::start_persistent().await?;

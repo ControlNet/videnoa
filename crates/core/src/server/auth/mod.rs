@@ -780,10 +780,11 @@ pub(super) async fn check_host(
         "Host \"{authority}\" is not allowed while no password is set. Add its host name to \
          server.allowed_hosts in config.toml and restart, or set a password."
     );
+    // The code tells a Controller the credentials are not at fault.
     (
         StatusCode::FORBIDDEN,
         [(header::CACHE_CONTROL, "no-store")],
-        Json(json!({"error": message})),
+        Json(json!({"error": message, "code": "host_not_allowed"})),
     )
         .into_response()
 }

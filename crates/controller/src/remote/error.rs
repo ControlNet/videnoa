@@ -71,6 +71,21 @@ impl VidenoaClientError {
                 status: 401 | 403,
                 ..
             }
+        ) && !self.is_host_not_allowed()
+    }
+
+    /// Whether the Worker refused the Host name this Controller addressed it
+    /// by: it has no password and the name is not in its `allowed_hosts`.
+    /// The credentials are not at fault; the Worker's reason says what is.
+    #[must_use]
+    pub const fn is_host_not_allowed(&self) -> bool {
+        matches!(
+            self,
+            Self::ClientStatus {
+                status: 403,
+                code: Some(ErrorCode::HostNotAllowed),
+                ..
+            }
         )
     }
 
@@ -82,6 +97,7 @@ impl VidenoaClientError {
     pub const fn is_worker_level(&self) -> bool {
         self.is_transient()
             || self.is_authentication()
+            || self.is_host_not_allowed()
             || matches!(
                 self,
                 Self::RateLimited | Self::UnexpectedStatus { .. } | Self::Incompatible

@@ -642,9 +642,15 @@ async fn open_access_rejects_rebound_host_on_business_and_setup_routes() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    let message = error_message(response).await;
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_slice(&body).unwrap();
+    let message = body["error"].as_str().unwrap_or_default();
     assert!(message.contains("evil.example"), "{message}");
     assert!(message.contains("server.allowed_hosts"), "{message}");
+    // A Controller tells this refusal from rejected credentials by its code.
+    assert_eq!(body["code"], "host_not_allowed", "{body}");
     assert!(!dir.path().join("workflows/rebind.json").exists());
 
     // The rebinding page must not be able to claim the first password either.

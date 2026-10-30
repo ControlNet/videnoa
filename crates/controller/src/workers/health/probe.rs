@@ -35,6 +35,10 @@ pub(super) enum ProbeFailure {
     Protocol {
         worker: u32,
     },
+    /// The Worker refused the Host name it was addressed by, saying why.
+    HostNotAllowed {
+        reason: Option<String>,
+    },
 }
 
 impl ProbeFailure {
@@ -45,7 +49,8 @@ impl ProbeFailure {
             | Self::Capabilities
             | Self::Authentication
             | Self::Incompatible
-            | Self::Protocol { .. } => CacheInvalidation::RemoteError,
+            | Self::Protocol { .. }
+            | Self::HostNotAllowed { .. } => CacheInvalidation::RemoteError,
         }
     }
 
@@ -63,6 +68,10 @@ impl ProbeFailure {
                  {PROTOCOL_VERSION}; update the Controller"
             )
             .into(),
+            Self::HostNotAllowed { reason } => match reason {
+                Some(reason) => format!("worker refused this Controller: {reason}").into(),
+                None => "worker refused the host name this Controller uses for it".into(),
+            },
         }
     }
 }
@@ -128,6 +137,13 @@ pub(super) async fn probe(
 }
 
 fn classify_error(error: &VidenoaClientError, fallback: ProbeFailure) -> ProbeFailure {
+    if let VidenoaClientError::ClientStatus { reason, .. } = error {
+        if error.is_host_not_allowed() {
+            return ProbeFailure::HostNotAllowed {
+                reason: reason.clone(),
+            };
+        }
+    }
     if error.is_authentication() {
         ProbeFailure::Authentication
     } else if *error == VidenoaClientError::Incompatible {

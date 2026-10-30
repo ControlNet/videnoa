@@ -75,6 +75,9 @@ impl VidenoaClient {
         &self,
         response: Response,
     ) -> Result<T, VidenoaClientError> {
+        if response.status() == StatusCode::FORBIDDEN {
+            return Err(self.forbidden(response).await);
+        }
         ensure_success(response.status())?;
         let body = self.bounded_body(response).await?;
         serde_json::from_slice(&body).map_err(|_| VidenoaClientError::MalformedPayload)
@@ -83,6 +86,19 @@ impl VidenoaClient {
     /// The `error` text of a Worker's JSON error envelope, cleaned of control
     /// characters and cut to [`REJECTION_REASON_CHARS`], with its code. Any
     /// other body yields neither, so raw response bytes are never reflected.
+    /// A 403. The Worker's reason is kept only when it refused the Host this
+    /// Controller addressed it by, which the user fixes on the Worker; any
+    /// other 403 stays redacted.
+    pub(super) async fn forbidden(&self, response: Response) -> VidenoaClientError {
+        let Rejection { reason, code } = self.rejection(response).await;
+        let refused_host = code == Some(ErrorCode::HostNotAllowed);
+        VidenoaClientError::ClientStatus {
+            status: StatusCode::FORBIDDEN.as_u16(),
+            reason: reason.filter(|_| refused_host),
+            code: code.filter(|_| refused_host),
+        }
+    }
+
     pub(super) async fn rejection(&self, response: Response) -> Rejection {
         let Ok(body) = self.bounded_body(response).await else {
             return Rejection::default();
