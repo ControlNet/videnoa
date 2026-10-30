@@ -13,7 +13,7 @@ use super::super::{
 };
 use crate::mock_videnoa::checkpoints::Checkpoint;
 use crate::mock_videnoa::domain::{
-    CreateJobResponse, JobRecord, JobResponse, JobStatus, RunRequest,
+    is_active, mock_time, CreateJobResponse, JobRecord, JobResponse, JobStatus, RunWorkflowRequest,
 };
 use crate::mock_videnoa::fingerprint::run_fingerprint;
 use crate::mock_videnoa::journal::{JournalOutcome, Route};
@@ -162,7 +162,7 @@ fn prepare_run(headers: &HeaderMap, body: &[u8]) -> Result<PreparedRun, RunParse
         status: StatusCode::BAD_REQUEST,
         code: "invalid_idempotency_key",
     })?;
-    let payload: RunRequest = serde_json::from_slice(body).map_err(|_| RunParseError {
+    let payload: RunWorkflowRequest = serde_json::from_slice(body).map_err(|_| RunParseError {
         status: StatusCode::BAD_REQUEST,
         code: "invalid_request",
     })?;
@@ -243,7 +243,7 @@ fn create_job(inner: &mut RuntimeState, prepared: &PreparedRun) -> (StatusCode, 
         response: JobResponse {
             id: id.clone(),
             status: JobStatus::Queued,
-            created_at: "2026-09-02T00:00:00Z".to_owned(),
+            created_at: mock_time("2026-09-02T00:00:00Z"),
             started_at: None,
             completed_at: None,
             progress: None,
@@ -253,6 +253,9 @@ fn create_job(inner: &mut RuntimeState, prepared: &PreparedRun) -> (StatusCode, 
             params: prepared.params.clone(),
             rerun_of_job_id: None,
             duration_ms: None,
+            cancel_requested: false,
+            cancel_requested_at: None,
+            cancel_reason: None,
         },
     };
     let creation = record.creation_response();
@@ -262,7 +265,7 @@ fn create_job(inner: &mut RuntimeState, prepared: &PreparedRun) -> (StatusCode, 
             .persistent
             .jobs
             .values()
-            .filter(|job| job.response.status.is_active())
+            .filter(|job| is_active(job.response.status))
             .count(),
     );
     if let Some(key) = &prepared.key {

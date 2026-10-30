@@ -70,6 +70,16 @@ impl MockVidenoa {
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    /// Makes health report this protocol version; `None` omits the field,
+    /// as Workers up to v0.1.10 do.
+    #[allow(
+        dead_code,
+        reason = "Shared harness protocol reporting is exercised by Task 20"
+    )]
+    pub async fn report_protocol(&self, protocol: Option<u32>) {
+        *self.state.protocol.lock().await = protocol;
+    }
+
     pub fn base_url(&self) -> &str {
         &self.base_url
     }

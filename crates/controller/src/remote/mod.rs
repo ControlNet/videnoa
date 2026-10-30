@@ -23,9 +23,9 @@ pub use capability_store::{
 pub use config::{PayloadLimits, RemoteTimeouts};
 pub use connector::VidenoaClient;
 pub use dto::{
-    DownloadReceipt, FileStat, Health, Job, JobProgress, JobStatus, Preset, PresetWorkflow,
-    RunOutcome, RunReceipt, RunSubmission, RunValidation, UploadReceipt, Workflow,
-    WorkflowInterface, WorkflowPort,
+    CancelReason, DownloadReceipt, FileStat, Health, Job, JobProgress, JobStatus, Preset,
+    PresetWorkflow, RunOutcome, RunReceipt, RunSubmission, RunValidation, UploadReceipt, Workflow,
+    WorkflowInterface, WorkflowPort, PROTOCOL_VERSION,
 };
 pub use paths::{sibling_output_path, FileApiPath};
 pub use request_failure::{ClientConfigError, VidenoaClientError};

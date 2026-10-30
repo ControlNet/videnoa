@@ -458,7 +458,7 @@ pub(crate) async fn processing_task(
 }
 
 /// A `Staged` task about to be submitted, reconciled only by the test.
-async fn staged_task(name: &str) -> TestResult<(ControllerFixture, MockVidenoa, Task)> {
+pub(crate) async fn staged_task(name: &str) -> TestResult<(ControllerFixture, MockVidenoa, Task)> {
     let gate = CheckpointGate::new(TransferCheckpointPoint::BeforeRemoteSubmit);
     let observer: Arc<dyn TransferCheckpointObserver> = gate.clone();
     let worker = MockVidenoa::start_persistent().await?;
@@ -472,7 +472,7 @@ async fn staged_task(name: &str) -> TestResult<(ControllerFixture, MockVidenoa, 
 }
 
 /// The remote job of a processing task, as the worker reports it.
-async fn remote_job(
+pub(crate) async fn remote_job(
     worker: &MockVidenoa,
     fixture: &ControllerFixture,
     task: &Task,
@@ -487,7 +487,7 @@ async fn remote_job(
     Ok(reqwest::get(url).await?.error_for_status()?.json().await?)
 }
 
-async fn wait_for_worker_record(
+pub(crate) async fn wait_for_worker_record(
     fixture: &ControllerFixture,
     id: WorkerId,
     predicate: impl Fn(&WorkerRecord) -> bool,
@@ -511,7 +511,7 @@ async fn wait_for_worker_record(
 /// A `Submitting` task, reconciled only by the test, whose first submission
 /// the worker accepted but whose response was lost. Returns when its
 /// confirmation retry is due.
-async fn submitting_task_with_lost_receipt(
+pub(crate) async fn submitting_task_with_lost_receipt(
     name: &str,
 ) -> TestResult<(ControllerFixture, MockVidenoa, Task, DateTime<Utc>)> {
     let (fixture, worker, task) = staged_task(name).await?;
@@ -561,7 +561,7 @@ pub(crate) fn assert_auth_blocked(record: &WorkerRecord) {
     assert!(record.health_retry_count > 0);
 }
 
-async fn request_cancellation(fixture: &ControllerFixture, task: &Task) -> TestResult {
+pub(crate) async fn request_cancellation(fixture: &ControllerFixture, task: &Task) -> TestResult {
     let durable = durable_task(fixture, task).await?;
     let attempt = fixture.store.current_attempt(task.id).await?;
     LifecycleService::new(fixture.store.clone())

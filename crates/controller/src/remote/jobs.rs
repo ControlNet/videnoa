@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use crate::domain::{RemoteJobId, SubmissionKey, WorkflowName};
 
-use super::dto::{RunRequest, ValidateRunRequest};
+use videnoa_protocol::RunWorkflowRequest;
 use super::transport::ensure_success;
 use super::{
     Job, RunOutcome, RunReceipt, RunSubmission, RunValidation, VidenoaClient, VidenoaClientError,
@@ -27,9 +27,9 @@ impl VidenoaClient {
                 self.http
                     .post(self.endpoint(&["api", "run"])?)
                     .header("idempotency-key", key.to_string())
-                    .json(&RunRequest {
-                        workflow_name: workflow.run_name(),
-                        params,
+                    .json(&RunWorkflowRequest {
+                        workflow_name: Some(workflow.run_name().to_owned()),
+                        params: Some(params.clone()),
                     }),
             )
             .await?;
@@ -66,8 +66,9 @@ impl VidenoaClient {
             .send_authenticated(
                 self.http
                     .post(self.endpoint(&["api", "run", "validate"])?)
-                    .json(&ValidateRunRequest {
-                        workflow_name: workflow.run_name(),
+                    .json(&RunWorkflowRequest {
+                        workflow_name: Some(workflow.run_name().to_owned()),
+                        params: None,
                     }),
             )
             .await?;

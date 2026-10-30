@@ -196,7 +196,7 @@ impl WorkerHealthService {
                         } else {
                             Some(deadline(now, delay)?)
                         },
-                        last_error: Some(failure.message().to_owned()),
+                        last_error: Some(failure.message().into_owned()),
                         updated_at: now,
                     },
                     worker.stage,

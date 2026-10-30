@@ -104,7 +104,11 @@ pub(super) async fn cancel_abandoned_job(
     remote_job_id: RemoteJobId,
     status: JobStatus,
 ) {
-    if !matches!(status, JobStatus::Queued | JobStatus::Running) {
+    // An unknown status may be an active one.
+    if !matches!(
+        status,
+        JobStatus::Queued | JobStatus::Running | JobStatus::Unknown
+    ) {
         return;
     }
     match worker.client.cancel_job(remote_job_id).await {

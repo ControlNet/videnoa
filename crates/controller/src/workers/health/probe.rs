@@ -1,7 +1,10 @@
+use std::borrow::Cow;
+
 use crate::persistence::WorkerRecord;
 use crate::recovery::StagePermit;
 use crate::remote::{
     CacheInvalidation, CompatibilityCatalog, PayloadLimits, VidenoaClient, VidenoaClientError,
+    PROTOCOL_VERSION,
 };
 use crate::scheduler::RuntimeSettings;
 
@@ -28,27 +31,38 @@ pub(super) enum ProbeFailure {
     Capabilities,
     Authentication,
     Incompatible,
+    /// The Worker speaks a protocol version this Controller does not.
+    Protocol {
+        worker: u32,
+    },
 }
 
 impl ProbeFailure {
     pub(super) const fn invalidation(&self) -> CacheInvalidation {
         match self {
             Self::Health => CacheInvalidation::HealthFailure,
-            Self::Client | Self::Capabilities | Self::Authentication | Self::Incompatible => {
-                CacheInvalidation::RemoteError
-            }
+            Self::Client
+            | Self::Capabilities
+            | Self::Authentication
+            | Self::Incompatible
+            | Self::Protocol { .. } => CacheInvalidation::RemoteError,
         }
     }
 
-    pub(super) const fn message(&self) -> &'static str {
+    pub(super) fn message(&self) -> Cow<'static, str> {
         match self {
-            Self::Authentication => super::AUTHENTICATION_FAILED,
-            Self::Client => "worker remote client initialization failed",
-            Self::Health => "worker health check failed",
-            Self::Capabilities => "worker capability refresh failed",
+            Self::Authentication => super::AUTHENTICATION_FAILED.into(),
+            Self::Client => "worker remote client initialization failed".into(),
+            Self::Health => "worker health check failed".into(),
+            Self::Capabilities => "worker capability refresh failed".into(),
             Self::Incompatible => {
-                "worker tunnel is incompatible with this Controller; update the worker or the Controller"
+                "worker tunnel is incompatible with this Controller; update the worker or the Controller".into()
             }
+            Self::Protocol { worker } => format!(
+                "worker speaks protocol {worker}, but this Controller supports protocols 1 to \
+                 {PROTOCOL_VERSION}; update the Controller"
+            )
+            .into(),
         }
     }
 }
@@ -73,6 +87,15 @@ pub(super) async fn probe(
         };
     };
     match client.health().await {
+        Ok(health) if health.is_healthy() && !health.protocol_supported() => {
+            tracing::warn!(worker_id = %worker.record.id, protocol = health.protocol(), "Worker speaks an unsupported protocol");
+            return ProbeOutcome::Failed {
+                worker,
+                failure: ProbeFailure::Protocol {
+                    worker: health.protocol(),
+                },
+            };
+        }
         Ok(health) if health.is_healthy() => {}
         Err(error) => {
             tracing::warn!(worker_id = %worker.record.id, error = %error, "Worker health request failed");

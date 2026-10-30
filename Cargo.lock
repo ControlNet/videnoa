@@ -7997,6 +7997,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+ "videnoa-protocol",
  "videnoa-transport",
 ]
 

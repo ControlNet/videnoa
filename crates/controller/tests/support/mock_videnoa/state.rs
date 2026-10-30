@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use super::checkpoints::{Checkpoint, CheckpointHub};
-use super::domain::{JobProgress, JobStatus};
+use super::domain::{is_active, mock_time, JobProgress, JobStatus};
 use super::faults::{Fault, FaultState, ResponseFault};
 use super::journal::{JournalEntry, LogicalTimestamp, Route, RouteCounters};
 use super::persistence::{self, PersistentState};
@@ -75,6 +75,8 @@ pub(crate) struct SharedState {
     pub inner: Mutex<RuntimeState>,
     pub checkpoints: CheckpointHub,
     pub password: Mutex<Option<String>>,
+    /// The `protocol` health reports; `None` is a v0.1.10 Worker.
+    pub protocol: Mutex<Option<u32>>,
     pub authentication_failures: std::sync::atomic::AtomicUsize,
     persistence_path: Option<PathBuf>,
 }
@@ -85,6 +87,7 @@ impl SharedState {
             inner: Mutex::new(RuntimeState::new(persistent)),
             checkpoints: CheckpointHub::new(),
             password: Mutex::new(None),
+            protocol: Mutex::new(Some(super::domain::PROTOCOL_VERSION)),
             authentication_failures: std::sync::atomic::AtomicUsize::new(0),
             persistence_path,
         })
@@ -168,13 +171,13 @@ impl SharedState {
         job.response.status = status;
         job.response.progress = progress;
         if status == JobStatus::Running {
-            job.response.started_at = Some("2026-09-02T00:00:01Z".to_owned());
+            job.response.started_at = Some(mock_time("2026-09-02T00:00:01Z"));
         }
         if matches!(
             status,
             JobStatus::Completed | JobStatus::Failed | JobStatus::Cancelled
         ) {
-            job.response.completed_at = Some("2026-09-02T00:00:02Z".to_owned());
+            job.response.completed_at = Some(mock_time("2026-09-02T00:00:02Z"));
         }
         self.persist_locked(&state).await
     }
@@ -190,7 +193,7 @@ impl SharedState {
             .persistent
             .jobs
             .values()
-            .filter(|job| job.response.status.is_active())
+            .filter(|job| is_active(job.response.status))
             .count()
     }
 

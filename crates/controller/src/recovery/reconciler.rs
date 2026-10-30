@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use crate::domain::{FailureCode, FailureStage, TaskStatus};
 use crate::lifecycle::{AdvanceCommand, Lifecycle, LifecycleFailure, LifecycleService};
 use crate::persistence::{AttemptRecord, Store, SubmissionOwner, TaskRecord, WorkerRecord};
-use crate::remote::VidenoaClient;
+use crate::remote::{VidenoaClient, VidenoaClientError};
 
 use super::{
     local_first_command, RecoveryCommandKind, RecoveryConfig, RecoveryError, RecoveryReport,
@@ -150,12 +150,26 @@ impl Reconciler {
             self.config.limits,
             worker.password.as_ref(),
         )?;
-        if let Err(error) = client.health().await {
-            // No health reply is evidence about this task: whatever the
-            // worker answered, its tasks wait for it.
-            return self
-                .defer_for_worker(&worker, task.id, &error, now, stage, report)
-                .await;
+        // No health reply is evidence about this task: whatever the worker
+        // answered, its tasks wait for it.
+        match client.health().await {
+            Ok(health) if health.is_healthy() && health.protocol_supported() => {}
+            Ok(health) => {
+                let error = if health.is_healthy() {
+                    VidenoaClientError::Incompatible
+                } else {
+                    // A status a newer worker added.
+                    VidenoaClientError::MalformedPayload
+                };
+                return self
+                    .defer_for_worker(&worker, task.id, &error, now, stage, report)
+                    .await;
+            }
+            Err(error) => {
+                return self
+                    .defer_for_worker(&worker, task.id, &error, now, stage, report)
+                    .await;
+            }
         }
         let worker = AssignedWorker {
             record: worker,

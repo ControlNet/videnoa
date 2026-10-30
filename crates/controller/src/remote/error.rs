@@ -43,9 +43,9 @@ pub enum VidenoaClientError {
     InvalidFilePath,
     #[error("failed to construct a remote endpoint URL")]
     EndpointUrl,
-    /// The Worker's tunnel speaks another protocol version; retrying cannot
-    /// help until one side is upgraded.
-    #[error("worker tunnel is incompatible with this Controller")]
+    /// The Worker's tunnel or API speaks another protocol version; retrying
+    /// cannot help until one side is upgraded.
+    #[error("worker is incompatible with this Controller")]
     Incompatible,
 }
 

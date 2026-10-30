@@ -92,7 +92,7 @@ async fn delayed_poll_waits_for_named_release_without_sleep() -> TestResult {
     server.release(ticket).await?;
 
     // Then: the exact blocked poll completes after release.
-    assert!(poll.await??.status.is_active());
+    assert!(crate::mock_videnoa::domain::is_active(poll.await??.status));
     Ok(())
 }
 

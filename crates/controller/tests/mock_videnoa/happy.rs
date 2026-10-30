@@ -5,7 +5,7 @@ use serde_json::json;
 
 use crate::mock_videnoa::api::MockClient;
 use crate::mock_videnoa::checkpoints::Checkpoint;
-use crate::mock_videnoa::domain::{JobProgress, JobStatus};
+use crate::mock_videnoa::domain::{job_progress, JobStatus};
 use crate::mock_videnoa::journal::Route;
 use crate::mock_videnoa::server::MockVidenoa;
 
@@ -16,7 +16,10 @@ async fn complete_remote_lifecycle_preserves_contract_bytes_and_journal() -> Tes
     // Given: a real TCP mock and an upload paused before request acceptance.
     let server = MockVidenoa::start().await?;
     let client = MockClient::new(server.base_url())?;
-    assert_eq!(client.health().await?.status, "ok");
+    assert_eq!(
+        client.health().await?.status,
+        crate::mock_videnoa::domain::HealthStatus::Ok
+    );
     let catalog = client.catalog().await?;
     assert!(catalog.contains_eligible("eligible-workflow.json"));
     assert!(catalog.contains_eligible("eligible-preset"));
@@ -50,7 +53,7 @@ async fn complete_remote_lifecycle_preserves_contract_bytes_and_journal() -> Tes
         .set_job(
             &created.body.id,
             JobStatus::Running,
-            Some(JobProgress::new(7, Some(20), 3.5, Some(4.0))),
+            Some(job_progress(7, Some(20), 3.5, Some(4.0))),
         )
         .await?;
     assert_eq!(

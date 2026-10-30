@@ -22,7 +22,7 @@ mod upload_activity;
 use mock_videnoa::server::MockVidenoa;
 use mock_videnoa::{
     checkpoints::Checkpoint,
-    domain::{JobProgress as MockJobProgress, JobStatus as MockJobStatus},
+    domain::{job_progress, JobStatus as MockJobStatus},
     faults::{Fault, OfflineMode, ResponseFault},
     journal::Route,
 };
@@ -582,7 +582,7 @@ async fn remote_lifecycle_streams_files_and_preserves_workflow_paths() -> TestRe
         .set_job(
             &submission.receipt.id.to_string(),
             MockJobStatus::Running,
-            Some(MockJobProgress::new(7, Some(20), 3.5, Some(4.0))),
+            Some(job_progress(7, Some(20), 3.5, Some(4.0))),
         )
         .await?;
     let running = client.job(submission.receipt.id).await?;

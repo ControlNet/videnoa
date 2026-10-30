@@ -3,7 +3,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use super::domain::{JobRecord, JobStatus};
+use super::domain::{is_active, mock_time, JobRecord, JobStatus};
 use super::state::HarnessError;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -23,9 +23,9 @@ pub(crate) struct PersistentState {
 impl PersistentState {
     pub fn cancel_active_jobs(&mut self) {
         for job in self.jobs.values_mut() {
-            if job.response.status.is_active() {
+            if is_active(job.response.status) {
                 job.response.status = JobStatus::Cancelled;
-                job.response.completed_at = Some("2026-09-02T00:00:02Z".to_owned());
+                job.response.completed_at = Some(mock_time("2026-09-02T00:00:02Z"));
                 job.response.progress = None;
             }
         }

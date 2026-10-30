@@ -1,36 +1,47 @@
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
+use videnoa_protocol as wire;
+pub use videnoa_protocol::{
+    CancelReason, JobProgress, JobStatus, WorkflowInterface, WorkflowPort, PROTOCOL_VERSION,
+};
 
 use crate::domain::{RemoteJobId, RemotePath, WorkflowName};
 
-// Worker responses are read tolerantly: fields added by a newer Worker are
-// ignored, so a Worker upgrade cannot break this Controller. Known fields and
-// enum values remain strictly typed.
+// Worker responses are read through the shared `videnoa-protocol` wire types,
+// then given this Controller's typed identifiers. Fields added by a newer
+// Worker are ignored and enum values it adds read as `Unknown`, so a Worker
+// upgrade cannot break this Controller. Known fields remain strictly typed.
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "snake_case")]
-enum HealthStatus {
-    Ok,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
-pub struct Health {
-    status: HealthStatus,
-}
+/// `GET /api/health`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(transparent)]
+pub struct Health(wire::HealthResponse);
 
 impl Health {
     #[must_use]
-    pub const fn is_healthy(self) -> bool {
-        match self.status {
-            HealthStatus::Ok => true,
-        }
+    pub fn is_healthy(&self) -> bool {
+        self.0.status == wire::HealthStatus::Ok
+    }
+
+    /// The Worker's protocol version; 1 for Workers up to v0.1.10.
+    #[must_use]
+    pub fn protocol(&self) -> u32 {
+        self.0.protocol()
+    }
+
+    /// Whether this Controller speaks the Worker's protocol: every version
+    /// from 1 up to its own [`PROTOCOL_VERSION`].
+    #[must_use]
+    pub fn protocol_supported(&self) -> bool {
+        (wire::LEGACY_PROTOCOL_VERSION..=PROTOCOL_VERSION).contains(&self.protocol())
     }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(from = "wire::WorkflowEntry")]
 pub struct Workflow {
     pub filename: WorkflowName,
     pub name: String,
@@ -39,7 +50,20 @@ pub struct Workflow {
     pub has_interface: bool,
 }
 
+impl From<wire::WorkflowEntry> for Workflow {
+    fn from(entry: wire::WorkflowEntry) -> Self {
+        Self {
+            filename: WorkflowName::new(entry.filename),
+            name: entry.name,
+            description: entry.description,
+            workflow: entry.workflow,
+            has_interface: entry.has_interface,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(try_from = "wire::PresetResponse")]
 pub struct Preset {
     pub id: WorkflowName,
     pub name: String,
@@ -47,43 +71,27 @@ pub struct Preset {
     pub workflow: PresetWorkflow,
 }
 
+impl TryFrom<wire::PresetResponse> for Preset {
+    type Error = serde_json::Error;
+
+    fn try_from(preset: wire::PresetResponse) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: WorkflowName::new(preset.id),
+            name: preset.name,
+            description: preset.description,
+            workflow: serde_json::from_value(preset.workflow)?,
+        })
+    }
+}
+
+/// The part of a preset's stored graph this Controller reads.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 pub struct PresetWorkflow {
     pub interface: Option<WorkflowInterface>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-pub struct WorkflowPort {
-    pub name: String,
-    pub port_type: String,
-    pub default_value: Option<Value>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-pub struct WorkflowInterface {
-    pub inputs: Vec<WorkflowPort>,
-    pub outputs: Vec<WorkflowPort>,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum JobStatus {
-    Queued,
-    Running,
-    Completed,
-    Failed,
-    Cancelled,
-}
-
 #[derive(Clone, Debug, Deserialize, PartialEq)]
-pub struct JobProgress {
-    pub current_frame: u64,
-    pub total_frames: Option<u64>,
-    pub fps: f32,
-    pub eta_seconds: Option<f64>,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(try_from = "wire::JobResponse")]
 pub struct Job {
     pub id: RemoteJobId,
     pub status: JobStatus,
@@ -97,13 +105,54 @@ pub struct Job {
     pub params: Option<BTreeMap<String, Value>>,
     pub rerun_of_job_id: Option<RemoteJobId>,
     pub duration_ms: Option<i64>,
+    /// The job was asked to stop; it stays queued or running until its
+    /// executor exits. Always false on Workers up to v0.1.10.
+    pub cancel_requested: bool,
+    /// Why the job was asked to stop, when it was.
+    pub cancel_reason: Option<CancelReason>,
+}
+
+impl TryFrom<wire::JobResponse> for Job {
+    type Error = uuid::Error;
+
+    fn try_from(job: wire::JobResponse) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: job.id.parse()?,
+            status: job.status,
+            created_at: job.created_at,
+            started_at: job.started_at,
+            completed_at: job.completed_at,
+            progress: job.progress,
+            error: job.error,
+            workflow_name: WorkflowName::new(job.workflow_name),
+            workflow_source: job.workflow_source,
+            params: job.params,
+            rerun_of_job_id: job.rerun_of_job_id.as_deref().map(str::parse).transpose()?,
+            duration_ms: job.duration_ms,
+            cancel_requested: job.cancel_requested,
+            cancel_reason: job.cancel_reason,
+        })
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(try_from = "wire::CreateJobResponse")]
 pub struct RunReceipt {
     pub id: RemoteJobId,
     pub status: JobStatus,
     pub created_at: DateTime<Utc>,
+}
+
+impl TryFrom<wire::CreateJobResponse> for RunReceipt {
+    type Error = uuid::Error;
+
+    fn try_from(receipt: wire::CreateJobResponse) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: receipt.id.parse()?,
+            status: receipt.status,
+            created_at: receipt.created_at,
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -119,17 +168,39 @@ pub struct RunSubmission {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(from = "wire::UploadResponse")]
 pub struct UploadReceipt {
     pub path: RemotePath,
     pub size: u64,
 }
 
+impl From<wire::UploadResponse> for UploadReceipt {
+    fn from(receipt: wire::UploadResponse) -> Self {
+        Self {
+            path: RemotePath::new(receipt.path),
+            size: receipt.size,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(from = "wire::FileStatResponse")]
 pub struct FileStat {
     pub path: RemotePath,
     pub size: u64,
     pub is_file: bool,
     pub is_dir: bool,
+}
+
+impl From<wire::FileStatResponse> for FileStat {
+    fn from(stat: wire::FileStatResponse) -> Self {
+        Self {
+            path: RemotePath::new(stat.path),
+            size: stat.size,
+            is_file: stat.is_file,
+            is_dir: stat.is_dir,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -147,17 +218,6 @@ pub enum RunValidation {
     },
     /// The Worker predates `POST /api/run/validate` or does not know the name.
     Unknown,
-}
-
-#[derive(Serialize)]
-pub(crate) struct ValidateRunRequest<'a> {
-    pub workflow_name: &'a str,
-}
-
-#[derive(Serialize)]
-pub(crate) struct RunRequest<'a> {
-    pub workflow_name: &'a str,
-    pub params: &'a BTreeMap<String, Value>,
 }
 
 #[cfg(test)]
@@ -241,15 +301,41 @@ mod tests {
     }
 
     #[test]
-    fn worker_responses_still_require_known_fields_and_statuses() {
+    fn worker_responses_still_require_known_fields() {
         assert!(
             serde_json::from_value::<RunReceipt>(json!({"id": JOB_ID, "status": "queued"}))
                 .is_err()
         );
         assert!(serde_json::from_value::<RunReceipt>(
-            json!({"id": JOB_ID, "status": "paused", "created_at": CREATED_AT})
+            json!({"id": "not-a-uuid", "status": "queued", "created_at": CREATED_AT})
         )
         .is_err());
-        assert!(serde_json::from_value::<Health>(json!({"status": "degraded"})).is_err());
+    }
+
+    #[test]
+    fn status_values_added_by_newer_workers_read_as_unknown() {
+        let receipt: RunReceipt = serde_json::from_value(
+            json!({"id": JOB_ID, "status": "paused", "created_at": CREATED_AT}),
+        )
+        .expect("a new status is readable");
+        assert_eq!(receipt.status, JobStatus::Unknown);
+        let health: Health =
+            serde_json::from_value(json!({"status": "degraded"})).expect("readable");
+        assert!(!health.is_healthy());
+    }
+
+    #[test]
+    fn protocol_is_1_when_missing_and_newer_versions_are_unsupported() {
+        let legacy: Health = serde_json::from_value(json!({"status": "ok"})).expect("readable");
+        assert_eq!(legacy.protocol(), 1);
+        assert!(legacy.protocol_supported());
+        let current: Health =
+            serde_json::from_value(json!({"status": "ok", "protocol": PROTOCOL_VERSION}))
+                .expect("readable");
+        assert!(current.protocol_supported());
+        let newer: Health =
+            serde_json::from_value(json!({"status": "ok", "protocol": PROTOCOL_VERSION + 1}))
+                .expect("readable");
+        assert!(!newer.protocol_supported());
     }
 }

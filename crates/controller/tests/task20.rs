@@ -46,3 +46,5 @@ mod submission_retry;
 mod support;
 #[path = "task20/worker_health.rs"]
 mod worker_health;
+#[path = "task20/worker_protocol.rs"]
+mod worker_protocol;

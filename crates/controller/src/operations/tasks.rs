@@ -333,7 +333,7 @@ async fn terminal_job(
         JobStatus::Completed => RemoteTerminalStatus::Completed,
         JobStatus::Failed => RemoteTerminalStatus::Failed,
         JobStatus::Cancelled => RemoteTerminalStatus::Cancelled,
-        JobStatus::Queued | JobStatus::Running => {
+        JobStatus::Queued | JobStatus::Running | JobStatus::Unknown => {
             return Err(OperationsError::Conflict(
                 "remote processing is not terminal",
             ));

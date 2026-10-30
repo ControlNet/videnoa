@@ -55,6 +55,12 @@ impl Reconciler {
                     JobStatus::Queued | JobStatus::Running => {
                         report.push(task.id, RecoveryCommandKind::Poll);
                     }
+                    JobStatus::Unknown => {
+                        // A status added by a newer worker: the job is still
+                        // there, so keep treating it as running.
+                        tracing::warn!(task_id = %task.id, worker_id = %worker.record.id, "Remote job status is unknown; polling continues");
+                        report.push(task.id, RecoveryCommandKind::Poll);
+                    }
                     JobStatus::Completed => {
                         let _write = stage.begin_write();
                         service
