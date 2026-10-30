@@ -54,17 +54,15 @@ use crate::registry::{register_all_nodes, NodeRegistry};
 use crate::streaming_executor::ProgressCallback;
 use idempotency::{IdempotencyKey, RequestFingerprint};
 use persistence::{IdempotentJobClaim, IdempotentJobLookup, JobsPersistence};
+/// A job's progress, as stored and as reported.
+pub use videnoa_protocol::JobProgress as ProgressUpdate;
+pub use videnoa_protocol::{
+    CreateJobResponse, ErrorCode, ErrorResponse, HealthResponse, HealthStatus, JobResponse,
+    PresetResponse, RunWorkflowRequest, WorkflowEntry, PROTOCOL_VERSION,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Preset {
-    pub name: String,
-    pub description: String,
-    pub workflow: serde_json::Value,
-}
-
-#[derive(Serialize)]
-pub struct PresetResponse {
-    pub id: String,
     pub name: String,
     pub description: String,
     pub workflow: serde_json::Value,
@@ -570,6 +568,28 @@ impl CancelReason {
     }
 }
 
+impl From<JobStatus> for videnoa_protocol::JobStatus {
+    fn from(status: JobStatus) -> Self {
+        match status {
+            JobStatus::Queued => Self::Queued,
+            JobStatus::Running => Self::Running,
+            JobStatus::Completed => Self::Completed,
+            JobStatus::Failed => Self::Failed,
+            JobStatus::Cancelled => Self::Cancelled,
+        }
+    }
+}
+
+impl From<CancelReason> for videnoa_protocol::CancelReason {
+    fn from(reason: CancelReason) -> Self {
+        match reason {
+            CancelReason::User => Self::User,
+            CancelReason::Shutdown => Self::Shutdown,
+            CancelReason::Restart => Self::Restart,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CancelRequest {
     pub requested_at: DateTime<Utc>,
@@ -588,14 +608,6 @@ impl Job {
         });
         self.cancel_token.cancel();
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProgressUpdate {
-    pub current_frame: u64,
-    pub total_frames: Option<u64>,
-    pub fps: f32,
-    pub eta_seconds: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -728,44 +740,15 @@ pub struct CreateJobRequest {
     pub params: Option<HashMap<String, serde_json::Value>>,
 }
 
+/// `POST /api/run`'s body. Fields a newer Controller adds are ignored, except
+/// `file_paths`: it belongs to `POST /api/batch`, and running the named
+/// workflow without those inputs would be wrong.
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RunWorkflowRequest {
+struct RunWorkflowBody {
+    #[serde(flatten)]
+    request: RunWorkflowRequest,
     #[serde(default)]
-    pub workflow_name: Option<String>,
-    #[serde(default)]
-    pub params: Option<HashMap<String, serde_json::Value>>,
-}
-
-#[derive(Serialize)]
-pub struct CreateJobResponse {
-    pub id: String,
-    pub status: JobStatus,
-    pub created_at: DateTime<Utc>,
-}
-
-#[derive(Serialize)]
-pub struct JobResponse {
-    pub id: String,
-    pub status: JobStatus,
-    pub created_at: DateTime<Utc>,
-    pub started_at: Option<DateTime<Utc>>,
-    pub completed_at: Option<DateTime<Utc>>,
-    pub progress: Option<ProgressUpdate>,
-    pub error: Option<String>,
-    pub workflow_name: String,
-    pub workflow_source: String,
-    pub params: Option<HashMap<String, serde_json::Value>>,
-    pub rerun_of_job_id: Option<String>,
-    pub duration_ms: Option<i64>,
-    /// Present (and true) once the job was asked to stop; it stays `queued`
-    /// or `running` until its executor exits and it becomes `cancelled`.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub cancel_requested: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cancel_requested_at: Option<DateTime<Utc>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cancel_reason: Option<CancelReason>,
+    file_paths: Option<serde::de::IgnoredAny>,
 }
 
 #[derive(Deserialize)]
@@ -780,18 +763,6 @@ pub struct BatchResponse {
     pub total: usize,
 }
 
-/// `status` is always `"ok"`; the other fields are additive capacity data.
-#[derive(Serialize)]
-pub struct HealthResponse {
-    pub status: String,
-    /// Jobs or previews that can hold the GPU at once.
-    pub gpu_slots: usize,
-    pub running: usize,
-    pub queued: usize,
-    /// Queued or running jobs that were asked to stop and have not yet.
-    pub cancelling: usize,
-}
-
 /// Build identity of the running server.
 ///
 /// The frontend is embedded in this binary, so a bundle-side constant would
@@ -802,13 +773,6 @@ pub struct AboutResponse {
     pub name: String,
     pub version: String,
     pub source_url: String,
-}
-
-#[derive(Serialize)]
-pub struct ErrorResponse {
-    pub error: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub code: Option<&'static str>,
 }
 
 #[derive(Deserialize)]
@@ -872,15 +836,6 @@ pub struct SaveWorkflowRequest {
     /// existing file answers 409 `workflow_exists`.
     #[serde(default)]
     pub overwrite: bool,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct WorkflowEntry {
-    pub filename: String,
-    pub name: String,
-    pub description: String,
-    pub workflow: serde_json::Value,
-    pub has_interface: bool,
 }
 
 // ─── Embedded frontend assets (release builds only) ──────────────────────────
@@ -1011,11 +966,12 @@ pub fn app_router_with_static(state: AppState, static_dir: Option<&StdPath>) -> 
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     let (running, queued, cancelling) = state.active_job_counts();
     Json(HealthResponse {
-        status: "ok".to_string(),
-        gpu_slots: GPU_SLOTS,
-        running,
-        queued,
-        cancelling,
+        status: HealthStatus::Ok,
+        gpu_slots: Some(GPU_SLOTS),
+        running: Some(running),
+        queued: Some(queued),
+        cancelling: Some(cancelling),
+        protocol: Some(PROTOCOL_VERSION),
     })
 }
 
@@ -1619,7 +1575,7 @@ async fn update_config(
         let current = config_etag(&*state.inner.config.read().await);
         if if_match.to_str().ok().map(str::trim) != Some(current.as_str()) {
             return Err(AppError::PreconditionFailed {
-                code: "config_changed",
+                code: ErrorCode::ConfigChanged,
                 message: "settings were changed elsewhere; reload them and apply the change again"
                     .into(),
             });
@@ -1694,12 +1650,24 @@ async fn create_job(
 async fn run_workflow_by_name(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(payload): Json<RunWorkflowRequest>,
+    Json(body): Json<RunWorkflowBody>,
 ) -> Result<(StatusCode, Json<CreateJobResponse>), AppError> {
+    if body.file_paths.is_some() {
+        return Err(AppError::Rejected {
+            status: StatusCode::UNPROCESSABLE_ENTITY,
+            code: None,
+            message: "file_paths belongs to POST /api/batch; POST /api/run takes workflow_name \
+                      and params"
+                .to_string(),
+        });
+    }
+    let payload = body.request;
+    let params: Option<HashMap<String, serde_json::Value>> =
+        payload.params.map(|params| params.into_iter().collect());
     let idempotency_key =
         IdempotencyKey::from_headers(&headers).map_err(|_| AppError::InvalidIdempotencyKey)?;
     let workflow_name = validate_run_workflow_name(payload.workflow_name.as_deref())?;
-    let fingerprint = RequestFingerprint::for_run(&workflow_name, payload.params.as_ref())
+    let fingerprint = RequestFingerprint::for_run(&workflow_name, params.as_ref())
         .map_err(|_| AppError::Internal("failed to fingerprint run request".to_string()))?;
     if let Some(key) = idempotency_key.as_ref() {
         let persistence = jobs_persistence(&state)?;
@@ -1718,7 +1686,7 @@ async fn run_workflow_by_name(
     let (workflow, workflow_source) = load_run_workflow(&state, &workflow_name).await?;
     let submission = JobSubmission {
         workflow,
-        params: payload.params,
+        params,
         workflow_name,
         workflow_source: workflow_source.to_string(),
         rerun_of_job_id: None,
@@ -1855,7 +1823,7 @@ fn prepare_job(submission: JobSubmission) -> (Job, CreateJobResponse) {
     };
     let response = CreateJobResponse {
         id,
-        status: JobStatus::Queued,
+        status: JobStatus::Queued.into(),
         created_at: now,
     };
     (job, response)
@@ -2422,7 +2390,7 @@ async fn save_workflow(
     if presets_dir.join(&filename).exists() {
         let run_name = filename.trim_end_matches(".json");
         return Err(AppError::Conflict {
-            code: "workflow_name_is_preset",
+            code: ErrorCode::WorkflowNameIsPreset,
             message: format!(
                 "'{run_name}' is the run name of a preset; save the workflow under another name"
             ),
@@ -2450,7 +2418,7 @@ async fn save_workflow(
         write_new_workflow_file(&path, &bytes).map_err(|e| {
             if e.kind() == std::io::ErrorKind::AlreadyExists {
                 AppError::Conflict {
-                    code: "workflow_exists",
+                    code: ErrorCode::WorkflowExists,
                     message: format!("a saved workflow named {filename} already exists"),
                 }
             } else {
@@ -3484,11 +3452,23 @@ pub enum AppError {
     NotFound(String),
     Internal(String),
     TooManyRequests(String),
-    Conflict { code: &'static str, message: String },
-    PreconditionFailed { code: &'static str, message: String },
+    Conflict {
+        code: ErrorCode,
+        message: String,
+    },
+    PreconditionFailed {
+        code: ErrorCode,
+        message: String,
+    },
     InvalidIdempotencyKey,
     IdempotencyConflict,
     ServiceUnavailable(String),
+    /// Any status, with an optional machine-readable code.
+    Rejected {
+        status: StatusCode,
+        code: Option<ErrorCode>,
+        message: String,
+    },
 }
 
 impl IntoResponse for AppError {
@@ -3506,14 +3486,19 @@ impl IntoResponse for AppError {
             AppError::InvalidIdempotencyKey => (
                 StatusCode::BAD_REQUEST,
                 "invalid idempotency key".to_string(),
-                Some("invalid_idempotency_key"),
+                Some(ErrorCode::InvalidIdempotencyKey),
             ),
             AppError::IdempotencyConflict => (
                 StatusCode::CONFLICT,
                 "idempotency key conflicts with an existing submission".to_string(),
-                Some("idempotency_conflict"),
+                Some(ErrorCode::IdempotencyConflict),
             ),
             AppError::ServiceUnavailable(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg, None),
+            AppError::Rejected {
+                status,
+                code,
+                message,
+            } => (status, message, code),
         };
 
         let body = Json(ErrorResponse {
@@ -3533,7 +3518,7 @@ impl From<anyhow::Error> for AppError {
 fn job_to_response(job: &Job) -> JobResponse {
     JobResponse {
         id: job.id.clone(),
-        status: job.status,
+        status: job.status.into(),
         created_at: job.created_at,
         started_at: job.started_at,
         completed_at: job.completed_at,
@@ -3541,12 +3526,15 @@ fn job_to_response(job: &Job) -> JobResponse {
         error: job.error.clone(),
         workflow_name: job.workflow_name.clone(),
         workflow_source: job.workflow_source.clone(),
-        params: job.params.clone(),
+        params: job
+            .params
+            .as_ref()
+            .map(|params| params.clone().into_iter().collect()),
         rerun_of_job_id: job.rerun_of_job_id.clone(),
         duration_ms: job_duration_ms(job),
         cancel_requested: job.cancel_request.is_some(),
         cancel_requested_at: job.cancel_request.map(|request| request.requested_at),
-        cancel_reason: job.cancel_request.map(|request| request.reason),
+        cancel_reason: job.cancel_request.map(|request| request.reason.into()),
     }
 }
 
@@ -3653,112 +3641,9 @@ mod tests {
         keys
     }
 
-    fn sorted(keys: &[&str]) -> Vec<String> {
-        let mut keys: Vec<String> = keys.iter().map(|key| (*key).to_owned()).collect();
-        keys.sort();
-        keys
-    }
-
-    /// Controllers up to v0.1.8 reject unknown fields in these responses, so
-    /// adding one would take those Controllers' workers offline or fail their
-    /// tasks. New data goes behind a new endpoint instead (docs/controller.md,
-    /// "Worker API compatibility").
-    ///
-    /// Exception: health carries capacity fields, which Controllers since
-    /// v0.1.9 ignore; a worker with them needs a v0.1.9 or newer Controller.
-    #[test]
-    fn controller_facing_responses_keep_the_fields_older_controllers_accept() {
-        let now = Utc::now();
-        assert_eq!(
-            json_keys(HealthResponse {
-                status: "ok".to_owned(),
-                gpu_slots: 1,
-                running: 0,
-                queued: 0,
-                cancelling: 0,
-            }),
-            sorted(&["status", "gpu_slots", "running", "queued", "cancelling"])
-        );
-        assert_eq!(
-            json_keys(WorkflowEntry {
-                filename: "a.json".to_owned(),
-                name: String::new(),
-                description: String::new(),
-                workflow: serde_json::json!({}),
-                has_interface: false,
-            }),
-            sorted(&[
-                "filename",
-                "name",
-                "description",
-                "workflow",
-                "has_interface"
-            ])
-        );
-        assert_eq!(
-            json_keys(PresetResponse {
-                id: "a".to_owned(),
-                name: String::new(),
-                description: String::new(),
-                workflow: serde_json::json!({}),
-            }),
-            sorted(&["id", "name", "description", "workflow"])
-        );
-        assert_eq!(
-            json_keys(CreateJobResponse {
-                id: "a".to_owned(),
-                status: JobStatus::Queued,
-                created_at: now,
-            }),
-            sorted(&["id", "status", "created_at"])
-        );
-        assert_eq!(
-            json_keys(ProgressUpdate {
-                current_frame: 0,
-                total_frames: None,
-                fps: 0.0,
-                eta_seconds: None,
-            }),
-            sorted(&["current_frame", "total_frames", "fps", "eta_seconds"])
-        );
-        assert_eq!(
-            json_keys(JobResponse {
-                id: "a".to_owned(),
-                status: JobStatus::Running,
-                created_at: now,
-                started_at: None,
-                completed_at: None,
-                progress: None,
-                error: None,
-                workflow_name: String::new(),
-                workflow_source: String::new(),
-                params: None,
-                rerun_of_job_id: None,
-                duration_ms: None,
-                cancel_requested: false,
-                cancel_requested_at: None,
-                cancel_reason: None,
-            }),
-            sorted(&[
-                "id",
-                "status",
-                "created_at",
-                "started_at",
-                "completed_at",
-                "progress",
-                "error",
-                "workflow_name",
-                "workflow_source",
-                "params",
-                "rerun_of_job_id",
-                "duration_ms",
-            ])
-        );
-        files::assert_controller_facing_file_responses();
-    }
-
     /// The cancel fields appear only on jobs something asked to stop, so a job
-    /// that was never cancelled keeps the field set pinned above.
+    /// that was never cancelled keeps its v0.1.10 field set (pinned in
+    /// `crates/protocol/tests/v0_1_10_compat.rs`).
     #[test]
     fn job_response_reports_a_cancel_request_only_when_there_is_one() {
         let mut job = build_test_job("cancel-fields".into(), JobStatus::Running, None);
@@ -4718,6 +4603,25 @@ mod tests {
         assert_eq!(json["queued"], 1);
         assert_eq!(json["cancelling"], 1);
         drop(gate);
+    }
+
+    #[tokio::test]
+    async fn health_reports_the_protocol_version() {
+        let mut app = test_router();
+        let req = Request::builder()
+            .uri("/api/health")
+            .body(Body::empty())
+            .unwrap();
+        let resp = send_request(&mut app, req).await;
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+
+        // A Controller reads it with the shared wire type.
+        let health: videnoa_protocol::HealthResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(health.status, videnoa_protocol::HealthStatus::Ok);
+        assert_eq!(health.protocol(), videnoa_protocol::PROTOCOL_VERSION);
+        assert_eq!(health.gpu_slots, Some(GPU_SLOTS));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -5731,6 +5635,37 @@ mod tests {
             state.inner.jobs.is_empty(),
             "validation must not create jobs"
         );
+        let _ = std::fs::remove_dir_all(&workflows_dir);
+        let _ = std::fs::remove_dir_all(&presets_dir);
+    }
+
+    /// A newer Controller may add a request field; this worker must not
+    /// reject the whole request for it (v0.1.10 answered 422).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_requests_ignore_fields_a_newer_controller_adds() {
+        let state = test_state();
+        let mut app = app_router(state.clone());
+        let workflows_dir = unique_temp_dir("videnoa-additive-workflows");
+        let presets_dir = unique_temp_dir("videnoa-additive-presets");
+        std::fs::create_dir_all(&workflows_dir).expect("create workflows dir");
+        std::fs::create_dir_all(&presets_dir).expect("create presets dir");
+        set_workflow_lookup_dirs(&state, workflows_dir.clone(), presets_dir.clone()).await;
+        write_json_file(
+            &workflows_dir.join("valid.json"),
+            &serde_json::json!({"workflow": valid_workflow_json()}),
+        );
+        let request = serde_json::json!({
+            "workflow_name": "valid",
+            "params": {},
+            "added_by_a_newer_controller": {"priority": 1},
+        });
+
+        let (status, body) = post_json(&mut app, "/api/run/validate", request.clone()).await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+        let (status, body) = post_json(&mut app, "/api/run", request).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        assert_eq!(state.inner.jobs.len(), 1);
+
         let _ = std::fs::remove_dir_all(&workflows_dir);
         let _ = std::fs::remove_dir_all(&presets_dir);
     }

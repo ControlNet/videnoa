@@ -7,29 +7,15 @@ use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use futures_util::TryStreamExt;
-use serde::Serialize;
 use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio_util::io::{ReaderStream, StreamReader};
+use videnoa_protocol::{FileStatResponse, UploadResponse};
 
 use super::{AppError, AppState};
 
 mod path;
 
 use path::{resolve_workspace_path, PathRequirement};
-
-#[derive(Serialize)]
-pub(super) struct UploadResponse {
-    path: String,
-    size: u64,
-}
-
-#[derive(Serialize)]
-pub(super) struct FileStatResponse {
-    path: String,
-    size: u64,
-    is_file: bool,
-    is_dir: bool,
-}
 
 pub(super) async fn upload_file(
     State(state): State<AppState>,
@@ -238,30 +224,6 @@ fn workflow_response_path(path: &StdPath) -> Result<String, AppError> {
             relative.display()
         ))
     })
-}
-
-/// See `controller_facing_responses_keep_the_fields_older_controllers_accept`.
-#[cfg(test)]
-pub(super) fn assert_controller_facing_file_responses() {
-    let keys = |value: serde_json::Value| {
-        let mut keys: Vec<String> = value.as_object().unwrap().keys().cloned().collect();
-        keys.sort();
-        keys
-    };
-    let upload = serde_json::to_value(UploadResponse {
-        path: String::new(),
-        size: 0,
-    })
-    .unwrap();
-    assert_eq!(keys(upload), ["path", "size"]);
-    let stat = serde_json::to_value(FileStatResponse {
-        path: String::new(),
-        size: 0,
-        is_file: true,
-        is_dir: false,
-    })
-    .unwrap();
-    assert_eq!(keys(stat), ["is_dir", "is_file", "path", "size"]);
 }
 
 #[cfg(test)]

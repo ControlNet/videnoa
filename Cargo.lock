@@ -8045,6 +8045,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+ "videnoa-protocol",
  "videnoa-transport",
  "windows-sys 0.60.2",
 ]

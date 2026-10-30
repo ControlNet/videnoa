@@ -148,7 +148,7 @@ impl JobsPersistence {
             .ok_or_else(|| anyhow!("persisted idempotency job has invalid status"))?;
         Ok(IdempotentJobLookup::Replayed(CreateJobResponse {
             id: existing.id,
-            status,
+            status: status.into(),
             created_at: parse_timestamp(&existing.created_at)?,
         }))
     }

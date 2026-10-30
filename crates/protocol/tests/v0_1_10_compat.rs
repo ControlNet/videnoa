@@ -53,7 +53,10 @@ fn jobs_and_receipts_keep_their_v0_1_10_form() {
     assert!(!running.cancel_requested);
     assert_eq!(running.cancel_reason, None);
     assert_eq!(
-        running.params.as_ref().and_then(|params| params.get("input")),
+        running
+            .params
+            .as_ref()
+            .and_then(|params| params.get("input")),
         Some(&serde_json::json!("6f1c/input.mkv"))
     );
     let failed: JobResponse = round_trip("job-failed.json");

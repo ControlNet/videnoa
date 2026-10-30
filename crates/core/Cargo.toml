@@ -8,6 +8,7 @@ edition = "2021"
 cap-std.workspace = true
 tempfile = "3"
 videnoa-transport.workspace = true
+videnoa-protocol.workspace = true
 argon2 = { workspace = true }
 rand_core = { workspace = true }
 anyhow = { workspace = true }
