@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use anyhow::{anyhow, bail, Context, Result};
 
-use crate::compile::{compile_graph_with_execution_context, CompileContext};
+use crate::compile::{compile_graph_with_execution_context, CompileContext, CompiledPipeline};
 use crate::debug_event::{build_print_debug_value_event, NodeDebugEventCallback};
 use crate::graph::PipelineGraph;
 use crate::node::ExecutionContext;
@@ -81,12 +81,19 @@ impl SequentialExecutor {
                      use execute_with_context() instead of execute()"
                 )
             })?;
-            let compiled = compile_graph_with_execution_context(
+            let CompiledPipeline {
+                decoder,
+                stages,
+                encoder,
+                total_frames,
+                total_output_frames,
+                after_stream,
+            } = compile_graph_with_execution_context(
                 graph,
                 registry,
                 compile_ctx,
                 &ctx,
-                node_debug_callback,
+                node_debug_callback.as_deref_mut(),
             )?;
 
             let executor = StreamingExecutor::new(DEFAULT_BUFFER_SIZE);
@@ -95,10 +102,10 @@ impl SequentialExecutor {
             let cancel_rx = cancel_rx.unwrap_or_else(|| tokio::sync::watch::channel(false).1);
 
             let future = executor.execute_pipeline_stages(
-                compiled.decoder,
-                compiled.stages,
-                compiled.encoder,
-                PipelineFrameCounts::new(compiled.total_frames, compiled.total_output_frames),
+                decoder,
+                stages,
+                encoder,
+                PipelineFrameCounts::new(total_frames, total_output_frames),
                 cancel_rx,
                 progress_callback,
             );
@@ -114,6 +121,10 @@ impl SequentialExecutor {
                     rt.block_on(future)?;
                 }
             }
+
+            // The stream finished and the output is published: only now may
+            // the nodes that consume the sink's outputs run.
+            after_stream.run(graph, registry, &ctx, node_debug_callback)?;
 
             return Ok(HashMap::new());
         }
@@ -1130,5 +1141,384 @@ mod tests {
             events.is_empty(),
             "non-Print nodes should not emit debug events"
         );
+    }
+
+    /// Whether the published output existed each time the node that consumes
+    /// it ran.
+    type Observations = std::sync::Arc<std::sync::Mutex<Vec<bool>>>;
+
+    struct FrameSourceNode;
+
+    impl Node for FrameSourceNode {
+        fn node_type(&self) -> &str {
+            "frame_source"
+        }
+
+        fn input_ports(&self) -> Vec<PortDefinition> {
+            vec![]
+        }
+
+        fn output_ports(&self) -> Vec<PortDefinition> {
+            vec![PortDefinition {
+                name: "frames".to_string(),
+                port_type: PortType::VideoFrames,
+                required: true,
+                default_value: None,
+            }]
+        }
+
+        fn execute(
+            &mut self,
+            _inputs: &HashMap<String, PortData>,
+            _ctx: &ExecutionContext,
+        ) -> Result<HashMap<String, PortData>> {
+            Ok(HashMap::new())
+        }
+    }
+
+    /// Like VideoOutput: reports the path it publishes the stream to.
+    struct PublishingSinkNode;
+
+    impl Node for PublishingSinkNode {
+        fn node_type(&self) -> &str {
+            "publishing_sink"
+        }
+
+        fn input_ports(&self) -> Vec<PortDefinition> {
+            vec![
+                PortDefinition {
+                    name: "frames".to_string(),
+                    port_type: PortType::VideoFrames,
+                    required: true,
+                    default_value: None,
+                },
+                PortDefinition {
+                    name: "output_path".to_string(),
+                    port_type: PortType::Path,
+                    required: true,
+                    default_value: None,
+                },
+            ]
+        }
+
+        fn output_ports(&self) -> Vec<PortDefinition> {
+            vec![PortDefinition {
+                name: "output_path".to_string(),
+                port_type: PortType::Path,
+                required: true,
+                default_value: None,
+            }]
+        }
+
+        fn execute(
+            &mut self,
+            inputs: &HashMap<String, PortData>,
+            _ctx: &ExecutionContext,
+        ) -> Result<HashMap<String, PortData>> {
+            let output_path = inputs
+                .get("output_path")
+                .map(clone_port_data)
+                .ok_or_else(|| anyhow!("missing output_path"))?;
+            Ok(HashMap::from([("output_path".to_string(), output_path)]))
+        }
+    }
+
+    /// A "done" notification: records whether the path it is given exists.
+    struct ObserveOutputNode {
+        observations: Observations,
+    }
+
+    impl Node for ObserveOutputNode {
+        fn node_type(&self) -> &str {
+            "observe_output"
+        }
+
+        fn input_ports(&self) -> Vec<PortDefinition> {
+            vec![
+                PortDefinition {
+                    name: "path".to_string(),
+                    port_type: PortType::Path,
+                    required: true,
+                    default_value: None,
+                },
+                PortDefinition {
+                    name: "fail".to_string(),
+                    port_type: PortType::Bool,
+                    required: false,
+                    default_value: Some(serde_json::json!(false)),
+                },
+            ]
+        }
+
+        fn output_ports(&self) -> Vec<PortDefinition> {
+            vec![PortDefinition {
+                name: "path".to_string(),
+                port_type: PortType::Path,
+                required: true,
+                default_value: None,
+            }]
+        }
+
+        fn execute(
+            &mut self,
+            inputs: &HashMap<String, PortData>,
+            _ctx: &ExecutionContext,
+        ) -> Result<HashMap<String, PortData>> {
+            let Some(PortData::Path(path)) = inputs.get("path") else {
+                bail!("missing path");
+            };
+            self.observations.lock().unwrap().push(path.exists());
+            if matches!(inputs.get("fail"), Some(PortData::Bool(true))) {
+                bail!("notification endpoint refused the request");
+            }
+            Ok(HashMap::from([(
+                "path".to_string(),
+                PortData::Path(path.clone()),
+            )]))
+        }
+    }
+
+    /// Publishes its output file when the stream finishes, unless cancelled.
+    struct PublishingSink {
+        path: PathBuf,
+        cancel_on_first_frame: Option<tokio::sync::watch::Sender<bool>>,
+    }
+
+    impl FrameSink for PublishingSink {
+        fn write_frame(&mut self, _frame: &Frame) -> Result<()> {
+            if let Some(cancel) = &self.cancel_on_first_frame {
+                cancel.send_replace(true);
+            }
+            Ok(())
+        }
+
+        fn finish(&mut self) -> Result<()> {
+            std::fs::write(&self.path, b"published")?;
+            Ok(())
+        }
+
+        fn finish_unless_cancelled(
+            &mut self,
+            cancelled: &std::sync::atomic::AtomicBool,
+        ) -> Result<()> {
+            if cancelled.load(std::sync::atomic::Ordering::SeqCst) {
+                return Ok(());
+            }
+            self.finish()
+        }
+    }
+
+    #[derive(Default)]
+    struct StreamCompileContext {
+        fail_decoding_at: Option<usize>,
+        cancel_on_first_frame: Option<tokio::sync::watch::Sender<bool>>,
+    }
+
+    impl CompileContext for StreamCompileContext {
+        fn create_decoder(
+            &self,
+            _node: &mut dyn Node,
+            _outputs: &HashMap<String, PortData>,
+        ) -> crate::compile::DecoderResult {
+            let fail_at = self.fail_decoding_at;
+            let frames = (0..3).map(move |index| {
+                if Some(index) == fail_at {
+                    bail!("decoder failed at frame {index}");
+                }
+                Ok(Frame::CpuRgb {
+                    data: vec![0; 3],
+                    width: 1,
+                    height: 1,
+                    bit_depth: 8,
+                })
+            });
+            Ok((Box::new(frames), Some(3)))
+        }
+
+        fn create_encoder(
+            &self,
+            _node: &mut dyn Node,
+            _inputs: &HashMap<String, PortData>,
+            outputs: &HashMap<String, PortData>,
+        ) -> Result<Box<dyn FrameSink>> {
+            let Some(PortData::Path(path)) = outputs.get("output_path") else {
+                bail!("sink did not report output_path");
+            };
+            Ok(Box::new(PublishingSink {
+                path: path.clone(),
+                cancel_on_first_frame: self.cancel_on_first_frame.clone(),
+            }))
+        }
+
+        fn create_processor(
+            &self,
+            node: Box<dyn Node>,
+            _inputs: &HashMap<String, PortData>,
+        ) -> Result<Box<dyn crate::node::FrameProcessor>> {
+            bail!("unexpected processor '{}'", node.node_type())
+        }
+
+        fn create_interpolator(
+            &self,
+            node: Box<dyn Node>,
+            _inputs: &HashMap<String, PortData>,
+        ) -> Result<Box<dyn crate::streaming_executor::FrameInterpolator>> {
+            bail!("unexpected interpolator '{}'", node.node_type())
+        }
+
+        fn is_interpolator_type(&self, _node_type: &str) -> bool {
+            false
+        }
+    }
+
+    /// `source -> sink`, with `sink.output_path -> notify` and, when `chained`,
+    /// `notify.path -> notify_again`: a consumer of the published output that
+    /// is one node further away.
+    fn graph_notifying_on_output(output: &std::path::Path, fail: bool) -> PipelineGraph {
+        let mut graph = PipelineGraph::new();
+        for (id, node_type, params) in [
+            ("source", "frame_source", HashMap::new()),
+            (
+                "sink",
+                "publishing_sink",
+                HashMap::from([("output_path".to_string(), serde_json::json!(output))]),
+            ),
+            ("notify", "observe_output", HashMap::new()),
+            (
+                "notify_again",
+                "observe_output",
+                HashMap::from([("fail".to_string(), serde_json::json!(fail))]),
+            ),
+        ] {
+            graph
+                .add_node(NodeInstance {
+                    id: id.to_string(),
+                    node_type: node_type.to_string(),
+                    params,
+                })
+                .unwrap();
+        }
+        for (from, from_port, to, to_port, port_type) in [
+            ("source", "frames", "sink", "frames", PortType::VideoFrames),
+            ("sink", "output_path", "notify", "path", PortType::Path),
+            ("notify", "path", "notify_again", "path", PortType::Path),
+        ] {
+            graph
+                .add_connection(
+                    from,
+                    PortConnection {
+                        source_port: from_port.to_string(),
+                        target_port: to_port.to_string(),
+                        port_type,
+                    },
+                    to,
+                )
+                .unwrap();
+        }
+        graph
+    }
+
+    fn stream_registry(observations: &Observations) -> NodeRegistry {
+        let mut registry = NodeRegistry::new();
+        registry.register("frame_source", |_| Ok(Box::new(FrameSourceNode)));
+        registry.register("publishing_sink", |_| Ok(Box::new(PublishingSinkNode)));
+        let observations = observations.clone();
+        registry.register("observe_output", move |_| {
+            Ok(Box::new(ObserveOutputNode {
+                observations: observations.clone(),
+            }))
+        });
+        registry
+    }
+
+    fn run_stream(
+        graph: &PipelineGraph,
+        registry: &NodeRegistry,
+        compile_ctx: &StreamCompileContext,
+        cancel_rx: Option<tokio::sync::watch::Receiver<bool>>,
+    ) -> Result<()> {
+        SequentialExecutor::execute_with_context(
+            graph,
+            registry,
+            Some(compile_ctx),
+            None,
+            cancel_rx,
+        )
+        .map(drop)
+    }
+
+    #[test]
+    fn nodes_that_consume_the_sink_output_run_after_it_is_published() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let output = dir.path().join("out.mkv");
+        let observations = Observations::default();
+        let registry = stream_registry(&observations);
+        let graph = graph_notifying_on_output(&output, false);
+
+        run_stream(&graph, &registry, &StreamCompileContext::default(), None)
+            .expect("the stream should complete");
+
+        assert_eq!(
+            *observations.lock().unwrap(),
+            vec![true, true],
+            "both consumers must run, and only once the output exists"
+        );
+    }
+
+    #[test]
+    fn nodes_that_consume_the_sink_output_do_not_run_when_the_stream_fails() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let output = dir.path().join("out.mkv");
+        let observations = Observations::default();
+        let registry = stream_registry(&observations);
+        let graph = graph_notifying_on_output(&output, false);
+        let compile_ctx = StreamCompileContext {
+            fail_decoding_at: Some(1),
+            ..Default::default()
+        };
+
+        let err = run_stream(&graph, &registry, &compile_ctx, None)
+            .expect_err("a failed decode must fail the run");
+
+        assert!(format!("{err:#}").contains("decoder failed"), "{err:#}");
+        assert!(observations.lock().unwrap().is_empty());
+        assert!(!output.exists());
+    }
+
+    #[test]
+    fn nodes_that_consume_the_sink_output_do_not_run_when_the_stream_is_cancelled() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let output = dir.path().join("out.mkv");
+        let observations = Observations::default();
+        let registry = stream_registry(&observations);
+        let graph = graph_notifying_on_output(&output, false);
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        let compile_ctx = StreamCompileContext {
+            cancel_on_first_frame: Some(cancel_tx),
+            ..Default::default()
+        };
+
+        let err = run_stream(&graph, &registry, &compile_ctx, Some(cancel_rx))
+            .expect_err("a cancelled stream must not complete");
+
+        assert!(crate::node::is_cancellation(&err), "{err:#}");
+        assert!(observations.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_failing_consumer_of_the_sink_output_fails_the_run() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let output = dir.path().join("out.mkv");
+        let observations = Observations::default();
+        let registry = stream_registry(&observations);
+        let graph = graph_notifying_on_output(&output, true);
+
+        let err = run_stream(&graph, &registry, &StreamCompileContext::default(), None)
+            .expect_err("a failing notification must fail the run");
+
+        let message = format!("{err:#}");
+        assert!(message.contains("notify_again"), "{message}");
+        assert!(message.contains("refused the request"), "{message}");
+        assert_eq!(*observations.lock().unwrap(), vec![true, true]);
     }
 }

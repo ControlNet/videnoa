@@ -3,11 +3,13 @@
 use axum::{
     body::{to_bytes, Body},
     http::{Request, StatusCode},
+    routing::post,
     Router,
 };
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tempfile::TempDir;
 use tower::ServiceExt;
@@ -118,6 +120,59 @@ async fn scalar_node_downstream_of_frame_chain_node_runs() {
 
     assert_eq!(job["status"], "completed", "{job:#}");
     assert!(dir.path().join("derived.mp4").is_file());
+}
+
+/// A "done" webhook fed by `VideoOutput.output_path` describes the finished
+/// file, so it must fire only once that file has been published.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn webhook_on_the_output_path_fires_after_the_output_is_published() {
+    let dir = TempDir::new().unwrap();
+    let Some(input) = synthetic_video(dir.path()) else {
+        eprintln!("skipping: ffmpeg is not available");
+        return;
+    };
+    let output = dir.path().join("done.mp4");
+    // Whether the posted path named an existing file when the webhook arrived.
+    let deliveries = Arc::new(Mutex::new(Vec::new()));
+    let endpoint = Router::new().route(
+        "/done",
+        post({
+            let deliveries = deliveries.clone();
+            move |body: String| {
+                let deliveries = deliveries.clone();
+                async move {
+                    deliveries.lock().unwrap().push(Path::new(&body).is_file());
+                    "ok"
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/done", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, endpoint).await.unwrap() });
+    let app = app(&dir);
+    let workflow = json!({
+        "nodes": [
+            {"id": "input", "node_type": "VideoInput", "params": {"path": input}},
+            {"id": "output", "node_type": "VideoOutput", "params": {"output_path": output, "codec": "libx264", "pixel_format": "yuv420p"}},
+            {"id": "to_str", "node_type": "TypeConversion", "params": {"input_type": "Path", "output_type": "Str"}},
+            {"id": "done", "node_type": "HttpRequest", "params": {"method": "POST", "url": url, "max_retries": 0}}
+        ],
+        "connections": [
+            {"from_node": "input", "from_port": "frames", "to_node": "output", "to_port": "frames", "port_type": "VideoFrames"},
+            {"from_node": "input", "from_port": "source_path", "to_node": "output", "to_port": "source_path", "port_type": "Path"},
+            {"from_node": "output", "from_port": "output_path", "to_node": "to_str", "to_port": "value", "port_type": "Path"},
+            {"from_node": "to_str", "from_port": "value", "to_node": "done", "to_port": "body", "port_type": "Str"}
+        ]
+    });
+
+    let (status, created) = request(&app, "POST", "/api/jobs", json!({"workflow": workflow})).await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let job = terminal(&app, created["id"].as_str().unwrap()).await;
+    server.abort();
+
+    assert_eq!(job["status"], "completed", "{job:#}");
+    assert_eq!(*deliveries.lock().unwrap(), vec![true], "{job:#}");
 }
 
 /// A Workflow node runs its target with the scalar executor, which cannot

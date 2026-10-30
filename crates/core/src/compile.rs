@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -25,6 +25,9 @@ pub struct CompiledPipeline {
     /// Total number of **output** frames after interpolation expansion.
     /// Equals `total_frames` when no interpolator is present.
     pub total_output_frames: Option<u64>,
+    /// Nodes that consume the sink's outputs. Compilation does not run them;
+    /// the caller runs them once the stream has finished.
+    pub after_stream: AfterStreamNodes,
 }
 
 impl fmt::Debug for CompiledPipeline {
@@ -32,7 +35,44 @@ impl fmt::Debug for CompiledPipeline {
         f.debug_struct("CompiledPipeline")
             .field("stages", &self.stages.len())
             .field("total_frames", &self.total_frames)
+            .field("after_stream", &self.after_stream.order.len())
             .finish_non_exhaustive()
+    }
+}
+
+/// The scalar nodes that depend, directly or through other nodes, on the
+/// outputs of the frame-chain sink, such as a "done" webhook fed by
+/// `VideoOutput.output_path`. Those outputs describe a file that exists only
+/// once the stream has been encoded and published, so these nodes must not
+/// run before that, nor at all when the stream fails or is cancelled.
+pub struct AfterStreamNodes {
+    order: Vec<NodeIndex>,
+    /// Outputs of the nodes run during compilation, which these nodes read.
+    outputs_by_node: HashMap<String, HashMap<String, PortData>>,
+}
+
+impl AfterStreamNodes {
+    /// Runs the nodes in execution order. Call it only after the stream has
+    /// finished successfully; a node's error is the run's error.
+    pub fn run(
+        mut self,
+        graph: &PipelineGraph,
+        registry: &NodeRegistry,
+        exec_ctx: &ExecutionContext,
+        mut node_debug_callback: Option<&mut NodeDebugEventCallback<'_>>,
+    ) -> Result<()> {
+        for node_idx in self.order {
+            exec_ctx.check_cancelled()?;
+            execute_scalar_node(
+                graph,
+                registry,
+                node_idx,
+                &mut self.outputs_by_node,
+                exec_ctx,
+                &mut node_debug_callback,
+            )?;
+        }
+        Ok(())
     }
 }
 
@@ -121,7 +161,8 @@ pub trait CompileContext {
 /// The function walks the graph in topological order, validates that it
 /// represents a linear VideoFrames pipeline (no fan-out / fan-in), resolves
 /// parameter inputs for every node, and categorises nodes into source,
-/// processing stages, and sink.
+/// processing stages, and sink. Nodes that consume the sink's outputs are not
+/// run; they are returned in [`CompiledPipeline::after_stream`].
 pub fn compile_graph(
     graph: &PipelineGraph,
     registry: &NodeRegistry,
@@ -166,6 +207,8 @@ pub(crate) fn compile_graph_with_execution_context(
         processing: processing_order,
     } = resolve_video_topology(graph, &execution_order)?;
 
+    let after_stream = nodes_downstream_of(graph, sink_idx);
+
     let mut outputs_by_node: HashMap<String, HashMap<String, PortData>> = HashMap::new();
     let mut source: Option<(FrameDecoder, Option<u64>)> = None;
     let mut stages: Vec<PipelineStage> = Vec::new();
@@ -173,12 +216,15 @@ pub(crate) fn compile_graph_with_execution_context(
 
     // One pass in topological order: a param node may consume a scalar output
     // of a frame-chain node (e.g. VideoInput.source_path), and the order along
-    // the VideoFrames chain stays source, processing nodes, sink.
+    // the VideoFrames chain stays source, processing nodes, sink. Nodes fed by
+    // the sink are left for after the stream.
     for &node_idx in &execution_order {
         exec_ctx.check_cancelled()?;
         let instance = graph.node(node_idx);
 
-        if node_idx == source_idx {
+        if after_stream.contains(&node_idx) {
+            continue;
+        } else if node_idx == source_idx {
             let mut source_node = registry
                 .create(&instance.node_type, instance.params.clone())
                 .with_context(|| {
@@ -255,26 +301,14 @@ pub(crate) fn compile_graph_with_execution_context(
             let node_stages = ctx.create_stages(node, &inputs, is_interpolator)?;
             stages.extend(node_stages);
         } else {
-            let mut node = registry
-                .create(&instance.node_type, instance.params.clone())
-                .with_context(|| {
-                    format!(
-                        "failed to instantiate param node '{}' of type '{}'",
-                        instance.id, instance.node_type
-                    )
-                })?;
-            let inputs = resolve_inputs(graph, registry, node_idx, &outputs_by_node)?;
-            let node_outputs = node
-                .execute(&inputs, exec_ctx)
-                .with_context(|| format!("execution failed for param node '{}'", instance.id))?;
-            exec_ctx.check_cancelled()?;
-            emit_print_debug_event(
-                &instance.id,
-                &instance.node_type,
-                &node_outputs,
+            execute_scalar_node(
+                graph,
+                registry,
+                node_idx,
+                &mut outputs_by_node,
+                exec_ctx,
                 &mut node_debug_callback,
-            );
-            outputs_by_node.insert(instance.id.clone(), node_outputs);
+            )?;
         }
     }
 
@@ -283,13 +317,69 @@ pub(crate) fn compile_graph_with_execution_context(
     let encoder = encoder.ok_or_else(|| anyhow!("no sink node found in VideoFrames pipeline"))?;
     let total_output_frames = ctx.total_output_frames().or(total_frames);
 
+    let after_stream = AfterStreamNodes {
+        order: execution_order
+            .into_iter()
+            .filter(|node_idx| after_stream.contains(node_idx))
+            .collect(),
+        outputs_by_node,
+    };
+
     Ok(CompiledPipeline {
         decoder,
         stages,
         encoder,
         total_frames,
         total_output_frames,
+        after_stream,
     })
+}
+
+/// Runs a node that is not on the VideoFrames chain and records its outputs.
+fn execute_scalar_node(
+    graph: &PipelineGraph,
+    registry: &NodeRegistry,
+    node_idx: NodeIndex,
+    outputs_by_node: &mut HashMap<String, HashMap<String, PortData>>,
+    exec_ctx: &ExecutionContext,
+    node_debug_callback: &mut Option<&mut NodeDebugEventCallback<'_>>,
+) -> Result<()> {
+    let instance = graph.node(node_idx);
+    let mut node = registry
+        .create(&instance.node_type, instance.params.clone())
+        .with_context(|| {
+            format!(
+                "failed to instantiate param node '{}' of type '{}'",
+                instance.id, instance.node_type
+            )
+        })?;
+    let inputs = resolve_inputs(graph, registry, node_idx, outputs_by_node)?;
+    let node_outputs = node
+        .execute(&inputs, exec_ctx)
+        .with_context(|| format!("execution failed for param node '{}'", instance.id))?;
+    exec_ctx.check_cancelled()?;
+    emit_print_debug_event(
+        &instance.id,
+        &instance.node_type,
+        &node_outputs,
+        node_debug_callback,
+    );
+    outputs_by_node.insert(instance.id.clone(), node_outputs);
+    Ok(())
+}
+
+/// Every node reachable from `start` along any connection, `start` excluded.
+fn nodes_downstream_of(graph: &PipelineGraph, start: NodeIndex) -> HashSet<NodeIndex> {
+    let mut downstream = HashSet::new();
+    let mut pending = vec![start];
+    while let Some(node_idx) = pending.pop() {
+        for (target, _) in graph.connections_from(node_idx) {
+            if downstream.insert(target) {
+                pending.push(target);
+            }
+        }
+    }
+    downstream
 }
 
 fn emit_print_debug_event(
