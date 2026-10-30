@@ -161,6 +161,7 @@ async fn iroh_password_and_api_lifecycle() -> anyhow::Result<()> {
             workflow_name: "iroh-socket-test".into(),
             workflow_source: "test".into(),
             rerun_of_job_id: None,
+            cancel_request: None,
         },
     );
     let (sender, _) = tokio::sync::broadcast::channel(8);

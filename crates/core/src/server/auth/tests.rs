@@ -422,6 +422,7 @@ async fn anonymous_websocket_survives_password_rotation_and_disable() {
             workflow_name: "socket-test".into(),
             workflow_source: "test".into(),
             rerun_of_job_id: None,
+            cancel_request: None,
         },
     );
     let (sender, _) = tokio::sync::broadcast::channel(8);

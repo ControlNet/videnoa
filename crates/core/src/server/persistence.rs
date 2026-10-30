@@ -7,7 +7,7 @@ use rusqlite::{params, Connection};
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
-use super::{Job, JobStatus, PipelineGraph, ProgressUpdate};
+use super::{CancelReason, CancelRequest, Job, JobStatus, PipelineGraph, ProgressUpdate};
 
 mod idempotency;
 pub(crate) use idempotency::{IdempotentJobClaim, IdempotentJobLookup};
@@ -177,7 +177,12 @@ impl JobsPersistence {
                     }
                 };
 
+                let mut cancel_request = None;
                 if matches!(row.status, JobStatus::Queued | JobStatus::Running) {
+                    cancel_request = Some(CancelRequest {
+                        requested_at: startup_now,
+                        reason: CancelReason::Restart,
+                    });
                     let previous_status = row.status;
                     row.status = JobStatus::Cancelled;
                     row.completed_at = Some(row.completed_at.unwrap_or(startup_now));
@@ -233,6 +238,7 @@ impl JobsPersistence {
                     workflow_name: row.workflow_name,
                     workflow_source: row.workflow_source,
                     rerun_of_job_id: row.rerun_of_job_id,
+                    cancel_request,
                 });
             }
 

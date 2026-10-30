@@ -332,6 +332,9 @@ pub struct Job {
     pub workflow_name: String,
     pub workflow_source: String,
     pub rerun_of_job_id: Option<String>,
+    /// Set once something asked a queued or running job to stop. The job keeps
+    /// its status (and the GPU permit) until its executor has exited.
+    pub cancel_request: Option<CancelRequest>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -342,6 +345,59 @@ pub enum JobStatus {
     Completed,
     Failed,
     Cancelled,
+}
+
+impl JobStatus {
+    fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            JobStatus::Completed | JobStatus::Failed | JobStatus::Cancelled
+        )
+    }
+}
+
+/// Why a queued or running job was asked to stop. `cancelled` alone cannot
+/// tell a user's cancel from a restart, so responses carry this code too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CancelReason {
+    /// A client cancelled it (`DELETE /api/jobs/{id}` on an active job).
+    User,
+    /// The worker shut down while the job was active.
+    Shutdown,
+    /// The worker restarted (or crashed) while the job was active.
+    Restart,
+}
+
+impl CancelReason {
+    /// The `error` text of a job cancelled for this reason.
+    fn message(self) -> &'static str {
+        match self {
+            CancelReason::User => "job cancelled at user request",
+            CancelReason::Shutdown => "job interrupted by worker shutdown",
+            CancelReason::Restart => "job interrupted by worker restart",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CancelRequest {
+    pub requested_at: DateTime<Utc>,
+    pub reason: CancelReason,
+}
+
+impl Job {
+    /// Asks an active job to stop. The first request's reason wins.
+    fn request_cancel(&mut self, reason: CancelReason) {
+        if self.status.is_terminal() {
+            return;
+        }
+        self.cancel_request.get_or_insert(CancelRequest {
+            requested_at: Utc::now(),
+            reason,
+        });
+        self.cancel_token.cancel();
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -512,6 +568,14 @@ pub struct JobResponse {
     pub params: Option<HashMap<String, serde_json::Value>>,
     pub rerun_of_job_id: Option<String>,
     pub duration_ms: Option<i64>,
+    /// Present (and true) once the job was asked to stop; it stays `queued`
+    /// or `running` until its executor exits and it becomes `cancelled`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub cancel_requested: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cancel_requested_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cancel_reason: Option<CancelReason>,
 }
 
 #[derive(Deserialize)]
@@ -1580,6 +1644,7 @@ fn prepare_job(submission: JobSubmission) -> (Job, CreateJobResponse) {
         workflow_name: submission.workflow_name,
         workflow_source: submission.workflow_source,
         rerun_of_job_id: submission.rerun_of_job_id,
+        cancel_request: None,
     };
     let response = CreateJobResponse {
         id,
@@ -1848,18 +1913,28 @@ async fn rerun_job(
     Ok((StatusCode::CREATED, Json(created)))
 }
 
+/// Deletes a finished job's history, or cancels a queued or running job.
+///
+/// A cancelled job is not removed: it keeps its status and the GPU permit
+/// until its executor exits, then becomes `cancelled`. Deleting it again after
+/// that removes its history. Both answer 204, so clients that treat this route
+/// as "cancel" keep working.
 async fn delete_job_history(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, AppError> {
-    let entry = match state.inner.jobs.entry(id.clone()) {
+    let mut entry = match state.inner.jobs.entry(id.clone()) {
         dashmap::mapref::entry::Entry::Occupied(entry) => entry,
         dashmap::mapref::entry::Entry::Vacant(_) => {
             return Err(AppError::NotFound(format!("job not found: {id}")));
         }
     };
-    // Hold the runtime entry until durable deletion succeeds. Failed deletion
-    // must never cancel a job whose queued/running state remains visible.
+    if !entry.get().status.is_terminal() {
+        entry.get_mut().request_cancel(CancelReason::User);
+        info!(job_id = %id, "Job cancellation requested");
+        return Ok(StatusCode::NO_CONTENT);
+    }
+    // Hold the runtime entry until durable deletion succeeds.
     if let Some(persistence) = &state.inner.jobs_persistence {
         let rows = persistence
             .delete_job(&id)
@@ -1870,10 +1945,7 @@ async fn delete_job_history(
             )));
         }
     }
-    let job = entry.remove();
-    if matches!(job.status, JobStatus::Queued | JobStatus::Running) {
-        job.cancel_token.cancel();
-    }
+    entry.remove();
     state.inner.progress_senders.remove(&id);
     info!(job_id = %id, "Job history row deleted");
     Ok(StatusCode::NO_CONTENT)
@@ -2950,7 +3022,7 @@ fn job_cancellation_watch(
 }
 
 async fn run_job(state: AppState, job_id: String) {
-    let _permit = {
+    let permit = {
         let cancel_token = {
             let job = match state.inner.jobs.get(&job_id) {
                 Some(j) => j,
@@ -2967,6 +3039,7 @@ async fn run_job(state: AppState, job_id: String) {
                 }
             }
             _ = cancel_token.cancelled() => {
+                finish_job(&state, &job_id, Ok(()));
                 return;
             }
         }
@@ -2974,9 +3047,6 @@ async fn run_job(state: AppState, job_id: String) {
 
     let running_snapshot = {
         if let Some(mut job) = state.inner.jobs.get_mut(&job_id) {
-            if job.status == JobStatus::Cancelled {
-                return;
-            }
             job.status = JobStatus::Running;
             job.started_at = Some(Utc::now());
             Some(job.clone())
@@ -3091,52 +3161,58 @@ async fn run_job(state: AppState, job_id: String) {
         })
     };
 
-    match result {
-        Ok(_outputs) => {
-            let mut completed_snapshot = None;
-            if let Some(mut job) = state.inner.jobs.get_mut(&job_id) {
-                if job.status == JobStatus::Cancelled {
-                    return;
-                }
-                job.status = JobStatus::Completed;
-                job.completed_at = Some(Utc::now());
-                completed_snapshot = Some(job.clone());
-            }
+    // The executor has exited: free the GPU before the terminal state becomes
+    // visible, so a client that sees it can rely on the slot being free.
+    drop(permit);
+    finish_job(&state, &job_id, result.map(drop));
+}
 
-            if let Some(snapshot) = completed_snapshot {
-                if let Err(err) = state.persist_job_transition(&snapshot) {
-                    error!(job_id = %job_id, error = ?err, "Failed to persist completed transition");
+/// Records the terminal state of a job whose executor has exited (or never
+/// started). A job that was asked to stop ends `cancelled` whether the
+/// executor returned an error or ran to the end.
+fn finish_job(state: &AppState, job_id: &str, result: Result<()>) {
+    let mut snapshot = None;
+    if let Some(mut job) = state.inner.jobs.get_mut(job_id) {
+        if job.cancel_token.is_cancelled() {
+            let reason = job
+                .cancel_request
+                .get_or_insert(CancelRequest {
+                    requested_at: Utc::now(),
+                    reason: CancelReason::User,
+                })
+                .reason;
+            if let Err(err) = &result {
+                info!(job_id = %job_id, error = %format!("{err:#}"), "Cancelled job stopped with an error");
+            }
+            job.status = JobStatus::Cancelled;
+            job.error = Some(reason.message().to_owned());
+        } else {
+            match &result {
+                Ok(()) => job.status = JobStatus::Completed,
+                Err(err) => {
+                    error!(job_id = %job_id, error = ?err, "Job execution failed");
+                    job.status = JobStatus::Failed;
+                    job.error = Some(format!("{err:#}"));
                 }
             }
         }
-        Err(err) => {
-            error!(job_id = %job_id, error = ?err, "Job execution failed");
-            let mut failed_snapshot = None;
-            if let Some(mut job) = state.inner.jobs.get_mut(&job_id) {
-                if job.status == JobStatus::Cancelled {
-                    return;
-                }
-                job.status = JobStatus::Failed;
-                job.error = Some(format!("{:#}", err));
-                job.completed_at = Some(Utc::now());
-                failed_snapshot = Some(job.clone());
-            }
-
-            if let Some(snapshot) = failed_snapshot {
-                if let Err(persist_err) = state.persist_job_transition(&snapshot) {
-                    error!(
-                        job_id = %job_id,
-                        error = ?persist_err,
-                        "Failed to persist failed transition"
-                    );
-                }
-            }
-        }
+        job.completed_at = Some(Utc::now());
+        snapshot = Some(job.clone());
     }
 
-    state.inner.progress_senders.remove(&job_id);
+    if let Some(snapshot) = snapshot {
+        if let Err(err) = state.persist_job_transition(&snapshot) {
+            error!(
+                job_id = %job_id,
+                status = ?snapshot.status,
+                error = ?err,
+                "Failed to persist terminal transition"
+            );
+        }
+        info!(job_id = %job_id, status = ?snapshot.status, "Job finished");
+    }
 
-    info!(job_id = %job_id, "Job completed");
+    state.inner.progress_senders.remove(job_id);
 }
 
 #[derive(Debug)]
@@ -3204,6 +3280,9 @@ fn job_to_response(job: &Job) -> JobResponse {
         params: job.params.clone(),
         rerun_of_job_id: job.rerun_of_job_id.clone(),
         duration_ms: job_duration_ms(job),
+        cancel_requested: job.cancel_request.is_some(),
+        cancel_requested_at: job.cancel_request.map(|request| request.requested_at),
+        cancel_reason: job.cancel_request.map(|request| request.reason),
     }
 }
 
@@ -3385,6 +3464,9 @@ mod tests {
                 params: None,
                 rerun_of_job_id: None,
                 duration_ms: None,
+                cancel_requested: false,
+                cancel_requested_at: None,
+                cancel_reason: None,
             }),
             sorted(&[
                 "id",
@@ -3402,6 +3484,22 @@ mod tests {
             ])
         );
         files::assert_controller_facing_file_responses();
+    }
+
+    /// The cancel fields appear only on jobs something asked to stop, so a job
+    /// that was never cancelled keeps the field set pinned above.
+    #[test]
+    fn job_response_reports_a_cancel_request_only_when_there_is_one() {
+        let mut job = build_test_job("cancel-fields".into(), JobStatus::Running, None);
+        assert!(!json_keys(job_to_response(&job)).contains(&"cancel_requested".to_owned()));
+
+        job.request_cancel(CancelReason::User);
+        let response = serde_json::to_value(job_to_response(&job)).unwrap();
+        assert_eq!(response["status"], "running");
+        assert_eq!(response["cancel_requested"], true);
+        assert_eq!(response["cancel_reason"], "user");
+        assert!(response["cancel_requested_at"].is_string());
+        assert!(job.cancel_token.is_cancelled());
     }
 
     #[test]
@@ -3984,6 +4082,7 @@ mod tests {
             workflow_name: "Source Workflow".to_string(),
             workflow_source: WORKFLOW_SOURCE_API_JOBS.to_string(),
             rerun_of_job_id: None,
+            cancel_request: None,
         }
     }
 
@@ -5346,45 +5445,34 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn failed_history_deletion_preserves_live_job_and_channel() {
+    async fn failed_history_deletion_keeps_the_finished_job_visible() {
         let state = test_state();
         let mut job = build_test_job("delete-failure".into(), JobStatus::Queued, None);
         job.workflow =
             serde_json::from_value(serde_json::json!({"nodes":[],"connections":[]})).unwrap();
         let cancel = job.cancel_token.clone();
         insert_test_job(&state, job);
-        let gate = state.inner.gpu_semaphore.acquire().await.unwrap();
-        let execution = tokio::spawn(run_job(state.clone(), "delete-failure".into()));
-        let (sender, _) = broadcast::channel(8);
-        state
-            .inner
-            .progress_senders
-            .insert("delete-failure".into(), sender);
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            run_job(state.clone(), "delete-failure".into()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            state.inner.jobs.get("delete-failure").unwrap().status,
+            JobStatus::Completed
+        );
         let persistence = state.inner.jobs_persistence.as_ref().unwrap();
         let conn = Connection::open(persistence.db_path()).unwrap();
-        // Deliberate database fault injection: deletion must have no runtime side effects.
+        // Deliberate database fault injection: a failed deletion keeps the job.
         conn.execute_batch("CREATE TRIGGER reject_delete BEFORE DELETE ON jobs BEGIN SELECT RAISE(ABORT, 'injected failure'); END;").unwrap();
         assert!(
             delete_job_history(State(state.clone()), Path("delete-failure".into()))
                 .await
                 .is_err()
         );
-        assert!(!cancel.is_cancelled());
-        assert_eq!(
-            state.inner.jobs.get("delete-failure").unwrap().status,
-            JobStatus::Queued
-        );
-        assert!(state.inner.progress_senders.contains_key("delete-failure"));
+        assert!(state.inner.jobs.contains_key("delete-failure"));
         conn.execute_batch("DROP TRIGGER reject_delete;").unwrap();
-        drop(gate);
-        tokio::time::timeout(Duration::from_secs(5), execution)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            state.inner.jobs.get("delete-failure").unwrap().status,
-            JobStatus::Completed
-        );
         assert_eq!(
             delete_job_history(State(state.clone()), Path("delete-failure".into()))
                 .await
@@ -5481,35 +5569,145 @@ mod tests {
         );
     }
 
+    async fn get_job_json(app: &mut Router, job_id: &str) -> (StatusCode, serde_json::Value) {
+        let req = Request::builder()
+            .uri(format!("/api/jobs/{job_id}"))
+            .body(Body::empty())
+            .unwrap();
+        let resp = send_request(app, req).await;
+        let status = resp.status();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&body).unwrap_or_default())
+    }
+
+    async fn delete_job(app: &mut Router, job_id: &str) -> StatusCode {
+        let req = Request::builder()
+            .method("DELETE")
+            .uri(format!("/api/jobs/{job_id}"))
+            .body(Body::empty())
+            .unwrap();
+        send_request(app, req).await.status()
+    }
+
+    async fn create_job_id(app: &mut Router, workflow: serde_json::Value) -> String {
+        let (status, json) = post_json(
+            app,
+            "/api/jobs",
+            serde_json::json!({ "workflow": workflow }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{json}");
+        json["id"].as_str().unwrap().to_owned()
+    }
+
     #[tokio::test]
-    async fn test_delete_job_history_cancels_active_job_then_removes_row() {
+    async fn test_delete_job_history_requests_cancel_of_active_job_and_keeps_it() {
         let data_dir = test_data_dir();
         let state = test_state_with_data_dir(data_dir.clone());
         let mut app = app_router(state.clone());
 
+        // A running job with no executor behind it, so it never finishes.
         let active_id = format!("delete-active-{}", Uuid::new_v4());
         let active_job = build_test_job(active_id.clone(), JobStatus::Running, None);
         let cancel_probe = active_job.cancel_token.clone();
         insert_test_job(&state, active_job);
 
-        let req = Request::builder()
-            .method("DELETE")
-            .uri(format!("/api/jobs/{active_id}"))
-            .body(Body::empty())
-            .unwrap();
-        let resp = send_request(&mut app, req).await;
-        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
-
+        assert_eq!(
+            delete_job(&mut app, &active_id).await,
+            StatusCode::NO_CONTENT
+        );
         assert!(cancel_probe.is_cancelled());
-        assert!(state.inner.jobs.get(&active_id).is_none());
-        assert_eq!(persisted_job_status(&data_dir, &active_id), None);
+        assert_eq!(
+            persisted_job_status(&data_dir, &active_id).as_deref(),
+            Some("running")
+        );
 
-        let req = Request::builder()
-            .uri(format!("/api/jobs/{active_id}"))
-            .body(Body::empty())
+        // Repeating the cancel is harmless and keeps the first request.
+        let (_, first) = get_job_json(&mut app, &active_id).await;
+        assert_eq!(
+            delete_job(&mut app, &active_id).await,
+            StatusCode::NO_CONTENT
+        );
+        let (status, job) = get_job_json(&mut app, &active_id).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(job["status"], "running");
+        assert_eq!(job["cancel_requested"], true);
+        assert_eq!(job["cancel_reason"], "user");
+        assert_eq!(job["cancel_requested_at"], first["cancel_requested_at"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelling_a_running_job_keeps_it_visible_until_its_executor_exits() {
+        // Given: a running job whose node ignores cancellation for a while, as
+        // a first TensorRT engine build does.
+        let data_dir = test_data_dir();
+        let state = test_state_with_data_dir(data_dir.clone());
+        let mut app = app_router(state.clone());
+        let job_id = create_job_id(&mut app, delay_workflow_json(600)).await;
+        assert!(wait_for_persisted_status(&data_dir, &job_id, "running").await);
+
+        // When: it is cancelled.
+        assert_eq!(delete_job(&mut app, &job_id).await, StatusCode::NO_CONTENT);
+
+        // Then: it stays visible as running with the cancel recorded, and it
+        // still holds the GPU permit.
+        let (status, job) = get_job_json(&mut app, &job_id).await;
+        assert_eq!(status, StatusCode::OK, "a cancelled job must not vanish");
+        assert_eq!(job["status"], "running");
+        assert_eq!(job["cancel_requested"], true);
+        assert_eq!(job["cancel_reason"], "user");
+        assert!(job["cancel_requested_at"].is_string(), "{job}");
+        assert_eq!(state.inner.gpu_semaphore.available_permits(), 0);
+
+        // When its executor exits, it becomes `cancelled` with the reason, and
+        // the GPU permit is free by the time that is visible.
+        assert_eq!(
+            wait_for_job_terminal_status(&state, &job_id).await,
+            JobStatus::Cancelled
+        );
+        assert_eq!(state.inner.gpu_semaphore.available_permits(), 1);
+        let (_, job) = get_job_json(&mut app, &job_id).await;
+        assert_eq!(job["status"], "cancelled");
+        assert_eq!(job["error"], "job cancelled at user request");
+        assert_eq!(job["cancel_reason"], "user");
+        assert!(wait_for_persisted_status(&data_dir, &job_id, "cancelled").await);
+
+        // Deleting the finished job removes its history.
+        assert_eq!(delete_job(&mut app, &job_id).await, StatusCode::NO_CONTENT);
+        assert_eq!(
+            get_job_json(&mut app, &job_id).await.0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(persisted_job_status(&data_dir, &job_id), None);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelling_a_queued_job_marks_it_cancelled_without_running_it() {
+        let data_dir = test_data_dir();
+        let state = test_state_with_data_dir(data_dir.clone());
+        let mut app = app_router(state.clone());
+        let gate = state
+            .inner
+            .gpu_semaphore
+            .clone()
+            .acquire_owned()
+            .await
             .unwrap();
-        let resp = send_request(&mut app, req).await;
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let job_id = create_job_id(&mut app, delay_workflow_json(0)).await;
+
+        assert_eq!(delete_job(&mut app, &job_id).await, StatusCode::NO_CONTENT);
+
+        assert_eq!(
+            wait_for_job_terminal_status(&state, &job_id).await,
+            JobStatus::Cancelled
+        );
+        let (_, job) = get_job_json(&mut app, &job_id).await;
+        assert_eq!(job["started_at"], serde_json::Value::Null);
+        assert_eq!(job["error"], "job cancelled at user request");
+        assert!(wait_for_persisted_status(&data_dir, &job_id, "cancelled").await);
+        drop(gate);
     }
 
     #[tokio::test]
@@ -5849,6 +6047,7 @@ mod tests {
             workflow_name: "Restore Candidate".to_string(),
             workflow_source: WORKFLOW_SOURCE_API_JOBS.to_string(),
             rerun_of_job_id: Some("older-job-id".to_string()),
+            cancel_request: None,
         };
 
         initial_state
@@ -5863,6 +6062,10 @@ mod tests {
             .expect("job should be restored from persistence");
 
         assert_eq!(restored_job.status, JobStatus::Cancelled);
+        assert_eq!(
+            restored_job.cancel_request.map(|request| request.reason),
+            Some(CancelReason::Restart)
+        );
         assert!(restored_job.completed_at.is_some());
         assert!(restored_job.error.is_some());
         assert!(restored_job
