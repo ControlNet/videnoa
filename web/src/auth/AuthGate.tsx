@@ -6,7 +6,7 @@ import { useJobStore } from '@/stores/job-store';
 import { useUIStore } from '@/stores/ui-store';
 import { resolveStartupLocale } from '@/i18n';
 import { PasswordField } from './PasswordField';
-import { authRequest, useAuthStore } from './store';
+import { authRequest, onPasswordChangeElsewhere, useAuthStore } from './store';
 import { setCsrfToken } from './transport';
 
 export function AuthGate({ children }: { children: ReactNode }) {
@@ -27,6 +27,12 @@ export function AuthGate({ children }: { children: ReactNode }) {
     window.addEventListener('videnoa-auth-expired', expired);
     return () => window.removeEventListener('videnoa-auth-expired', expired);
   }, []);
+  useEffect(() => onPasswordChangeElsewhere(() => {
+    // Another tab rotated the session: pick up its fresh state (or the login
+    // screen) and let open pages such as Settings reload.
+    void refresh();
+    window.dispatchEvent(new Event('videnoa-password-changed'));
+  }), [refresh]);
   const allowed = session !== null && (!session.password_enabled || session.authenticated);
   useEffect(() => {
     if (session === null || allowed) return;

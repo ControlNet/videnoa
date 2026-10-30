@@ -6,7 +6,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { CheckRow, Field, SettingsGrid, SettingsSection, settingsInputClass } from '@/pages/settings/section';
 import type { AuthConfig } from '@/types';
 import { PasswordField } from './PasswordField';
-import { authRequest, useAuthStore } from './store';
+import { announcePasswordChange, authRequest, useAuthStore } from './store';
 
 /**
  * Changing the password and choosing how long a session lives are two different
@@ -30,6 +30,7 @@ export function PasswordSettings() {
     try {
       const next = await authRequest('/api/auth/password', disable ? 'DELETE' : 'PUT', disable ? undefined : { password, password_confirmation: confirmation });
       window.dispatchEvent(new Event("videnoa-password-changed"));
+      announcePasswordChange();
       accept(next); setPassword(''); setConfirmation(''); setConfirmDisable(false); setSuccess(true);
     } catch (err) { setError(err instanceof Error ? err.message : 'requestFailed'); }
     finally { setBusy(false); }
