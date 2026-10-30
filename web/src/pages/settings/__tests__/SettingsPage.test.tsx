@@ -1,12 +1,13 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { getConfig, updateConfig } from "@/api/client";
+import { ApiError, getConfig, updateConfig } from "@/api/client";
 import { i18n, initializeI18n } from "@/i18n";
 import type { AppConfig } from "@/types";
 import { SettingsPage } from "../SettingsPage";
 
-vi.mock("@/api/client", () => ({
+vi.mock("@/api/client", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@/api/client")>()),
 	getConfig: vi.fn(),
 	updateConfig: vi.fn(),
 }));
@@ -43,10 +44,11 @@ beforeEach(async () => {
 
 describe("SettingsPage profiling toggle", () => {
 	it("renders profiling toggle and saves profiling_enabled changes", async () => {
-		vi.mocked(getConfig).mockResolvedValue(makeConfig());
-		vi.mocked(updateConfig).mockResolvedValue(
-			makeConfig({ performance: { profiling_enabled: true } }),
-		);
+		vi.mocked(getConfig).mockResolvedValue({ config: makeConfig(), etag: '"v1"' });
+		vi.mocked(updateConfig).mockResolvedValue({
+			config: makeConfig({ performance: { profiling_enabled: true } }),
+			etag: '"v2"',
+		});
 
 		render(
 			<MemoryRouter>
@@ -76,13 +78,14 @@ describe("SettingsPage profiling toggle", () => {
 			expect.objectContaining({
 				performance: { profiling_enabled: true },
 			}),
+			'"v1"',
 		);
 	});
 
 	it("keeps iroh relays when the iroh toggle changes", async () => {
 		const iroh = { enabled: true, relay_urls: ["https://relay.example.test"] };
-		vi.mocked(getConfig).mockResolvedValue(makeConfig({ iroh }));
-		vi.mocked(updateConfig).mockResolvedValue(makeConfig({ iroh: { ...iroh, enabled: false } }));
+		vi.mocked(getConfig).mockResolvedValue({ config: makeConfig({ iroh }), etag: '"v1"' });
+		vi.mocked(updateConfig).mockResolvedValue({ config: makeConfig({ iroh: { ...iroh, enabled: false } }), etag: '"v2"' });
 
 		render(
 			<MemoryRouter>
@@ -103,13 +106,14 @@ describe("SettingsPage profiling toggle", () => {
 			expect.objectContaining({
 				iroh: { enabled: false, relay_urls: ["https://relay.example.test"] },
 			}),
+			'"v1"',
 		);
 	});
 
 	it("edits iroh relays one per line, opts into public relays, and drops both when cleared", async () => {
 		const iroh = { enabled: true, relay_urls: ["https://relay.example.test"] };
-		vi.mocked(getConfig).mockResolvedValue(makeConfig({ iroh }));
-		vi.mocked(updateConfig).mockImplementation(async (config) => config);
+		vi.mocked(getConfig).mockResolvedValue({ config: makeConfig({ iroh }), etag: '"v1"' });
+		vi.mocked(updateConfig).mockImplementation(async (config) => ({ config, etag: '"v2"' }));
 
 		render(
 			<MemoryRouter>
@@ -165,8 +169,8 @@ describe("SettingsPage profiling toggle", () => {
 			locale: "en",
 		} as unknown as AppConfig;
 
-		vi.mocked(getConfig).mockResolvedValue(legacyConfig);
-		vi.mocked(updateConfig).mockResolvedValue(makeConfig());
+		vi.mocked(getConfig).mockResolvedValue({ config: legacyConfig, etag: '"v1"' });
+		vi.mocked(updateConfig).mockResolvedValue({ config: makeConfig(), etag: '"v2"' });
 
 		render(
 			<MemoryRouter>
@@ -180,5 +184,45 @@ describe("SettingsPage profiling toggle", () => {
 
 		expect(screen.getByLabelText("Profiling telemetry")).not.toBeChecked();
 		expect(screen.queryByText("Something went wrong")).not.toBeInTheDocument();
+	});
+
+	// Settings are one document: a save based on an old version (e.g. after
+	// the desktop language switch wrote it) must not revert the newer one.
+	it("reloads and says so when the settings changed elsewhere", async () => {
+		vi.mocked(getConfig)
+			.mockResolvedValueOnce({ config: makeConfig(), etag: '"v1"' })
+			.mockResolvedValueOnce({
+				config: makeConfig({ locale: "zh-CN", performance: { profiling_enabled: true } }),
+				etag: '"v2"',
+			});
+		vi.mocked(updateConfig).mockRejectedValue(
+			new ApiError(412, "changed", { error: "changed", code: "config_changed" }),
+		);
+
+		render(
+			<MemoryRouter>
+				<SettingsPage />
+			</MemoryRouter>,
+		);
+		const models = await screen.findByLabelText(/^Models/);
+		fireEvent.change(models, { target: { value: "other-models" } });
+		fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+		await waitFor(() => {
+			expect(getConfig).toHaveBeenCalledTimes(2);
+		});
+		expect(updateConfig).toHaveBeenCalledWith(
+			expect.objectContaining({
+				paths: expect.objectContaining({ models_dir: "other-models" }),
+			}),
+			'"v1"',
+		);
+		expect(
+			await screen.findByText(
+				"Settings were changed elsewhere and have been reloaded. Apply your changes again.",
+			),
+		).toBeInTheDocument();
+		expect(screen.getByLabelText(/^Models/)).toHaveValue("models");
+		expect(screen.getByLabelText("Profiling telemetry")).toBeChecked();
 	});
 });

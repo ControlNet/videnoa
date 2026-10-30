@@ -316,6 +316,7 @@ export const enResources: NamespaceResources = {
 		"batch.workflow.nodes_other": "{{count}} nodes",
 		"errors.loadConfig": "Failed to load config",
 		"errors.saveConfig": "Failed to save config",
+		"errors.configChanged": "Settings were changed elsewhere and have been reloaded. Apply your changes again.",
 		"footer.saveSuccess": "Settings saved",
 		"footer.unsavedChanges": "Unsaved changes",
 		"page.description": "Configure Videnoa",

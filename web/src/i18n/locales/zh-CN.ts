@@ -302,6 +302,7 @@ export const zhCNResources: NamespaceResources = {
 		"batch.workflow.nodes_other": "{{count}} 个节点",
 		"errors.loadConfig": "加载配置失败",
 		"errors.saveConfig": "保存配置失败",
+		"errors.configChanged": "设置已在别处被修改，已重新加载，请重新应用你的修改。",
 		"footer.saveSuccess": "设置已保存",
 		"footer.unsavedChanges": "有未保存的更改",
 		"page.description": "配置 Videnoa",

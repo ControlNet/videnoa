@@ -69,8 +69,13 @@ export function apiErrorCode(error: unknown): string | null {
 
 // ─── Generic request wrapper ─────────────────────────────────────────────────
 
-async function request<T>(url: string, init?: RequestInit): Promise<T> {
+async function request<T>(
+  url: string,
+  init?: RequestInit,
+  onResponse?: (resp: Response) => void,
+): Promise<T> {
   const resp = await authenticatedFetch(url, init);
+  onResponse?.(resp);
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
     let message = `HTTP ${String(resp.status)}`;
@@ -470,14 +475,35 @@ export function submitBatch(
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
-export function getConfig(): Promise<AppConfig> {
-  return request<AppConfig>('/api/config');
+/** The config document and its version (`ETag`), for a conditional update. */
+export interface VersionedConfig {
+  config: AppConfig;
+  etag: string | null;
 }
 
-export function updateConfig(config: AppConfig): Promise<AppConfig> {
-  return request<AppConfig>('/api/config', {
+async function requestVersionedConfig(init?: RequestInit): Promise<VersionedConfig> {
+  let etag: string | null = null;
+  const config = await request<AppConfig>('/api/config', init, (resp) => {
+    etag = resp.headers.get('ETag');
+  });
+  return { config, etag };
+}
+
+export function getConfig(): Promise<VersionedConfig> {
+  return requestVersionedConfig();
+}
+
+/**
+ * Save the whole config document. With the `etag` it was read with, the
+ * server applies it only if nothing changed meanwhile, and otherwise answers
+ * 412 `config_changed`.
+ */
+export function updateConfig(config: AppConfig, etag: string | null): Promise<VersionedConfig> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (etag) headers['If-Match'] = etag;
+  return requestVersionedConfig({
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify(config),
   });
 }

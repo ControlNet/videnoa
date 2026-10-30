@@ -62,38 +62,51 @@ function resolveInitialLocale(): SupportedLocale {
 	return FALLBACK_LOCALE;
 }
 
-async function fetchDesktopConfig(): Promise<ConfigPayload | null> {
+async function fetchDesktopConfig(): Promise<{ config: ConfigPayload; etag: string | null } | null> {
 	if (typeof window === "undefined" || !isDesktopRuntime()) return null;
 
 	try {
 		const response = await authenticatedFetch("/api/config");
 		if (!response.ok) return null;
 		const payload = (await response.json()) as ConfigPayload;
-		return payload && typeof payload === "object" ? payload : null;
+		return payload && typeof payload === "object"
+			? { config: payload, etag: response.headers.get("ETag") }
+			: null;
 	} catch {
 		return null;
 	}
 }
 
+/**
+ * Write the locale into the whole config document. The PUT is conditional on
+ * the version just read, so it cannot revert a Settings save that landed in
+ * between; on 412 the document is read again and the locale reapplied once.
+ */
 async function persistDesktopLocale(locale: SupportedLocale): Promise<void> {
 	if (typeof window === "undefined" || !isDesktopRuntime()) return;
 	if (desktopConfigLocale === locale) return;
 
-	const config = await fetchDesktopConfig();
-	if (!config) return;
+	for (let attempt = 0; attempt < 2; attempt += 1) {
+		const current = await fetchDesktopConfig();
+		if (!current) return;
 
-	try {
-		const response = await authenticatedFetch("/api/config", {
-			method: "PUT",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ ...config, locale }),
-		});
+		try {
+			const headers: Record<string, string> = { "Content-Type": "application/json" };
+			if (current.etag) headers["If-Match"] = current.etag;
+			const response = await authenticatedFetch("/api/config", {
+				method: "PUT",
+				headers,
+				body: JSON.stringify({ ...current.config, locale }),
+			});
 
-		if (response.ok) {
-			desktopConfigLocale = locale;
+			if (response.ok) {
+				desktopConfigLocale = locale;
+				return;
+			}
+			if (response.status !== 412) return;
+		} catch {
+			return;
 		}
-	} catch {
-		return;
 	}
 }
 
@@ -101,7 +114,7 @@ export async function resolveStartupLocale(): Promise<SupportedLocale> {
 	if (typeof window === "undefined") return FALLBACK_LOCALE;
 
 	if (isDesktopRuntime()) {
-		const config = await fetchDesktopConfig();
+		const config = (await fetchDesktopConfig())?.config;
 		if (config && typeof config.locale === "string") {
 			const configLocale = normalizeLocale(config.locale);
 			desktopConfigLocale = configLocale;
