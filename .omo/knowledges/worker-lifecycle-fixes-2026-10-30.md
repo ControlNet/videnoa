@@ -123,3 +123,23 @@ Fixes for findings E (server half), P, N, M, R and Q of
 - Manual check: start `target/debug/videnoa` on a temp data dir, start a
   second one on the same dir (exits 1 with the lock message), send SIGTERM
   to the first (exits 0, logs "Shutdown requested" then "Server stopped").
+
+## Flaky core suite after the merge (fixed in `wave1-flaky-fix`)
+
+- The core lib suite is fsync-bound. Sampling `/proc/<pid>/task/*/wchan`
+  showed nearly all test threads in `jbd2_log_wait_commit`; with other
+  builds on the same disk, a job-store write takes seconds. Count fsyncs
+  with `strace -f -y -e trace=fsync,fdatasync` on the test binary.
+- `begin_shutdown` used to persist while iterating the job map, so a slow
+  write let a not-yet-visited queued job start and complete. It now cancels
+  all jobs in memory first, then writes only the cancel columns
+  (`JobsPersistence::record_cancel_request`). Test:
+  `shutdown_cancels_every_job_before_it_writes_to_disk`, which holds the
+  store's connection (`JobsPersistence::lock_connection`) to stall writes.
+- `JobsPersistence` keeps one connection; a connection per operation
+  checkpointed and deleted the WAL on every close. Schema creation and
+  migration run in one transaction.
+- Tests that need a job to stay running use `test_hold` with a `TestGate`
+  the test opens, not a timed sleep. Wait-until helpers have a 30 s bound.
+- Per-test timing: run the test binary with
+  `RUSTC_BOOTSTRAP=1 <bin> -Z unstable-options --report-time`.
