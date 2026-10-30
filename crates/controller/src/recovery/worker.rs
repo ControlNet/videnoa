@@ -25,10 +25,17 @@ impl Reconciler {
             | VidenoaClientError::InvalidFilePath
             | VidenoaClientError::EndpointUrl => Err(error.into()),
             error if error.is_transient() => Err(error.into()),
-            error => {
+            error if error.is_worker_level() => {
                 tracing::warn!(worker_id = %worker.id, %task_id, %error, "Worker rejected a request; task deferred");
                 self.defer_for_worker(worker, task_id, &error, now, stage, report)
                     .await
+            }
+            // A rejection of a request about this task's job, such as a 400
+            // or 409 on the job's own URL: only this task waits.
+            error => {
+                tracing::warn!(worker_id = %worker.id, %task_id, %error, "Worker rejected a request about one task; task deferred");
+                report.defer(task_id);
+                Ok(())
             }
         }
     }

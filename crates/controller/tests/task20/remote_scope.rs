@@ -127,6 +127,38 @@ async fn rejected_remote_cancel_defers_instead_of_stopping_the_controller() -> T
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rejected_request_about_one_job_backs_off_only_its_task() -> TestResult {
+    // Given: a processing task reconciled only by this test.
+    let worker = MockVidenoa::start_persistent().await?;
+    let mut fixture = ControllerFixture::start().await?;
+    let task = processing_task(&worker, &fixture, "job-rejected").await?;
+    fixture.crash().await?;
+    let reconciler = fixture.reconciler()?;
+
+    for status in [400, 409] {
+        fault(&worker, Route::JobPoll, status, Vec::new()).await;
+
+        // When: the worker rejects the poll of this task's job.
+        let report = reconciler
+            .reconcile_task_id(task.id, Utc::now())
+            .await
+            .map_err(|error| format!("poll HTTP {status}: {error}"))?;
+
+        // Then: the task waits, and the worker stays online for other tasks.
+        assert!(deferred(&report, &task), "poll HTTP {status}");
+        assert_eq!(
+            durable_task(&fixture, &task).await?.status,
+            TaskStatus::Processing
+        );
+        let record = durable_worker(&fixture, &task).await?;
+        assert!(record.online, "poll HTTP {status}");
+        assert_eq!(record.health_retry_count, 0, "poll HTTP {status}");
+        assert_eq!(record.last_error, None, "poll HTTP {status}");
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn rejected_cancel_after_confirming_submission_defers() -> TestResult {
     // Given: a cancelled task whose submission the worker accepted but whose
     // receipt was lost.
