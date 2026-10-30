@@ -480,6 +480,62 @@ async fn a_malformed_workflow_interface_is_listed_invalid_without_hiding_the_oth
     Ok(())
 }
 
+#[tokio::test]
+async fn a_preset_shadowed_by_a_saved_workflow_is_invalid() -> TestResult {
+    // Given: a Worker with a saved workflow `eligible-workflow.json` and a
+    // preset `eligible-workflow`, which `/api/run` resolves to the workflow.
+    let server = MockVidenoa::start().await?;
+    let client = test_client(
+        &server,
+        Duration::from_secs(5),
+        Duration::from_secs(1),
+        JSON_LIMIT,
+    )?;
+    server
+        .set_fault(Fault::Response(ResponseFault {
+            route: Route::Presets,
+            status: 200,
+            body: serde_json::to_vec(&serde_json::json!([
+                {
+                    "id": "eligible-workflow",
+                    "name": "Shadowed preset",
+                    "description": "",
+                    "workflow": {"interface": {
+                        "inputs": [
+                            {"name": "input", "port_type": "Path"},
+                            {"name": "output", "port_type": "Path"},
+                        ],
+                        "outputs": [],
+                    }},
+                },
+            ]))?,
+        }))
+        .await;
+
+    // When: the catalog is refreshed.
+    let capabilities = client.capabilities().await?;
+
+    // Then: the preset cannot be scheduled, because a task for it would run
+    // the saved workflow; the saved workflow itself still runs as named.
+    assert_eq!(
+        capabilities.compatibility(&WorkflowName::new("eligible-workflow")),
+        Some(Compatibility::Incompatible)
+    );
+    assert_eq!(
+        capabilities.compatibility(&WorkflowName::new("eligible-workflow.json")),
+        Some(Compatibility::Eligible)
+    );
+    assert_eq!(
+        capabilities.invalid_workflows(),
+        vec![InvalidWorkflow {
+            name: WorkflowName::new("eligible-workflow"),
+            kind: WorkflowKind::Preset,
+            reason: "a saved workflow with the same name runs instead of this preset; rename that workflow on the worker".to_owned(),
+        }]
+    );
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn remote_lifecycle_streams_files_and_preserves_workflow_paths() -> TestResult {
     // Given: payloads larger than the configured client chunk and a tracked streaming reader.

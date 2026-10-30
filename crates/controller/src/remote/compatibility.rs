@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::domain::{InvalidWorkflow, WorkflowKind, WorkflowName, WorkflowSummary};
 
@@ -87,6 +87,29 @@ impl CompatibilityCatalog {
         }
     }
 
+    /// Excludes presets a task cannot reach. The Worker's `/api/run` looks a
+    /// run name up among saved workflows before presets, so a saved workflow
+    /// with a preset's run name runs in its place.
+    pub(crate) fn exclude_shadowed_presets(&mut self) {
+        let workflows: BTreeSet<&str> = self
+            .entries
+            .iter()
+            .filter(|(_, entry)| entry.kind == WorkflowKind::Workflow)
+            .map(|(name, _)| name.run_name())
+            .collect();
+        let shadowed: Vec<WorkflowName> = self
+            .entries
+            .iter()
+            .filter(|(name, entry)| {
+                entry.kind == WorkflowKind::Preset && workflows.contains(name.run_name())
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in shadowed {
+            self.mark_invalid(&name, SHADOWED_PRESET.to_owned());
+        }
+    }
+
     /// Lists an entry the Worker reports but this Controller cannot read,
     /// unless an entry of that name is already known.
     pub(crate) fn insert_invalid(&mut self, name: WorkflowName, kind: WorkflowKind, reason: &str) {
@@ -117,6 +140,9 @@ impl CompatibilityCatalog {
             });
     }
 }
+
+const SHADOWED_PRESET: &str =
+    "a saved workflow with the same name runs instead of this preset; rename that workflow on the worker";
 
 fn eligibility(interface: &WorkflowInterface) -> Compatibility {
     let required = ["input", "output"];

@@ -53,7 +53,8 @@ impl VidenoaClient {
     /// Fetches and merges saved workflows and presets with interface
     /// compatibility, then excludes eligible entries the Worker's own run
     /// validation rejects. Missing validation evidence keeps an entry eligible.
-    /// An unreadable entry or interface is listed invalid on its own.
+    /// An unreadable entry or interface is listed invalid on its own, and so
+    /// is a preset a saved workflow of the same run name would replace.
     ///
     /// # Errors
     /// Returns [`VidenoaClientError`] for transport, status, bounds, or payload
@@ -115,6 +116,7 @@ impl VidenoaClient {
                 preset.workflow.interface.as_ref(),
             );
         }
+        catalog.exclude_shadowed_presets();
         for name in catalog.eligible_names() {
             match self.validate_run(&name).await {
                 Ok(RunValidation::Invalid { reason }) => catalog.mark_invalid(&name, reason),
