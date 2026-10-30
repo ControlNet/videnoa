@@ -435,6 +435,10 @@ mod tests {
             "input"
         }
 
+        fn accepts_config_param(&self, key: &str) -> bool {
+            key == "value"
+        }
+
         fn input_ports(&self) -> Vec<PortDefinition> {
             vec![]
         }
@@ -467,6 +471,10 @@ mod tests {
     impl Node for ProcessNode {
         fn node_type(&self) -> &str {
             "process"
+        }
+
+        fn accepts_config_param(&self, key: &str) -> bool {
+            key == "increment"
         }
 
         fn input_ports(&self) -> Vec<PortDefinition> {

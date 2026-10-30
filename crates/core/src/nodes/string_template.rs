@@ -44,6 +44,13 @@ impl Node for StringTemplateNode {
         "StringTemplate"
     }
 
+    /// The editor keeps `strN` values when `num_input` is lowered, so a saved
+    /// workflow can hold values for inputs that no longer exist.
+    fn accepts_config_param(&self, key: &str) -> bool {
+        key.strip_prefix("str")
+            .is_some_and(|index| !index.is_empty() && index.bytes().all(|b| b.is_ascii_digit()))
+    }
+
     fn input_ports(&self) -> Vec<PortDefinition> {
         let mut ports = vec![
             PortDefinition {

@@ -322,8 +322,25 @@ impl PipelineGraph {
                         instance.id, instance.node_type
                     )
                 })?;
+            let input_ports = node.input_ports();
 
-            definitions.insert(idx, (node.input_ports(), node.output_ports()));
+            // A renamed or misspelled param would otherwise run with the
+            // port's default without any notice.
+            let mut keys: Vec<&String> = instance.params.keys().collect();
+            keys.sort();
+            for key in keys {
+                if !input_ports.iter().any(|port| port.name == *key)
+                    && !node.accepts_config_param(key)
+                {
+                    bail!(
+                        "node '{}' of type '{}' has unknown param '{key}'",
+                        instance.id,
+                        instance.node_type
+                    );
+                }
+            }
+
+            definitions.insert(idx, (input_ports, node.output_ports()));
         }
 
         Ok(definitions)
@@ -883,6 +900,120 @@ mod tests {
         graph
             .validate_frame_chain_inputs(&registry)
             .expect("complete chain should pass frame-chain input validation");
+    }
+
+    #[test]
+    fn test_validate_rejects_unknown_param_key() {
+        let registry = build_default_registry();
+        let mut graph = PipelineGraph::new();
+        graph
+            .add_node(NodeInstance {
+                id: "join".to_string(),
+                node_type: "PathJoiner".to_string(),
+                params: HashMap::from([
+                    ("file_name".to_string(), serde_json::json!("out.mkv")),
+                    ("filename".to_string(), serde_json::json!("out.mkv")),
+                ]),
+            })
+            .expect("node should be added");
+
+        let err = graph
+            .validate(&registry)
+            .expect_err("a misspelled param must not be ignored");
+
+        assert_eq!(
+            err.to_string(),
+            "node 'join' of type 'PathJoiner' has unknown param 'filename'"
+        );
+    }
+
+    #[test]
+    fn test_validate_keeps_the_specific_message_for_a_renamed_param() {
+        let registry = build_default_registry();
+        let mut graph = PipelineGraph::new();
+        graph
+            .add_node(NodeInstance {
+                id: "fi".to_string(),
+                node_type: "FrameInterpolation".to_string(),
+                params: HashMap::from([(
+                    "inference_concurrency".to_string(),
+                    serde_json::json!(2),
+                )]),
+            })
+            .expect("node should be added");
+
+        let err = graph
+            .validate(&registry)
+            .expect_err("the renamed param must be rejected");
+
+        assert!(
+            format!("{err:#}").contains("'inference_concurrency' was renamed to 'num_workers'"),
+            "{err:#}"
+        );
+    }
+
+    /// Every key the editor, the presets, the batch endpoint and the job
+    /// params write into node params must stay accepted.
+    #[test]
+    fn test_validate_accepts_every_param_key_the_writers_use() {
+        let registry = build_default_registry();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let nested = dir.path().join("nested.json");
+        std::fs::write(&nested, r#"{"nodes": [], "connections": []}"#).expect("write nested");
+        let workflow = serde_json::json!({
+            "nodes": [
+                {"id": "wi", "node_type": "WorkflowInput", "params": {
+                    "ports": [{"name": "input", "port_type": "Path"}],
+                    "input": "/videos/in.mkv",
+                    "output": "/videos/out.mkv"
+                }},
+                {"id": "wo", "node_type": "WorkflowOutput", "params": {
+                    "ports": [{"name": "result", "port_type": "Str"}]
+                }},
+                {"id": "wf", "node_type": "Workflow", "params": {
+                    "workflow_path": nested,
+                    "interface_inputs": [],
+                    "interface_outputs": []
+                }},
+                {"id": "template", "node_type": "StringTemplate", "params": {
+                    "num_input": 1, "template": "{str0}", "strict": true,
+                    "str0": "a", "str3": "left behind when num_input was lowered"
+                }},
+                {"id": "constant", "node_type": "Constant", "params": {"type": "Str", "value": "x"}},
+                {"id": "print", "node_type": "Print", "params": {"value_type": "Str", "value": "x"}},
+                {"id": "convert", "node_type": "TypeConversion", "params": {
+                    "input_type": "Int", "output_type": "Str", "value": 1
+                }}
+            ],
+            "connections": [
+                {"from_node": "template", "from_port": "value", "to_node": "wo", "to_port": "result", "port_type": "Str"}
+            ]
+        });
+        let graph: PipelineGraph = serde_json::from_value(workflow).expect("graph parses");
+
+        graph
+            .validate(&registry)
+            .expect("config keys written by the editor and the server must validate");
+    }
+
+    #[test]
+    fn test_shipped_presets_validate() {
+        let registry = build_default_registry();
+        let presets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../presets");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&presets).expect("presets dir") {
+            let path = entry.expect("preset entry").path();
+            let document: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).expect("read preset"))
+                    .expect("preset is JSON");
+            let graph: PipelineGraph = serde_json::from_value(document["workflow"].clone())
+                .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            graph
+                .validate(&registry)
+                .unwrap_or_else(|e| panic!("{}: {e:#}", path.display()));
+            checked += 1;
+        }
+        assert!(checked > 0, "no presets found in {}", presets.display());
     }
 
     #[test]

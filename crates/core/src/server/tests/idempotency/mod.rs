@@ -185,6 +185,10 @@ impl Node for DelayNode {
         "idempotency_delay"
     }
 
+    fn accepts_config_param(&self, key: &str) -> bool {
+        key == "delay_ms"
+    }
+
     fn input_ports(&self) -> Vec<crate::node::PortDefinition> {
         Vec::new()
     }

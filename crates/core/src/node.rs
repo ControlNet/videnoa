@@ -125,6 +125,13 @@ pub trait Node: Send + Sync {
     fn node_type(&self) -> &str;
     fn input_ports(&self) -> Vec<PortDefinition>;
     fn output_ports(&self) -> Vec<PortDefinition>;
+
+    /// Whether `key` is a configuration param of this node that is not an
+    /// input port, such as the port list of a WorkflowOutput. Validation
+    /// rejects any other param that does not name an input port.
+    fn accepts_config_param(&self, _key: &str) -> bool {
+        false
+    }
     fn execute(
         &mut self,
         inputs: &HashMap<String, PortData>,

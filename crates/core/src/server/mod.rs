@@ -3933,6 +3933,10 @@ mod tests {
             "test_delay"
         }
 
+        fn accepts_config_param(&self, key: &str) -> bool {
+            key == "sleep_ms"
+        }
+
         fn input_ports(&self) -> Vec<crate::node::PortDefinition> {
             vec![]
         }

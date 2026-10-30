@@ -64,6 +64,12 @@ impl Node for WorkflowInputNode {
         "WorkflowInput"
     }
 
+    /// Besides `ports`, every other param is a value injected for one of the
+    /// ports, by the run dialogs, job params, the batch endpoint or preview.
+    fn accepts_config_param(&self, _key: &str) -> bool {
+        true
+    }
+
     fn input_ports(&self) -> Vec<PortDefinition> {
         vec![]
     }
@@ -155,6 +161,10 @@ impl Node for WorkflowOutputNode {
         "WorkflowOutput"
     }
 
+    fn accepts_config_param(&self, key: &str) -> bool {
+        key == "ports"
+    }
+
     fn input_ports(&self) -> Vec<PortDefinition> {
         self.ports.clone()
     }
@@ -234,6 +244,13 @@ impl Default for WorkflowNode {
 impl Node for WorkflowNode {
     fn node_type(&self) -> &str {
         "Workflow"
+    }
+
+    fn accepts_config_param(&self, key: &str) -> bool {
+        matches!(
+            key,
+            "workflow_path" | "interface_inputs" | "interface_outputs"
+        )
     }
 
     fn input_ports(&self) -> Vec<PortDefinition> {
