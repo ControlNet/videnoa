@@ -69,13 +69,6 @@ pub struct PresetResponse {
     pub workflow: serde_json::Value,
 }
 
-#[derive(Deserialize)]
-pub struct CreatePresetRequest {
-    pub name: String,
-    pub description: String,
-    pub workflow: serde_json::Value,
-}
-
 #[derive(Clone)]
 pub struct AppState {
     inner: Arc<AppStateInner>,
@@ -91,6 +84,10 @@ struct AppStateInner {
     node_registry: NodeRegistry,
     model_registry: ModelRegistry,
     progress_senders: DashMap<String, broadcast::Sender<JobWsEvent>>,
+    /// Presets loaded at startup. Nothing serves them any more: `/api/presets`
+    /// and `/api/run` read `presets_dir` live. Kept so `AppState::new` keeps
+    /// its signature; drop both together.
+    #[allow(dead_code)]
     presets: DashMap<String, Preset>,
     config: RwLock<AppConfig>,
     config_path: PathBuf,
@@ -654,7 +651,7 @@ pub fn api_router(state: AppState) -> Router {
         .route("/api/models", get(list_models))
         .route("/api/models/{filename}/inspect", get(inspect_model))
         .route("/api/batch", post(create_batch))
-        .route("/api/presets", get(list_presets).post(create_preset))
+        .route("/api/presets", get(list_presets))
         .route("/api/workflows", get(list_workflows).post(save_workflow))
         .route(
             "/api/workflows/{filename}/interface",
@@ -1906,59 +1903,22 @@ async fn inspect_model(
     Ok(Json(inspection))
 }
 
+/// Presets are read from the configured `presets_dir` on every request: the
+/// same live lookup `/api/run` resolves preset names against, so the list
+/// cannot drift from what runs after `presets_dir` changes.
 async fn list_presets(State(state): State<AppState>) -> Json<Vec<PresetResponse>> {
-    let presets: Vec<PresetResponse> = state
-        .inner
-        .presets
-        .iter()
-        .map(|entry| PresetResponse {
-            id: entry.key().clone(),
-            name: entry.value().name.clone(),
-            description: entry.value().description.clone(),
-            workflow: entry.value().workflow.clone(),
+    let presets_dir = state.inner.config.read().await.paths.presets_dir.clone();
+    let mut presets: Vec<PresetResponse> = load_builtin_presets(&presets_dir)
+        .into_iter()
+        .map(|(id, preset)| PresetResponse {
+            id,
+            name: preset.name,
+            description: preset.description,
+            workflow: preset.workflow,
         })
         .collect();
+    presets.sort_by(|a, b| a.id.cmp(&b.id));
     Json(presets)
-}
-
-/// Upper bound on entries in the in-memory preset map (built-in presets
-/// included). Presets created through the API are not persisted, so the map
-/// must stay bounded for the lifetime of the process.
-const MAX_PRESETS: usize = 256;
-
-async fn create_preset(
-    State(state): State<AppState>,
-    Json(payload): Json<CreatePresetRequest>,
-) -> Result<(StatusCode, Json<PresetResponse>), (StatusCode, Json<ErrorResponse>)> {
-    if state.inner.presets.len() >= MAX_PRESETS {
-        return Err((
-            StatusCode::CONFLICT,
-            Json(ErrorResponse {
-                error: format!(
-                    "preset limit reached ({MAX_PRESETS} presets); API-created presets are kept in memory only, restart the server to clear them"
-                ),
-                code: Some("preset_limit_reached"),
-            }),
-        ));
-    }
-
-    let id = Uuid::new_v4().to_string();
-    let preset = Preset {
-        name: payload.name,
-        description: payload.description,
-        workflow: payload.workflow,
-    };
-
-    let response = PresetResponse {
-        id: id.clone(),
-        name: preset.name.clone(),
-        description: preset.description.clone(),
-        workflow: preset.workflow.clone(),
-    };
-
-    state.inner.presets.insert(id, preset);
-
-    Ok((StatusCode::CREATED, Json(response)))
 }
 
 // ---------------------------------------------------------------------------
@@ -5960,33 +5920,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_presets() {
-        let presets = DashMap::new();
-        presets.insert(
-            "test-preset".to_string(),
-            Preset {
-                name: "Test Preset".to_string(),
-                description: "A test preset".to_string(),
-                workflow: serde_json::json!({"nodes": [], "connections": []}),
-            },
+        let presets_dir = unique_temp_dir("videnoa-list-presets");
+        std::fs::create_dir_all(&presets_dir).unwrap();
+        write_json_file(
+            &presets_dir.join("test-preset.json"),
+            &serde_json::json!({
+                "name": "Test Preset",
+                "description": "A test preset",
+                "workflow": {"nodes": [], "connections": []}
+            }),
         );
 
-        let mut node_registry = NodeRegistry::new();
-        node_registry.register("test_source", |_params| {
-            Ok(Box::new(TestNode {
-                node_type: "test_source".to_string(),
-                inputs: vec![],
-                outputs: vec![],
-            }))
-        });
-        let model_registry = ModelRegistry::with_builtin_models(test_models_dir());
-        let state = AppState::new(
-            node_registry,
-            model_registry,
-            presets,
-            AppConfig::default(),
-            test_config_path(),
-            test_data_dir(),
-        );
+        let state = test_state();
+        state.inner.config.write().await.paths.presets_dir = presets_dir.clone();
         let mut app = app_router(state);
 
         let req = Request::builder()
@@ -6005,6 +5951,8 @@ mod tests {
         assert_eq!(json[0]["id"], "test-preset");
         assert_eq!(json[0]["name"], "Test Preset");
         assert!(json[0]["workflow"].is_object());
+
+        let _ = std::fs::remove_dir_all(&presets_dir);
     }
 
     #[tokio::test]
@@ -6238,15 +6186,69 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
+    async fn list_preset_ids(app: &mut Router) -> Vec<String> {
+        let req = Request::builder()
+            .uri("/api/presets")
+            .body(Body::empty())
+            .unwrap();
+        let resp = send_request(app, req).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+        let mut ids: Vec<String> = json
+            .iter()
+            .map(|preset| preset["id"].as_str().unwrap().to_string())
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    /// `/api/run` resolves presets from the configured directory on every
+    /// request, so the list must come from the same place: a startup snapshot
+    /// keeps listing the old directory after `presets_dir` changes.
     #[tokio::test]
-    async fn test_create_preset() {
+    async fn test_list_presets_follows_the_configured_presets_dir() {
+        let state = test_state();
+        let mut app = app_router(state.clone());
+        let first = unique_temp_dir("videnoa-presets-first");
+        let second = unique_temp_dir("videnoa-presets-second");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        let preset = |name: &str| {
+            serde_json::json!({
+                "name": name,
+                "description": "",
+                "workflow": {"nodes": [], "connections": []}
+            })
+        };
+        write_json_file(&first.join("alpha.json"), &preset("Alpha"));
+        write_json_file(&second.join("beta.json"), &preset("Beta"));
+
+        state.inner.config.write().await.paths.presets_dir = first.clone();
+        assert_eq!(list_preset_ids(&mut app).await, vec!["alpha"]);
+
+        write_json_file(&first.join("gamma.json"), &preset("Gamma"));
+        assert_eq!(list_preset_ids(&mut app).await, vec!["alpha", "gamma"]);
+
+        state.inner.config.write().await.paths.presets_dir = second.clone();
+        assert_eq!(list_preset_ids(&mut app).await, vec!["beta"]);
+
+        let _ = std::fs::remove_dir_all(&first);
+        let _ = std::fs::remove_dir_all(&second);
+    }
+
+    /// Presets created through the API had UUID ids, lived only in memory and
+    /// could never be run by name; nothing called the endpoint, so it is gone.
+    #[tokio::test]
+    async fn test_presets_cannot_be_created_through_the_api() {
         let mut app = test_router();
         let body = serde_json::json!({
             "name": "My Custom Preset",
             "description": "Custom workflow",
             "workflow": {"nodes": [], "connections": []}
         });
-
         let req = Request::builder()
             .method("POST")
             .uri("/api/presets")
@@ -6255,56 +6257,7 @@ mod tests {
             .unwrap();
 
         let resp = send_request(&mut app, req).await;
-        assert_eq!(resp.status(), StatusCode::CREATED);
-
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert!(json["id"].is_string());
-        assert_eq!(json["name"], "My Custom Preset");
-    }
-
-    #[tokio::test]
-    async fn test_create_preset_rejects_when_map_is_full() {
-        let state = test_state();
-        for index in 0..MAX_PRESETS {
-            state.inner.presets.insert(
-                format!("prefilled-{index}"),
-                Preset {
-                    name: format!("Prefilled {index}"),
-                    description: String::new(),
-                    workflow: serde_json::json!({"nodes": [], "connections": []}),
-                },
-            );
-        }
-        let mut app = app_router(state.clone());
-
-        let body = serde_json::json!({
-            "name": "One Too Many",
-            "description": "",
-            "workflow": {"nodes": [], "connections": []}
-        });
-        let req = Request::builder()
-            .method("POST")
-            .uri("/api/presets")
-            .header("content-type", "application/json")
-            .body(Body::from(serde_json::to_vec(&body).unwrap()))
-            .unwrap();
-
-        let resp = send_request(&mut app, req).await;
-        assert_eq!(resp.status(), StatusCode::CONFLICT);
-
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["code"], "preset_limit_reached");
-        assert!(json["error"]
-            .as_str()
-            .unwrap()
-            .contains(&format!("{MAX_PRESETS} presets")));
-        assert_eq!(state.inner.presets.len(), MAX_PRESETS);
+        assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
     }
 
     fn fs_test_state(models_dir: PathBuf) -> AppState {
@@ -7735,6 +7688,7 @@ mod tests {
         let mut config = AppConfig::default();
         config.paths.presets_dir = presets_dir.clone();
         let state = app_state_with_config(config, data_dir.join("config.toml"), data_dir);
+        let presets = load_builtin_presets(&presets_dir);
 
         let preset_files = std::fs::read_dir(&presets_dir)
             .expect("read presets dir")
@@ -7746,13 +7700,9 @@ mod tests {
             "no presets found in {}",
             presets_dir.display()
         );
-        assert_eq!(
-            state.inner.presets.len(),
-            preset_files,
-            "every preset should load"
-        );
+        assert_eq!(presets.len(), preset_files, "every preset should load");
 
-        for preset in state.inner.presets.iter() {
+        for preset in presets.iter() {
             if let Err(error) = parse_and_validate_workflow(&state, preset.workflow.clone()) {
                 panic!("preset '{}' fails run validation: {error:?}", preset.key());
             }
