@@ -9,6 +9,7 @@ use serde::de::Error as DeError;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::node::PortDefinition;
+use crate::nodes::workflow_io::validate_nested_workflow;
 use crate::registry::NodeRegistry;
 use crate::types::PortType;
 
@@ -216,6 +217,11 @@ impl PipelineGraph {
             self.check_required_inputs(*idx, input_ports)?;
         }
 
+        for node in self.nodes().filter(|node| node.node_type == "Workflow") {
+            validate_nested_workflow(&node.params)
+                .with_context(|| format!("node '{}' of type 'Workflow'", node.id))?;
+        }
+
         Ok(())
     }
 
@@ -277,6 +283,10 @@ impl PipelineGraph {
 
     pub fn execution_order(&self) -> Result<Vec<NodeIndex>> {
         toposort(&self.graph, None).map_err(|_| anyhow!("cycle detected in pipeline graph"))
+    }
+
+    pub fn nodes(&self) -> impl Iterator<Item = &NodeInstance> {
+        self.graph.node_weights()
     }
 
     pub fn node(&self, idx: NodeIndex) -> &NodeInstance {

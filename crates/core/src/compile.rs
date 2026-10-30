@@ -167,122 +167,120 @@ pub(crate) fn compile_graph_with_execution_context(
     } = resolve_video_topology(graph, &execution_order)?;
 
     let mut outputs_by_node: HashMap<String, HashMap<String, PortData>> = HashMap::new();
+    let mut source: Option<(FrameDecoder, Option<u64>)> = None;
+    let mut stages: Vec<PipelineStage> = Vec::new();
+    let mut encoder: Option<Box<dyn FrameSink>> = None;
 
+    // One pass in topological order: a param node may consume a scalar output
+    // of a frame-chain node (e.g. VideoInput.source_path), and the order along
+    // the VideoFrames chain stays source, processing nodes, sink.
     for &node_idx in &execution_order {
         exec_ctx.check_cancelled()?;
-        let incoming_vf = count_video_frames_edges(graph, node_idx, Direction::Incoming);
-        let outgoing_vf = count_video_frames_edges(graph, node_idx, Direction::Outgoing);
-        if incoming_vf > 0 || outgoing_vf > 0 {
-            continue;
-        }
         let instance = graph.node(node_idx);
-        let mut node = registry
-            .create(&instance.node_type, instance.params.clone())
-            .with_context(|| {
-                format!(
-                    "failed to instantiate param node '{}' of type '{}'",
-                    instance.id, instance.node_type
-                )
-            })?;
-        let inputs = resolve_inputs(graph, registry, node_idx, &outputs_by_node)?;
-        let node_outputs = node
-            .execute(&inputs, exec_ctx)
-            .with_context(|| format!("execution failed for param node '{}'", instance.id))?;
-        exec_ctx.check_cancelled()?;
-        emit_print_debug_event(
-            &instance.id,
-            &instance.node_type,
-            &node_outputs,
-            &mut node_debug_callback,
-        );
-        outputs_by_node.insert(instance.id.clone(), node_outputs);
-    }
 
-    exec_ctx.check_cancelled()?;
-    let source_instance = graph.node(source_idx);
-    let mut source_node = registry
-        .create(&source_instance.node_type, source_instance.params.clone())
-        .with_context(|| {
-            format!(
-                "failed to instantiate source node '{}' of type '{}'",
-                source_instance.id, source_instance.node_type
-            )
-        })?;
-    let source_inputs = resolve_inputs(graph, registry, source_idx, &outputs_by_node)?;
-    let source_outputs = source_node
-        .execute(&source_inputs, exec_ctx)
-        .with_context(|| format!("execution failed for source node '{}'", source_instance.id))?;
-    exec_ctx.check_cancelled()?;
-    emit_print_debug_event(
-        &source_instance.id,
-        &source_instance.node_type,
-        &source_outputs,
-        &mut node_debug_callback,
-    );
-    let (decoder, total_frames) = ctx.create_decoder(source_node.as_mut(), &source_outputs)?;
-    outputs_by_node.insert(source_instance.id.clone(), source_outputs);
+        if node_idx == source_idx {
+            let mut source_node = registry
+                .create(&instance.node_type, instance.params.clone())
+                .with_context(|| {
+                    format!(
+                        "failed to instantiate source node '{}' of type '{}'",
+                        instance.id, instance.node_type
+                    )
+                })?;
+            let source_inputs = resolve_inputs(graph, registry, node_idx, &outputs_by_node)?;
+            let source_outputs = source_node
+                .execute(&source_inputs, exec_ctx)
+                .with_context(|| format!("execution failed for source node '{}'", instance.id))?;
+            exec_ctx.check_cancelled()?;
+            emit_print_debug_event(
+                &instance.id,
+                &instance.node_type,
+                &source_outputs,
+                &mut node_debug_callback,
+            );
+            source = Some(ctx.create_decoder(source_node.as_mut(), &source_outputs)?);
+            outputs_by_node.insert(instance.id.clone(), source_outputs);
+        } else if node_idx == sink_idx {
+            let mut sink_node = registry
+                .create(&instance.node_type, instance.params.clone())
+                .with_context(|| {
+                    format!(
+                        "failed to instantiate sink node '{}' of type '{}'",
+                        instance.id, instance.node_type
+                    )
+                })?;
+            let sink_inputs = resolve_inputs(graph, registry, node_idx, &outputs_by_node)?;
+            // The sink's execute() validates its configuration (output path,
+            // source file, codec settings). Its error is the most specific
+            // diagnosis available, so surface it instead of guessing outputs
+            // from raw params.
+            let sink_outputs = sink_node
+                .execute(&sink_inputs, exec_ctx)
+                .with_context(|| format!("execution failed for sink node '{}'", instance.id))?;
+            emit_print_debug_event(
+                &instance.id,
+                &instance.node_type,
+                &sink_outputs,
+                &mut node_debug_callback,
+            );
+            exec_ctx.check_cancelled()?;
+            encoder = Some(ctx.create_encoder(sink_node.as_mut(), &sink_inputs, &sink_outputs)?);
+            outputs_by_node.insert(instance.id.clone(), sink_outputs);
+        } else if processing_order.contains(&node_idx) {
+            let mut node = registry
+                .create(&instance.node_type, instance.params.clone())
+                .with_context(|| {
+                    format!(
+                        "failed to instantiate node '{}' of type '{}'",
+                        instance.id, instance.node_type
+                    )
+                })?;
+            let inputs = resolve_inputs(graph, registry, node_idx, &outputs_by_node)?;
+            let outputs = if ctx.execute_processing_node(&instance.node_type) {
+                node.execute(&inputs, exec_ctx)
+                    .with_context(|| format!("execution failed for node '{}'", instance.id))?
+            } else {
+                HashMap::new()
+            };
+            exec_ctx.check_cancelled()?;
+            emit_print_debug_event(
+                &instance.id,
+                &instance.node_type,
+                &outputs,
+                &mut node_debug_callback,
+            );
+            outputs_by_node.insert(instance.id.clone(), outputs);
 
-    let mut stages: Vec<PipelineStage> = Vec::new();
-
-    for &node_idx in &processing_order {
-        exec_ctx.check_cancelled()?;
-        let instance = graph.node(node_idx);
-        let mut node = registry
-            .create(&instance.node_type, instance.params.clone())
-            .with_context(|| {
-                format!(
-                    "failed to instantiate node '{}' of type '{}'",
-                    instance.id, instance.node_type
-                )
-            })?;
-        let inputs = resolve_inputs(graph, registry, node_idx, &outputs_by_node)?;
-        let outputs = if ctx.execute_processing_node(&instance.node_type) {
-            node.execute(&inputs, exec_ctx)
-                .with_context(|| format!("execution failed for node '{}'", instance.id))?
+            let is_interpolator = ctx.is_interpolator_type(&instance.node_type);
+            let node_stages = ctx.create_stages(node, &inputs, is_interpolator)?;
+            stages.extend(node_stages);
         } else {
-            HashMap::new()
-        };
-        exec_ctx.check_cancelled()?;
-        emit_print_debug_event(
-            &instance.id,
-            &instance.node_type,
-            &outputs,
-            &mut node_debug_callback,
-        );
-        outputs_by_node.insert(instance.id.clone(), outputs);
-
-        let is_interpolator = ctx.is_interpolator_type(&instance.node_type);
-        let node_stages = ctx.create_stages(node, &inputs, is_interpolator)?;
-        stages.extend(node_stages);
+            let mut node = registry
+                .create(&instance.node_type, instance.params.clone())
+                .with_context(|| {
+                    format!(
+                        "failed to instantiate param node '{}' of type '{}'",
+                        instance.id, instance.node_type
+                    )
+                })?;
+            let inputs = resolve_inputs(graph, registry, node_idx, &outputs_by_node)?;
+            let node_outputs = node
+                .execute(&inputs, exec_ctx)
+                .with_context(|| format!("execution failed for param node '{}'", instance.id))?;
+            exec_ctx.check_cancelled()?;
+            emit_print_debug_event(
+                &instance.id,
+                &instance.node_type,
+                &node_outputs,
+                &mut node_debug_callback,
+            );
+            outputs_by_node.insert(instance.id.clone(), node_outputs);
+        }
     }
 
-    exec_ctx.check_cancelled()?;
-    let sink_instance = graph.node(sink_idx);
-    let mut sink_node = registry
-        .create(&sink_instance.node_type, sink_instance.params.clone())
-        .with_context(|| {
-            format!(
-                "failed to instantiate sink node '{}' of type '{}'",
-                sink_instance.id, sink_instance.node_type
-            )
-        })?;
-    let sink_inputs = resolve_inputs(graph, registry, sink_idx, &outputs_by_node)?;
-    // The sink's execute() validates its configuration (output path, source
-    // file, codec settings). Its error is the most specific diagnosis available,
-    // so surface it instead of guessing outputs from raw params.
-    let sink_outputs = sink_node
-        .execute(&sink_inputs, exec_ctx)
-        .with_context(|| format!("execution failed for sink node '{}'", sink_instance.id))?;
-    emit_print_debug_event(
-        &sink_instance.id,
-        &sink_instance.node_type,
-        &sink_outputs,
-        &mut node_debug_callback,
-    );
-    exec_ctx.check_cancelled()?;
-    let encoder = ctx.create_encoder(sink_node.as_mut(), &sink_inputs, &sink_outputs)?;
-    outputs_by_node.insert(sink_instance.id.clone(), sink_outputs);
-
+    let (decoder, total_frames) =
+        source.ok_or_else(|| anyhow!("no source node found in VideoFrames pipeline"))?;
+    let encoder = encoder.ok_or_else(|| anyhow!("no sink node found in VideoFrames pipeline"))?;
     let total_output_frames = ctx.total_output_frames().or(total_frames);
 
     Ok(CompiledPipeline {
@@ -510,6 +508,7 @@ mod tests {
     use crate::node::PortDefinition;
     use crate::nodes::video_output::VideoOutputNode;
     use std::cell::RefCell;
+    use std::path::PathBuf;
 
     struct MockSourceNode {
         #[allow(dead_code)]
@@ -532,6 +531,85 @@ mod tests {
                 required: true,
                 default_value: None,
             }]
+        }
+
+        fn execute(
+            &mut self,
+            _inputs: &HashMap<String, PortData>,
+            _ctx: &ExecutionContext,
+        ) -> Result<HashMap<String, PortData>> {
+            Ok(HashMap::new())
+        }
+    }
+
+    /// A source that, like VideoInput, also outputs the path it decodes.
+    struct MockPathSourceNode;
+
+    impl Node for MockPathSourceNode {
+        fn node_type(&self) -> &str {
+            "mock_path_source"
+        }
+
+        fn input_ports(&self) -> Vec<PortDefinition> {
+            vec![]
+        }
+
+        fn output_ports(&self) -> Vec<PortDefinition> {
+            vec![
+                PortDefinition {
+                    name: "frames".to_string(),
+                    port_type: PortType::VideoFrames,
+                    required: true,
+                    default_value: None,
+                },
+                PortDefinition {
+                    name: "source_path".to_string(),
+                    port_type: PortType::Path,
+                    required: true,
+                    default_value: None,
+                },
+            ]
+        }
+
+        fn execute(
+            &mut self,
+            _inputs: &HashMap<String, PortData>,
+            _ctx: &ExecutionContext,
+        ) -> Result<HashMap<String, PortData>> {
+            Ok(HashMap::from([(
+                "source_path".to_string(),
+                PortData::Path("/videos/episode-01.mkv".into()),
+            )]))
+        }
+    }
+
+    /// A sink that, like VideoOutput, takes its output path as a scalar input.
+    struct MockPathSinkNode;
+
+    impl Node for MockPathSinkNode {
+        fn node_type(&self) -> &str {
+            "mock_path_sink"
+        }
+
+        fn input_ports(&self) -> Vec<PortDefinition> {
+            vec![
+                PortDefinition {
+                    name: "frames".to_string(),
+                    port_type: PortType::VideoFrames,
+                    required: true,
+                    default_value: None,
+                },
+                PortDefinition {
+                    name: "output_path".to_string(),
+                    port_type: PortType::Path,
+                    required: true,
+                    default_value: None,
+                },
+            ]
+        }
+
+        fn output_ports(&self) -> Vec<PortDefinition> {
+            vec![]
         }
 
         fn execute(
@@ -902,6 +980,7 @@ mod tests {
         decoder_frames: Vec<Frame>,
         total_frames: Option<u64>,
         encoder_settings: RefCell<Option<(String, i64, String)>>,
+        encoder_output_path: RefCell<Option<PathBuf>>,
         bound_cancellation: RefCell<Option<tokio::sync::watch::Receiver<bool>>>,
     }
 
@@ -919,6 +998,7 @@ mod tests {
                 total_frames: Some(num_frames as u64),
                 decoder_frames: frames,
                 encoder_settings: RefCell::new(None),
+                encoder_output_path: RefCell::new(None),
                 bound_cancellation: RefCell::new(None),
             }
         }
@@ -971,6 +1051,9 @@ mod tests {
             };
             self.encoder_settings
                 .replace(Some((codec, crf, pixel_format)));
+            if let Some(PortData::Path(path)) = inputs.get("output_path") {
+                self.encoder_output_path.replace(Some(path.clone()));
+            }
             Ok(Box::new(MockSink))
         }
 
@@ -1012,6 +1095,8 @@ mod tests {
         registry.register("mock_processor", |_| Ok(Box::new(MockProcessorNode)));
         registry.register("mock_interpolator", |_| Ok(Box::new(MockInterpolatorNode)));
         registry.register("mock_sink", |_| Ok(Box::new(MockSinkNode)));
+        registry.register("mock_path_source", |_| Ok(Box::new(MockPathSourceNode)));
+        registry.register("mock_path_sink", |_| Ok(Box::new(MockPathSinkNode)));
         registry.register("VideoOutput", |_| Ok(Box::new(VideoOutputNode::new())));
 
         registry.register("int_source", |_| {
@@ -1250,6 +1335,68 @@ mod tests {
             .clone()
             .expect("compile must hand the job cancellation to the context");
         assert!(*bound.borrow(), "the bound receiver must follow the job");
+    }
+
+    #[test]
+    fn test_compile_runs_scalar_nodes_that_consume_frame_chain_outputs() {
+        // source.source_path -> PathDivider -> PathJoiner -> sink.output_path,
+        // the editor's way to derive an output path from the input path.
+        let mut registry = build_video_registry();
+        crate::registry::register_all_nodes(&mut registry);
+        let compile_ctx = MockCompileContext::new(2);
+
+        let mut graph = PipelineGraph::new();
+        for (id, node_type, params) in [
+            ("source", "mock_path_source", HashMap::new()),
+            ("divide", "PathDivider", HashMap::new()),
+            (
+                "join",
+                "PathJoiner",
+                HashMap::from([("file_name".to_string(), serde_json::json!("derived.mkv"))]),
+            ),
+            ("sink", "mock_path_sink", HashMap::new()),
+        ] {
+            graph
+                .add_node(NodeInstance {
+                    id: id.to_string(),
+                    node_type: node_type.to_string(),
+                    params,
+                })
+                .unwrap();
+        }
+        for (from, from_port, to, to_port, port_type) in [
+            ("source", "frames", "sink", "frames", PortType::VideoFrames),
+            ("source", "source_path", "divide", "path", PortType::Path),
+            (
+                "divide",
+                "parent_path",
+                "join",
+                "parent_path",
+                PortType::Path,
+            ),
+            ("join", "path", "sink", "output_path", PortType::Path),
+        ] {
+            graph
+                .add_connection(
+                    from,
+                    PortConnection {
+                        source_port: from_port.to_string(),
+                        target_port: to_port.to_string(),
+                        port_type,
+                    },
+                    to,
+                )
+                .unwrap();
+        }
+        graph.validate(&registry).expect("graph should validate");
+
+        compile_graph(&graph, &registry, &compile_ctx)
+            .expect("a graph that validates must compile");
+
+        assert_eq!(
+            compile_ctx.encoder_output_path.borrow().as_deref(),
+            Some(std::path::Path::new("/videos/derived.mkv"))
+        );
     }
 
     #[test]

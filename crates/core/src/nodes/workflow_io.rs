@@ -250,8 +250,6 @@ impl Node for WorkflowNode {
         inputs: &HashMap<String, PortData>,
         ctx: &ExecutionContext,
     ) -> Result<HashMap<String, PortData>> {
-        const MAX_NESTING_DEPTH: u32 = 10;
-
         if self.workflow_path.is_empty() {
             bail!("Workflow node: workflow_path is empty");
         }
@@ -274,17 +272,7 @@ impl Node for WorkflowNode {
             );
         }
 
-        // Load and parse the workflow
-        let json_str = std::fs::read_to_string(&path)
-            .with_context(|| format!("Workflow node: failed to read '{}'", self.workflow_path))?;
-        let workflow_value: serde_json::Value = serde_json::from_str(&json_str)
-            .with_context(|| format!("Workflow node: failed to parse '{}'", self.workflow_path))?;
-
-        // Support preset envelope
-        let workflow_value = unwrap_workflow(workflow_value);
-
-        let graph: PipelineGraph = serde_json::from_value(workflow_value)
-            .with_context(|| format!("Workflow node: invalid graph in '{}'", self.workflow_path))?;
+        let graph = load_nested_workflow(&self.workflow_path)?;
 
         // Build inner registry (same as outer — reuse the standard set)
         let registry = crate::registry::build_default_registry();
@@ -322,6 +310,65 @@ impl Node for WorkflowNode {
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+const MAX_NESTING_DEPTH: u32 = 10;
+
+/// Load and parse the workflow a `Workflow` node runs. A preset envelope
+/// (`{"workflow": {...}}`) is accepted too.
+fn load_nested_workflow(workflow_path: &str) -> Result<PipelineGraph> {
+    let json_str = std::fs::read_to_string(workflow_path)
+        .with_context(|| format!("Workflow node: failed to read '{workflow_path}'"))?;
+    let workflow_value: serde_json::Value = serde_json::from_str(&json_str)
+        .with_context(|| format!("Workflow node: failed to parse '{workflow_path}'"))?;
+    serde_json::from_value(unwrap_workflow(workflow_value))
+        .with_context(|| format!("Workflow node: invalid graph in '{workflow_path}'"))
+}
+
+/// Check, before a job is queued, that a `Workflow` node with these params can
+/// run its target: the target must load, must not nest itself, and neither it
+/// nor a workflow it nests may have a VideoFrames chain. Nested workflows run
+/// on the scalar executor, which cannot stream frames.
+pub(crate) fn validate_nested_workflow(params: &HashMap<String, serde_json::Value>) -> Result<()> {
+    let workflow_path = params
+        .get("workflow_path")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    check_nested_workflow(workflow_path, &mut Vec::new())
+}
+
+fn check_nested_workflow(workflow_path: &str, chain: &mut Vec<PathBuf>) -> Result<()> {
+    if workflow_path.is_empty() {
+        bail!("Workflow node: workflow_path is empty");
+    }
+    let path = PathBuf::from(workflow_path);
+    if chain.contains(&path) {
+        bail!("Workflow node: circular reference detected — '{workflow_path}' nests itself");
+    }
+    if chain.len() >= MAX_NESTING_DEPTH as usize {
+        bail!("Workflow node: maximum nesting depth ({MAX_NESTING_DEPTH}) exceeded at '{workflow_path}'");
+    }
+
+    let graph = load_nested_workflow(workflow_path)?;
+    if graph.has_video_frames_edges() {
+        bail!(
+            "Workflow node: '{workflow_path}' has VideoFrames connections; a Workflow node can only \
+             run workflows without a video pipeline"
+        );
+    }
+
+    chain.push(path);
+    for node in graph.nodes().filter(|node| node.node_type == "Workflow") {
+        let nested_path = node
+            .params
+            .get("workflow_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        check_nested_workflow(nested_path, chain)
+            .with_context(|| format!("in node '{}' of '{workflow_path}'", node.id))?;
+    }
+    chain.pop();
+    Ok(())
+}
 
 fn parse_port_type(s: &str) -> Option<PortType> {
     match s {
@@ -1041,5 +1088,36 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validate_nested_workflow_rejects_targets_that_cannot_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let self_path = dir.path().join("self.json");
+        let self_nesting = serde_json::json!({
+            "nodes": [{"id": "again", "node_type": "Workflow", "params": {"workflow_path": self_path}}],
+            "connections": []
+        });
+        std::fs::write(&self_path, self_nesting.to_string()).unwrap();
+        let params = |path: &std::path::Path| {
+            HashMap::from([("workflow_path".to_string(), serde_json::json!(path))])
+        };
+
+        let missing = validate_nested_workflow(&params(&dir.path().join("missing.json")))
+            .expect_err("an unreadable target must be rejected");
+        let circular = validate_nested_workflow(&params(&self_path))
+            .expect_err("a target that nests itself must be rejected");
+        let empty = validate_nested_workflow(&HashMap::new())
+            .expect_err("a Workflow node without a target must be rejected");
+
+        assert!(
+            format!("{missing:#}").contains("failed to read"),
+            "{missing:#}"
+        );
+        assert!(
+            format!("{circular:#}").contains("circular reference"),
+            "{circular:#}"
+        );
+        assert!(format!("{empty:#}").contains("workflow_path is empty"));
     }
 }
