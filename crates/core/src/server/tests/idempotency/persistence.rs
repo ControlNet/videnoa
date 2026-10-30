@@ -2,26 +2,36 @@ use anyhow::Result;
 use rusqlite::Connection;
 
 use super::super::persistence::JobsPersistence;
-use super::{persisted_job_count, RunFixture};
+use super::persisted_job_count;
+
+/// A data directory with no worker state in it. These tests write an old
+/// `jobs.db` themselves; replacing the one of a live state is unsound (its
+/// connection still has the WAL and shared memory open) and fails on
+/// Windows, where an open file cannot be deleted.
+fn empty_data_dir() -> Result<(tempfile::TempDir, std::path::PathBuf)> {
+    let root = tempfile::TempDir::new()?;
+    let data_dir = root.path().join("data");
+    std::fs::create_dir_all(&data_dir)?;
+    Ok((root, data_dir))
+}
 
 #[test]
 fn legacy_jobs_table_migrates_without_synthetic_keys_or_row_loss() -> Result<()> {
     // Given: a pre-idempotency database containing one ordinary unkeyed row.
-    let fixture = RunFixture::new(0)?;
-    std::fs::remove_file(fixture.data_dir.join("jobs.db"))?;
-    let connection = Connection::open(fixture.data_dir.join("jobs.db"))?;
+    let (_root, data_dir) = empty_data_dir()?;
+    let connection = Connection::open(data_dir.join("jobs.db"))?;
     create_legacy_schema(&connection, false)?;
     insert_legacy_row(&connection, "legacy-job", None)?;
     drop(connection);
 
     // When: the current persistence layer initializes the old database.
-    let persistence = JobsPersistence::new(&fixture.data_dir)?;
+    let persistence = JobsPersistence::new(&data_dir)?;
     let restored = persistence.load_jobs_for_startup()?;
 
     // Then: the row survives, new nullable columns exist, and no key is fabricated.
     assert_eq!(restored.len(), 1);
-    assert_eq!(persisted_job_count(&fixture.data_dir)?, 1);
-    let connection = Connection::open(fixture.data_dir.join("jobs.db"))?;
+    assert_eq!(persisted_job_count(&data_dir)?, 1);
+    let connection = Connection::open(data_dir.join("jobs.db"))?;
     let (key, fingerprint): (Option<String>, Option<String>) = connection.query_row(
         "SELECT idempotency_key, request_fingerprint FROM jobs WHERE id = 'legacy-job'",
         [],
@@ -35,21 +45,20 @@ fn legacy_jobs_table_migrates_without_synthetic_keys_or_row_loss() -> Result<()>
 #[test]
 fn migration_rejects_duplicate_existing_keys_without_corrupting_rows() -> Result<()> {
     // Given: a partially migrated database with contradictory duplicate key mappings.
-    let fixture = RunFixture::new(0)?;
-    std::fs::remove_file(fixture.data_dir.join("jobs.db"))?;
-    let connection = Connection::open(fixture.data_dir.join("jobs.db"))?;
+    let (_root, data_dir) = empty_data_dir()?;
+    let connection = Connection::open(data_dir.join("jobs.db"))?;
     create_legacy_schema(&connection, true)?;
     insert_legacy_row(&connection, "conflict-a", Some("duplicate-key"))?;
     insert_legacy_row(&connection, "conflict-b", Some("duplicate-key"))?;
     drop(connection);
 
     // When: initialization attempts to enforce durable key uniqueness.
-    let result = JobsPersistence::new(&fixture.data_dir);
+    let result = JobsPersistence::new(&data_dir);
 
     // Then: startup reports the conflict and leaves both source rows intact.
     let error = result.expect_err("duplicate mappings must fail migration");
     assert!(error.to_string().contains("unique idempotency key"));
-    assert_eq!(persisted_job_count(&fixture.data_dir)?, 2);
+    assert_eq!(persisted_job_count(&data_dir)?, 2);
     Ok(())
 }
 
