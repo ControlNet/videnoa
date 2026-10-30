@@ -141,5 +141,12 @@ Fixes for findings E (server half), P, N, M, R and Q of
   migration run in one transaction.
 - Tests that need a job to stay running use `test_hold` with a `TestGate`
   the test opens, not a timed sleep. Wait-until helpers have a 30 s bound.
+- Windows CI (fixed in `wave1-windows-fix`): the job store keeps
+  `jobs.db` open, so a test must not delete or replace it under a live
+  `AppState` (os error 32 on Windows; stale -wal/-shm on Unix). A persisted
+  `running` row precedes the executor's last cancellation check, so tests
+  wait for `TestGate::wait_until_held` before cancelling.
+- Gates: CI also runs `git ls-files -z '*.rs' | xargs -0 -n1 rustfmt
+  --edition 2021 --check` (cargo fmt skips `include!`-ed files).
 - Per-test timing: run the test binary with
   `RUSTC_BOOTSTRAP=1 <bin> -Z unstable-options --report-time`.
