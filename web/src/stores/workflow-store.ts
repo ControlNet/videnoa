@@ -66,6 +66,14 @@ interface WorkflowState {
   submittedJobId: string | null;
   setSubmittedJobId: (jobId: string | null) => void;
 
+  /** Fingerprint of the graph as last loaded, cleared or saved; see `selectIsDirty`. */
+  savedFingerprint: string;
+  /**
+   * Record a graph as saved: the one passed (as it was when the save started,
+   * so edits made while it ran stay unsaved) or else the current one.
+   */
+  markSaved: (saved?: { nodes: Node<PipelineNodeData>[]; edges: Edge[] }) => void;
+
   exportWorkflow: () => Workflow;
 }
 
@@ -116,6 +124,31 @@ function parseStructuredExportParam(key: string, value: string): unknown {
   } catch {
     return value;
   }
+}
+
+/**
+ * Params the editor refreshes by itself (a Workflow node re-reads its
+ * sub-workflow's interface on mount); a change there is not the user's edit.
+ */
+const DERIVED_PARAM_KEYS = new Set<string>(['interface_inputs', 'interface_outputs']);
+
+/** What Save writes, minus node positions and derived params. */
+function graphFingerprint(nodes: Node<PipelineNodeData>[], edges: Edge[]): string {
+  return JSON.stringify({
+    nodes: nodes.map((n) => [
+      n.id,
+      n.data.nodeType,
+      Object.entries(n.data.params)
+        .filter(([key]) => !DERIVED_PARAM_KEYS.has(key))
+        .sort(([a], [b]) => a.localeCompare(b)),
+    ]),
+    edges: edges.map((e) => [e.source, e.sourceHandle, e.target, e.targetHandle]),
+  });
+}
+
+/** Whether the canvas differs from what was last loaded, cleared or saved. */
+export function selectIsDirty(state: WorkflowState): boolean {
+  return graphFingerprint(state.nodes, state.edges) !== state.savedFingerprint;
 }
 
 function snapshot(state: { nodes: Node<PipelineNodeData>[]; edges: Edge[] }): HistoryEntry {
@@ -389,6 +422,12 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   future: [],
   currentFile: null,
   submittedJobId: null,
+  savedFingerprint: graphFingerprint([], []),
+
+  markSaved: (saved) => {
+    const { nodes, edges } = saved ?? get();
+    set({ savedFingerprint: graphFingerprint(nodes, edges) });
+  },
 
   setNodes: (nodes) => {
     const state = get();
@@ -519,6 +558,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
       future: [],
       nodes,
       edges,
+      savedFingerprint: graphFingerprint(nodes, edges),
       currentFile: null,
       submittedJobId: null,
     });
@@ -531,6 +571,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
       future: [],
       nodes: [],
       edges: [],
+      savedFingerprint: graphFingerprint([], []),
       currentFile: null,
       submittedJobId: null,
     });

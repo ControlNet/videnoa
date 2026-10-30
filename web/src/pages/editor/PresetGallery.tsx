@@ -22,9 +22,14 @@ import {
 } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useUIStore } from "@/stores/ui-store";
-import { normalizeParams, useWorkflowStore } from "@/stores/workflow-store";
+import {
+	normalizeParams,
+	selectIsDirty,
+	useWorkflowStore,
+} from "@/stores/workflow-store";
 import type { PipelineNodeData, Preset } from "@/types";
 import { computeLayout } from "./auto-layout";
+import { DiscardChangesDialog } from "./DiscardChangesDialog";
 
 export function PresetGallery() {
 	const { t } = useTranslation("editor");
@@ -41,10 +46,21 @@ export function PresetGallery() {
 		null,
 	);
 	const [deleting, setDeleting] = useState(false);
+	/** Load held back until the user agrees to discard unsaved changes. */
+	const [pendingLoad, setPendingLoad] = useState<(() => void) | null>(null);
+
+	const guardUnsaved = useCallback((load: () => void) => {
+		if (selectIsDirty(useWorkflowStore.getState())) {
+			setPendingLoad(() => load);
+		} else {
+			load();
+		}
+	}, []);
 
 	useEffect(() => {
 		if (!open) {
 			setPendingDelete(null);
+			setPendingLoad(null);
 			return;
 		}
 		let cancelled = false;
@@ -176,7 +192,9 @@ export function PresetGallery() {
 										key={preset.id}
 										className="cursor-pointer hover:bg-secondary/40 transition-colors"
 										onClick={() => {
-											handleLoadPreset(preset);
+											guardUnsaved(() => {
+												handleLoadPreset(preset);
+											});
 										}}
 									>
 										<CardHeader className="p-4">
@@ -203,7 +221,9 @@ export function PresetGallery() {
 										key={wf.filename}
 										className="cursor-pointer hover:bg-secondary/40 transition-colors"
 										onClick={() => {
-											handleLoadWorkflow(wf);
+											guardUnsaved(() => {
+												handleLoadWorkflow(wf);
+											});
 										}}
 									>
 										<CardHeader className="p-4 flex flex-row items-start justify-between gap-2">
@@ -273,6 +293,17 @@ export function PresetGallery() {
 					</DialogFooter>
 				</DialogContent>
 			</Dialog>
+			<DiscardChangesDialog
+				open={open && pendingLoad !== null}
+				onCancel={() => {
+					setPendingLoad(null);
+				}}
+				onDiscard={() => {
+					const load = pendingLoad;
+					setPendingLoad(null);
+					load?.();
+				}}
+			/>
 		</>
 	);
 }

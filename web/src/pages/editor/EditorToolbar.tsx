@@ -38,8 +38,9 @@ import {
 } from "@/components/ui/tooltip";
 import { useJobStore } from "@/stores/job-store";
 import { useUIStore } from "@/stores/ui-store";
-import { useWorkflowStore } from "@/stores/workflow-store";
+import { selectIsDirty, useWorkflowStore } from "@/stores/workflow-store";
 import type { WorkflowPort } from "@/types";
+import { DiscardChangesDialog } from "./DiscardChangesDialog";
 import { RunFromEditorDialog } from "./RunFromEditorDialog";
 
 interface EditorToolbarProps {
@@ -96,6 +97,7 @@ export function EditorToolbar({ onAutoLayout, onFitView }: EditorToolbarProps) {
 	const [saveDesc, setSaveDesc] = useState("");
 	/** "Save as" name that already exists, waiting for the user to confirm replacing it. */
 	const [replaceTarget, setReplaceTarget] = useState<string | null>(null);
+	const [confirmClear, setConfirmClear] = useState(false);
 	const [runDialogOpen, setRunDialogOpen] = useState(false);
 	const [runInputs, setRunInputs] = useState<WorkflowPort[]>([]);
 
@@ -134,13 +136,14 @@ export function EditorToolbar({ onAutoLayout, onFitView }: EditorToolbarProps) {
 	const handleSave = async () => {
 		if (currentFile) {
 			try {
-				const workflow = useWorkflowStore.getState().exportWorkflow();
+				const { nodes, edges, exportWorkflow } = useWorkflowStore.getState();
 				// Write the file this workflow was loaded from: its JSON name may
 				// be shared with another file (e.g. a copy made on disk).
-				await saveWorkflow(currentFile.name, currentFile.description, workflow, {
+				await saveWorkflow(currentFile.name, currentFile.description, exportWorkflow(), {
 					filename: currentFile.filename,
 					overwrite: true,
 				});
+				useWorkflowStore.getState().markSaved({ nodes, edges });
 				toast.success(t("toolbar.toast.workflowSaved"));
 			} catch (err) {
 				reportSaveError(err, currentFile.filename.replace(/\.json$/, ""));
@@ -154,11 +157,11 @@ export function EditorToolbar({ onAutoLayout, onFitView }: EditorToolbarProps) {
 		const name = saveName.trim();
 		if (!name) return;
 		try {
-			const workflow = useWorkflowStore.getState().exportWorkflow();
+			const { nodes, edges, exportWorkflow } = useWorkflowStore.getState();
 			const entry = await saveWorkflow(
 				name,
 				saveDesc.trim(),
-				workflow,
+				exportWorkflow(),
 				overwrite ? { overwrite: true } : undefined,
 			);
 			useWorkflowStore.getState().setCurrentFile({
@@ -166,6 +169,7 @@ export function EditorToolbar({ onAutoLayout, onFitView }: EditorToolbarProps) {
 				name: entry.name,
 				description: entry.description,
 			});
+			useWorkflowStore.getState().markSaved({ nodes, edges });
 			toast.success(t("toolbar.toast.workflowSaved"));
 			setReplaceTarget(null);
 			setSavePopoverOpen(false);
@@ -228,7 +232,13 @@ export function EditorToolbar({ onAutoLayout, onFitView }: EditorToolbarProps) {
 				<ToolbarButton
 					icon={Trash2}
 					label={t("toolbar.clear")}
-					onClick={clear}
+					onClick={() => {
+						if (selectIsDirty(useWorkflowStore.getState())) {
+							setConfirmClear(true);
+						} else {
+							clear();
+						}
+					}}
 				/>
 
 				<Popover open={savePopoverOpen} onOpenChange={setSavePopoverOpen}>
@@ -367,6 +377,16 @@ export function EditorToolbar({ onAutoLayout, onFitView }: EditorToolbarProps) {
 					</DialogFooter>
 				</DialogContent>
 			</Dialog>
+			<DiscardChangesDialog
+				open={confirmClear}
+				onCancel={() => {
+					setConfirmClear(false);
+				}}
+				onDiscard={() => {
+					setConfirmClear(false);
+					clear();
+				}}
+			/>
 		</>
 	);
 }

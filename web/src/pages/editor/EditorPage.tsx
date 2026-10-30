@@ -23,7 +23,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { useJobStore } from "@/stores/job-store";
 import { useNodeDefinitions } from "@/stores/node-definitions-store";
 import { useUIStore } from "@/stores/ui-store";
-import { useWorkflowStore } from "@/stores/workflow-store";
+import { selectIsDirty, useWorkflowStore } from "@/stores/workflow-store";
 import {
 	type NodeTypeName,
 	type PipelineNodeData,
@@ -155,6 +155,20 @@ function EditorCanvas() {
 			useJobStore.getState().unsubscribeFromJob();
 		};
 	}, []);
+
+	const isDirty = useWorkflowStore(selectIsDirty);
+	useEffect(() => {
+		if (!isDirty) return;
+		// Closing or reloading the page would drop the unsaved canvas.
+		const confirmUnload = (event: BeforeUnloadEvent) => {
+			event.preventDefault();
+			event.returnValue = "";
+		};
+		window.addEventListener("beforeunload", confirmUnload);
+		return () => {
+			window.removeEventListener("beforeunload", confirmUnload);
+		};
+	}, [isDirty]);
 
 	const onNodesChange = useCallback(
 		(changes: NodeChange[]) => {

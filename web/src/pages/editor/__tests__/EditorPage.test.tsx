@@ -453,3 +453,32 @@ describe("EditorPage Escape shortcut", () => {
 		expect(useUIStore.getState().activeModal).toBe("presets");
 	});
 });
+
+describe("EditorPage unsaved changes", () => {
+	function unload(): Event {
+		const event = new Event("beforeunload", { cancelable: true });
+		window.dispatchEvent(event);
+		return event;
+	}
+
+	it("asks the browser to confirm closing the page only while there are unsaved changes", () => {
+		useWorkflowStore.getState().clear();
+		render(<EditorPage />);
+		expect(unload().defaultPrevented).toBe(false);
+
+		act(() => {
+			useWorkflowStore.getState().addNode({
+				id: "n1",
+				type: "pipeline",
+				position: { x: 0, y: 0 },
+				data: { nodeType: "VideoInput", params: {} },
+			});
+		});
+		expect(unload().defaultPrevented).toBe(true);
+
+		act(() => {
+			useWorkflowStore.getState().markSaved();
+		});
+		expect(unload().defaultPrevented).toBe(false);
+	});
+});

@@ -6,7 +6,7 @@ import type { PipelineNodeData, Workflow, WorkflowPort } from '../../types';
 import { useJobStore } from '../job-store';
 import type { NodeDescriptor } from '../node-definitions-store';
 import { useNodeDefinitions } from '../node-definitions-store';
-import { useWorkflowStore } from '../workflow-store';
+import { selectIsDirty, useWorkflowStore } from '../workflow-store';
 
 const preset: Workflow = presetJson.workflow as Workflow;
 
@@ -565,5 +565,59 @@ describe('submittedJobId', () => {
 
     expect(useWorkflowStore.getState().submittedJobId).toBeNull();
     expect(unsubscribeFromJob).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('unsaved changes', () => {
+  const dirty = () => selectIsDirty(useWorkflowStore.getState());
+  const wf: Workflow = {
+    nodes: [
+      { id: 'p1', node_type: 'Print', params: { value: 'x' } },
+      { id: 'sub', node_type: 'Workflow', params: { workflow_path: 'inner.json' } },
+    ],
+    connections: [],
+  };
+
+  it('is clean after a load and dirty after an edit', () => {
+    useWorkflowStore.getState().loadWorkflow(wf);
+    expect(dirty()).toBe(false);
+
+    useWorkflowStore.getState().updateNodeParams('p1', { value: 'y' });
+    expect(dirty()).toBe(true);
+  });
+
+  it('is clean again after the canvas is saved or cleared', () => {
+    useWorkflowStore.getState().loadWorkflow(wf);
+    useWorkflowStore.getState().removeNode('p1');
+    expect(dirty()).toBe(true);
+
+    useWorkflowStore.getState().markSaved();
+    expect(dirty()).toBe(false);
+
+    useWorkflowStore.getState().addNode(makeNode('n1', 'VideoInput'));
+    expect(dirty()).toBe(true);
+    useWorkflowStore.getState().clear();
+    expect(dirty()).toBe(false);
+  });
+
+  it('ignores node moves and the sub-workflow interface refreshed on mount', () => {
+    useWorkflowStore.getState().loadWorkflow(wf);
+    const nodes = useWorkflowStore.getState().nodes;
+    useWorkflowStore.setState({
+      nodes: nodes.map((n) => ({ ...n, position: { x: 999, y: 999 } })),
+    });
+    useWorkflowStore.getState().updateNodeParams('sub', {
+      interface_inputs: '[{"name":"a","port_type":"Str"}]',
+      interface_outputs: '[]',
+    });
+
+    expect(dirty()).toBe(false);
+  });
+
+  it('counts a new graph on an empty canvas as unsaved', () => {
+    useWorkflowStore.getState().clear();
+    useWorkflowStore.getState().addNode(makeNode('n1', 'VideoInput'));
+
+    expect(dirty()).toBe(true);
   });
 });
