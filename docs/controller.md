@@ -107,6 +107,15 @@ lifetime; increasing the policy does not extend an existing session's deadline.
 Its optional `[iroh]` section (`relay_urls`, `use_public_relays`) is edited in Web Settings or the
 file and read at startup, so a change applies after the next Controller start.
 See [self-hosted relays](../docs/iroh.md#self-hosted-relays).
+Its optional `[history]` section takes `retention_days`, a positive number of
+days. It is off by default, which keeps every task. When set, an hourly sweep
+purges a completed, cancelled or discarded task, or a failed task that Retry
+cannot resume, once it has not changed for that many days. It removes the
+task's Controller temporary files, attempts and `Idempotency-Key`; afterwards
+that key can create a new task. Failed tasks that Retry can still resume stay
+until they are retried or discarded, and published outputs and Worker folders
+are never touched. The section is only edited in the file, is kept when Web
+Settings saves, and applies after the next Controller start.
 The in-memory `ControllerConfig` is the active runtime configuration.
 `controller.sqlite3` holds durable operational/application state: tasks, attempts,
 workers, recovery evidence, idempotency, administrator credential, and sessions.
@@ -576,7 +585,8 @@ and request returns the original batch membership and response without rescannin
 files or creating tasks, including after a Controller restart. A successful replay
 returns HTTP 200; a stored partial result remains HTTP 207. Reusing the key with
 different options returns HTTP 409. Batch keys are scoped separately from individual
-task keys. Without a key, every request remains an independent submission.
+task keys and expire seven days after the first request; after that the key
+starts a new batch. Without a key, every request remains an independent submission.
 
 For keyed requests, task inserts and the batch response commit together. A database
 failure saving the response rolls back the entire transaction. Preview/validation

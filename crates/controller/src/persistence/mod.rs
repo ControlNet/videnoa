@@ -4,6 +4,7 @@ pub(crate) use batch_idempotency::{finish_batch, insert_batch_task, BatchAdmissi
 mod attempt_query;
 mod codec;
 mod credential;
+mod history_retention;
 mod idempotency;
 mod lifecycle_evidence;
 mod lifecycle_retry;

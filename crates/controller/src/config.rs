@@ -54,6 +54,15 @@ pub struct ControllerConfig {
     pub timeouts: TimeoutConfig,
     pub retry: RetryConfig,
     pub iroh: IrohConfig,
+    pub history: HistoryConfig,
+}
+
+/// How long finished task history is kept, read from `controller.toml`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct HistoryConfig {
+    /// Days after its last change that a finished task is purged; `None`
+    /// keeps all history.
+    pub retention_days: Option<NonZeroU32>,
 }
 
 /// iroh transport settings, read from `controller.toml` at startup.
@@ -198,6 +207,7 @@ impl Default for ControllerConfig {
                 max_attempts: DEFAULT_MAX_ATTEMPTS,
             },
             iroh: IrohConfig::default(),
+            history: HistoryConfig::default(),
         }
     }
 }

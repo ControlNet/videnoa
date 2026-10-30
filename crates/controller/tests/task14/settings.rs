@@ -274,6 +274,39 @@ async fn settings_updates_keep_iroh_relays_from_the_config_file() -> TestResult 
 }
 
 #[tokio::test]
+async fn settings_updates_keep_history_retention_from_the_config_file() -> TestResult {
+    // Given: a Controller whose controller.toml keeps 30 days of task history.
+    let days = std::num::NonZeroU32::new(30).ok_or("30 is not zero")?;
+    let fixture = Fixture::with_history_retention(days).await?;
+    let response = fixture
+        .router
+        .clone()
+        .oneshot(Fixture::request("GET", "/api/settings", None)?)
+        .await?;
+    let settings = json_body(response).await?;
+
+    // When: runtime settings are saved through the API, which rewrites the file.
+    let response = fixture
+        .router
+        .clone()
+        .oneshot(Fixture::request(
+            "PUT",
+            "/api/settings",
+            Some(&settings_update(&settings, 12, 302)),
+        )?)
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Then: the retention the API does not manage is kept.
+    let document = fs::read_to_string(&fixture.config_file)?;
+    assert!(document.contains("health_seconds = 12"), "{document}");
+    let reloaded =
+        videnoa_controller::config::ControllerConfig::from_toml_in(&document, &fixture.workspace)?;
+    assert_eq!(reloaded.history.retention_days, Some(days));
+    Ok(())
+}
+
+#[tokio::test]
 async fn iroh_relays_are_edited_through_settings_and_apply_after_restart() -> TestResult {
     // Given: a Controller started on the public N0 network.
     let fixture = Fixture::new().await?;

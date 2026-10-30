@@ -6,14 +6,18 @@
 //! an edited released migration fail here, as it would for a real user.
 
 use std::error::Error;
+use std::num::NonZeroU32;
 use std::path::Path;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use tempfile::TempDir;
+use videnoa_controller::config::{ControllerConfig, HistoryConfig};
 use videnoa_controller::domain::{
     FailureCode, PageRequest, TaskId, TaskListQuery, TaskStatus, WorkerId, WorkerName,
 };
+use videnoa_controller::paths::PathCapabilities;
 use videnoa_controller::persistence::{Database, DatabaseOptions, Store, WorkerDeleteOutcome};
+use videnoa_controller::tasks::HistoryRetention;
 
 type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -173,4 +177,60 @@ async fn deleting_the_worker_a_released_retry_pinned_unpins_the_task() -> TestRe
         WorkerDeleteOutcome::Referenced
     );
     Ok(())
+}
+
+/// Released history is old enough to purge, so it shows what retention keeps.
+#[tokio::test]
+async fn released_history_is_purged_only_when_retention_is_set() -> TestResult {
+    // Given: v0.1.10 history from 2023, with a temp folder the output_exists
+    // failure left behind.
+    let (directory, store) = upgraded("v0.1.10").await?;
+    let config = ControllerConfig::for_workspace(directory.path())?;
+    std::fs::create_dir_all(&config.paths.temp_root)?;
+    let paths = PathCapabilities::open(&config.paths)?;
+    let leftover = config.paths.temp_root.join(OUTPUT_EXISTS);
+    std::fs::create_dir(&leftover)?;
+    std::fs::write(leftover.join("output.mp4.verified"), b"enhanced-video")?;
+    let now = chrono::Utc::now();
+
+    // When: the sweep runs with retention off.
+    let off = HistoryRetention::new(store.clone(), paths.clone(), HistoryConfig::default())
+        .sweep(now)
+        .await?;
+
+    // Then: every task stays, but the expired batch receipt goes.
+    assert_eq!((off.expired_batch_receipts, off.purged_tasks), (1, 0));
+    assert_eq!(count(&store, "batch_idempotency").await?, 0);
+    assert_eq!(count(&store, "tasks").await?, 7);
+
+    // When: history is kept for 30 days.
+    let thirty_days = HistoryConfig {
+        retention_days: NonZeroU32::new(30),
+    };
+    let on = HistoryRetention::new(store.clone(), paths, thirty_days)
+        .sweep(now)
+        .await?;
+
+    // Then: finished tasks go with their attempts, key and temp folder; a
+    // failure Retry can still resume and unfinished tasks stay.
+    assert_eq!(on.purged_tasks, 3);
+    let kept: Vec<String> = sqlx::query_scalar("SELECT id FROM tasks ORDER BY id")
+        .fetch_all(store.database().pool())
+        .await?;
+    assert_eq!(kept, [FAILED_PROCESSING, PROCESSING, QUEUED, PINNED]);
+    let orphaned: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM task_attempts WHERE task_id NOT IN (SELECT id FROM tasks)",
+    )
+    .fetch_one(store.database().pool())
+    .await?;
+    assert_eq!(orphaned, 0);
+    assert_eq!(count(&store, "task_idempotency").await?, 0);
+    assert!(!leftover.exists());
+    Ok(())
+}
+
+async fn count(store: &Store, table: &str) -> TestResult<i64> {
+    Ok(sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
+        .fetch_one(store.database().pool())
+        .await?)
 }

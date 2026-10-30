@@ -1,4 +1,5 @@
 use std::error::Error;
+use std::num::NonZeroU32;
 
 use tempfile::TempDir;
 use videnoa_controller::config::{ConfigError, ControllerConfig};
@@ -175,6 +176,35 @@ fn iroh_relays_are_optional_validated_and_preserved() -> TestResult {
     assert!(matches!(
         ControllerConfig::from_toml(&unknown),
         Err(ConfigError::Schema { .. })
+    ));
+    Ok(())
+}
+
+#[test]
+fn history_retention_is_off_by_default_validated_and_preserved() -> TestResult {
+    // Given: documents without, with, and with a zero retention period.
+    let kept = format!("{}\n[history]\nretention_days = 30\n", complete_config());
+    let zero = format!("{}\n[history]\nretention_days = 0\n", complete_config());
+
+    // When / Then: no section keeps all history and adds nothing on write.
+    let default = ControllerConfig::from_toml(complete_config())?;
+    assert_eq!(default.history.retention_days, None);
+    assert!(!default.to_toml()?.contains("[history]"));
+
+    // A period loads and survives the projection the settings API writes back.
+    let configured = ControllerConfig::from_toml(&kept)?;
+    assert_eq!(configured.history.retention_days, NonZeroU32::new(30));
+    assert_eq!(
+        ControllerConfig::from_toml(&configured.to_toml()?)?,
+        configured
+    );
+
+    // Zero would purge everything at once, so it is rejected.
+    assert!(matches!(
+        ControllerConfig::from_toml(&zero),
+        Err(ConfigError::ZeroValue {
+            field: "history.retention_days"
+        })
     ));
     Ok(())
 }

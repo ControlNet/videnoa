@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use super::raw::{RawControllerConfig, RawIrohConfig};
 use super::{
-    AuthConfig, ConfigError, ControllerConfig, IrohConfig, PathConfig, RetryConfig,
+    AuthConfig, ConfigError, ControllerConfig, HistoryConfig, IrohConfig, PathConfig, RetryConfig,
     SchedulerConfig, ServerConfig, TimeoutConfig,
 };
 
@@ -75,6 +75,13 @@ pub(super) fn build_config(
             max_attempts: positive_nonzero_u32("retry.max_attempts", raw.retry.max_attempts)?,
         },
         iroh: iroh(&raw.iroh)?,
+        history: HistoryConfig {
+            retention_days: raw
+                .history
+                .retention_days
+                .map(|days| positive_nonzero_u32("history.retention_days", days))
+                .transpose()?,
+        },
     })
 }
 
