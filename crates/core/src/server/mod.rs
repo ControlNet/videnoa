@@ -2049,6 +2049,19 @@ async fn save_workflow(
 
     sanitize_workflow_filename(&filename)?;
 
+    // `/api/run` resolves a name in `workflows_dir` before `presets_dir`, so a
+    // saved workflow with a preset's run name would silently replace it.
+    let presets_dir = state.inner.config.read().await.paths.presets_dir.clone();
+    if presets_dir.join(&filename).exists() {
+        let run_name = filename.trim_end_matches(".json");
+        return Err(AppError::Conflict {
+            code: "workflow_name_is_preset",
+            message: format!(
+                "'{run_name}' is the run name of a preset; save the workflow under another name"
+            ),
+        });
+    }
+
     let dir = state.resolve_workflows_dir().await;
 
     std::fs::create_dir_all(&dir)
@@ -7017,6 +7030,44 @@ mod tests {
         assert_eq!(saved_description(&dir.join("Dup.json")), "third");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `/api/run` looks a name up in `workflows_dir` before `presets_dir`, so a
+    /// saved workflow named like a preset would silently run instead of it.
+    #[tokio::test]
+    async fn test_save_workflow_rejects_a_preset_run_name() {
+        let dir = unique_temp_dir("videnoa-wf-preset-name");
+        let presets_dir = unique_temp_dir("videnoa-wf-preset-name-presets");
+        std::fs::create_dir_all(&presets_dir).unwrap();
+        write_json_file(
+            &presets_dir.join("interpolation-2x.json"),
+            &serde_json::json!({
+                "name": "Interpolation 2x",
+                "description": "",
+                "workflow": {"nodes": [], "connections": []}
+            }),
+        );
+        let state = workflow_test_state(dir.clone());
+        state.inner.config.write().await.paths.presets_dir = presets_dir.clone();
+        let mut app = app_router(state);
+
+        for body in [
+            serde_json::json!({"name": "interpolation-2x"}),
+            serde_json::json!({"name": "interpolation-2x.json", "overwrite": true}),
+            serde_json::json!({"name": "Mine", "filename": "interpolation-2x.json", "overwrite": true}),
+        ] {
+            let mut body = body;
+            body["description"] = serde_json::json!("");
+            body["workflow"] = serde_json::json!({"nodes": [], "connections": []});
+            let (status, json) = post_workflow(&mut app, body.clone()).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{body}");
+            assert_eq!(json["code"], "workflow_name_is_preset", "{body}");
+            assert!(json["error"].as_str().unwrap().contains("interpolation-2x"));
+        }
+        assert!(!dir.join("interpolation-2x.json").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&presets_dir);
     }
 
     /// Save targets the file the workflow was loaded from. A file copied on
