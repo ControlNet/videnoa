@@ -120,6 +120,20 @@ impl LifecycleFailure {
         Self::new(expected_status, failure_stage, failure_code, message, true)
     }
 
+    /// The operator gave up waiting for a cancellation the Worker never
+    /// confirmed. Its job may still run and its task folder may remain there.
+    #[must_use]
+    pub fn abandoned(expected_status: TaskStatus) -> Self {
+        Self::new(
+            expected_status,
+            FailureStage::RemoteCleanup,
+            FailureCode::WorkerUnavailable,
+            "Abandoned by the operator while cancelling: the Worker has not confirmed that \
+             the job stopped or that the task folder was deleted",
+            false,
+        )
+    }
+
     #[must_use]
     pub fn terminal(
         expected_status: TaskStatus,

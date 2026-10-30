@@ -292,8 +292,12 @@ waits in the queue as before.
 
 Worker updates use `PUT /api/workers/{id}` with the current version and all
 mutable fields. Enable and disable use `POST /api/workers/{id}/enable` and
-`/disable`. Delete uses `DELETE /api/workers/{id}?version=N` and succeeds only
-for an unreferenced current record.
+`/disable`. Delete uses `DELETE /api/workers/{id}?version=N` and succeeds once
+every task that ran on or is assigned to the Worker is terminal (completed,
+failed or cancelled); otherwise it returns 409. Finished tasks and attempts are
+detached from the deleted Worker: their `worker_id` becomes null and each
+attempt keeps the Worker's name in `worker_name`. A failed task whose Worker was
+deleted can no longer be retried; create a new task instead.
 
 Every worker must persist its Videnoa data. `jobs.db` stores keyed job identity,
 and worker task workspaces remain recovery evidence until cleanup. Losing this
@@ -356,7 +360,15 @@ its Worker even while that Worker is offline; deleting the Worker lets any
 Worker take it, and cancelling the task removes it from the queue.
 
 Cancellation is accepted from queued through verifying. Publishing, remote
-cleanup, and terminal tasks reject cancellation. Publication ambiguity permits
+cleanup, and terminal tasks reject cancellation. From uploading on, cancellation
+completes only after the Worker confirms that the job stopped and its task folder
+was deleted. When the Worker is gone for good, `POST /api/tasks/{id}/abandon`
+with `{"version": N}` ends a task whose cancellation is still waiting: the task
+fails with `worker_unavailable` at `remote_cleanup` and a message saying that the
+Worker did not confirm the job stopped or the folder was deleted, releases its
+Controller temporary files and its Worker capacity, and nothing is sent to the
+Worker. Abandon requires a requested cancellation; once the Worker's tasks are
+all terminal, the Worker can be deleted. Publication ambiguity permits
 manual retry on the existing attempt; remote-state ambiguity remains non-retryable.
 
 ## No-Clobber and Ambiguity

@@ -45,7 +45,11 @@ impl Store {
         Ok(None)
     }
 
-    /// Deletes an unreferenced worker using optimistic concurrency.
+    /// Deletes a worker whose tasks are all terminal, using optimistic concurrency.
+    ///
+    /// The finished tasks and attempts that ran on it are detached in the same
+    /// transaction, and the attempts keep the worker's name. Tasks a retry
+    /// queued for this worker lose that pin (`ON DELETE SET NULL`).
     ///
     /// # Errors
     /// Returns an error when `SQLite` cannot complete the delete policy.
@@ -54,30 +58,67 @@ impl Store {
         id: WorkerId,
         expected_version: u64,
     ) -> Result<WorkerDeleteOutcome, PersistenceError> {
-        let result = sqlx::query(
-            "DELETE FROM workers
-             WHERE id = ? AND version = ?
-               AND NOT EXISTS (SELECT 1 FROM tasks WHERE worker_id = ?)
-               AND NOT EXISTS (SELECT 1 FROM task_attempts WHERE worker_id = ?)",
-        )
-        .bind(id.to_string())
-        .bind(sqlite_u64("expected_version", expected_version)?)
-        .bind(id.to_string())
-        .bind(id.to_string())
-        .execute(self.database.pool())
+        let id = id.to_string();
+        let version = sqlite_u64("expected_version", expected_version)?;
+        let deletable = format!(
+            "EXISTS (SELECT 1 FROM workers WHERE id = ? AND version = ?)
+             AND NOT EXISTS (SELECT 1 FROM tasks
+                 WHERE worker_id = ? AND status NOT IN {TERMINAL})
+             AND NOT EXISTS (SELECT 1 FROM task_attempts
+                 WHERE worker_id = ? AND status NOT IN {TERMINAL})",
+            TERMINAL = *TERMINAL,
+        );
+        let mut transaction = self.database.pool().begin().await?;
+        // Write first, so the guard and the detach serialize with lifecycle writes.
+        sqlx::query(&format!(
+            "UPDATE task_attempts
+             SET worker_name = (SELECT name FROM workers WHERE id = ?), worker_id = NULL
+             WHERE worker_id = ? AND {deletable}"
+        ))
+        .bind(&id)
+        .bind(&id)
+        .bind(&id)
+        .bind(version)
+        .bind(&id)
+        .bind(&id)
+        .execute(&mut *transaction)
         .await?;
-        if result.rows_affected() == 1 {
+        sqlx::query(&format!(
+            "UPDATE tasks SET worker_id = NULL WHERE worker_id = ? AND {deletable}"
+        ))
+        .bind(&id)
+        .bind(&id)
+        .bind(version)
+        .bind(&id)
+        .bind(&id)
+        .execute(&mut *transaction)
+        .await?;
+        let deleted = sqlx::query(&format!("DELETE FROM workers WHERE id = ? AND {deletable}"))
+            .bind(&id)
+            .bind(&id)
+            .bind(version)
+            .bind(&id)
+            .bind(&id)
+            .execute(&mut *transaction)
+            .await?
+            .rows_affected();
+        if deleted == 1 {
+            transaction.commit().await?;
             return Ok(WorkerDeleteOutcome::Deleted);
         }
-        let row = sqlx::query(
+        transaction.rollback().await?;
+        let row = sqlx::query(&format!(
             "SELECT version,
-                EXISTS(SELECT 1 FROM tasks WHERE worker_id = ?) OR
-                EXISTS(SELECT 1 FROM task_attempts WHERE worker_id = ?) AS referenced
+                EXISTS(SELECT 1 FROM tasks
+                    WHERE worker_id = ? AND status NOT IN {TERMINAL}) OR
+                EXISTS(SELECT 1 FROM task_attempts
+                    WHERE worker_id = ? AND status NOT IN {TERMINAL}) AS referenced
              FROM workers WHERE id = ?",
-        )
-        .bind(id.to_string())
-        .bind(id.to_string())
-        .bind(id.to_string())
+            TERMINAL = *TERMINAL,
+        ))
+        .bind(&id)
+        .bind(&id)
+        .bind(&id)
         .fetch_optional(self.database.pool())
         .await?;
         let Some(row) = row else {

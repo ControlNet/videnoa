@@ -13,7 +13,7 @@ use tempfile::TempDir;
 use videnoa_controller::domain::{
     FailureCode, PageRequest, TaskId, TaskListQuery, TaskStatus, WorkerId,
 };
-use videnoa_controller::persistence::{Database, DatabaseOptions, Store};
+use videnoa_controller::persistence::{Database, DatabaseOptions, Store, WorkerDeleteOutcome};
 
 type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -131,6 +131,50 @@ async fn database_written_by_v0_1_10_upgrades_to_the_current_schema() -> TestRes
     assert_eq!(
         pinned.requested_worker_id,
         Some(id::<WorkerId>(RETIRED_WORKER)?)
+    );
+    Ok(())
+}
+
+/// Migration 0014 advises deleting the Worker a retry pinned a task to; a
+/// released database must let that happen and unpin the task.
+#[tokio::test]
+async fn deleting_the_worker_a_released_retry_pinned_unpins_the_task() -> TestResult {
+    let (_directory, store) = upgraded("v0.1.10").await?;
+    let retired = id::<WorkerId>(RETIRED_WORKER)?;
+    let version = store
+        .worker(retired)
+        .await?
+        .ok_or("released worker is missing")?
+        .version;
+
+    let outcome = store.delete_worker(retired, version).await?;
+
+    assert_eq!(outcome, WorkerDeleteOutcome::Deleted);
+    let pinned = store
+        .task(id::<TaskId>(PINNED)?)
+        .await?
+        .ok_or("released task is missing")?;
+    assert_eq!(pinned.status, TaskStatus::Queued);
+    assert_eq!(pinned.requested_worker_id, None);
+    let attempt = store
+        .current_attempt(pinned.id)
+        .await?
+        .ok_or("released attempt is missing")?;
+    assert_eq!(attempt.attempt.worker_id, None);
+    assert_eq!(
+        attempt
+            .attempt
+            .worker_name
+            .as_ref()
+            .map(|name| name.as_str()),
+        Some("retired-worker")
+    );
+    // The Worker with an active task stays.
+    let busy = id::<WorkerId>(FIXTURE_WORKER)?;
+    let version = store.worker(busy).await?.ok_or("worker missing")?.version;
+    assert_eq!(
+        store.delete_worker(busy, version).await?,
+        WorkerDeleteOutcome::Referenced
     );
     Ok(())
 }

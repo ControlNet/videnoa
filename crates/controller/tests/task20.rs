@@ -10,6 +10,8 @@ mod mock_videnoa;
 mod cancellation;
 #[path = "task20/cancellation_downstream.rs"]
 mod cancellation_downstream;
+#[path = "task20/dead_worker.rs"]
+mod dead_worker;
 #[path = "task20/fault_matrix.rs"]
 mod fault_matrix;
 #[path = "task20/fault_matrix_local.rs"]

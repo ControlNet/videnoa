@@ -120,7 +120,7 @@ async fn disabling_busy_worker_preserves_assignment_and_blocks_new_work() -> Tes
 }
 
 #[tokio::test]
-async fn deletion_conflicts_for_active_and_historical_references() -> TestResult {
+async fn deletion_conflicts_only_while_tasks_are_active() -> TestResult {
     // Given: one referenced worker and one never-used worker.
     let fixture = fixture().await?;
     let referenced = fixture
@@ -174,17 +174,28 @@ async fn deletion_conflicts_for_active_and_historical_references() -> TestResult
     videnoa_controller::lifecycle::LifecycleService::new(fixture.store.clone())
         .request_cancellation(&task, Some(&attempt), fixture.now)
         .await?;
-    let historical = fixture
-        .registry
-        .delete(referenced.id, 1)
-        .await
-        .expect_err("historical reference must conflict");
+    fixture.registry.delete(referenced.id, 1).await?;
     fixture.registry.delete(unused.id, unused.version).await?;
 
-    // Then: references are typed conflicts and the unused worker is removed.
+    // Then: only the active reference conflicts; the finished attempt is
+    // detached and keeps the deleted worker's name.
     assert_eq!(active.code(), WorkerRegistryErrorCode::Referenced);
-    assert_eq!(historical.code(), WorkerRegistryErrorCode::Referenced);
+    assert!(fixture.registry.worker(referenced.id).await?.is_none());
     assert!(fixture.registry.worker(unused.id).await?.is_none());
+    let attempt = fixture
+        .store
+        .current_attempt(task_id)
+        .await?
+        .ok_or_else(|| std::io::Error::other("attempt missing"))?;
+    assert_eq!(attempt.attempt.worker_id, None);
+    assert_eq!(
+        attempt
+            .attempt
+            .worker_name
+            .as_ref()
+            .map(|name| name.as_str()),
+        Some("worker-a")
+    );
     Ok(())
 }
 

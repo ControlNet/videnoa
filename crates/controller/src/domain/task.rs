@@ -4,7 +4,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use super::{
     AttemptId, FailureCode, FailureStage, InputExtension, InputPath, OutputExtension, OutputPath,
     PageRequest, RemoteJobId, RemotePath, SortDirection, SourceReference, SubmissionKey, TaskId,
-    TaskProgress, TaskSortField, TaskSource, TaskStatus, WorkerId, WorkflowName,
+    TaskProgress, TaskSortField, TaskSource, TaskStatus, WorkerId, WorkerName, WorkflowName,
 };
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -41,6 +41,10 @@ pub struct TaskAttempt {
     pub task_id: TaskId,
     pub attempt_number: u32,
     pub worker_id: Option<WorkerId>,
+    /// The name of the Worker that ran this attempt, kept when that Worker is
+    /// deleted and `worker_id` becomes null.
+    #[serde(default)]
+    pub worker_name: Option<WorkerName>,
     pub status: TaskStatus,
     pub submission_key: SubmissionKey,
     pub remote_job_id: Option<RemoteJobId>,

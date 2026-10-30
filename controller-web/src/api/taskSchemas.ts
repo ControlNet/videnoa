@@ -113,6 +113,7 @@ export const taskAttemptSchema = z
     task_id: z.string().uuid(),
     attempt_number: z.number().int().nonnegative(),
     worker_id: z.string().uuid().nullable(),
+    worker_name: z.string().nullish(),
     status: taskStatusSchema,
     submission_key: z.string().uuid(),
     remote_job_id: z.string().uuid().nullable(),

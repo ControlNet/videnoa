@@ -5,8 +5,9 @@ use crate::persistence::{AttemptRecord, TaskRecord};
 
 use super::engine::{applied, attempt_cas};
 use super::{
-    CancellationWrite, CommandKind, CommittedCommand, DurableAction, Lifecycle, LifecycleError,
-    LifecycleService, PairedTransition, SubmissionCancellationReconciliation, TransitionTarget,
+    CancellationWrite, CommandKind, CommittedCommand, DurableAction, FailureWrite, Lifecycle,
+    LifecycleError, LifecycleFailure, LifecycleService, PairedTransition,
+    SubmissionCancellationReconciliation, TransitionTarget,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -39,6 +40,28 @@ impl Lifecycle {
             | TaskStatus::Completed
             | TaskStatus::Failed
             | TaskStatus::Cancelled => Err(LifecycleError::Conflict),
+        }
+    }
+
+    /// Whether a requested cancellation in this state waits for the Worker, so
+    /// the operator may abandon it when the Worker cannot answer.
+    #[must_use]
+    pub const fn abandonable(status: TaskStatus) -> bool {
+        match status {
+            TaskStatus::Uploading
+            | TaskStatus::Staged
+            | TaskStatus::Submitting
+            | TaskStatus::Processing
+            | TaskStatus::RemoteCompleted
+            | TaskStatus::Downloading
+            | TaskStatus::Verifying => true,
+            TaskStatus::Queued
+            | TaskStatus::Reserved
+            | TaskStatus::Publishing
+            | TaskStatus::RemoteCleanup
+            | TaskStatus::Completed
+            | TaskStatus::Failed
+            | TaskStatus::Cancelled => false,
         }
     }
 }
@@ -114,6 +137,37 @@ impl LifecycleService {
         };
         let version = applied(self.store().apply_lifecycle_transition(&write).await?)?;
         Ok(self.committed(task.id, next_status, version, DurableAction::Cancel(action)))
+    }
+
+    /// Fails a task whose requested cancellation is still waiting for its
+    /// Worker, without that Worker's confirmation. The failure records that the
+    /// remote job and task folder are unverified; nothing is sent to the Worker.
+    ///
+    /// # Errors
+    /// Returns an error when cancellation was not requested, the state does not
+    /// wait for the Worker, snapshots disagree, or CAS conflicts.
+    pub async fn abandon(
+        &self,
+        task: &TaskRecord,
+        attempt: &AttemptRecord,
+        occurred_at: DateTime<Utc>,
+    ) -> Result<CommittedCommand, LifecycleError> {
+        if task.cancel_requested_at.is_none() {
+            return Err(LifecycleError::CancellationIntentRequired);
+        }
+        if !Lifecycle::abandonable(task.status) {
+            return Err(LifecycleError::IllegalCommand);
+        }
+        let write = FailureWrite {
+            task_id: task.id,
+            task_version: task.version,
+            from: task.status,
+            attempt: Some(attempt_cas(task, attempt)?),
+            failure: LifecycleFailure::abandoned(task.status).info(),
+            occurred_at,
+        };
+        let version = applied(self.store().fail_lifecycle(&write).await?)?;
+        Ok(self.committed(task.id, TaskStatus::Failed, version, DurableAction::None))
     }
 
     /// Commits terminal cancellation after the state-specific cleanup action converges.

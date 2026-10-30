@@ -4,8 +4,8 @@ use axum::Json;
 use chrono::Utc;
 
 use crate::domain::{
-    CancelTaskResponse, RemoteJobId, RetryTaskRequest, RetryTaskResponse, TaskActionRequest,
-    TaskId, WorkerId, WorkflowName,
+    AbandonTaskResponse, CancelTaskResponse, RemoteJobId, RetryTaskRequest, RetryTaskResponse,
+    TaskActionRequest, TaskId, WorkerId, WorkflowName,
 };
 use crate::lifecycle::{
     Lifecycle, RemoteTerminalStatus, RequeueRetryCommand, ResumeStage, RetryMode,
@@ -43,6 +43,37 @@ pub(super) async fn cancel(
     }))
 }
 
+/// Gives up on a cancellation that waits for an unreachable Worker. Only the
+/// Controller's own temporary files are released: the Worker is not contacted.
+pub(super) async fn abandon(
+    State(state): State<OperationsState>,
+    id: Result<Path<TaskId>, PathRejection>,
+    payload: Result<Json<TaskActionRequest>, JsonRejection>,
+) -> Result<Json<AbandonTaskResponse>, OperationsError> {
+    let Path(id) = id.map_err(|_| OperationsError::InvalidRequest)?;
+    let Json(request) = payload.map_err(|_| OperationsError::InvalidRequest)?;
+    let task = task(&state, id).await?;
+    require_version(task.version, request.version)?;
+    let attempt = state
+        .store
+        .current_attempt(id)
+        .await
+        .map_err(|_| OperationsError::Internal)?
+        .ok_or(OperationsError::Conflict("task has no attempt to abandon"))?;
+    let committed = state
+        .lifecycle
+        .abandon(&task, &attempt, Utc::now())
+        .await
+        .map_err(|error| OperationsError::from_lifecycle(&error))?;
+    if let Err(error) = crate::scheduler::remove_task_workspace(&state.paths, id).await {
+        tracing::warn!(task_id = %id, %error, "Abandoned task kept its temporary files");
+    }
+    Ok(Json(AbandonTaskResponse {
+        task_id: id,
+        status: committed.status(),
+    }))
+}
+
 pub(super) async fn retry(
     State(state): State<OperationsState>,
     id: Result<Path<TaskId>, PathRejection>,
@@ -63,6 +94,12 @@ pub(super) async fn retry(
         .failure
         .as_ref()
         .ok_or(OperationsError::Conflict("task has no retryable failure"))?;
+    if attempt.attempt.worker_id.is_none() {
+        // Its Worker was deleted: no output, workspace or job can be checked.
+        return Err(OperationsError::Conflict(
+            "the Worker that ran this task was deleted",
+        ));
+    }
     let moved = request
         .worker_id
         .filter(|worker_id| Some(*worker_id) != attempt.attempt.worker_id);

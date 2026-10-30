@@ -1,4 +1,4 @@
-use videnoa_controller::domain::{RetryTaskResponse, Task};
+use videnoa_controller::domain::{RetryTaskResponse, Task, WorkerId};
 
 use super::http::require_status;
 use super::{ControllerFixture, TestResult};
@@ -16,6 +16,44 @@ impl ControllerFixture {
 
     pub async fn cancel_status(&self, task: &Task) -> TestResult<reqwest::StatusCode> {
         self.task_action_status(task, "cancel").await
+    }
+
+    pub async fn abandon_status(&self, task: &Task) -> TestResult<reqwest::StatusCode> {
+        self.task_action_status(task, "abandon").await
+    }
+
+    /// Deletes a Worker at its current version. Health probes keep bumping an
+    /// offline Worker's version, so a stale-version conflict reads it again.
+    pub async fn delete_worker_status(
+        &self,
+        worker_id: WorkerId,
+    ) -> TestResult<reqwest::StatusCode> {
+        for _ in 0..50 {
+            let version = self
+                .workers()
+                .await?
+                .into_iter()
+                .find(|worker| worker.id == worker_id)
+                .ok_or_else(|| std::io::Error::other("worker is not listed"))?
+                .version;
+            let response = self
+                .client
+                .delete(format!(
+                    "{}/api/workers/{worker_id}?version={version}",
+                    self.base_url
+                ))
+                .bearer_auth(PASSWORD)
+                .send()
+                .await?;
+            let status = response.status();
+            let stale = status == reqwest::StatusCode::CONFLICT
+                && response.text().await?.contains("changed");
+            if !stale {
+                return Ok(status);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        Err(std::io::Error::other("worker version kept changing").into())
     }
 
     pub async fn retry_task(&self, task: &Task) -> TestResult<RetryTaskResponse> {

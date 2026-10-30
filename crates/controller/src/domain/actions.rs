@@ -28,6 +28,13 @@ pub struct CancelTaskResponse {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
+pub struct AbandonTaskResponse {
+    pub task_id: TaskId,
+    pub status: TaskStatus,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RetryTaskResponse {
     pub task_id: TaskId,
     /// The resumed attempt, or `None` when the task went back to the queue.
