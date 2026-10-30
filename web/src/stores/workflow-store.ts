@@ -492,7 +492,6 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   },
 
   loadWorkflow: (workflow, nodePositions) => {
-    const state = get();
     const nodes: Node<PipelineNodeData>[] = workflow.nodes.map((wn, i) => ({
       id: wn.id,
       type: 'pipeline',
@@ -512,8 +511,11 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
       data: { port_type: conn.port_type },
     }));
 
+    // History holds only the graph, not the file it belongs to: undoing past
+    // a load would show the previous graph under this file's name, and Save
+    // would write it there. A load or clear therefore starts a new history.
     set({
-      past: [...state.past, snapshot(state)].slice(-MAX_HISTORY),
+      past: [],
       future: [],
       nodes,
       edges,
@@ -524,9 +526,8 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   },
 
   clear: () => {
-    const state = get();
     set({
-      past: [...state.past, snapshot(state)].slice(-MAX_HISTORY),
+      past: [],
       future: [],
       nodes: [],
       edges: [],

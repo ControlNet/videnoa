@@ -424,6 +424,38 @@ describe('undo / redo', () => {
     expect(useWorkflowStore.getState().nodes).toHaveLength(1);
     expect(useWorkflowStore.getState().nodes[0].id).toBe('n1');
   });
+
+  // History holds only nodes and edges. Undo after loading B used to bring
+  // back A's graph while currentFile still named B, and Save then wrote A's
+  // graph into B.json.
+  it('does not undo across a workflow load', () => {
+    const wfA: Workflow = { nodes: [{ id: 'a1', node_type: 'Print', params: { value: 'A' } }], connections: [] };
+    const wfB: Workflow = { nodes: [{ id: 'b1', node_type: 'Print', params: { value: 'B' } }], connections: [] };
+    const store = useWorkflowStore.getState();
+    store.loadWorkflow(wfA);
+    store.setCurrentFile({ filename: 'A.json', name: 'A', description: '' });
+    store.loadWorkflow(wfB);
+    store.setCurrentFile({ filename: 'B.json', name: 'B', description: '' });
+
+    useWorkflowStore.getState().undo();
+
+    const after = useWorkflowStore.getState();
+    expect(after.currentFile?.filename).toBe('B.json');
+    expect(after.exportWorkflow().nodes[0].params.value).toBe('B');
+    expect(after.past).toHaveLength(0);
+    expect(after.future).toHaveLength(0);
+  });
+
+  it('does not undo a clear back onto a canvas with no file', () => {
+    const store = useWorkflowStore.getState();
+    store.addNode(makeNode('n1', 'VideoInput'));
+    store.clear();
+
+    useWorkflowStore.getState().undo();
+
+    expect(useWorkflowStore.getState().nodes).toHaveLength(0);
+    expect(useWorkflowStore.getState().past).toHaveLength(0);
+  });
 });
 
 describe('loadWorkflow', () => {
