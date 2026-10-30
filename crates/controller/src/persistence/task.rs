@@ -82,8 +82,8 @@ impl Store {
             TERMINAL = *TERMINAL,
         );
         let row = sqlx::query(&sql)
-        .fetch_optional(self.database.pool())
-        .await?;
+            .fetch_optional(self.database.pool())
+            .await?;
         row.map(|row| {
             let updated_at_ms = row.try_get("updated_at_ms")?;
             let id: String = row.try_get("id")?;

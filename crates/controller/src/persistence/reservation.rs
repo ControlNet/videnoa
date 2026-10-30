@@ -44,20 +44,20 @@ impl Store {
             COMPUTE = *COMPUTE,
         );
         let attempt_no = sqlx::query(&sql)
-        .bind(reservation.worker_id.to_string())
-        .bind(timestamp(reservation.reserved_at))
-        .bind(timestamp(reservation.reserved_at))
-        .bind(reservation.task_id.to_string())
-        .bind(sqlite_u64(
-            "expected_task_version",
-            reservation.expected_task_version,
-        )?)
-        .bind(reservation.worker_id.to_string())
-        .bind(reservation.worker_id.to_string())
-        .bind(policy.paused)
-        .bind(i64::from(policy.prefetch_per_worker))
-        .fetch_optional(&mut *transaction)
-        .await?;
+            .bind(reservation.worker_id.to_string())
+            .bind(timestamp(reservation.reserved_at))
+            .bind(timestamp(reservation.reserved_at))
+            .bind(reservation.task_id.to_string())
+            .bind(sqlite_u64(
+                "expected_task_version",
+                reservation.expected_task_version,
+            )?)
+            .bind(reservation.worker_id.to_string())
+            .bind(reservation.worker_id.to_string())
+            .bind(policy.paused)
+            .bind(i64::from(policy.prefetch_per_worker))
+            .fetch_optional(&mut *transaction)
+            .await?;
         let Some(attempt_no) = attempt_no else {
             transaction.rollback().await?;
             return Ok(ReservationOutcome::Conflict);

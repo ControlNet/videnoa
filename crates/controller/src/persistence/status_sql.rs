@@ -47,13 +47,13 @@ mod tests {
     /// come with a table rebuild, or this test fails.
     #[tokio::test]
     async fn schema_checks_accept_every_status_and_failure_value() {
-        use crate::domain::{FailureCode, FailureStage};
         use super::super::codec::{failure_code, failure_stage};
+        use crate::domain::{FailureCode, FailureStage};
 
         let directory = tempfile::TempDir::new().expect("temp directory");
-        let database = crate::persistence::Database::open(crate::persistence::DatabaseOptions::new(
-            directory.path().join("controller.sqlite3"),
-        ))
+        let database = crate::persistence::Database::open(
+            crate::persistence::DatabaseOptions::new(directory.path().join("controller.sqlite3")),
+        )
         .await
         .expect("database");
         let pool = database.pool();

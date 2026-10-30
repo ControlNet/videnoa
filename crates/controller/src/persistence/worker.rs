@@ -83,26 +83,32 @@ impl Store {
             COMPUTE = *COMPUTE,
         );
         let updated_version: Option<i64> = sqlx::query_scalar(&sql)
-        .bind(update.password.is_some())
-        .bind(update.password.as_ref().and_then(Option::as_ref).map(crate::domain::SecretString::expose))
-        .bind(update.password.is_some())
-        .bind(update.api_url.as_url().as_str())
-        .bind(update.password.is_some())
-        .bind(update.api_url.as_url().as_str())
-        .bind(update.password.is_some())
-        .bind(update.api_url.as_url().as_str())
-        .bind(update.password.is_some())
-        .bind(update.api_url.as_url().as_str())
-        .bind(update.name.as_str())
-        .bind(update.api_url.as_url().as_str())
-        .bind(update.enabled)
-        .bind(i64::from(update.compute_slots.get()))
-        .bind(timestamp(update.updated_at))
-        .bind(update.id.to_string())
-        .bind(sqlite_u64("expected_version", update.expected_version)?)
-        .bind(i64::from(update.compute_slots.get()))
-        .fetch_optional(&mut *transaction)
-        .await?;
+            .bind(update.password.is_some())
+            .bind(
+                update
+                    .password
+                    .as_ref()
+                    .and_then(Option::as_ref)
+                    .map(crate::domain::SecretString::expose),
+            )
+            .bind(update.password.is_some())
+            .bind(update.api_url.as_url().as_str())
+            .bind(update.password.is_some())
+            .bind(update.api_url.as_url().as_str())
+            .bind(update.password.is_some())
+            .bind(update.api_url.as_url().as_str())
+            .bind(update.password.is_some())
+            .bind(update.api_url.as_url().as_str())
+            .bind(update.name.as_str())
+            .bind(update.api_url.as_url().as_str())
+            .bind(update.enabled)
+            .bind(i64::from(update.compute_slots.get()))
+            .bind(timestamp(update.updated_at))
+            .bind(update.id.to_string())
+            .bind(sqlite_u64("expected_version", update.expected_version)?)
+            .bind(i64::from(update.compute_slots.get()))
+            .fetch_optional(&mut *transaction)
+            .await?;
         let outcome = if let Some(version) = updated_version {
             WorkerUpdateOutcome::Applied {
                 new_version: rust_u64("version", version)?,
@@ -117,9 +123,9 @@ impl Store {
                 COMPUTE = *COMPUTE,
             );
             let state: Option<(i64, i64)> = sqlx::query_as(&sql)
-            .bind(update.id.to_string())
-            .fetch_optional(&mut *transaction)
-            .await?;
+                .bind(update.id.to_string())
+                .fetch_optional(&mut *transaction)
+                .await?;
             match state {
                 Some((version, used_slots))
                     if rust_u64("version", version)? == update.expected_version
@@ -171,9 +177,9 @@ impl Store {
             COMPUTE = *COMPUTE,
         );
         let count: i64 = sqlx::query_scalar(&sql)
-        .bind(id.to_string())
-        .fetch_one(self.database.pool())
-        .await?;
+            .bind(id.to_string())
+            .fetch_one(self.database.pool())
+            .await?;
         rust_u64("used_slots", count)
     }
 }

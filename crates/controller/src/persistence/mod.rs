@@ -15,9 +15,9 @@ mod readiness;
 mod reservation;
 mod scheduler;
 mod session;
-mod status_sql;
 #[path = "database.rs"]
 mod sqlite;
+mod status_sql;
 #[path = "error.rs"]
 mod storage_error;
 mod submission_claim;
