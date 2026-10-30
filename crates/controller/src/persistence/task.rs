@@ -2,6 +2,7 @@ use sqlx::Row;
 
 use super::codec::{encode_json, parse_brand, sqlite_u64, task_source, timestamp};
 use super::models::{empty_progress, NewTask, TaskRecord};
+use super::status_sql::TERMINAL;
 use super::task_row::{map_task, TASK_COLUMNS};
 use super::{PersistenceError, Store};
 
@@ -75,11 +76,12 @@ impl Store {
     pub(crate) async fn begin_recovery_scan(
         &self,
     ) -> Result<Option<RecoveryScan>, PersistenceError> {
-        let row = sqlx::query(
-            "SELECT updated_at_ms, id FROM tasks
-             WHERE status NOT IN ('completed', 'failed', 'cancelled')
+        let sql = format!(
+            "SELECT updated_at_ms, id FROM tasks WHERE status NOT IN {TERMINAL}
              ORDER BY updated_at_ms DESC, id DESC LIMIT 1",
-        )
+            TERMINAL = *TERMINAL,
+        );
+        let row = sqlx::query(&sql)
         .fetch_optional(self.database.pool())
         .await?;
         row.map(|row| {
@@ -103,16 +105,18 @@ impl Store {
         let sql = match scan.after {
             Some(_) => format!(
                 "SELECT {TASK_COLUMNS} FROM tasks
-                 WHERE status NOT IN ('completed', 'failed', 'cancelled')
+                 WHERE status NOT IN {TERMINAL}
                    AND (updated_at_ms, id) > (?, ?)
                    AND (updated_at_ms, id) <= (?, ?)
-                 ORDER BY updated_at_ms ASC, id ASC LIMIT ?"
+                 ORDER BY updated_at_ms ASC, id ASC LIMIT ?",
+                TERMINAL = *TERMINAL,
             ),
             None => format!(
                 "SELECT {TASK_COLUMNS} FROM tasks
-                 WHERE status NOT IN ('completed', 'failed', 'cancelled')
+                 WHERE status NOT IN {TERMINAL}
                    AND (updated_at_ms, id) <= (?, ?)
-                 ORDER BY updated_at_ms ASC, id ASC LIMIT ?"
+                 ORDER BY updated_at_ms ASC, id ASC LIMIT ?",
+                TERMINAL = *TERMINAL,
             ),
         };
         let mut query = sqlx::query(&sql);

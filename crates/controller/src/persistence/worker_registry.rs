@@ -6,6 +6,7 @@ use crate::domain::{WorkerApiUrl, WorkerCapacity, WorkerId, WorkerName};
 
 use super::codec::{parse_brand, rust_u32, rust_u64, sqlite_u64};
 use super::models::{WorkerDeleteOutcome, WorkerIdentityConflict};
+use super::status_sql::{COMPUTE, TERMINAL};
 use super::{PersistenceError, Store};
 
 impl Store {
@@ -96,7 +97,7 @@ impl Store {
     /// # Errors
     /// Returns an error when `SQLite` access or count conversion fails.
     pub async fn worker_capacity(&self, id: WorkerId) -> Result<WorkerCapacity, PersistenceError> {
-        let sql = format!("{CAPACITY_SELECT} WHERE w.id = ? GROUP BY w.id");
+        let sql = format!("{} WHERE w.id = ? GROUP BY w.id", *CAPACITY_SELECT);
         let row = sqlx::query(&sql)
             .bind(id.to_string())
             .fetch_one(self.database.pool())
@@ -111,7 +112,7 @@ impl Store {
     pub async fn worker_capacities(
         &self,
     ) -> Result<HashMap<WorkerId, WorkerCapacity>, PersistenceError> {
-        let sql = format!("{CAPACITY_SELECT} GROUP BY w.id");
+        let sql = format!("{} GROUP BY w.id", *CAPACITY_SELECT);
         sqlx::query(&sql)
             .fetch_all(self.database.pool())
             .await?
@@ -124,14 +125,20 @@ impl Store {
     }
 }
 
-const CAPACITY_SELECT: &str = "SELECT w.id, w.compute_slots,
-    SUM(CASE WHEN t.status IN ('submitting', 'processing') THEN 1 ELSE 0 END) AS used,
-    SUM(CASE WHEN t.status NOT IN ('completed', 'failed', 'cancelled') THEN 1 ELSE 0 END) AS assigned,
+static CAPACITY_SELECT: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    format!(
+        "SELECT w.id, w.compute_slots,
+    SUM(CASE WHEN t.status IN {COMPUTE} THEN 1 ELSE 0 END) AS used,
+    SUM(CASE WHEN t.status NOT IN {TERMINAL} THEN 1 ELSE 0 END) AS assigned,
     SUM(CASE WHEN t.status = 'staged' THEN 1 ELSE 0 END) AS staged,
     SUM(CASE WHEN t.status = 'processing' THEN 1 ELSE 0 END) AS processing,
     SUM(CASE WHEN t.status = 'uploading' THEN 1 ELSE 0 END) AS uploads,
     SUM(CASE WHEN t.status = 'downloading' THEN 1 ELSE 0 END) AS downloads
-    FROM workers w LEFT JOIN tasks t ON t.worker_id = w.id";
+    FROM workers w LEFT JOIN tasks t ON t.worker_id = w.id",
+        COMPUTE = *COMPUTE,
+        TERMINAL = *TERMINAL,
+    )
+});
 
 fn map_capacity(row: &sqlx::sqlite::SqliteRow) -> Result<WorkerCapacity, PersistenceError> {
     let total = rust_u64("compute_slots", row.try_get("compute_slots")?)?;

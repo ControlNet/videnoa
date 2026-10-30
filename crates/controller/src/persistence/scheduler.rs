@@ -1,7 +1,10 @@
+use std::sync::LazyLock;
+
 use sqlx::Row;
 
 use super::codec::{parse_brand, rust_u64};
 use super::models::{SchedulerCandidate, UploadCandidateRecord};
+use super::status_sql::{COMPUTE, STAGE_IN};
 use super::{PersistenceError, Store};
 use crate::domain::{TaskId, WorkerId};
 
@@ -14,7 +17,7 @@ impl Store {
         &self,
     ) -> Result<Option<SchedulerCandidate>, PersistenceError> {
         let policy = self.config_manager().scheduler();
-        let row = sqlx::query(SCHEDULER_CANDIDATE_SQL)
+        let row = sqlx::query(&SCHEDULER_CANDIDATE_SQL)
             .bind(policy.paused)
             .bind(i64::from(policy.prefetch_per_worker))
             .fetch_optional(self.database.pool())
@@ -30,7 +33,7 @@ impl Store {
         &self,
         limit: u16,
     ) -> Result<Vec<UploadCandidateRecord>, PersistenceError> {
-        let rows = sqlx::query(UPLOAD_CANDIDATES_SQL)
+        let rows = sqlx::query(&UPLOAD_CANDIDATES_SQL)
             .bind(self.config_manager().scheduler().paused)
             .bind(i64::from(limit))
             .fetch_all(self.database.pool())
@@ -58,14 +61,16 @@ fn map_upload_candidate(
     })
 }
 
-const SCHEDULER_CANDIDATE_SQL: &str = "WITH worker_load AS (
+static SCHEDULER_CANDIDATE_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "WITH worker_load AS (
     SELECT w.id,
         (SELECT COUNT(*) FROM tasks pending
          WHERE pending.worker_id = w.id
-           AND pending.status IN ('reserved', 'uploading', 'staged')) AS pending_slots,
+           AND pending.status IN {STAGE_IN}) AS pending_slots,
         (SELECT COUNT(*) FROM tasks active
          WHERE active.worker_id = w.id
-           AND active.status IN ('submitting', 'processing')) AS active_compute
+           AND active.status IN {COMPUTE}) AS active_compute
     FROM workers w
 )
 SELECT t.id AS task_id, t.version AS task_version, w.id AS worker_id,
@@ -83,9 +88,15 @@ WHERE t.status = 'queued' AND ? = 0
   AND load.pending_slots < MAX(w.compute_slots - load.active_compute, 0) + ?
 ORDER BY t.priority DESC, t.created_at_ms ASC, t.id ASC,
          load.active_compute ASC, load.pending_slots ASC, w.last_assigned_at_ms ASC, w.id ASC
-LIMIT 1";
+LIMIT 1",
+        STAGE_IN = *STAGE_IN,
+        COMPUTE = *COMPUTE,
+    )
+});
 
-const UPLOAD_CANDIDATES_SQL: &str = "SELECT t.id AS task_id, t.worker_id,
+static UPLOAD_CANDIDATES_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "SELECT t.id AS task_id, t.worker_id,
     CASE WHEN (
         SELECT COUNT(*) FROM tasks stage_in
         WHERE stage_in.worker_id = t.worker_id
@@ -98,10 +109,13 @@ const UPLOAD_CANDIDATES_SQL: &str = "SELECT t.id AS task_id, t.worker_id,
     ) < MAX((SELECT compute_slots FROM workers WHERE id = t.worker_id) - (
             SELECT COUNT(*) FROM tasks active
             WHERE active.worker_id = t.worker_id
-              AND active.status IN ('submitting', 'processing')
+              AND active.status IN {COMPUTE}
         ), 0)
         THEN 0 ELSE 1 END AS upload_rank
 FROM tasks t
 WHERE t.status = 'reserved' AND ? = 0
 ORDER BY upload_rank ASC, t.priority DESC, t.created_at_ms ASC, t.id ASC
-LIMIT ?";
+LIMIT ?",
+        COMPUTE = *COMPUTE,
+    )
+});
