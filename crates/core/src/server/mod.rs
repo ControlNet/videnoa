@@ -581,6 +581,14 @@ pub struct SaveWorkflowRequest {
     pub name: String,
     pub description: String,
     pub workflow: serde_json::Value,
+    /// File to write, as `GET /api/workflows` lists it. When absent the file
+    /// name is derived from `name`.
+    #[serde(default)]
+    pub filename: Option<String>,
+    /// Replace an existing file. Without it the save is create-only and an
+    /// existing file answers 409 `workflow_exists`.
+    #[serde(default)]
+    pub overwrite: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1992,6 +2000,18 @@ async fn list_workflows(State(state): State<AppState>) -> Json<Vec<WorkflowEntry
     Json(entries)
 }
 
+/// Create `path` and write `bytes`, failing with `AlreadyExists` instead of
+/// replacing a file that is already there.
+fn write_new_workflow_file(path: &StdPath, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    file.write_all(bytes)
+}
+
 async fn save_workflow(
     State(state): State<AppState>,
     Json(payload): Json<SaveWorkflowRequest>,
@@ -2013,10 +2033,18 @@ async fn save_workflow(
         ));
     }
 
-    let filename = if trimmed.ends_with(".json") {
-        trimmed.clone()
-    } else {
-        format!("{trimmed}.json")
+    let filename = match payload.filename.as_deref() {
+        Some(filename) => {
+            sanitize_workflow_filename(filename)?;
+            if filename.trim() != filename || !filename.ends_with(".json") {
+                return Err(AppError::BadRequest(
+                    "filename must be a saved workflow's .json file name".into(),
+                ));
+            }
+            filename.to_string()
+        }
+        None if trimmed.ends_with(".json") => trimmed.clone(),
+        None => format!("{trimmed}.json"),
     };
 
     sanitize_workflow_filename(&filename)?;
@@ -2035,8 +2063,21 @@ async fn save_workflow(
     let path = dir.join(&filename);
     let bytes = serde_json::to_vec_pretty(&doc)
         .map_err(|e| AppError::Internal(format!("failed to serialize workflow: {e}")))?;
-    std::fs::write(&path, bytes)
-        .map_err(|e| AppError::Internal(format!("failed to write workflow file: {e}")))?;
+    if payload.overwrite {
+        std::fs::write(&path, bytes)
+            .map_err(|e| AppError::Internal(format!("failed to write workflow file: {e}")))?;
+    } else {
+        write_new_workflow_file(&path, &bytes).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                AppError::Conflict {
+                    code: "workflow_exists",
+                    message: format!("a saved workflow named {filename} already exists"),
+                }
+            } else {
+                AppError::Internal(format!("failed to write workflow file: {e}"))
+            }
+        })?;
+    }
 
     let has_interface = payload
         .workflow
@@ -3017,6 +3058,7 @@ pub enum AppError {
     NotFound(String),
     Internal(String),
     TooManyRequests(String),
+    Conflict { code: &'static str, message: String },
     InvalidIdempotencyKey,
     IdempotencyConflict,
 }
@@ -3029,6 +3071,7 @@ impl IntoResponse for AppError {
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg, None),
             AppError::TooManyRequests(msg) => (StatusCode::TOO_MANY_REQUESTS, msg, None),
             AppError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg, None),
+            AppError::Conflict { code, message } => (StatusCode::CONFLICT, message, Some(code)),
             AppError::InvalidIdempotencyKey => (
                 StatusCode::BAD_REQUEST,
                 "invalid idempotency key".to_string(),
@@ -6913,6 +6956,116 @@ mod tests {
             .unwrap();
         let resp = send_request(&mut app, req).await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    async fn post_workflow(
+        app: &mut Router,
+        body: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/workflows")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let resp = send_request(app, req).await;
+        let status = resp.status();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&body).unwrap())
+    }
+
+    fn saved_description(path: &StdPath) -> String {
+        let doc: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        doc["description"].as_str().unwrap().to_string()
+    }
+
+    /// "Save as" with a name that already exists must not replace that file
+    /// silently; the editor asks first and then resends with `overwrite`.
+    #[tokio::test]
+    async fn test_save_workflow_is_create_only_unless_overwrite_is_set() {
+        let dir = unique_temp_dir("videnoa-wf-create-only");
+        let mut app = app_router(workflow_test_state(dir.clone()));
+        let save = |description: &str, overwrite: Option<bool>| {
+            let mut body = serde_json::json!({
+                "name": "Dup",
+                "description": description,
+                "workflow": {"nodes": [], "connections": []}
+            });
+            if let Some(overwrite) = overwrite {
+                body["overwrite"] = serde_json::json!(overwrite);
+            }
+            body
+        };
+
+        let (status, _) = post_workflow(&mut app, save("first", None)).await;
+        assert_eq!(status, StatusCode::CREATED);
+
+        let (status, json) = post_workflow(&mut app, save("second", None)).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(json["code"], "workflow_exists");
+        let (status, json) = post_workflow(&mut app, save("second", Some(false))).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(json["code"], "workflow_exists");
+        assert_eq!(saved_description(&dir.join("Dup.json")), "first");
+
+        let (status, _) = post_workflow(&mut app, save("third", Some(true))).await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(saved_description(&dir.join("Dup.json")), "third");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Save targets the file the workflow was loaded from. A file copied on
+    /// disk keeps the original's JSON `name`; saving the copy by name would
+    /// overwrite the original.
+    #[tokio::test]
+    async fn test_save_workflow_writes_the_given_filename() {
+        let dir = unique_temp_dir("videnoa-wf-by-filename");
+        std::fs::create_dir_all(&dir).unwrap();
+        let doc = serde_json::json!({
+            "name": "Original",
+            "description": "untouched",
+            "workflow": {"nodes": [], "connections": []}
+        });
+        write_json_file(&dir.join("Original.json"), &doc);
+        write_json_file(&dir.join("copy.json"), &doc);
+        let mut app = app_router(workflow_test_state(dir.clone()));
+
+        let (status, json) = post_workflow(
+            &mut app,
+            serde_json::json!({
+                "name": "Original",
+                "filename": "copy.json",
+                "overwrite": true,
+                "description": "edited copy",
+                "workflow": {"nodes": [], "connections": []}
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(json["filename"], "copy.json");
+        assert_eq!(json["name"], "Original");
+        assert_eq!(saved_description(&dir.join("copy.json")), "edited copy");
+        assert_eq!(saved_description(&dir.join("Original.json")), "untouched");
+
+        for filename in ["../escape.json", "nested/x.json", "no-extension", ""] {
+            let (status, _) = post_workflow(
+                &mut app,
+                serde_json::json!({
+                    "name": "Original",
+                    "filename": filename,
+                    "overwrite": true,
+                    "description": "",
+                    "workflow": {"nodes": [], "connections": []}
+                }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "filename {filename:?}");
+        }
 
         let _ = std::fs::remove_dir_all(&dir);
     }
