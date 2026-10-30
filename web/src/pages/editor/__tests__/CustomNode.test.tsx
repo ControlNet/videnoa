@@ -156,6 +156,50 @@ beforeEach(() => {
   });
 });
 
+describe('CustomNode drift from the worker', () => {
+  function loadNode(nodeType: string, params: Record<string, unknown>) {
+    useWorkflowStore.getState().loadWorkflow({
+      nodes: [{ id: 'n1', node_type: nodeType, params }],
+      connections: [],
+    });
+    return useWorkflowStore.getState().nodes[0].data.params;
+  }
+
+  // An old workflow can name a node this worker no longer has. It used to
+  // render nothing while still being exported, so it could not be seen or
+  // removed.
+  it('shows a node of an unknown type as a deletable placeholder', async () => {
+    const params = loadNode('RemovedNode', { x: 1 });
+    await renderNode('RemovedNode', 'n1', params as Record<string, string | number | boolean>);
+
+    expect(screen.getByText('RemovedNode')).toBeInTheDocument();
+    expect(screen.getByText('This worker has no node of this type.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Remove node' }));
+    expect(useWorkflowStore.getState().nodes).toHaveLength(0);
+  });
+
+  it('lists params the node does not know as unsupported and lets them be removed', async () => {
+    const params = loadNode('Print', { value: 'x', renamed_param: 3 });
+    await renderNode('Print', 'n1', params as Record<string, string | number | boolean>);
+
+    expect(screen.getByText('Unsupported params')).toBeInTheDocument();
+    expect(screen.getByText('renamed_param')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Remove param renamed_param' }));
+    expect(useWorkflowStore.getState().exportWorkflow().nodes[0].params).toEqual({ value: 'x' });
+  });
+
+  it('keeps null, array and object params as JSON values', () => {
+    loadNode('X', { opt: null, list: [1, 2], obj: { a: true }, text: '[1]' });
+
+    expect(useWorkflowStore.getState().exportWorkflow().nodes[0].params).toEqual({
+      opt: null,
+      list: [1, 2],
+      obj: { a: true },
+      text: '[1]',
+    });
+  });
+});
+
 describe('CustomNode Print runtime preview', () => {
   it('renders Print runtime preview panel with empty fallback by default', async () => {
     await renderNode('Print', 'print-1');

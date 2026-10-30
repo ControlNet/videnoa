@@ -25,6 +25,7 @@ import { useNodeDefinitions } from "@/stores/node-definitions-store";
 import { useUIStore } from "@/stores/ui-store";
 import { selectIsDirty, useWorkflowStore } from "@/stores/workflow-store";
 import {
+	type NodeParamValue,
 	type NodeTypeName,
 	type PipelineNodeData,
 	PORT_COLORS,
@@ -212,13 +213,13 @@ function EditorCanvas() {
 				sourceNode.data.nodeType as NodeTypeName,
 				connection.sourceHandle,
 				"output",
-				sourceNode.data.params as Record<string, string | number | boolean>,
+				sourceNode.data.params as Record<string, NodeParamValue>,
 			);
 			const targetPortType = getPortType(
 				targetNode.data.nodeType as NodeTypeName,
 				connection.targetHandle,
 				"input",
-				targetNode.data.params as Record<string, string | number | boolean>,
+				targetNode.data.params as Record<string, NodeParamValue>,
 			);
 
 			return sourcePortType !== undefined && sourcePortType === targetPortType;
@@ -238,7 +239,7 @@ function EditorCanvas() {
 					sourceNode.data.nodeType as NodeTypeName,
 					connection.sourceHandle,
 					"output",
-					sourceNode.data.params as Record<string, string | number | boolean>,
+					sourceNode.data.params as Record<string, NodeParamValue>,
 				) ?? "Str";
 
 			const targetNode = nodes.find((n) => n.id === connection.target);
@@ -287,7 +288,7 @@ function EditorCanvas() {
 				y: event.clientY,
 			});
 
-			const defaultParams: Record<string, string | number | boolean> = {};
+			const defaultParams: Record<string, NodeParamValue> = {};
 			for (const port of desc.inputs) {
 				if (
 					port.direction === "param" &&

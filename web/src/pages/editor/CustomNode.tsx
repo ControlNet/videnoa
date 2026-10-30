@@ -18,6 +18,7 @@ import {
   Scissors,
   Split,
   Trash2,
+  TriangleAlert,
   Workflow,
   X,
 } from 'lucide-react';
@@ -50,6 +51,7 @@ import {
 } from '@/stores/node-definitions-store';
 import { useWorkflowStore } from '@/stores/workflow-store';
 import {
+  type NodeParamValue,
   type NodeTypeName,
   PORT_COLORS,
   type PortType,
@@ -120,7 +122,7 @@ function isNvencCodec(codec: unknown): boolean {
 
 function isVisibleVideoOutputPort(
   port: PortDescriptor,
-  params: Record<string, string | number | boolean>,
+  params: Record<string, NodeParamValue>,
 ): boolean {
   const nvenc = isNvencCodec(params.codec ?? 'libx265');
   if (port.name === 'crf' || port.name === 'x265_preset') return !nvenc;
@@ -182,6 +184,12 @@ function InlineHandle({
       </TooltipContent>
     </Tooltip>
   );
+}
+
+/** Text for a param field: arrays and objects as JSON, a missing value as the fallback. */
+function paramText(value: NodeParamValue | undefined, fallback?: unknown): string {
+  const shown = value ?? fallback ?? '';
+  return typeof shown === 'object' ? JSON.stringify(shown) : String(shown);
 }
 
 /** Params to set when a model is picked; SuperResolution follows the model's native scale. */
@@ -261,8 +269,8 @@ function ParamEditorControl({
   nodeId: string;
   nodeType: NodeTypeName;
   port: PortDescriptor;
-  value: string | number | boolean | undefined;
-  nodeParams: Record<string, string | number | boolean>;
+  value: NodeParamValue | undefined;
+  nodeParams: Record<string, NodeParamValue>;
 }) {
   const updateNodeParams = useWorkflowStore((s) => s.updateNodeParams);
   const { defaultBackend } = useModelCache();
@@ -285,7 +293,7 @@ function ParamEditorControl({
     return (
       <ModelSelector
         nodeType={nodeType}
-        value={String(value ?? '')}
+        value={paramText(value)}
         onChange={(path, model) => {
           updateNodeParams(nodeId, modelSelectionParams(nodeType, path, model));
         }}
@@ -300,7 +308,7 @@ function ParamEditorControl({
     const resolvedDefault = port.name === 'backend' ? defaultBackend : port.default_value;
     return (
       <Select
-        value={String(value ?? resolvedDefault ?? '')}
+        value={paramText(value, resolvedDefault)}
         onValueChange={(v) => { handleChange(v); }}
       >
         <SelectTrigger className="h-6 w-[110px] text-[10px] bg-background/50 border-border/50">
@@ -332,7 +340,7 @@ function ParamEditorControl({
     return (
       <Input
         type="number"
-        value={String(value ?? port.default_value ?? '')}
+        value={paramText(value, port.default_value)}
         step={port.port_type === 'Float' ? '0.01' : '1'}
         onChange={(e) => {
           if (e.target.value === '') {
@@ -352,7 +360,7 @@ function ParamEditorControl({
   if (port.ui_hint === 'workflow_picker' || port.port_type === 'WorkflowPath') {
     return (
       <WorkflowPathPicker
-        value={String(value ?? '')}
+        value={paramText(value)}
         onChange={handleChange}
       />
     );
@@ -361,7 +369,7 @@ function ParamEditorControl({
   if (port.port_type === 'Path' && port.name !== 'model_path') {
     return (
       <PathAutocomplete
-        value={String(value ?? port.default_value ?? '')}
+        value={paramText(value, port.default_value)}
         onChange={handleChange}
         className="h-6 w-[150px] text-[10px]"
       />
@@ -371,7 +379,7 @@ function ParamEditorControl({
   if (nodeType === 'Constant' && port.name === 'value' && nodeParams.type === 'Path') {
     return (
       <PathAutocomplete
-        value={String(value ?? port.default_value ?? '')}
+        value={paramText(value, port.default_value)}
         onChange={handleChange}
         className="h-6 w-[150px] text-[10px]"
       />
@@ -381,7 +389,7 @@ function ParamEditorControl({
   return (
     <Input
       type="text"
-      value={String(value ?? port.default_value ?? '')}
+      value={paramText(value, port.default_value)}
       onChange={(e) => { handleChange(e.target.value); }}
       className="h-6 w-[130px] text-[10px] bg-background/50 border-border/50 px-1.5"
       placeholder={port.name}
@@ -417,7 +425,7 @@ function toPortType(value: unknown): PortType | undefined {
 
 function resolveDescriptorPortType(
   port: PortDescriptor,
-  params?: Record<string, string | number | boolean>,
+  params?: Record<string, NodeParamValue>,
 ): PortType | undefined {
   if (port.dynamic_type_param && params) {
     const dynamicType = toPortType(params[port.dynamic_type_param]);
@@ -427,7 +435,7 @@ function resolveDescriptorPortType(
 }
 
 function parseStringTemplateDynamicInputs(
-  params: Record<string, string | number | boolean>,
+  params: Record<string, NodeParamValue>,
 ): DynamicPort[] {
   const raw = params.num_input;
   const parsed = typeof raw === 'number' ? raw : Number(raw ?? 0);
@@ -439,7 +447,7 @@ function parseStringTemplateDynamicInputs(
   }));
 }
 
-function parseDynamicPorts(params: Record<string, string | number | boolean>): DynamicPort[] {
+function parseDynamicPorts(params: Record<string, NodeParamValue>): DynamicPort[] {
   const raw = params.ports;
   if (!raw || typeof raw !== 'string') return [];
   try {
@@ -562,7 +570,7 @@ function DynamicPortEditor({
   );
 }
 
-function parseInterfacePorts(params: Record<string, string | number | boolean>, key: string): WorkflowPort[] {
+function parseInterfacePorts(params: Record<string, NodeParamValue>, key: string): WorkflowPort[] {
   const raw = params[key];
   if (!raw || typeof raw !== 'string') return [];
   try {
@@ -572,10 +580,145 @@ function parseInterfacePorts(params: Record<string, string | number | boolean>, 
   }
 }
 
+/** Saved params the node does not declare: shown read-only, each removable. */
+function UnsupportedParams({
+  nodeId,
+  params,
+  names,
+}: {
+  nodeId: string;
+  params: Record<string, NodeParamValue>;
+  names: string[];
+}) {
+  const { t } = useTranslation('editor');
+  const updateNodeParams = useWorkflowStore((s) => s.updateNodeParams);
+
+  return (
+    <div className="border-t border-border/40 px-2 py-1.5">
+      <p className="flex items-center gap-1 text-[9px] uppercase tracking-wide text-amber-600 dark:text-amber-400">
+        <TriangleAlert className="size-3" />
+        {t('node.unsupportedParams')}
+      </p>
+      <p className="text-[9px] text-muted-foreground">{t('node.unsupportedParamsHint')}</p>
+      {names.map((name) => (
+        <div key={name} className="nodrag flex items-center gap-2 min-h-6">
+          <span className="text-[10px] font-mono text-muted-foreground">{name}</span>
+          <span className="flex-1 min-w-0 truncate text-[10px] font-mono text-foreground/80">
+            {paramText(params[name])}
+          </span>
+          <button
+            type="button"
+            aria-label={t('node.removeParam', { name })}
+            onClick={() => { updateNodeParams(nodeId, { [name]: undefined }); }}
+            className="p-0.5 rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive shrink-0"
+          >
+            <Trash2 className="size-3" />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * A node whose type this worker does not define (removed or renamed since
+ * the workflow was saved, or definitions failed to load). It is still part
+ * of the workflow, so it stays visible, keeps its connections and can be
+ * deleted.
+ */
+function UnsupportedNode({
+  id,
+  nodeType,
+  params,
+}: {
+  id: string;
+  nodeType: string;
+  params: Record<string, NodeParamValue>;
+}) {
+  const { t } = useTranslation('editor');
+  const removeNode = useWorkflowStore((s) => s.removeNode);
+  const edges = useWorkflowStore((s) => s.edges);
+  const definitionsLoaded = useNodeDefinitions((s) => s.descriptors.length > 0);
+  const handleFor = (name: string, edgeData: unknown): PortDescriptor => ({
+    name,
+    port_type:
+      edgeData && typeof edgeData === 'object' && 'port_type' in edgeData
+        ? String(edgeData.port_type)
+        : 'Str',
+    direction: 'stream',
+    required: false,
+    default_value: null,
+    ui_hint: null,
+    enum_options: null,
+    dynamic_type_param: null,
+  });
+  const inputs = new Map<string, PortDescriptor>();
+  const outputs = new Map<string, PortDescriptor>();
+  for (const edge of edges) {
+    if (edge.target === id && edge.targetHandle) {
+      inputs.set(edge.targetHandle, handleFor(edge.targetHandle, edge.data));
+    }
+    if (edge.source === id && edge.sourceHandle) {
+      outputs.set(edge.sourceHandle, handleFor(edge.sourceHandle, edge.data));
+    }
+  }
+  const paramNames = Object.keys(params);
+
+  return (
+    <div className="rounded-lg border border-dashed border-destructive/70 shadow-lg overflow-hidden min-w-[220px] bg-card">
+      <div className="flex items-center gap-2 px-3 py-2 bg-destructive/15">
+        <TriangleAlert className="size-4 text-destructive" />
+        <span className="text-xs font-semibold tracking-wide flex-1 font-mono">{nodeType}</span>
+        <button
+          type="button"
+          aria-label={t('node.remove')}
+          onClick={(e) => { e.stopPropagation(); removeNode(id); }}
+          className="p-0.5 rounded hover:bg-destructive/20"
+        >
+          <X className="size-3" />
+        </button>
+      </div>
+      <p className="px-3 py-1.5 text-[10px] text-muted-foreground">
+        {definitionsLoaded ? t('node.unsupportedType') : t('node.definitionsUnavailable')}
+      </p>
+      {(inputs.size > 0 || outputs.size > 0) && (
+        <div className="flex justify-between gap-6 py-1">
+          <div className="flex flex-col gap-0.5">
+            {[...inputs.values()].map((port) => (
+              <div key={port.name} className="flex items-center gap-1.5 h-[22px] pl-1.5">
+                <InlineHandle port={port} direction="input" />
+                <span className="text-[10px] text-muted-foreground">{port.name}</span>
+              </div>
+            ))}
+          </div>
+          <div className="flex flex-col gap-0.5 items-end">
+            {[...outputs.values()].map((port) => (
+              <div key={port.name} className="flex items-center gap-1.5 h-[22px] pr-1.5">
+                <span className="text-[10px] text-muted-foreground">{port.name}</span>
+                <InlineHandle port={port} direction="output" />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {paramNames.length > 0 && (
+        <div className="border-t border-border/40 px-3 py-1">
+          {paramNames.map((name) => (
+            <div key={name} className="flex gap-2 text-[10px] font-mono">
+              <span className="text-muted-foreground">{name}</span>
+              <span className="truncate">{paramText(params[name])}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CustomNodeComponent({ id, data }: NodeProps) {
   const { t } = useTranslation('editor');
   const nodeType = data.nodeType as NodeTypeName;
-  const params = data.params as Record<string, string | number | boolean>;
+  const params = data.params as Record<string, NodeParamValue>;
   const desc = useDescriptor(nodeType);
   const runtimePreview = useJobStore((s) => s.runtimePreviewsByNodeId[id]);
   const removeNode = useWorkflowStore((s) => s.removeNode);
@@ -626,7 +769,9 @@ function CustomNodeComponent({ id, data }: NodeProps) {
     [edges, id],
   );
 
-  if (!desc) return null;
+  if (!desc) {
+    return <UnsupportedNode id={id} nodeType={nodeType} params={params} />;
+  }
 
   const accent = desc.accent_color;
   const IconComp = ICON_REGISTRY[desc.icon];
@@ -654,6 +799,16 @@ function CustomNodeComponent({ id, data }: NodeProps) {
     ? paramInputs.filter((port) => isVisibleVideoOutputPort(port, params))
     : paramInputs;
   const effectiveParamInputs = [...visibleParamInputs, ...stringTemplateInputs];
+  // Params this worker's node does not declare (renamed or removed since the
+  // workflow was saved) are ignored at run time, so show them.
+  const knownParamNames = new Set([
+    ...desc.inputs.map((port) => port.name),
+    ...stringTemplateInputs.map((port) => port.name),
+    ...(isWorkflowIO ? ['ports'] : []),
+    ...(isWorkflowNode ? ['interface_inputs', 'interface_outputs'] : []),
+    ...interfaceInputs.map((port) => port.name),
+  ]);
+  const unsupportedParams = Object.keys(params).filter((key) => !knownParamNames.has(key));
   const hasStreamPorts = streamInputs.length > 0
     || desc.outputs.length > 0
     || interfaceInputs.length > 0
@@ -674,6 +829,7 @@ function CustomNodeComponent({ id, data }: NodeProps) {
         </span>
         <button
           type="button"
+          aria-label={t('node.remove')}
           onClick={(e) => { e.stopPropagation(); removeNode(id); }}
           className="opacity-0 group-hover/node:opacity-100 transition-opacity p-0.5 rounded hover:bg-white/20"
         >
@@ -783,6 +939,10 @@ function CustomNodeComponent({ id, data }: NodeProps) {
         <DynamicPortEditor nodeId={id} nodeType={nodeType} ports={dynamicPorts} />
       )}
 
+      {unsupportedParams.length > 0 && (
+        <UnsupportedParams nodeId={id} params={params} names={unsupportedParams} />
+      )}
+
       {nodeType === 'Print' && (
         <div className="border-t border-border/40 px-2 py-1.5" data-testid="print-runtime-preview">
           <p className="text-[9px] uppercase tracking-wide text-muted-foreground/80">
@@ -815,7 +975,7 @@ export function getPortType(
   nodeType: NodeTypeName,
   handleId: string,
   direction: 'input' | 'output',
-  nodeParams?: Record<string, string | number | boolean>,
+  nodeParams?: Record<string, NodeParamValue>,
 ): PortType | undefined {
   if ((nodeType === 'WorkflowInput' || nodeType === 'WorkflowOutput') && nodeParams) {
     const dynPorts = parseDynamicPorts(nodeParams);

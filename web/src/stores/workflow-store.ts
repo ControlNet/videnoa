@@ -1,6 +1,7 @@
 import type { Edge, Node } from '@xyflow/react';
 import { create } from 'zustand';
 import type {
+  NodeParamValue,
   NodeTypeName,
   PipelineNodeData,
   PortType,
@@ -14,15 +15,21 @@ import { useNodeDefinitions } from './node-definitions-store';
 
 const MAX_HISTORY = 50;
 
+/**
+ * Params as the editor holds them. The structured params the editor edits as
+ * text (`ports`, `interface_*`) are held as JSON strings and parsed back on
+ * export; every other value stays the JSON value the workflow holds, so a
+ * `null` or a list is saved back unchanged rather than as a string.
+ */
 export function normalizeParams(
   params: Record<string, unknown>,
-): Record<string, string | number | boolean> {
-  const out: Record<string, string | number | boolean> = {};
+): Record<string, NodeParamValue> {
+  const out: Record<string, NodeParamValue> = {};
   for (const [k, v] of Object.entries(params)) {
-    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
-      out[k] = v;
-    } else {
+    if (STRUCTURED_EXPORT_PARAM_KEYS.has(k) && typeof v !== 'string') {
       out[k] = JSON.stringify(v);
+    } else {
+      out[k] = v as NodeParamValue;
     }
   }
   return out;
@@ -47,7 +54,7 @@ interface WorkflowState {
   /** Merge params into a node; keys set to `undefined` are removed. */
   updateNodeParams: (
     nodeId: string,
-    params: Record<string, string | number | boolean | undefined>,
+    params: Record<string, NodeParamValue | undefined>,
   ) => void;
   addEdge: (edge: Edge) => void;
   removeEdge: (edgeId: string) => void;
@@ -78,9 +85,9 @@ interface WorkflowState {
 }
 
 function mergeParams(
-  current: Record<string, string | number | boolean>,
-  updates: Record<string, string | number | boolean | undefined>,
-): Record<string, string | number | boolean> {
+  current: Record<string, NodeParamValue>,
+  updates: Record<string, NodeParamValue | undefined>,
+): Record<string, NodeParamValue> {
   const merged = { ...current };
   for (const [key, value] of Object.entries(updates)) {
     if (value === undefined) {
@@ -158,7 +165,7 @@ function snapshot(state: { nodes: Node<PipelineNodeData>[]; edges: Edge[] }): Hi
   };
 }
 
-function parseIfacePorts(params: Record<string, string | number | boolean>, key: string): WorkflowPort[] {
+function parseIfacePorts(params: Record<string, NodeParamValue>, key: string): WorkflowPort[] {
   const raw = params[key];
   if (!raw || typeof raw !== 'string') return [];
   try {
@@ -176,7 +183,7 @@ function toPortType(value: unknown): PortType | undefined {
 
 function resolveDescriptorPortType(
   port: { port_type: string; dynamic_type_param: string | null },
-  params: Record<string, string | number | boolean>,
+  params: Record<string, NodeParamValue>,
 ): PortType | undefined {
   if (port.dynamic_type_param) {
     const dynamicType = toPortType(params[port.dynamic_type_param]);
@@ -186,7 +193,7 @@ function resolveDescriptorPortType(
 }
 
 function parseStringTemplateDynamicInputs(
-  params: Record<string, string | number | boolean>,
+  params: Record<string, NodeParamValue>,
 ): WorkflowPort[] {
   const raw = params.num_input;
   const parsed = typeof raw === 'number' ? raw : Number(raw ?? 0);
@@ -262,7 +269,7 @@ function resolvePortType(
   return 'Str';
 }
 
-function parseDynPorts(params: Record<string, string | number | boolean>): WorkflowPort[] {
+function parseDynPorts(params: Record<string, NodeParamValue>): WorkflowPort[] {
   const raw = params.ports;
   if (!raw || typeof raw !== 'string') return [];
   try {
@@ -272,7 +279,7 @@ function parseDynPorts(params: Record<string, string | number | boolean>): Workf
   }
 }
 
-function parseDynamicPortConfig(raw: string | number | boolean | undefined): DynamicPortConfig[] {
+function parseDynamicPortConfig(raw: NodeParamValue | undefined): DynamicPortConfig[] {
   if (typeof raw !== 'string') return [];
   try {
     const parsed = JSON.parse(raw);
@@ -394,7 +401,7 @@ function extractWorkflowInterface(
 
   if (!inputNode && !outputNode) return null;
 
-  const parsePortConfig = (params: Record<string, string | number | boolean>): WorkflowPort[] => {
+  const parsePortConfig = (params: Record<string, NodeParamValue>): WorkflowPort[] => {
     const portsRaw = params.ports;
     if (!portsRaw || typeof portsRaw !== 'string') return [];
     try {
