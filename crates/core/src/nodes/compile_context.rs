@@ -190,6 +190,9 @@ pub struct VideoCompileContext {
     trt_cache_dir: PathBuf,
     /// Frame buffers shared by the decoder, pooled stages and encoder of a job.
     frame_pool: Arc<FramePool>,
+    /// Cancellation of the execution being compiled, checked before each
+    /// model load (every inference lane loads its own session).
+    cancellation: RefCell<Option<tokio::sync::watch::Receiver<bool>>>,
 }
 
 impl Drop for VideoCompileContext {
@@ -343,6 +346,15 @@ impl VideoCompileContext {
             pipe_bit_depth: Cell::new(8),
             trt_cache_dir,
             frame_pool: FramePool::shared(),
+            cancellation: RefCell::new(None),
+        }
+    }
+
+    /// The context nodes initialised by this compile context execute under.
+    fn node_execution_context(&self) -> ExecutionContext {
+        ExecutionContext {
+            cancellation: self.cancellation.borrow().clone(),
+            ..ExecutionContext::default()
         }
     }
 
@@ -418,8 +430,11 @@ impl VideoCompileContext {
         )? {
             node.set_trt_cache_dir(cache_dir);
         }
-        node.execute(inputs, &ExecutionContext::default())
+        let exec_ctx = self.node_execution_context();
+        exec_ctx.check_cancelled()?;
+        node.execute(inputs, &exec_ctx)
             .context("failed to initialize SuperResolution node")?;
+        exec_ctx.check_cancelled()?;
         Ok(node)
     }
 
@@ -428,8 +443,11 @@ impl VideoCompileContext {
         if let Some(cache_dir) = self.resolve_trt_cache_dir(inputs, 32)? {
             node.set_trt_cache_dir(cache_dir);
         }
-        node.execute(inputs, &ExecutionContext::default())
+        let exec_ctx = self.node_execution_context();
+        exec_ctx.check_cancelled()?;
+        node.execute(inputs, &exec_ctx)
             .context("failed to initialize FrameInterpolation node")?;
+        exec_ctx.check_cancelled()?;
         Ok(node)
     }
 
@@ -943,6 +961,10 @@ impl CompileContext for VideoCompileContext {
 
     fn total_output_frames(&self) -> Option<u64> {
         self.total_output_frames.get()
+    }
+
+    fn bind_execution_context(&self, exec_ctx: &ExecutionContext) {
+        self.cancellation.replace(exec_ctx.cancellation.clone());
     }
 
     fn create_stages(
@@ -1573,6 +1595,34 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn cancelled_compile_stops_before_loading_a_model() {
+        let context = context_with_output(1280, 720);
+        let (_cancel_tx, cancel_rx) = tokio::sync::watch::channel(true);
+        context.bind_execution_context(&ExecutionContext {
+            cancellation: Some(cancel_rx),
+            ..ExecutionContext::default()
+        });
+        let inputs = HashMap::from([(
+            "model_path".to_string(),
+            PortData::Path(PathBuf::from("missing-model.onnx")),
+        )]);
+
+        for (node, is_interpolator) in [
+            (Box::new(SuperResNode::new()) as Box<dyn Node>, false),
+            (Box::new(FrameInterpolationNode::new()), true),
+        ] {
+            let error = context
+                .create_stages(node, &inputs, is_interpolator)
+                .err()
+                .expect("a cancelled compile must not load the model");
+            assert!(
+                crate::node::is_cancellation(&error),
+                "expected a cancellation, got: {error:#}"
+            );
+        }
     }
 
     #[test]

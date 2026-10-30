@@ -85,6 +85,12 @@ pub trait CompileContext {
         None
     }
 
+    /// Called once before any node is compiled, with the context of the
+    /// execution being compiled. Contexts that initialise nodes themselves use
+    /// its cancellation, so a cancel during a model load or engine build stops
+    /// the compilation at the next check point.
+    fn bind_execution_context(&self, _exec_ctx: &ExecutionContext) {}
+
     /// Create one or more streaming stages for a processing node.
     ///
     /// The default implementation preserves the original one-node -> one-stage
@@ -147,6 +153,7 @@ pub(crate) fn compile_graph_with_execution_context(
     mut node_debug_callback: Option<&mut NodeDebugEventCallback<'_>>,
 ) -> Result<CompiledPipeline> {
     exec_ctx.check_cancelled()?;
+    ctx.bind_execution_context(exec_ctx);
     let execution_order = graph.execution_order()?;
 
     if !has_video_frames_ports(graph, registry, &execution_order)? {
@@ -895,6 +902,7 @@ mod tests {
         decoder_frames: Vec<Frame>,
         total_frames: Option<u64>,
         encoder_settings: RefCell<Option<(String, i64, String)>>,
+        bound_cancellation: RefCell<Option<tokio::sync::watch::Receiver<bool>>>,
     }
 
     impl MockCompileContext {
@@ -911,6 +919,7 @@ mod tests {
                 total_frames: Some(num_frames as u64),
                 decoder_frames: frames,
                 encoder_settings: RefCell::new(None),
+                bound_cancellation: RefCell::new(None),
             }
         }
     }
@@ -983,6 +992,11 @@ mod tests {
 
         fn is_interpolator_type(&self, node_type: &str) -> bool {
             node_type == "mock_interpolator"
+        }
+
+        fn bind_execution_context(&self, exec_ctx: &ExecutionContext) {
+            self.bound_cancellation
+                .replace(exec_ctx.cancellation.clone());
         }
     }
 
@@ -1193,6 +1207,49 @@ mod tests {
             "second stage should be an Interpolator"
         );
         assert_eq!(compiled.total_frames, Some(10));
+    }
+
+    #[test]
+    fn test_compile_binds_the_job_cancellation_to_the_compile_context() {
+        let registry = build_video_registry();
+        let compile_ctx = MockCompileContext::new(1);
+        let mut graph = PipelineGraph::new();
+        for (id, node_type) in [("source", "mock_source"), ("sink", "mock_sink")] {
+            graph
+                .add_node(NodeInstance {
+                    id: id.to_string(),
+                    node_type: node_type.to_string(),
+                    params: HashMap::new(),
+                })
+                .unwrap();
+        }
+        graph
+            .add_connection(
+                "source",
+                PortConnection {
+                    source_port: "frames".to_string(),
+                    target_port: "frames".to_string(),
+                    port_type: PortType::VideoFrames,
+                },
+                "sink",
+            )
+            .unwrap();
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        let exec_ctx = ExecutionContext {
+            cancellation: Some(cancel_rx),
+            ..ExecutionContext::default()
+        };
+
+        compile_graph_with_execution_context(&graph, &registry, &compile_ctx, &exec_ctx, None)
+            .expect("graph should compile");
+
+        cancel_tx.send(true).unwrap();
+        let bound = compile_ctx
+            .bound_cancellation
+            .borrow()
+            .clone()
+            .expect("compile must hand the job cancellation to the context");
+        assert!(*bound.borrow(), "the bound receiver must follow the job");
     }
 
     #[test]

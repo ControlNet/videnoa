@@ -115,7 +115,7 @@ async fn test_parallel_interpolator_cancels_with_both_lanes_active() -> Result<(
     });
 
     // When
-    executor
+    let error = executor
         .execute_pipeline_stages(
             frames,
             stages,
@@ -124,7 +124,12 @@ async fn test_parallel_interpolator_cancels_with_both_lanes_active() -> Result<(
             cancel_rx,
             None,
         )
-        .await?;
+        .await
+        .expect_err("a cancelled pipeline must not report success");
+    assert!(
+        crate::node::is_cancellation(&error),
+        "unexpected error: {error:#}"
+    );
 
     // Then
     assert!(
