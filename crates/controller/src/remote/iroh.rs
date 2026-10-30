@@ -162,8 +162,8 @@ mod classification_tests {
 
     #[test]
     fn tunnel_protocol_failures_are_incompatibility_not_outage() {
-        let error = anyhow::Error::from(std::io::Error::other("handshake"))
-            .context(TunnelError::Protocol);
+        let error =
+            anyhow::Error::from(std::io::Error::other("handshake")).context(TunnelError::Protocol);
         assert_eq!(classify(&error), VidenoaClientError::Incompatible);
         assert!(!classify(&error).is_transient());
         assert_eq!(

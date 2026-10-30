@@ -154,7 +154,8 @@ impl VidenoaClient {
 
 const UNREADABLE_WORKFLOW: &str =
     "the worker lists this workflow in a form this Controller cannot read";
-const UNREADABLE_PRESET: &str = "the worker lists this preset in a form this Controller cannot read";
+const UNREADABLE_PRESET: &str =
+    "the worker lists this preset in a form this Controller cannot read";
 const UNREADABLE_INTERFACE: &str = "the worker reports an interface this Controller cannot read";
 
 /// Reads one listing entry. An unreadable entry that still carries its name

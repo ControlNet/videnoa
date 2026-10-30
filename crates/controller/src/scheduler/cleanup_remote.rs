@@ -59,8 +59,7 @@ impl TransferExecutor {
                 | VidenoaClientError::Stall
                 | VidenoaClientError::RateLimited
                 | VidenoaClientError::ClientStatus {
-                    status: 401 | 403,
-                    ..
+                    status: 401 | 403, ..
                 }
                 | VidenoaClientError::UnexpectedStatus { .. }
                 | VidenoaClientError::Incompatible,

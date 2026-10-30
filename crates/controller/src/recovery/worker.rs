@@ -56,8 +56,7 @@ impl Reconciler {
             );
             self.refresh_worker(update, task_id, stage, report).await
         } else {
-            self.defer_worker(worker, task_id, now, stage, report)
-                .await
+            self.defer_worker(worker, task_id, now, stage, report).await
         }
     }
 
