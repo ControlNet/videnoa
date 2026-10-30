@@ -10,7 +10,9 @@ use super::{
     MAX_JSON_BYTES,
 };
 use crate::mock_videnoa::checkpoints::Checkpoint;
-use crate::mock_videnoa::domain::{ErrorCode, ErrorResponse, JobRecord};
+use crate::mock_videnoa::domain::{
+    is_active, mock_time, CancelReason, ErrorCode, ErrorResponse, JobRecord,
+};
 use crate::mock_videnoa::journal::{JournalOutcome, Route};
 use crate::mock_videnoa::state::SharedState;
 
@@ -128,6 +130,32 @@ pub(crate) async fn cancel(
     let (sequence, found) = {
         let mut inner = state.inner.lock().await;
         let sequence = inner.begin(Route::JobCancel);
+        let slow = inner.faults.slow_job_cancellation;
+        let stopping = inner
+            .persistent
+            .jobs
+            .get_mut(&id)
+            .filter(|job| slow && is_active(job.response.status));
+        if let Some(job) = stopping {
+            // The executor is still winding down: only record the request.
+            job.response.cancel_requested = true;
+            job.response.cancel_requested_at = Some(mock_time("2026-09-02T00:00:03Z"));
+            job.response.cancel_reason = Some(CancelReason::User);
+            if state.persist_locked(&inner).await.is_err() {
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, "persistence_failed");
+            }
+            drop(inner);
+            let journal =
+                journal_request(&parts, &body, Route::JobCancel, sequence, BTreeMap::new());
+            record(
+                &state,
+                journal,
+                StatusCode::NO_CONTENT,
+                JournalOutcome::Delivered,
+            )
+            .await;
+            return StatusCode::NO_CONTENT.into_response();
+        }
         let found = inner.persistent.jobs.remove(&id).is_some();
         if found {
             inner

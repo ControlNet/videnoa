@@ -1,12 +1,12 @@
 use chrono::{DateTime, Utc};
 
-use crate::domain::{FailureCode, FailureStage, TaskStatus};
+use crate::domain::{FailureCode, FailureStage, RemoteJobId, TaskStatus};
 use crate::lifecycle::{
     AdvanceCommand, DurableAction, LifecycleErrorCode, LifecycleFailure, LifecycleService,
     SubmissionCancellationReconciliation, SubmissionEvidence,
 };
 use crate::persistence::{AttemptRecord, TaskRecord};
-use crate::remote::{FileApiPath, VidenoaClientError};
+use crate::remote::{FileApiPath, JobStatus, VidenoaClientError};
 
 use super::paths::{remote_paths, submission_params};
 use super::submission_ownership::SubmissionOwnership;
@@ -133,8 +133,13 @@ impl Reconciler {
                     .attempt
                     .remote_job_id
                     .ok_or(RecoveryError::MissingRemoteEvidence)?;
-                match worker.client.cancel_job(remote_job_id).await {
-                    Ok(()) | Err(VidenoaClientError::NotFound) => {}
+                match stop_remote_job(worker, remote_job_id).await {
+                    Ok(true) => {}
+                    // Its files stay until the job stops using them.
+                    Ok(false) => {
+                        report.defer(task.id);
+                        return Ok(());
+                    }
                     Err(error) => {
                         // The cancel stays requested; the next pass retries it.
                         return self
@@ -252,8 +257,14 @@ impl Reconciler {
             return Err(error.into());
         }
         if let Some(job_id) = remote_job_id {
-            match worker.client.cancel_job(job_id).await {
-                Ok(()) | Err(VidenoaClientError::NotFound) => {}
+            match stop_remote_job(worker, job_id).await {
+                Ok(true) => {}
+                // The confirmed job is durable now; the next pass waits for
+                // it to stop from Processing.
+                Ok(false) => {
+                    report.defer(task.id);
+                    return Ok(());
+                }
                 Err(error) => {
                     // The confirmed job is durable now; the next pass cancels
                     // it from Processing.
@@ -277,6 +288,9 @@ impl Reconciler {
             .await
     }
 
+    /// Deletes the task's workspace on the worker and marks it cancelled.
+    /// Callers stop the task's remote job first: the job reads its input
+    /// from the workspace until it stops.
     async fn finish_cancellation(
         &self,
         task: TaskRecord,
@@ -328,5 +342,31 @@ impl Reconciler {
             .await?;
         report.push(task.id, RecoveryCommandKind::Terminal);
         Ok(())
+    }
+}
+
+/// Cancels a remote job and reports whether the worker has stopped it. A
+/// worker keeps an active job listed, with its cancel requested, until its
+/// executor exits; deleting a stopped job removes its history.
+async fn stop_remote_job(
+    worker: &AssignedWorker,
+    id: RemoteJobId,
+) -> Result<bool, VidenoaClientError> {
+    match worker.client.cancel_job(id).await {
+        Ok(()) | Err(VidenoaClientError::NotFound) => {}
+        Err(error) => return Err(error),
+    }
+    match worker.client.job(id).await {
+        Err(VidenoaClientError::NotFound) => Ok(true),
+        Ok(job) => match job.status {
+            JobStatus::Completed | JobStatus::Failed | JobStatus::Cancelled => {
+                match worker.client.cancel_job(id).await {
+                    Ok(()) | Err(VidenoaClientError::NotFound) => Ok(true),
+                    Err(error) => Err(error),
+                }
+            }
+            JobStatus::Queued | JobStatus::Running | JobStatus::Unknown => Ok(false),
+        },
+        Err(error) => Err(error),
     }
 }

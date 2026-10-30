@@ -8,6 +8,7 @@ use videnoa_controller::domain::{FailureCode, FailureStage, Task, TaskStatus};
 use videnoa_controller::remote::PROTOCOL_VERSION;
 
 use crate::mock_videnoa::domain::CancelReason;
+use crate::mock_videnoa::faults::Fault;
 use crate::mock_videnoa::journal::Route;
 use crate::mock_videnoa::server::MockVidenoa;
 use crate::remote_scope::{
@@ -135,6 +136,47 @@ async fn a_job_cancelled_on_the_worker_says_who_cancelled_it() -> TestResult {
             TaskStatus::Failed
         );
     }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cancelled_task_waits_until_the_worker_has_stopped_its_job() -> TestResult {
+    // Given: a processing task the user cancelled, on a worker whose job
+    // takes a while to stop after the cancel request.
+    let worker = MockVidenoa::start_persistent().await?;
+    let mut fixture = ControllerFixture::start().await?;
+    let task = processing_task(&worker, &fixture, "slow-cancel").await?;
+    fixture.crash().await?;
+    let job_id = remote_job_id(&fixture, &task).await?;
+    worker.set_fault(Fault::SlowJobCancellation).await;
+    request_cancellation(&fixture, &task).await?;
+    let reconciler = fixture.reconciler()?;
+
+    // When: reconciliation cancels the job while it is still running.
+    let report = reconciler.reconcile_task_id(task.id, Utc::now()).await?;
+
+    // Then: the task waits, and the job's input is not deleted under it.
+    assert!(deferred(&report, &task));
+    assert_ne!(
+        durable_task(&fixture, &task).await?.status,
+        TaskStatus::Cancelled
+    );
+    assert_eq!(worker.counters().await.get(Route::DeleteFile), 0);
+    assert_eq!(worker.active_job_count().await, 1);
+
+    // When: the job has stopped and reconciliation runs again.
+    worker
+        .request_cancel(&job_id, CancelReason::User, true)
+        .await?;
+    reconciler.reconcile_task_id(task.id, Utc::now()).await?;
+
+    // Then: the task is cancelled and the job and its files are gone.
+    assert_eq!(
+        durable_task(&fixture, &task).await?.status,
+        TaskStatus::Cancelled
+    );
+    assert_eq!(worker.job_count().await, 0);
+    assert_eq!(worker.counters().await.get(Route::DeleteFile), 1);
     Ok(())
 }
 

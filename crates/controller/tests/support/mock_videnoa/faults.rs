@@ -21,6 +21,15 @@ pub enum Fault {
         name: String,
         error: String,
     },
+    /// Makes `DELETE /api/jobs/{id}` on an active job only request its
+    /// cancellation, as the Worker does while the job's executor winds down:
+    /// the job stays listed as running with `cancel_requested` until the test
+    /// settles it. A DELETE on a finished job removes it.
+    #[allow(
+        dead_code,
+        reason = "Shared harness slow cancellation is exercised by Task 20"
+    )]
+    SlowJobCancellation,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -69,6 +78,10 @@ impl RestartOutcome {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "Each flag is an independent fault a test installs"
+)]
 pub(crate) struct FaultState {
     pub disconnect_before_accept: bool,
     pub accept_then_drop_run_response: bool,
@@ -80,6 +93,8 @@ pub(crate) struct FaultState {
     pub stall_download: Option<()>,
     pub service_unavailable: bool,
     pub invalid_workflows: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub slow_job_cancellation: bool,
 }
 
 impl FaultState {
@@ -101,6 +116,7 @@ impl FaultState {
             Fault::InvalidWorkflow { name, error } => {
                 self.invalid_workflows.insert(name, error);
             }
+            Fault::SlowJobCancellation => self.slow_job_cancellation = true,
         }
     }
 }
