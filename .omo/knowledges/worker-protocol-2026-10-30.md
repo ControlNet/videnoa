@@ -43,6 +43,9 @@ task probes with /api/run", and wave-1 carry-overs c1 to c4.
 - `transport.rs::forbidden` reads 403 bodies; only `host_not_allowed` keeps its
   reason. `is_authentication()` excludes it; `is_worker_level()` includes it, so
   it never fails a task. The probe shows the worker's reason with normal backoff.
+  Run (`run_rejection`), run validation and `cancel_job` read 403 bodies the
+  same way (`transport::forbidden`); validation returns the error rather than
+  calling the workflow invalid.
 
 ## Cancellation (lookup, c2, c3)
 

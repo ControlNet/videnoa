@@ -7,7 +7,7 @@ use crate::domain::{RemoteJobId, SubmissionKey, WorkflowName};
 
 use videnoa_protocol::{ErrorCode, RunWorkflowRequest};
 
-use super::transport::{ensure_success, Rejection};
+use super::transport::{ensure_success, forbidden, Rejection};
 use super::{
     Job, RunOutcome, RunReceipt, RunSubmission, RunValidation, VidenoaClient, VidenoaClientError,
 };
@@ -81,6 +81,8 @@ impl VidenoaClient {
         }
         let rejection = self.rejection(response).await;
         match run_rejection(status, rejection) {
+            // A refused Host is about the Worker, not this workflow.
+            error if error.is_host_not_allowed() => Err(error),
             VidenoaClientError::ClientStatus {
                 status: 400 | 422,
                 reason,
@@ -154,6 +156,9 @@ impl VidenoaClient {
         let response = self
             .send_authenticated(self.http.delete(self.endpoint(&["api", "jobs", &id])?))
             .await?;
+        if response.status() == StatusCode::FORBIDDEN {
+            return Err(self.forbidden(response).await);
+        }
         ensure_success(response.status())
     }
 }
@@ -186,6 +191,7 @@ fn run_rejection(status: StatusCode, rejection: Rejection) -> VidenoaClientError
             code: Some(code),
         },
         _ => match status {
+            StatusCode::FORBIDDEN => forbidden(Rejection { reason, code }),
             // The Worker validates the workflow on submission; keep its
             // reason so the task failure says what to fix.
             StatusCode::BAD_REQUEST => VidenoaClientError::ClientStatus {

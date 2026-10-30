@@ -90,13 +90,7 @@ impl VidenoaClient {
     /// Controller addressed it by, which the user fixes on the Worker; any
     /// other 403 stays redacted.
     pub(super) async fn forbidden(&self, response: Response) -> VidenoaClientError {
-        let Rejection { reason, code } = self.rejection(response).await;
-        let refused_host = code == Some(ErrorCode::HostNotAllowed);
-        VidenoaClientError::ClientStatus {
-            status: StatusCode::FORBIDDEN.as_u16(),
-            reason: reason.filter(|_| refused_host),
-            code: code.filter(|_| refused_host),
-        }
+        forbidden(self.rejection(response).await)
     }
 
     pub(super) async fn rejection(&self, response: Response) -> Rejection {
@@ -160,6 +154,16 @@ fn bounded_reason(raw: &str) -> Option<String> {
     } else {
         kept
     })
+}
+
+/// A 403 read from its [`Rejection`]; see [`VidenoaClient::forbidden`].
+pub(super) fn forbidden(Rejection { reason, code }: Rejection) -> VidenoaClientError {
+    let refused_host = code == Some(ErrorCode::HostNotAllowed);
+    VidenoaClientError::ClientStatus {
+        status: StatusCode::FORBIDDEN.as_u16(),
+        reason: reason.filter(|_| refused_host),
+        code: code.filter(|_| refused_host),
+    }
 }
 
 pub(super) fn ensure_success(status: StatusCode) -> Result<(), VidenoaClientError> {

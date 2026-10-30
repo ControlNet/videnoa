@@ -984,6 +984,52 @@ async fn run_validation_reads_the_same_codes() -> TestResult {
     Ok(())
 }
 
+#[tokio::test]
+async fn a_refused_host_name_is_reported_by_every_job_request() -> TestResult {
+    // Given: a Worker whose job routes refuse the Host this Controller uses.
+    let server = MockVidenoa::start().await?;
+    let client = test_client(
+        &server,
+        Duration::from_secs(5),
+        Duration::from_secs(1),
+        JSON_LIMIT,
+    )?;
+    let params = BTreeMap::new();
+    let workflow = WorkflowName::new("eligible-workflow.json");
+    let key: SubmissionKey = "00000000-0000-4000-8000-000000000990".parse()?;
+    let job = client.run(&workflow, key, &params).await?.receipt.id;
+    let reason = "host 'nas.local' is not allowed; add it to the worker's allowed hosts";
+    let body = format!(r#"{{"error":"{reason}","code":"host_not_allowed"}}"#).into_bytes();
+    let refused = VidenoaClientError::ClientStatus {
+        status: 403,
+        reason: Some(reason.to_owned()),
+        code: Some(ErrorCode::HostNotAllowed),
+    };
+    for route in [Route::Run, Route::RunValidate, Route::JobCancel] {
+        server
+            .set_fault(Fault::Response(ResponseFault {
+                route,
+                status: 403,
+                body: body.clone(),
+            }))
+            .await;
+    }
+
+    // When: the Controller submits, validates and cancels.
+    let key: SubmissionKey = "00000000-0000-4000-8000-000000000991".parse()?;
+    let run = client.run(&workflow, key, &params).await;
+    let validation = client.validate_run(&workflow).await;
+    let cancel = client.cancel_job(job).await;
+
+    // Then: each says the Worker refused the host, not that the password is
+    // wrong, and validation does not call the workflow invalid.
+    assert_eq!(run.expect_err("refused run"), refused);
+    assert_eq!(validation.expect_err("refused validation"), refused);
+    assert_eq!(cancel.expect_err("refused cancel"), refused);
+    assert!(refused.is_host_not_allowed() && !refused.is_authentication());
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn network_request_stall_and_truncation_errors_remain_distinct() -> TestResult {
     // Given: short configured request/stall bounds and one stored multi-chunk file.
