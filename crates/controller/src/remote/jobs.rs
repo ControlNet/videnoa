@@ -99,6 +99,40 @@ impl VidenoaClient {
         }
     }
 
+    /// Finds the job a run with `key` created, without creating one. Only
+    /// protocol-2 Workers serve this.
+    ///
+    /// # Errors
+    /// Returns [`VidenoaClientError::NotFound`] when the Worker created no job
+    /// with the key, and other [`VidenoaClientError`]s for transport, status,
+    /// bounds, or payload failures. A 404 without the Worker's `job_not_found`
+    /// code is no evidence about the key and reads as an unexpected status.
+    pub async fn job_by_submission_key(
+        &self,
+        key: SubmissionKey,
+    ) -> Result<RunReceipt, VidenoaClientError> {
+        let key = key.to_string();
+        let response = self
+            .send_authenticated(self.http.get(self.endpoint(&[
+                "api",
+                "jobs",
+                "by-idempotency-key",
+                &key,
+            ])?))
+            .await?;
+        if response.status() == StatusCode::NOT_FOUND {
+            let rejection = self.rejection(response).await;
+            return Err(if rejection.code == Some(ErrorCode::JobNotFound) {
+                VidenoaClientError::NotFound
+            } else {
+                VidenoaClientError::UnexpectedStatus {
+                    status: StatusCode::NOT_FOUND.as_u16(),
+                }
+            });
+        }
+        self.json(response).await
+    }
+
     /// Polls one remote job by typed identifier.
     ///
     /// # Errors

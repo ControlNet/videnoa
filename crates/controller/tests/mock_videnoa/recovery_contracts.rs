@@ -111,8 +111,11 @@ async fn contradictory_remote_identity_is_nonretryable_ambiguity() -> TestResult
 
 #[tokio::test]
 async fn submitting_cancellation_uses_typed_reconciliation_and_never_polls() -> TestResult {
-    // Given: a submitting task with durable cancellation intent.
+    // Given: a submitting task with durable cancellation intent, on a
+    // protocol-1 worker, which has no lookup by key: the Controller asks it
+    // by replaying the keyed run.
     let server = MockVidenoa::start().await?;
+    server.report_protocol(None).await;
     let fixture = Fixture::new(&server, 2).await?;
     let state = fixture.task_at(TaskStatus::Submitting).await?;
     request_cancellation(&fixture, state.task_id).await?;

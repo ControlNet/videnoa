@@ -24,6 +24,8 @@ const RECOVERY_PAGE_SIZE: NonZeroU16 = match NonZeroU16::new(256) {
 pub(super) struct AssignedWorker {
     pub(super) record: WorkerRecord,
     pub(super) client: VidenoaClient,
+    /// The protocol its last health reply reported.
+    pub(super) protocol: u32,
 }
 
 #[derive(Clone)]
@@ -152,8 +154,8 @@ impl Reconciler {
         )?;
         // No health reply is evidence about this task: whatever the worker
         // answered, its tasks wait for it.
-        match client.health().await {
-            Ok(health) if health.is_healthy() && health.protocol_supported() => {}
+        let protocol = match client.health().await {
+            Ok(health) if health.is_healthy() && health.protocol_supported() => health.protocol(),
             Ok(health) => {
                 let error = if health.is_healthy() {
                     VidenoaClientError::Incompatible
@@ -170,10 +172,11 @@ impl Reconciler {
                     .defer_for_worker(&worker, task.id, &error, now, stage, report)
                     .await;
             }
-        }
+        };
         let worker = AssignedWorker {
             record: worker,
             client,
+            protocol,
         };
         if task.cancel_requested_at.is_some() {
             return self

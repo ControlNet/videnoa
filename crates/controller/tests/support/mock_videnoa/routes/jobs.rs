@@ -10,6 +10,7 @@ use super::{
     MAX_JSON_BYTES,
 };
 use crate::mock_videnoa::checkpoints::Checkpoint;
+use crate::mock_videnoa::domain::{ErrorCode, ErrorResponse, JobRecord};
 use crate::mock_videnoa::journal::{JournalOutcome, Route};
 use crate::mock_videnoa::state::SharedState;
 
@@ -50,6 +51,60 @@ pub(crate) async fn poll(
         },
     };
     let journal = journal_request(&parts, &body, Route::JobPoll, sequence, checkpoints);
+    record(&state, journal, status, JournalOutcome::Delivered).await;
+    response
+}
+
+/// `GET /api/jobs/by-idempotency-key/{key}`: the job a keyed run created.
+/// A protocol-1 worker has no such route and answers a bare 404.
+pub(crate) async fn lookup(
+    State(state): State<Arc<SharedState>>,
+    Path(key): Path<String>,
+    request: Request,
+) -> Response {
+    let Ok((parts, body)) = body_bytes(request, MAX_JSON_BYTES).await else {
+        return error_response(StatusCode::BAD_REQUEST, "invalid_body");
+    };
+    if state
+        .protocol
+        .lock()
+        .await
+        .is_none_or(|protocol| protocol < 2)
+    {
+        return error_response(StatusCode::NOT_FOUND, "not_found");
+    }
+    let (sequence, creation) = {
+        let mut inner = state.inner.lock().await;
+        let sequence = inner.begin(Route::JobLookup);
+        let creation = inner
+            .persistent
+            .idempotency
+            .get(&key)
+            .and_then(|mapping| inner.persistent.jobs.get(&mapping.job_id))
+            .map(JobRecord::creation_response);
+        (sequence, creation)
+    };
+    let (status, response) = match state.take_response_fault(Route::JobLookup).await {
+        Some(fault) => {
+            let status =
+                StatusCode::from_u16(fault.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            (status, raw_json_response(status, fault.body))
+        }
+        None => match creation {
+            Some(creation) => (StatusCode::OK, json_response(StatusCode::OK, &creation)),
+            None => (
+                StatusCode::NOT_FOUND,
+                json_response(
+                    StatusCode::NOT_FOUND,
+                    &ErrorResponse {
+                        error: "no job was created with this idempotency key".to_owned(),
+                        code: Some(ErrorCode::JobNotFound),
+                    },
+                ),
+            ),
+        },
+    };
+    let journal = journal_request(&parts, &body, Route::JobLookup, sequence, BTreeMap::new());
     record(&state, journal, status, JournalOutcome::Delivered).await;
     response
 }

@@ -33,6 +33,7 @@ pub(crate) fn router(state: Arc<SharedState>) -> Router {
         .route("/api/run", post(jobs::run))
         .route("/api/run/validate", post(jobs::validate))
         .route("/api/jobs/{id}", get(jobs::poll).delete(jobs::cancel))
+        .route("/api/jobs/by-idempotency-key/{key}", get(jobs::lookup))
         .route(
             "/api/files/{*path}",
             get(files::get).put(files::upload).delete(files::delete),

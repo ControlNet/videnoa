@@ -20,6 +20,10 @@ impl IdempotencyKey {
             return Err(InvalidKey);
         }
         let raw = value.to_str().map_err(|_| InvalidKey)?;
+        Self::parse(raw).map(Some)
+    }
+
+    pub(super) fn parse(raw: &str) -> Result<Self, InvalidKey> {
         let bytes = raw.as_bytes();
         if bytes.is_empty()
             || bytes.len() > MAX_KEY_BYTES
@@ -27,7 +31,7 @@ impl IdempotencyKey {
         {
             return Err(InvalidKey);
         }
-        Ok(Some(Self(raw.into())))
+        Ok(Self(raw.into()))
     }
 
     pub(super) fn as_str(&self) -> &str {

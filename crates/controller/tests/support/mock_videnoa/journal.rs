@@ -19,6 +19,8 @@ pub enum Route {
     Download,
     Stat,
     DeleteFile,
+    /// `GET /api/jobs/by-idempotency-key/{key}` (protocol 2).
+    JobLookup,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

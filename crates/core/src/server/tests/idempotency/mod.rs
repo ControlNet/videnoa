@@ -1,5 +1,6 @@
 mod api_basic;
 mod api_concurrency;
+mod lookup;
 mod persistence;
 mod restart;
 mod workflow_independence;

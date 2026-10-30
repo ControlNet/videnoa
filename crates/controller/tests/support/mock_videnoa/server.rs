@@ -80,6 +80,18 @@ impl MockVidenoa {
         *self.state.protocol.lock().await = protocol;
     }
 
+    /// Drops every job and its idempotency key, as if their history was
+    /// deleted on the worker.
+    #[allow(
+        dead_code,
+        reason = "Shared harness job forgetting is exercised by Task 20"
+    )]
+    pub async fn forget_jobs(&self) {
+        let mut inner = self.state.inner.lock().await;
+        inner.persistent.jobs.clear();
+        inner.persistent.idempotency.clear();
+    }
+
     pub fn base_url(&self) -> &str {
         &self.base_url
     }

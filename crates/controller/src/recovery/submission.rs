@@ -177,17 +177,38 @@ impl Reconciler {
             return Ok(());
         }
         let (input, output) = remote_paths(&attempt)?;
-        let reconciliation = match worker
-            .client
-            .run(
-                &task.request.workflow,
-                attempt.attempt.submission_key,
-                &submission_params(input, output),
-            )
-            .await
-        {
-            Ok(submitted) => SubmissionCancellationReconciliation::Accepted(SubmissionEvidence {
-                remote_job_id: submitted.receipt.id,
+        // A protocol-2 Worker says whether the submission was accepted
+        // without creating a job. An older one is asked by resubmitting
+        // with the same key, which creates the job if it was not.
+        let lookup = if worker.protocol >= 2 {
+            worker
+                .client
+                .job_by_submission_key(attempt.attempt.submission_key)
+                .await
+                .map_err(|error| {
+                    // Only the lookup's NotFound proves no job exists; a
+                    // rejected lookup says nothing about the submission.
+                    if let VidenoaClientError::ClientStatus { status, .. } = error {
+                        if !error.is_worker_level() {
+                            return VidenoaClientError::UnexpectedStatus { status };
+                        }
+                    }
+                    error
+                })
+        } else {
+            worker
+                .client
+                .run(
+                    &task.request.workflow,
+                    attempt.attempt.submission_key,
+                    &submission_params(input, output),
+                )
+                .await
+                .map(|submitted| submitted.receipt)
+        };
+        let reconciliation = match lookup {
+            Ok(receipt) => SubmissionCancellationReconciliation::Accepted(SubmissionEvidence {
+                remote_job_id: receipt.id,
                 remote_input_path: input.clone(),
                 remote_output_path: output.clone(),
             }),
@@ -196,8 +217,9 @@ impl Reconciler {
                 report.defer(task.id);
                 return Ok(());
             }
-            // Rejected credentials do not mean the job was never accepted.
-            Err(error) if error.is_authentication() => {
+            // Rejected credentials, or any other fault of the worker rather
+            // than the request, do not mean the job was never accepted.
+            Err(error) if error.is_worker_level() => {
                 return self
                     .defer_submission(&attempt, &worker.record, error, now, stage, report)
                     .await;

@@ -10,8 +10,8 @@ use videnoa_controller::remote::PROTOCOL_VERSION;
 use crate::mock_videnoa::journal::Route;
 use crate::mock_videnoa::server::MockVidenoa;
 use crate::remote_scope::{
-    deferred, durable_task, durable_worker, fault, processing_task, wait_for_durable,
-    wait_for_worker_record,
+    deferred, durable_task, durable_worker, fault, processing_task, request_cancellation,
+    submitting_task_with_lost_receipt, wait_for_durable, wait_for_worker_record,
 };
 use crate::support::{ControllerFixture, TestResult};
 
@@ -91,6 +91,84 @@ async fn a_processing_task_waits_while_its_worker_speaks_a_newer_protocol() -> T
     );
     assert!(!durable_worker(&fixture, &task).await?.online);
     assert_eq!(worker.active_job_count().await, 1);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancelling_a_lost_submission_looks_it_up_instead_of_resubmitting() -> TestResult {
+    // Given: a cancelled Submitting task whose accepted run lost its receipt.
+    let (fixture, worker, task, retry_at) =
+        submitting_task_with_lost_receipt("cancel-lookup").await?;
+    request_cancellation(&fixture, &task).await?;
+
+    // When: reconciliation learns whether the worker accepted it.
+    fixture
+        .reconciler()?
+        .reconcile_task_id(task.id, retry_at)
+        .await?;
+
+    // Then: it asked by key, sent no second run, and cancelled the job it found.
+    let counters = worker.counters().await;
+    assert_eq!(counters.get(Route::JobLookup), 1);
+    assert_eq!(counters.get(Route::Run), 1);
+    assert_eq!(
+        durable_task(&fixture, &task).await?.status,
+        TaskStatus::Cancelled
+    );
+    assert_eq!(worker.active_job_count().await, 0);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancelling_a_submission_the_worker_never_accepted_creates_no_job() -> TestResult {
+    // Given: a cancelled Submitting task whose run the worker never received.
+    let (fixture, worker, task, retry_at) =
+        submitting_task_with_lost_receipt("cancel-lookup-none").await?;
+    request_cancellation(&fixture, &task).await?;
+    // The lost run's job is gone, and with it the key (as after a worker
+    // deleted the job's history).
+    assert_eq!(worker.job_count().await, 1);
+    worker.forget_jobs().await;
+
+    // When: reconciliation looks the submission up.
+    fixture
+        .reconciler()?
+        .reconcile_task_id(task.id, retry_at)
+        .await?;
+
+    // Then: the task is cancelled without a job being created to cancel.
+    assert_eq!(
+        durable_task(&fixture, &task).await?.status,
+        TaskStatus::Cancelled
+    );
+    assert_eq!(worker.counters().await.get(Route::Run), 1);
+    assert_eq!(worker.job_count().await, 0);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancelling_a_lost_submission_on_a_protocol_1_worker_resubmits() -> TestResult {
+    // Given: a worker without the lookup route.
+    let (fixture, worker, task, retry_at) =
+        submitting_task_with_lost_receipt("cancel-lookup-v1").await?;
+    worker.report_protocol(None).await;
+    request_cancellation(&fixture, &task).await?;
+
+    // When: reconciliation learns whether the worker accepted it.
+    fixture
+        .reconciler()?
+        .reconcile_task_id(task.id, retry_at)
+        .await?;
+
+    // Then: it falls back to resubmitting with the same key.
+    let counters = worker.counters().await;
+    assert_eq!(counters.get(Route::JobLookup), 0);
+    assert_eq!(counters.get(Route::Run), 2);
+    assert_eq!(
+        durable_task(&fixture, &task).await?.status,
+        TaskStatus::Cancelled
+    );
+    assert_eq!(worker.active_job_count().await, 0);
     Ok(())
 }
 

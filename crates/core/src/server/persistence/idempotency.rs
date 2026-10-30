@@ -40,6 +40,23 @@ impl JobsPersistence {
         .with_context(|| "failed to inspect durable idempotent job submission")
     }
 
+    /// The job a run with `key` created, whatever its request was.
+    pub(crate) fn idempotent_job(&self, key: &str) -> Result<Option<CreateJobResponse>> {
+        self.with_connection(|connection| {
+            let Some(existing) = Self::load_idempotency_mapping(connection, key)? else {
+                return Ok(None);
+            };
+            let status = parse_status(&existing.status)
+                .ok_or_else(|| anyhow!("persisted idempotency job has invalid status"))?;
+            Ok(Some(CreateJobResponse {
+                id: existing.id,
+                status: status.into(),
+                created_at: parse_timestamp(&existing.created_at)?,
+            }))
+        })
+        .with_context(|| "failed to look up durable idempotent job submission")
+    }
+
     pub(crate) fn claim_idempotent_job(
         &self,
         key: &str,

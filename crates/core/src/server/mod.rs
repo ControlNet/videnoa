@@ -895,6 +895,10 @@ pub fn api_router(state: AppState) -> Router {
         .route("/api/run/validate", post(validate_run_workflow))
         .route("/api/jobs/{id}", get(get_job).delete(delete_job_history))
         .route("/api/jobs/{id}/rerun", post(rerun_job))
+        .route(
+            "/api/jobs/by-idempotency-key/{key}",
+            get(get_job_by_idempotency_key),
+        )
         .route("/api/nodes", get(list_nodes))
         .route("/api/models", get(list_models))
         .route("/api/models/{filename}/inspect", get(inspect_model))
@@ -2059,6 +2063,27 @@ async fn get_job(
         .ok_or_else(|| AppError::NotFound(format!("job not found: {id}")))?;
 
     Ok(Json(job_to_response(job.value())))
+}
+
+/// The job a `POST /api/run` with this `Idempotency-Key` created, without
+/// creating one (protocol 2). A Controller that lost the answer to a
+/// submission asks this to learn whether the job exists; 404 with code
+/// `job_not_found` means no run with the key was accepted.
+async fn get_job_by_idempotency_key(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+) -> Result<Json<CreateJobResponse>, AppError> {
+    let key = IdempotencyKey::parse(&key).map_err(|_| AppError::InvalidIdempotencyKey)?;
+    jobs_persistence(&state)?
+        .idempotent_job(key.as_str())
+        .map_err(|error| {
+            AppError::Internal(format!("failed to look up idempotent job: {error:#}"))
+        })?
+        .map(Json)
+        .ok_or_else(|| {
+            AppError::NotFound("no job was created with this idempotency key".to_owned())
+                .with_code(ErrorCode::JobNotFound)
+        })
 }
 
 async fn rerun_job(

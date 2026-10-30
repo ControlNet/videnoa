@@ -370,7 +370,7 @@ async fn rejected_credentials_while_cancelling_a_submission_keep_its_job() -> Te
     let (fixture, worker, task, retry_at) =
         submitting_task_with_lost_receipt("cancel-submit-auth").await?;
     request_cancellation(&fixture, &task).await?;
-    fault(&worker, Route::Run, 401, Vec::new()).await;
+    fault(&worker, Route::JobLookup, 401, Vec::new()).await;
     let reconciler = fixture.reconciler()?;
 
     // When: confirming the submission is rejected for credentials.
