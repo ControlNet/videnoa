@@ -50,9 +50,13 @@ pub(crate) async fn workflow_interface(
         "wrong-path-type.json" => Some(wrong_path_interface()),
         _ => None,
     };
-    let response = match interface {
-        Some(interface) => json_response(StatusCode::OK, &interface),
-        None => error_response(StatusCode::NOT_FOUND, "not_found"),
+    let response = match (state.take_response_fault(Route::Interface).await, interface) {
+        (Some(fault), _) => match StatusCode::from_u16(fault.status) {
+            Ok(status) => raw_json_response(status, fault.body),
+            Err(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "invalid_fault_status"),
+        },
+        (None, Some(interface)) => json_response(StatusCode::OK, &interface),
+        (None, None) => error_response(StatusCode::NOT_FOUND, "not_found"),
     };
     record(
         &state,

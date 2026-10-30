@@ -332,6 +332,154 @@ async fn capabilities_keep_workflows_eligible_when_validation_is_unavailable() -
     Ok(())
 }
 
+#[tokio::test]
+async fn a_malformed_preset_is_listed_invalid_without_hiding_the_others() -> TestResult {
+    // Given: a Worker whose preset listing mixes a readable preset, one with
+    // an unreadable interface, and one without an id.
+    let server = MockVidenoa::start().await?;
+    let client = test_client(
+        &server,
+        Duration::from_secs(5),
+        Duration::from_secs(1),
+        JSON_LIMIT,
+    )?;
+    server
+        .set_fault(Fault::Response(ResponseFault {
+            route: Route::Presets,
+            status: 200,
+            body: serde_json::to_vec(&serde_json::json!([
+                {
+                    "id": "eligible-preset",
+                    "name": "Eligible preset",
+                    "description": "",
+                    "workflow": {"interface": {
+                        "inputs": [
+                            {"name": "input", "port_type": "Path"},
+                            {"name": "output", "port_type": "Path"},
+                        ],
+                        "outputs": [],
+                    }},
+                },
+                {
+                    "id": "broken-preset",
+                    "name": "Broken preset",
+                    "description": "",
+                    "workflow": {"interface": {"inputs": "input", "outputs": []}},
+                },
+                {"name": "Preset without an id"},
+            ]))?,
+        }))
+        .await;
+
+    // When: the catalog is refreshed.
+    let capabilities = client.capabilities().await?;
+
+    // Then: only the broken preset is excluded, with a reason, and the rest
+    // of the catalog is intact.
+    assert_eq!(
+        capabilities.compatibility(&WorkflowName::new("eligible-preset")),
+        Some(Compatibility::Eligible)
+    );
+    assert_eq!(
+        capabilities.compatibility(&WorkflowName::new("eligible-workflow.json")),
+        Some(Compatibility::Eligible)
+    );
+    assert_eq!(
+        capabilities.compatibility(&WorkflowName::new("broken-preset")),
+        Some(Compatibility::Incompatible)
+    );
+    assert_eq!(
+        capabilities.invalid_workflows(),
+        vec![InvalidWorkflow {
+            name: WorkflowName::new("broken-preset"),
+            kind: WorkflowKind::Preset,
+            reason: "the worker lists this preset in a form this Controller cannot read".to_owned(),
+        }]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_malformed_workflow_interface_is_listed_invalid_without_hiding_the_others() -> TestResult
+{
+    // Given: a Worker whose saved workflow listing has an unreadable entry
+    // and whose first interface reply is unreadable.
+    let server = MockVidenoa::start().await?;
+    let client = test_client(
+        &server,
+        Duration::from_secs(5),
+        Duration::from_secs(1),
+        JSON_LIMIT,
+    )?;
+    server
+        .set_fault(Fault::Response(ResponseFault {
+            route: Route::Workflows,
+            status: 200,
+            body: serde_json::to_vec(&serde_json::json!([
+                {
+                    "filename": "eligible-workflow.json",
+                    "name": "Eligible",
+                    "description": "",
+                    "workflow": {},
+                    "has_interface": true,
+                },
+                {
+                    "filename": "broken-listing.json",
+                    "name": "Broken listing",
+                    "description": "",
+                    "workflow": {},
+                    "has_interface": "yes",
+                },
+                {
+                    "filename": "other-workflow.json",
+                    "name": "Other",
+                    "description": "",
+                    "workflow": {},
+                    "has_interface": false,
+                },
+            ]))?,
+        }))
+        .await;
+    server
+        .set_fault(Fault::Response(ResponseFault {
+            route: Route::Interface,
+            status: 200,
+            body: br#"{"inputs":"input"}"#.to_vec(),
+        }))
+        .await;
+
+    // When: the catalog is refreshed.
+    let capabilities = client.capabilities().await?;
+
+    // Then: both unreadable workflows are invalid with a reason and the
+    // presets are untouched.
+    assert_eq!(
+        capabilities.compatibility(&WorkflowName::new("other-workflow.json")),
+        Some(Compatibility::Incompatible)
+    );
+    assert_eq!(
+        capabilities.compatibility(&WorkflowName::new("eligible-preset")),
+        Some(Compatibility::Eligible)
+    );
+    assert_eq!(
+        capabilities.invalid_workflows(),
+        vec![
+            InvalidWorkflow {
+                name: WorkflowName::new("broken-listing.json"),
+                kind: WorkflowKind::Workflow,
+                reason: "the worker lists this workflow in a form this Controller cannot read"
+                    .to_owned(),
+            },
+            InvalidWorkflow {
+                name: WorkflowName::new("eligible-workflow.json"),
+                kind: WorkflowKind::Workflow,
+                reason: "the worker reports an interface this Controller cannot read".to_owned(),
+            },
+        ]
+    );
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn remote_lifecycle_streams_files_and_preserves_workflow_paths() -> TestResult {
     // Given: payloads larger than the configured client chunk and a tracked streaming reader.

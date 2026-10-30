@@ -87,6 +87,22 @@ impl CompatibilityCatalog {
         }
     }
 
+    /// Lists an entry the Worker reports but this Controller cannot read,
+    /// unless an entry of that name is already known.
+    pub(crate) fn insert_invalid(&mut self, name: WorkflowName, kind: WorkflowKind, reason: &str) {
+        if self.entries.contains_key(&name) {
+            return;
+        }
+        self.entries.insert(
+            name.clone(),
+            CompatibilityEntry {
+                kind,
+                compatibility: Compatibility::Incompatible,
+            },
+        );
+        self.invalid.insert(name, reason.to_owned());
+    }
+
     pub(crate) fn insert(
         &mut self,
         name: WorkflowName,
