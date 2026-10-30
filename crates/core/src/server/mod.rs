@@ -111,6 +111,30 @@ const RERUN_COMPLETED_REJECTION: &str = "cannot rerun completed job";
 const PREVIEW_VSYNC_MODE: &str = "vfr";
 /// Budget for the preview's metadata probe, separate from the extraction's.
 const PREVIEW_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+/// Jobs (and previews) that may hold the GPU at once.
+const GPU_SLOTS: usize = 1;
+/// Queued plus running jobs the worker accepts; further submissions get 503
+/// until some finish, so a runaway client cannot grow the queue without bound.
+const MAX_ACTIVE_JOBS: usize = 64;
+/// How long a preview waits for the GPU before it reports that it is busy.
+/// The wait is FIFO behind queued jobs, so it must not be open-ended.
+const PREVIEW_GPU_WAIT: Duration = Duration::from_secs(2);
+/// Node types that never touch the GPU or run a frame pipeline. A job made
+/// only of these does not take the GPU permit; every other node type,
+/// including nested `Workflow` nodes and any type added later, does.
+const GPU_FREE_NODE_TYPES: &[&str] = &[
+    "WorkflowInput",
+    "WorkflowOutput",
+    "Constant",
+    "Print",
+    "PathDivider",
+    "PathJoiner",
+    "StringTemplate",
+    "StringReplace",
+    "TypeConversion",
+    "HttpRequest",
+    "Downloader",
+];
 
 impl AppStateInner {
     /// Keep `event` as the latest value of its node, so `job_ws` can replay it
@@ -204,7 +228,7 @@ impl AppState {
                 settings_lock: tokio::sync::Mutex::new(()),
                 jobs,
                 jobs_persistence,
-                gpu_semaphore: Arc::new(Semaphore::new(1)),
+                gpu_semaphore: Arc::new(Semaphore::new(GPU_SLOTS)),
                 node_registry,
                 model_registry,
                 progress_senders: DashMap::new(),
@@ -230,6 +254,33 @@ impl AppState {
     fn persist_job_transition(&self, job: &Job) -> Result<()> {
         if let Some(persistence) = &self.inner.jobs_persistence {
             persistence.update_job(job)?;
+        }
+        Ok(())
+    }
+
+    /// Running, queued and cancelling (active, cancel requested) job counts.
+    fn active_job_counts(&self) -> (usize, usize, usize) {
+        let (mut running, mut queued, mut cancelling) = (0, 0, 0);
+        for job in self.inner.jobs.iter() {
+            match job.status {
+                JobStatus::Running => running += 1,
+                JobStatus::Queued => queued += 1,
+                _ => continue,
+            }
+            if job.cancel_request.is_some() {
+                cancelling += 1;
+            }
+        }
+        (running, queued, cancelling)
+    }
+
+    /// Refuses `additional` new jobs when they would exceed [`MAX_ACTIVE_JOBS`].
+    fn ensure_queue_capacity(&self, additional: usize) -> Result<(), AppError> {
+        let (running, queued, _) = self.active_job_counts();
+        if running + queued + additional > MAX_ACTIVE_JOBS {
+            return Err(AppError::ServiceUnavailable(format!(
+                "job queue is full ({running} running, {queued} queued, limit {MAX_ACTIVE_JOBS}); retry after some jobs finish"
+            )));
         }
         Ok(())
     }
@@ -590,9 +641,16 @@ pub struct BatchResponse {
     pub total: usize,
 }
 
+/// `status` is always `"ok"`; the other fields are additive capacity data.
 #[derive(Serialize)]
 pub struct HealthResponse {
     pub status: String,
+    /// Jobs or previews that can hold the GPU at once.
+    pub gpu_slots: usize,
+    pub running: usize,
+    pub queued: usize,
+    /// Queued or running jobs that were asked to stop and have not yet.
+    pub cancelling: usize,
 }
 
 /// Build identity of the running server.
@@ -811,9 +869,14 @@ pub fn app_router_with_static(state: AppState, static_dir: Option<&StdPath>) -> 
     }
 }
 
-async fn health() -> Json<HealthResponse> {
+async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
+    let (running, queued, cancelling) = state.active_job_counts();
     Json(HealthResponse {
         status: "ok".to_string(),
+        gpu_slots: GPU_SLOTS,
+        running,
+        queued,
+        cancelling,
     })
 }
 
@@ -1588,6 +1651,7 @@ fn create_and_spawn_job(
     state: &AppState,
     submission: JobSubmission,
 ) -> Result<CreateJobResponse, AppError> {
+    state.ensure_queue_capacity(1)?;
     let (job, response) = prepare_job(submission);
     state
         .persist_job_snapshot(&job)
@@ -1603,6 +1667,7 @@ fn create_idempotent_job(
     fingerprint: &RequestFingerprint,
 ) -> Result<(StatusCode, Json<CreateJobResponse>), AppError> {
     let persistence = jobs_persistence(state)?;
+    state.ensure_queue_capacity(1)?;
     let (job, response) = prepare_job(submission);
     match persistence
         .claim_idempotent_job(key.as_str(), fingerprint.as_str(), &job)
@@ -1819,6 +1884,7 @@ async fn create_batch(
         prepared.push((file_path, job, response));
     }
 
+    state.ensure_queue_capacity(prepared.len())?;
     // Persist all jobs before spawning any; on a storage failure remove the
     // ones already stored so the batch leaves nothing behind.
     for (index, (_, job, _)) in prepared.iter().enumerate() {
@@ -2930,13 +2996,22 @@ async fn process_frame(
     let output = session.path().join(&filename);
     let result_slot = session.reserve_result()?;
     let trt_cache = state.inner.config.read().await.paths.trt_cache_dir.clone();
-    let permit = state
-        .inner
-        .gpu_semaphore
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(|error| AppError::Internal(error.to_string()))?;
+    // Jobs are ahead of a preview in the GPU's FIFO; report that instead of
+    // waiting behind every one of them.
+    let permit = match tokio::time::timeout(
+        PREVIEW_GPU_WAIT,
+        state.inner.gpu_semaphore.clone().acquire_owned(),
+    )
+    .await
+    {
+        Ok(permit) => permit.map_err(|error| AppError::Internal(error.to_string()))?,
+        Err(_) => {
+            let (running, queued, _) = state.active_job_counts();
+            return Err(AppError::ServiceUnavailable(format!(
+                "GPU is busy ({running} running, {queued} queued jobs); retry the preview when they finish"
+            )));
+        }
+    };
     let inner = state.inner.clone();
     tokio::task::spawn_blocking(move || {
         // The blocking work owns admission even if the HTTP caller disconnects.
@@ -3021,23 +3096,35 @@ fn job_cancellation_watch(
     (rx, bridge)
 }
 
+/// Whether a job must hold the GPU permit: true unless every node is one of
+/// [`GPU_FREE_NODE_TYPES`]. A graph whose order cannot be computed counts as
+/// GPU-bound.
+fn needs_gpu(workflow: &PipelineGraph) -> bool {
+    workflow.execution_order().map_or(true, |order| {
+        order
+            .into_iter()
+            .any(|index| !GPU_FREE_NODE_TYPES.contains(&workflow.node(index).node_type.as_str()))
+    })
+}
+
 async fn run_job(state: AppState, job_id: String) {
     let permit = {
-        let cancel_token = {
+        let (cancel_token, needs_gpu) = {
             let job = match state.inner.jobs.get(&job_id) {
                 Some(j) => j,
                 None => return,
             };
-            job.cancel_token.clone()
+            (job.cancel_token.clone(), needs_gpu(&job.workflow))
         };
 
         tokio::select! {
-            permit = state.inner.gpu_semaphore.clone().acquire_owned() => {
+            permit = state.inner.gpu_semaphore.clone().acquire_owned(), if needs_gpu => {
                 match permit {
-                    Ok(p) => p,
+                    Ok(p) => Some(p),
                     Err(_) => return,
                 }
             }
+            () = std::future::ready(()), if !needs_gpu => None,
             _ = cancel_token.cancelled() => {
                 finish_job(&state, &job_id, Ok(()));
                 return;
@@ -3236,6 +3323,7 @@ pub enum AppError {
     PreconditionFailed { code: &'static str, message: String },
     InvalidIdempotencyKey,
     IdempotencyConflict,
+    ServiceUnavailable(String),
 }
 
 impl IntoResponse for AppError {
@@ -3260,6 +3348,7 @@ impl IntoResponse for AppError {
                 "idempotency key conflicts with an existing submission".to_string(),
                 Some("idempotency_conflict"),
             ),
+            AppError::ServiceUnavailable(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg, None),
         };
 
         let body = Json(ErrorResponse {
@@ -3409,14 +3498,21 @@ mod tests {
     /// adding one would take those Controllers' workers offline or fail their
     /// tasks. New data goes behind a new endpoint instead (docs/controller.md,
     /// "Worker API compatibility").
+    ///
+    /// Exception: health carries capacity fields, which Controllers since
+    /// v0.1.9 ignore; a worker with them needs a v0.1.9 or newer Controller.
     #[test]
     fn controller_facing_responses_keep_the_fields_older_controllers_accept() {
         let now = Utc::now();
         assert_eq!(
             json_keys(HealthResponse {
-                status: "ok".to_owned()
+                status: "ok".to_owned(),
+                gpu_slots: 1,
+                running: 0,
+                queued: 0,
+                cancelling: 0,
             }),
-            sorted(&["status"])
+            sorted(&["status", "gpu_slots", "running", "queued", "cancelling"])
         );
         assert_eq!(
             json_keys(WorkflowEntry {
@@ -4267,6 +4363,232 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["status"], "ok");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn health_reports_gpu_capacity_and_job_counts() {
+        // Given: one job holding the GPU, one queued behind it and one queued
+        // job that was cancelled while its executor is still stopping.
+        let state = test_state();
+        let mut app = app_router(state.clone());
+        let gate = state
+            .inner
+            .gpu_semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .unwrap();
+        let mut running = build_test_job("health-running".into(), JobStatus::Running, None);
+        running.request_cancel(CancelReason::User);
+        insert_test_job(&state, running);
+        insert_test_job(
+            &state,
+            build_test_job("health-queued".into(), JobStatus::Queued, None),
+        );
+        insert_test_job(
+            &state,
+            build_test_job("health-done".into(), JobStatus::Completed, None),
+        );
+
+        let req = Request::builder()
+            .uri("/api/health")
+            .body(Body::empty())
+            .unwrap();
+        let resp = send_request(&mut app, req).await;
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        // Then: `status` is unchanged and the capacity fields are additive.
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["gpu_slots"], 1);
+        assert_eq!(json["running"], 1);
+        assert_eq!(json["queued"], 1);
+        assert_eq!(json["cancelling"], 1);
+        drop(gate);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn job_submissions_beyond_the_queue_bound_are_refused_with_503() {
+        // Given: the GPU is busy and the queue is full.
+        let state = test_state();
+        let mut app = app_router(state.clone());
+        let _gate = state
+            .inner
+            .gpu_semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .unwrap();
+        for _ in 0..MAX_ACTIVE_JOBS {
+            create_job_id(&mut app, delay_workflow_json(0)).await;
+        }
+
+        // When/then: one more job, a batch and a rerun are all refused with
+        // 503, which the Controller treats as transient.
+        let (status, json) = post_json(
+            &mut app,
+            "/api/jobs",
+            serde_json::json!({ "workflow": delay_workflow_json(0) }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{json}");
+        assert!(
+            json["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("queue is full"),
+            "{json}"
+        );
+        let (status, _) = post_json(
+            &mut app,
+            "/api/batch",
+            serde_json::json!({ "file_paths": ["/media/a.mkv"], "workflow": delay_workflow_json(0) }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        let failed = build_test_job("queue-full-rerun".into(), JobStatus::Failed, None);
+        insert_test_job(&state, failed);
+        let (status, _) = post_json(
+            &mut app,
+            "/api/jobs/queue-full-rerun/rerun",
+            serde_json::Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            state
+                .inner
+                .jobs
+                .iter()
+                .filter(|job| !job.status.is_terminal())
+                .count(),
+            MAX_ACTIVE_JOBS
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn scalar_only_jobs_do_not_wait_for_the_gpu() {
+        // Given: the GPU is busy.
+        let state = all_nodes_state();
+        let mut app = app_router(state.clone());
+        let _gate = state
+            .inner
+            .gpu_semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .unwrap();
+
+        // When: a workflow without any frame-processing node is submitted.
+        let (status, json) = post_json(
+            &mut app,
+            "/api/jobs",
+            serde_json::json!({
+                "workflow": workflow_input_output_json(),
+                "params": {"greeting": "hello"}
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{json}");
+        let job_id = json["id"].as_str().unwrap().to_owned();
+
+        // Then: it runs to completion without the GPU permit.
+        assert_eq!(
+            wait_for_job_terminal_status(&state, &job_id).await,
+            JobStatus::Completed
+        );
+    }
+
+    #[test]
+    fn only_graphs_made_of_known_scalar_nodes_skip_the_gpu() {
+        let graph = |types: &[&str]| -> PipelineGraph {
+            let nodes: Vec<_> = types
+                .iter()
+                .enumerate()
+                .map(|(index, node_type)| {
+                    serde_json::json!({"id": format!("n{index}"), "node_type": node_type, "params": {}})
+                })
+                .collect();
+            serde_json::from_value(serde_json::json!({"nodes": nodes, "connections": []})).unwrap()
+        };
+        assert!(!needs_gpu(&graph(&[
+            "WorkflowInput",
+            "Downloader",
+            "HttpRequest",
+            "PathJoiner",
+            "Print",
+            "WorkflowOutput"
+        ])));
+        // Frame pipelines, nested workflows and node types this list does not
+        // know (new nodes, test nodes) keep the GPU permit.
+        assert!(needs_gpu(&graph(&[
+            "WorkflowInput",
+            "VideoInput",
+            "VideoOutput"
+        ])));
+        assert!(needs_gpu(&graph(&["Workflow"])));
+        assert!(needs_gpu(&graph(&["test_delay"])));
+    }
+
+    #[tokio::test]
+    async fn preview_processing_gives_up_quickly_while_the_gpu_is_busy() {
+        // Given: a preview session with one extracted frame, and a job holding
+        // the GPU.
+        let state = all_nodes_state();
+        let cache = state.preview_cache().unwrap();
+        let session = cache.create().unwrap();
+        std::fs::write(session.path().join("frame_0001.png"), b"never decoded").unwrap();
+        cache.insert("busy-gpu".into(), session);
+        let _busy = state
+            .inner
+            .gpu_semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .unwrap();
+        let workflow = serde_json::json!({
+            "nodes": [
+                {"id": "in", "node_type": "VideoInput", "params": {}},
+                {"id": "out", "node_type": "VideoOutput", "params": {}}
+            ],
+            "connections": [frames_edge("in", "out")]
+        });
+
+        // When: a frame is processed.
+        let started = Instant::now();
+        let response = tokio::time::timeout(
+            Duration::from_secs(30),
+            process_frame(
+                State(state.clone()),
+                Json(ProcessFrameRequest {
+                    preview_id: "busy-gpu".into(),
+                    frame_index: 0,
+                    workflow,
+                }),
+            ),
+        )
+        .await
+        .expect("preview must not wait for the GPU indefinitely")
+        .err()
+        .expect("preview must not run while the GPU is busy")
+        .into_response();
+
+        // Then: it is refused promptly with a retryable status and a reason.
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(
+            json["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("GPU is busy"),
+            "{json}"
+        );
     }
 
     #[tokio::test]
