@@ -4276,6 +4276,11 @@ mod tests {
     struct TestGate {
         open: Mutex<bool>,
         opened: std::sync::Condvar,
+        /// Set once a [`HoldNode`] is inside `execute`. A persisted `running`
+        /// row comes earlier: the executor still checks for cancellation
+        /// before it starts the node, so a cancel in between ends the job
+        /// without ever holding it.
+        held: std::sync::atomic::AtomicBool,
     }
 
     impl TestGate {
@@ -4290,6 +4295,7 @@ mod tests {
                     Arc::new(TestGate {
                         open: Mutex::new(false),
                         opened: std::sync::Condvar::new(),
+                        held: std::sync::atomic::AtomicBool::new(false),
                     })
                 })
                 .clone()
@@ -4298,6 +4304,15 @@ mod tests {
         fn open(&self) {
             *self.open.lock().unwrap() = true;
             self.opened.notify_all();
+        }
+
+        /// Waits until a [`HoldNode`] on this gate is running.
+        async fn wait_until_held(&self) {
+            let deadline = Instant::now() + WAIT_BUDGET;
+            while !self.held.load(std::sync::atomic::Ordering::SeqCst) {
+                assert!(Instant::now() < deadline, "no job reached the test gate");
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
         }
     }
 
@@ -4329,6 +4344,9 @@ mod tests {
             _inputs: &std::collections::HashMap<String, crate::types::PortData>,
             _ctx: &crate::node::ExecutionContext,
         ) -> Result<std::collections::HashMap<String, crate::types::PortData>> {
+            self.gate
+                .held
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             let open = self.gate.open.lock().unwrap();
             let (open, _) = self
                 .gate
@@ -6299,6 +6317,7 @@ mod tests {
         let gate = Uuid::new_v4().to_string();
         let job_id = create_job_id(&mut app, gate_workflow_json(&gate)).await;
         assert!(wait_for_persisted_status(&data_dir, &job_id, "running").await);
+        TestGate::named(&gate).wait_until_held().await;
 
         // When: it is cancelled.
         assert_eq!(delete_job(&mut app, &job_id).await, StatusCode::NO_CONTENT);
@@ -7172,6 +7191,7 @@ mod tests {
         let running = create_job_id(&mut app, gate_workflow_json(&gate)).await;
         let queued = create_job_id(&mut app, delay_workflow_json(0)).await;
         assert!(wait_for_persisted_status(&data_dir, &running, "running").await);
+        TestGate::named(&gate).wait_until_held().await;
 
         // When: the worker begins to shut down, and the running executor
         // exits afterwards.
@@ -7209,6 +7229,7 @@ mod tests {
         let gate = Uuid::new_v4().to_string();
         let job_id = create_job_id(&mut app, gate_workflow_json(&gate)).await;
         assert!(wait_for_persisted_status(&data_dir, &job_id, "running").await);
+        TestGate::named(&gate).wait_until_held().await;
 
         // When: the shutdown grace ends first.
         state.begin_shutdown();
