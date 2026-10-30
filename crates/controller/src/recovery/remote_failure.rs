@@ -108,7 +108,8 @@ impl Reconciler {
             VidenoaClientError::Conflict
             | VidenoaClientError::UnexpectedStatus { .. }
             | VidenoaClientError::MalformedPayload
-            | VidenoaClientError::OversizedPayload { .. } => {
+            | VidenoaClientError::OversizedPayload { .. }
+            | VidenoaClientError::Incompatible => {
                 let stage = match operation {
                     RemoteFailureOperation::Submission => RemoteAmbiguityStage::Submission,
                     RemoteFailureOperation::Processing => RemoteAmbiguityStage::Processing,

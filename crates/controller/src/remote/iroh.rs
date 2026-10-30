@@ -95,7 +95,7 @@ impl Lease {
                 reason: None,
             },
             TunnelError::RateLimited => VidenoaClientError::RateLimited,
-            TunnelError::Protocol => VidenoaClientError::MalformedPayload,
+            TunnelError::Protocol => VidenoaClientError::Incompatible,
             TunnelError::Unavailable => VidenoaClientError::Network,
         })
     }
@@ -141,7 +141,7 @@ fn classify(error: &anyhow::Error) -> VidenoaClientError {
             reason: None,
         },
         Some(TunnelError::RateLimited) => VidenoaClientError::RateLimited,
-        Some(TunnelError::Protocol) => VidenoaClientError::MalformedPayload,
+        Some(TunnelError::Protocol) => VidenoaClientError::Incompatible,
         _ => VidenoaClientError::Network,
     }
 }
@@ -155,6 +155,23 @@ pub async fn shutdown_iroh() {
 #[cfg(test)]
 #[path = "iroh_health_test.rs"]
 mod health_test;
+
+#[cfg(test)]
+mod classification_tests {
+    use super::*;
+
+    #[test]
+    fn tunnel_protocol_failures_are_incompatibility_not_outage() {
+        let error = anyhow::Error::from(std::io::Error::other("handshake"))
+            .context(TunnelError::Protocol);
+        assert_eq!(classify(&error), VidenoaClientError::Incompatible);
+        assert!(!classify(&error).is_transient());
+        assert_eq!(
+            classify(&anyhow::Error::from(TunnelError::Unavailable)),
+            VidenoaClientError::Network
+        );
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -43,6 +43,10 @@ pub enum VidenoaClientError {
     InvalidFilePath,
     #[error("failed to construct a remote endpoint URL")]
     EndpointUrl,
+    /// The Worker's tunnel speaks another protocol version; retrying cannot
+    /// help until one side is upgraded.
+    #[error("worker tunnel is incompatible with this Controller")]
+    Incompatible,
 }
 
 fn reason_suffix(reason: Option<&str>) -> String {
@@ -65,7 +69,8 @@ impl VidenoaClientError {
             | Self::OversizedPayload { .. }
             | Self::LocalIo
             | Self::InvalidFilePath
-            | Self::EndpointUrl => false,
+            | Self::EndpointUrl
+            | Self::Incompatible => false,
         }
     }
 }
@@ -97,6 +102,7 @@ mod tests {
             VidenoaClientError::LocalIo,
             VidenoaClientError::InvalidFilePath,
             VidenoaClientError::EndpointUrl,
+            VidenoaClientError::Incompatible,
         ];
 
         // When: the runtime classifies each error for automatic retry.

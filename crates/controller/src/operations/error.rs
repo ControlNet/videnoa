@@ -106,7 +106,8 @@ impl OperationsError {
             | VidenoaClientError::UnexpectedStatus { .. }
             | VidenoaClientError::Network
             | VidenoaClientError::Timeout
-            | VidenoaClientError::Stall => Self::Unavailable,
+            | VidenoaClientError::Stall
+            | VidenoaClientError::Incompatible => Self::Unavailable,
             VidenoaClientError::MalformedPayload
             | VidenoaClientError::OversizedPayload { .. }
             | VidenoaClientError::LocalIo

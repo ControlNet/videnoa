@@ -55,7 +55,8 @@ impl TransferExecutor {
                 VidenoaClientError::ServerStatus { .. }
                 | VidenoaClientError::Network
                 | VidenoaClientError::Timeout
-                | VidenoaClientError::Stall,
+                | VidenoaClientError::Stall
+                | VidenoaClientError::Incompatible,
             ) => {
                 self.cleanup_retry(task, attempt, DownstreamFailure::RemoteCleanup, now, jitter)
                     .await

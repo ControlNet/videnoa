@@ -27,13 +27,14 @@ pub(super) enum ProbeFailure {
     Health,
     Capabilities,
     Authentication,
+    Incompatible,
 }
 
 impl ProbeFailure {
     pub(super) const fn invalidation(&self) -> CacheInvalidation {
         match self {
             Self::Health => CacheInvalidation::HealthFailure,
-            Self::Client | Self::Capabilities | Self::Authentication => {
+            Self::Client | Self::Capabilities | Self::Authentication | Self::Incompatible => {
                 CacheInvalidation::RemoteError
             }
         }
@@ -45,6 +46,9 @@ impl ProbeFailure {
             Self::Client => "worker remote client initialization failed",
             Self::Health => "worker health check failed",
             Self::Capabilities => "worker capability refresh failed",
+            Self::Incompatible => {
+                "worker tunnel is incompatible with this Controller; update the worker or the Controller"
+            }
         }
     }
 }
@@ -109,6 +113,8 @@ fn classify_error(error: &VidenoaClientError, fallback: ProbeFailure) -> ProbeFa
         }
     ) {
         ProbeFailure::Authentication
+    } else if *error == VidenoaClientError::Incompatible {
+        ProbeFailure::Incompatible
     } else {
         fallback
     }
@@ -119,7 +125,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn authentication_is_independent_of_probe_stage() {
+    fn authentication_and_incompatibility_are_independent_of_probe_stage() {
         for status in [401, 403] {
             for stage in [ProbeFailure::Health, ProbeFailure::Capabilities] {
                 assert_eq!(
@@ -133,6 +139,12 @@ mod tests {
                     ProbeFailure::Authentication
                 );
             }
+        }
+        for stage in [ProbeFailure::Health, ProbeFailure::Capabilities] {
+            assert_eq!(
+                classify_error(&VidenoaClientError::Incompatible, stage),
+                ProbeFailure::Incompatible
+            );
         }
         for error in [
             VidenoaClientError::Network,
@@ -155,5 +167,16 @@ mod tests {
                 ProbeFailure::Capabilities
             );
         }
+    }
+    #[test]
+    fn incompatibility_has_its_own_health_message() {
+        assert_eq!(
+            ProbeFailure::Incompatible.message(),
+            "worker tunnel is incompatible with this Controller; update the worker or the Controller"
+        );
+        assert_ne!(
+            ProbeFailure::Incompatible.message(),
+            ProbeFailure::Health.message()
+        );
     }
 }
