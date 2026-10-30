@@ -1,7 +1,9 @@
 use crate::domain::{Task, TaskAttempt, TaskDetailResponse, TaskListResponse};
+use crate::lifecycle::Lifecycle;
 use crate::persistence::{AttemptRecord, PageResult, TaskRecord};
 
 pub(crate) fn task(record: TaskRecord) -> Task {
+    let allowed_actions = Lifecycle::allowed_actions(&record);
     Task {
         id: record.id,
         version: record.version,
@@ -26,6 +28,7 @@ pub(crate) fn task(record: TaskRecord) -> Task {
         created_at: record.created_at,
         updated_at: record.updated_at,
         completed_at: record.lifecycle.completed_at,
+        allowed_actions,
     }
 }
 

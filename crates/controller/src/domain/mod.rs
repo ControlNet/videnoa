@@ -23,8 +23,8 @@ pub use actions::{
 pub use auth::{LoginRequest, LoginResponse, LogoutResponse, SessionResponse};
 pub use enums::{
     ApiErrorCode, AuthMethod, FailureCode, FailureStage, FieldErrorCode, HealthStatus,
-    ReadinessStatus, SortDirection, SseEventKind, TaskFilterField, TaskSortField, TaskSource,
-    TaskStatus, WorkflowKind,
+    ReadinessStatus, SortDirection, SseEventKind, TaskAction, TaskFilterField, TaskSortField,
+    TaskSource, TaskStatus, WorkflowKind,
 };
 pub use errors::{ApiError, ApiErrorEnvelope, FieldError};
 pub use execution_nodes::{

@@ -94,6 +94,7 @@ export const taskSchema = z
     created_at: z.iso.datetime(),
     updated_at: z.iso.datetime(),
     completed_at: z.iso.datetime().nullable(),
+    allowed_actions: z.array(z.string()).default([]),
   })
   .strict()
 

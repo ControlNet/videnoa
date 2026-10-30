@@ -86,8 +86,37 @@ export function task(index: number, overrides: Partial<Task> = {}): Task {
     created_at: new Date(Date.UTC(2030, 0, 1, 0, 0, index)).toISOString(),
     updated_at: new Date(Date.UTC(2030, 0, 1, 0, 5, index)).toISOString(),
     completed_at: completed ? new Date(Date.UTC(2030, 0, 1, 0, 5, index)).toISOString() : null,
-  } as const satisfies Task
-  return { ...base, ...overrides }
+  } as const satisfies Omit<Task, "allowed_actions">
+  const merged = { ...base, ...overrides }
+  return { ...merged, allowed_actions: overrides.allowed_actions ?? controllerActions(merged) }
+}
+
+const cancellableStatuses: readonly Task["status"][] = [
+  "queued",
+  "reserved",
+  "uploading",
+  "staged",
+  "submitting",
+  "processing",
+  "remote_completed",
+  "downloading",
+  "verifying",
+]
+
+/**
+ * The actions the Controller lists for this fixture's state, so suites see the
+ * buttons a real task would offer; a suite can override them.
+ */
+function controllerActions(task: Omit<Task, "allowed_actions">): string[] {
+  if (cancellableStatuses.includes(task.status)) {
+    if (task.cancel_requested_at === null) return ["cancel"]
+    return task.status === "queued" || task.status === "reserved" ? [] : ["abandon"]
+  }
+  if (task.status !== "failed") return []
+  const failure = task.failure
+  const retryable = failure !== null && failure.retryable && failure.failure_code !== "remote_state_ambiguous"
+  const elsewhere = retryable && failure.failure_code === "processing_failed" && failure.failure_stage === "processing"
+  return [...(retryable ? ["retry"] : []), ...(elsewhere ? ["retry_on_another_worker"] : []), "discard"]
 }
 
 export function taskDetail(taskValue: Task, attempts: readonly TaskAttempt[] = []): TaskDetail {

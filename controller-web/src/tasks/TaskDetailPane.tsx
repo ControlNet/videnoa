@@ -8,8 +8,42 @@ import type { Worker } from "../api/workerSchemas"
 import { formatStatus } from "./format"
 import { RetryWorkerMenu } from "./RetryWorkerMenu"
 import { TaskDetailContent } from "./TaskDetailContent"
-import { canCancelTask, canRetryOnAnotherWorker, canRetryTask, failureGuidance } from "./taskActionPolicy"
+import {
+  canAbandonTask,
+  canCancelTask,
+  canDiscardTask,
+  canRetryOnAnotherWorker,
+  canRetryTask,
+  failureGuidance,
+} from "./taskActionPolicy"
+import { abandonTaskResponseSchema, discardTaskResponseSchema } from "./taskActionSchemas"
 import { useTaskDetail } from "./useTaskDetail"
+
+type TaskAction = "cancel" | "retry" | "abandon" | "discard"
+type ConfirmedAction = Exclude<TaskAction, "retry">
+
+const confirmations: Record<ConfirmedAction, { label: string; question: string; keep: string; confirm: string }> = {
+  cancel: {
+    label: "Confirm Task Cancellation",
+    question: "Cancel this task at its current stage? Completed work is preserved where the lifecycle permits.",
+    keep: "Keep Task",
+    confirm: "Confirm Cancellation",
+  },
+  abandon: {
+    label: "Confirm Task Abandon",
+    question:
+      "Stop waiting for the Worker? The task fails although the Worker has not confirmed that its job stopped or that its task folder was deleted. Check that Worker before using it again.",
+    keep: "Keep Waiting",
+    confirm: "Confirm Abandon",
+  },
+  discard: {
+    label: "Confirm Task Discard",
+    question:
+      "Discard this failed task? It can no longer be retried. Its temporary files are deleted, and its folder on the Worker is deleted when the Worker confirms the job ended. The published output is not touched.",
+    keep: "Keep Task",
+    confirm: "Confirm Discard",
+  },
+}
 
 type TaskDetailPaneProps = {
   readonly apiClient: ApiClient
@@ -30,12 +64,14 @@ export function TaskDetailPane(props: TaskDetailPaneProps) {
 function TaskDetailPaneBody({ apiClient, taskId, onClose, onChanged }: TaskDetailPaneProps) {
   const paneRef = useRef<HTMLElement>(null)
   const cancelTaskRef = useRef<HTMLButtonElement>(null)
+  const abandonTaskRef = useRef<HTMLButtonElement>(null)
+  const discardTaskRef = useRef<HTMLButtonElement>(null)
   const keepTaskRef = useRef<HTMLButtonElement>(null)
-  const confirmCancelRef = useRef<HTMLButtonElement>(null)
+  const confirmActionRef = useRef<HTMLButtonElement>(null)
   const data = useTaskDetail(apiClient, taskId)
-  const [action, setAction] = useState<"cancel" | "retry" | null>(null)
+  const [action, setAction] = useState<TaskAction | null>(null)
   const [message, setMessage] = useState<string | null>(null)
-  const [confirmingCancel, setConfirmingCancel] = useState(false)
+  const [confirming, setConfirming] = useState<ConfirmedAction | null>(null)
   const [choosingWorker, setChoosingWorker] = useState(false)
   const retryMenuRef = useRef<HTMLButtonElement>(null)
 
@@ -44,12 +80,14 @@ function TaskDetailPaneBody({ apiClient, taskId, onClose, onChanged }: TaskDetai
     paneRef.current?.focus()
   }, [taskId])
   useEffect(() => {
-    if (confirmingCancel) keepTaskRef.current?.focus()
-  }, [confirmingCancel])
+    if (confirming !== null) keepTaskRef.current?.focus()
+  }, [confirming])
 
-  function dismissCancellation(): void {
-    setConfirmingCancel(false)
-    queueMicrotask(() => cancelTaskRef.current?.focus())
+  function dismissConfirmation(): void {
+    if (confirming === null) return
+    const trigger = { cancel: cancelTaskRef, abandon: abandonTaskRef, discard: discardTaskRef }[confirming]
+    setConfirming(null)
+    queueMicrotask(() => trigger.current?.focus())
   }
 
   function closeWorkerMenu(): void {
@@ -57,7 +95,7 @@ function TaskDetailPaneBody({ apiClient, taskId, onClose, onChanged }: TaskDetai
     queueMicrotask(() => retryMenuRef.current?.focus())
   }
 
-  async function mutate(kind: "cancel" | "retry", worker?: Worker): Promise<void> {
+  async function mutate(kind: TaskAction, worker?: Worker): Promise<void> {
     const task = data.detail?.task
     if (task === undefined) return
     setAction(kind)
@@ -71,6 +109,24 @@ function TaskDetailPaneBody({ apiClient, taskId, onClose, onChanged }: TaskDetai
           schema: cancelTaskResponseSchema,
         })
         setMessage("Cancellation requested with the current task version.")
+      } else if (kind === "abandon") {
+        await apiClient.request(`api/tasks/${task.id}/abandon`, {
+          method: "POST",
+          json: { version: task.version },
+          schema: abandonTaskResponseSchema,
+        })
+        setMessage("Task abandoned. The Worker has not confirmed that its job stopped; check it before using it again.")
+      } else if (kind === "discard") {
+        const discarded = await apiClient.request(`api/tasks/${task.id}/discard`, {
+          method: "POST",
+          json: { version: task.version },
+          schema: discardTaskResponseSchema,
+        })
+        setMessage(
+          discarded.worker_folder_deleted
+            ? "Task discarded. Its temporary files and Worker folder were deleted."
+            : "Task discarded. Its temporary files were deleted; its Worker folder was kept because the Worker could not confirm that the job ended.",
+        )
       } else {
         const retried = await apiClient.request(`api/tasks/${task.id}/retry`, {
           method: "POST",
@@ -111,7 +167,7 @@ function TaskDetailPaneBody({ apiClient, taskId, onClose, onChanged }: TaskDetai
         if (event.key !== "Escape") return
         event.preventDefault()
         if (choosingWorker) closeWorkerMenu()
-        else if (confirmingCancel) dismissCancellation()
+        else if (confirming !== null) dismissConfirmation()
         else onClose()
       }}
     >
@@ -121,8 +177,20 @@ function TaskDetailPaneBody({ apiClient, taskId, onClose, onChanged }: TaskDetai
         </div>
         <div className="task-detail-actions">
           {task !== undefined && canCancelTask(task) ? (
-            <Button ref={cancelTaskRef} variant="danger" size="sm" disabled={action !== null} onClick={() => setConfirmingCancel(true)}>
+            <Button ref={cancelTaskRef} variant="danger" size="sm" disabled={action !== null} onClick={() => setConfirming("cancel")}>
               Cancel Task
+            </Button>
+          ) : null}
+          {task !== undefined && canAbandonTask(task) ? (
+            <Button
+              ref={abandonTaskRef}
+              variant="danger"
+              size="sm"
+              disabled={action !== null}
+              title="Stop waiting for a Worker that cannot confirm the cancellation"
+              onClick={() => setConfirming("abandon")}
+            >
+              Abandon Task
             </Button>
           ) : null}
           {task !== undefined && canRetryTask(task) ? (
@@ -157,48 +225,60 @@ function TaskDetailPaneBody({ apiClient, taskId, onClose, onChanged }: TaskDetai
               ) : null}
             </div>
           ) : null}
+          {task !== undefined && canDiscardTask(task) ? (
+            <Button
+              ref={discardTaskRef}
+              variant="outline"
+              size="sm"
+              disabled={action !== null}
+              title="Give up on this task and release its files"
+              onClick={() => setConfirming("discard")}
+            >
+              Discard Task
+            </Button>
+          ) : null}
           <Button variant="outline" size="sm" icon aria-label="Close Task Detail" onClick={onClose}>
             <X size={14} aria-hidden="true" />
           </Button>
         </div>
       </header>
-      {confirmingCancel ? (
+      {confirming === null ? null : (
         <div
           className="cancel-confirmation"
           role="alertdialog"
-          aria-label="Confirm Task Cancellation"
+          aria-label={confirmations[confirming].label}
           aria-modal="true"
           onKeyDown={(event) => {
             if (event.key !== "Tab") return
             const active = document.activeElement
             if (event.shiftKey && active === keepTaskRef.current) {
               event.preventDefault()
-              confirmCancelRef.current?.focus()
-            } else if (!event.shiftKey && active === confirmCancelRef.current) {
+              confirmActionRef.current?.focus()
+            } else if (!event.shiftKey && active === confirmActionRef.current) {
               event.preventDefault()
               keepTaskRef.current?.focus()
             }
           }}
         >
-          <p>Cancel this task at its current stage? Completed work is preserved where the lifecycle permits.</p>
+          <p>{confirmations[confirming].question}</p>
           <div>
-            <Button ref={keepTaskRef} variant="outline" size="sm" onClick={dismissCancellation}>
-              Keep Task
+            <Button ref={keepTaskRef} variant="outline" size="sm" onClick={dismissConfirmation}>
+              {confirmations[confirming].keep}
             </Button>
             <Button
-              ref={confirmCancelRef}
+              ref={confirmActionRef}
               variant="danger"
               size="sm"
               onClick={() => {
-                setConfirmingCancel(false)
-                void mutate("cancel")
+                setConfirming(null)
+                void mutate(confirming)
               }}
             >
-              Confirm Cancellation
+              {confirmations[confirming].confirm}
             </Button>
           </div>
         </div>
-      ) : null}
+      )}
       {message === null ? null : <output className="task-action-message">{message}</output>}
       {data.error === null ? null : (
         <div className="task-action-error" role="alert">

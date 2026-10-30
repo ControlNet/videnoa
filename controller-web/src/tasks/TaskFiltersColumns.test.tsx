@@ -42,6 +42,7 @@ const failedTask = {
   created_at: "2030-01-01T00:00:00Z",
   updated_at: "2030-01-01T00:02:00Z",
   completed_at: "2030-01-01T00:02:00Z",
+  allowed_actions: [],
 } as const satisfies Task
 
 beforeEach(() => {

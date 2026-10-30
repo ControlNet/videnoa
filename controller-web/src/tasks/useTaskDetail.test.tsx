@@ -221,6 +221,7 @@ function task(id: string, inputPath: string, version: number): Task {
     created_at: "2030-01-01T00:00:00Z",
     updated_at: "2030-01-01T00:01:00Z",
     completed_at: null,
+    allowed_actions: [],
   }
 }
 

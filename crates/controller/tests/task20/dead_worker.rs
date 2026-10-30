@@ -3,7 +3,9 @@
 
 use std::time::Duration;
 
-use videnoa_controller::domain::{FailureCode, Task, TaskDetailResponse, TaskStatus, WorkerName};
+use videnoa_controller::domain::{
+    FailureCode, Task, TaskAction, TaskDetailResponse, TaskStatus, WorkerName,
+};
 
 use crate::mock_videnoa::checkpoints::Checkpoint;
 use crate::mock_videnoa::faults::OfflineMode;
@@ -22,7 +24,8 @@ async fn abandoned_cancellation_on_a_dead_worker_frees_it_for_deletion() -> Test
     let task = fixture.create_task("dead-worker", b"input-video").await?;
     worker.await_checkpoint(&run).await?;
     worker.release(run).await?;
-    wait_for_status(&fixture, &task, TaskStatus::Processing).await?;
+    let processing = wait_for_status(&fixture, &task, TaskStatus::Processing).await?;
+    assert_eq!(processing.task.allowed_actions, [TaskAction::Cancel]);
     worker.set_offline(OfflineMode::ConnectionRefused).await?;
 
     // When: the cancel cannot reach the Worker, the operator abandons the task.
@@ -30,6 +33,7 @@ async fn abandoned_cancellation_on_a_dead_worker_frees_it_for_deletion() -> Test
     let waiting = fixture.task(&task).await?;
     assert_eq!(waiting.task.status, TaskStatus::Processing);
     assert!(waiting.task.cancel_requested_at.is_some());
+    assert_eq!(waiting.task.allowed_actions, [TaskAction::Abandon]);
     assert_eq!(
         fixture.abandon_status(&task).await?,
         reqwest::StatusCode::OK
@@ -39,6 +43,7 @@ async fn abandoned_cancellation_on_a_dead_worker_frees_it_for_deletion() -> Test
     // capacity or temporary files, and the Worker can be deleted.
     let abandoned = fixture.task(&task).await?;
     assert_eq!(abandoned.task.status, TaskStatus::Failed);
+    assert_eq!(abandoned.task.allowed_actions, [TaskAction::Discard]);
     let failure = abandoned
         .task
         .failure

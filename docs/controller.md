@@ -626,7 +626,10 @@ task; all normal path and request validation still applies.
 /api/tasks/{id}` returns the task plus a paginated attempts array.
 
 `POST /api/tasks/{id}/cancel`, `retry`, `abandon` and `discard` require the
-current `version`. Retry also accepts an optional `worker_id` to queue the task
+current `version`. Every task lists the actions it accepts now in
+`allowed_actions` (`cancel`, `abandon`, `retry`, `retry_on_another_worker`,
+`discard`); the Web UI offers exactly those, and clients should ignore values
+they do not know. Retry also accepts an optional `worker_id` to queue the task
 for another Worker; the response's `attempt_id` is `null` when the task was
 queued, and the task's `requested_worker_id` names the Worker it waits for. `GET /api/status-counts` returns all lifecycle categories,
 including zero counts.

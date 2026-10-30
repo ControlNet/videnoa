@@ -71,6 +71,7 @@ export function TaskDetailContent({ detail, guidance, loadingMore, onLoadMore }:
               <Detail label="Stage" value={detail.task.failure.failure_stage} />
               <Detail label="Code" value={detail.task.failure.failure_code} mono />
               <Detail label="Manual Retry" value={canRetryTask(detail.task) ? "Available" : "Unavailable"} />
+              {detail.task.discarded_at == null ? null : <Detail label="Discarded" value={formatDate(detail.task.discarded_at)} />}
             </dl>
             <p className="copy-value">{detail.task.failure.message}</p>
             {guidance === null ? null : <p className="failure-guidance">{guidance.message}</p>}

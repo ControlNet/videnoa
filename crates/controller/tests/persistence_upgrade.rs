@@ -13,8 +13,9 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use tempfile::TempDir;
 use videnoa_controller::config::{ControllerConfig, HistoryConfig};
 use videnoa_controller::domain::{
-    FailureCode, PageRequest, TaskId, TaskListQuery, TaskStatus, WorkerId, WorkerName,
+    FailureCode, PageRequest, TaskAction, TaskId, TaskListQuery, TaskStatus, WorkerId, WorkerName,
 };
+use videnoa_controller::lifecycle::Lifecycle;
 use videnoa_controller::paths::PathCapabilities;
 use videnoa_controller::persistence::{Database, DatabaseOptions, Store, WorkerDeleteOutcome};
 use videnoa_controller::tasks::HistoryRetention;
@@ -176,6 +177,33 @@ async fn deleting_the_worker_a_released_retry_pinned_unpins_the_task() -> TestRe
         store.delete_worker(busy, version).await?,
         WorkerDeleteOutcome::Referenced
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn released_tasks_offer_the_actions_their_state_allows() -> TestResult {
+    let (_directory, store) = upgraded("v0.1.10").await?;
+    let retry_anywhere = [
+        TaskAction::Retry,
+        TaskAction::RetryOnAnotherWorker,
+        TaskAction::Discard,
+    ];
+    let expected: [(&str, &[TaskAction]); 7] = [
+        (COMPLETED, &[]),
+        (FAILED_PROCESSING, &retry_anywhere),
+        (PROCESSING, &[TaskAction::Cancel]),
+        (QUEUED, &[TaskAction::Cancel]),
+        (CANCELLED, &[]),
+        (OUTPUT_EXISTS, &[TaskAction::Discard]),
+        (PINNED, &[TaskAction::Cancel]),
+    ];
+    for (task_id, actions) in expected {
+        let task = store
+            .task(id::<TaskId>(task_id)?)
+            .await?
+            .ok_or("released task is missing")?;
+        assert_eq!(Lifecycle::allowed_actions(&task), actions, "{task_id}");
+    }
     Ok(())
 }
 

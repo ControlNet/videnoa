@@ -384,5 +384,6 @@ function taskRow(workerId: string, id = "00000000-0000-4000-8000-000000000001"):
     created_at: "2030-01-01T00:00:00Z",
     updated_at: "2030-01-01T00:05:00Z",
     completed_at: null,
+    allowed_actions: [],
   }
 }

@@ -3,8 +3,9 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use super::{
     AttemptId, FailureCode, FailureStage, InputExtension, InputPath, OutputExtension, OutputPath,
-    PageRequest, RemoteJobId, RemotePath, SortDirection, SourceReference, SubmissionKey, TaskId,
-    TaskProgress, TaskSortField, TaskSource, TaskStatus, WorkerId, WorkerName, WorkflowName,
+    PageRequest, RemoteJobId, RemotePath, SortDirection, SourceReference, SubmissionKey,
+    TaskAction, TaskId, TaskProgress, TaskSortField, TaskSource, TaskStatus, WorkerId, WorkerName,
+    WorkflowName,
 };
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -88,6 +89,9 @@ pub struct Task {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
+    /// The operator actions the task accepts now, in a stable order.
+    #[serde(default)]
+    pub allowed_actions: Vec<TaskAction>,
 }
 
 pub type TaskSummary = Task;

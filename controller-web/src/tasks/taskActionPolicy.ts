@@ -1,32 +1,30 @@
 import type { FailureCode, FailureStage, Task } from "../api/taskSchemas"
 
-const cancellableStatuses = new Set<Task["status"]>([
-  "queued",
-  "reserved",
-  "uploading",
-  "staged",
-  "submitting",
-  "processing",
-  "remote_completed",
-  "downloading",
-  "verifying",
-])
-
 export type FailureGuidance = {
   readonly kind: "blocked" | "new_task" | "processing_retry" | "stage_retry"
   readonly message: string
 }
 
+/*
+ * The Controller lists the actions each task accepts in `allowed_actions`, so
+ * the UI offers exactly those and never re-derives lifecycle rules. Actions this
+ * UI does not know are ignored.
+ */
+function allows(task: Task, action: string): boolean {
+  return task.allowed_actions.includes(action)
+}
+
 export function canCancelTask(task: Task): boolean {
-  return task.cancel_requested_at === null && cancellableStatuses.has(task.status)
+  return allows(task, "cancel")
+}
+
+/** A requested cancellation that waits for a Worker that cannot answer. */
+export function canAbandonTask(task: Task): boolean {
+  return allows(task, "abandon")
 }
 
 export function canRetryTask(task: Task): boolean {
-  if (task.status !== "failed" || task.failure === null) return false
-  if (task.failure.failure_code === "input_changed" && task.failure.failure_stage === "upload") return true
-  if (task.failure.failure_code === "remote_submission_failed" && task.failure.failure_stage === "submission") return true
-  if (!task.failure.retryable) return false
-  return isSupportedRetryPair(task.failure.failure_code, task.failure.failure_stage)
+  return allows(task, "retry")
 }
 
 /**
@@ -34,39 +32,12 @@ export function canRetryTask(task: Task): boolean {
  * exists. The Controller deletes the task workspace on the original Worker first.
  */
 export function canRetryOnAnotherWorker(task: Task): boolean {
-  if (!canRetryTask(task) || task.failure === null) return false
-  const { failure_code: code, failure_stage: stage } = task.failure
-  return (
-    (code === "processing_failed" && stage === "processing") ||
-    (code === "transfer_failed" && stage === "upload") ||
-    (code === "input_changed" && stage === "upload") ||
-    (code === "remote_submission_failed" && stage === "submission")
-  )
+  return allows(task, "retry_on_another_worker")
 }
 
-function isSupportedRetryPair(code: FailureCode, stage: FailureStage): boolean {
-  switch (code) {
-    case "processing_failed":
-      return stage === "processing"
-    case "transfer_failed":
-      return stage === "upload" || stage === "download"
-    case "verification_failed":
-      return stage === "verification"
-    case "publication_failed":
-    case "publication_ambiguous":
-      return stage === "publication"
-    case "cleanup_failed":
-      return stage === "local_cleanup" || stage === "remote_cleanup"
-    case "input_unavailable":
-    case "input_changed":
-    case "output_exists":
-    case "worker_unavailable":
-    case "workflow_incompatible":
-    case "remote_submission_failed":
-    case "remote_state_ambiguous":
-    case "cancelled":
-      return false
-  }
+/** Give up on a failed task: it is never retried and its files are released. */
+export function canDiscardTask(task: Task): boolean {
+  return allows(task, "discard")
 }
 
 export function failureGuidance(code: FailureCode, stage: FailureStage): FailureGuidance {

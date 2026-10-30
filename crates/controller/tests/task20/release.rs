@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use videnoa_controller::domain::{FailureCode, Task, TaskDetailResponse, TaskStatus};
+use videnoa_controller::domain::{FailureCode, Task, TaskAction, TaskDetailResponse, TaskStatus};
 
 use crate::mock_videnoa::checkpoints::Checkpoint;
 use crate::mock_videnoa::domain::JobStatus;
@@ -38,6 +38,7 @@ async fn output_collision_releases_the_verified_output() -> TestResult {
         .failure
         .ok_or_else(|| std::io::Error::other("collision has no failure"))?;
     assert_eq!(failure.failure_code, FailureCode::OutputExists);
+    assert_eq!(failed.task.allowed_actions, [TaskAction::Discard]);
     wait_for_absent(&fixture.temp_root.join(task.id.to_string())).await?;
     assert_eq!(tokio::fs::read(&output).await?, b"user-file");
     Ok(())
@@ -93,6 +94,14 @@ async fn discarding_a_failed_task_releases_its_worker_folder_and_ends_retry() ->
         failed.task.failure.map(|failure| failure.failure_code),
         Some(FailureCode::ProcessingFailed)
     );
+    assert_eq!(
+        failed.task.allowed_actions,
+        [
+            TaskAction::Retry,
+            TaskAction::RetryOnAnotherWorker,
+            TaskAction::Discard
+        ]
+    );
     assert!(worker.file_count().await > 0);
 
     // When: the operator discards it.
@@ -107,6 +116,7 @@ async fn discarding_a_failed_task_releases_its_worker_folder_and_ends_retry() ->
     let discarded = fixture.task(&task).await?;
     assert_eq!(discarded.task.status, TaskStatus::Failed);
     assert!(discarded.task.discarded_at.is_some());
+    assert!(discarded.task.allowed_actions.is_empty());
     assert!(!fixture.temp_root.join(task.id.to_string()).exists());
     assert_eq!(
         fixture.retry_status(&task).await?,

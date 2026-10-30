@@ -79,6 +79,14 @@ snake_case_enum!(FailureCode {
     Cancelled,
 });
 snake_case_enum!(TaskSource { Manual, Api });
+// Operator actions a task accepts in its current state.
+snake_case_enum!(TaskAction {
+    Cancel,
+    Abandon,
+    Retry,
+    RetryOnAnotherWorker,
+    Discard,
+});
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
