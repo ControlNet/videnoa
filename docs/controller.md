@@ -291,8 +291,11 @@ Each health refresh also asks the worker to validate every eligible name with
 creating a job. A name the worker rejects is not scheduled there and is listed
 under `capabilities.invalid_workflows` with the worker's reason; the Workers
 page shows the count in the error column and the reasons in its tooltip.
-Workers older than v0.1.9 answer 404, and a validation request that fails for
-any other reason (timeout, 5xx) also leaves the name eligible.
+Workers older than v0.1.9 answer a bare 404, and a validation request that fails
+for any other reason (timeout, 5xx without a code) also leaves the name
+eligible. A protocol-2 worker's coded rejection, including 404
+`workflow_not_found`, marks the name invalid, as does a 422 (the worker cannot
+read the request; update the worker).
 
 Task and batch creation, including batch preview, return 400 with a `workflow`
 field error when every worker that reports the workflow reports it invalid and
@@ -716,19 +719,53 @@ manual migration command or supported migration downgrade.
 
 ### Worker API compatibility
 
-Controller and workers can be upgraded separately within these rules:
+Controller and workers can be upgraded separately within these rules. The wire
+types both sides use live in one crate, `videnoa-protocol`, with fixture tests
+that pin the v0.1.10 JSON byte for byte.
 
-- Since v0.1.9, Controller ignores fields it does not know in worker
-  responses. Known fields and status values are still checked strictly.
-- Controllers up to v0.1.8 reject unknown fields in worker responses. Workers
-  therefore do not add fields to the responses those Controllers read (health,
-  workflow and preset lists, interfaces, run receipts, jobs, uploads and file
-  metadata); a Worker unit test pins these field sets. New information is served
-  from new endpoints instead.
-- Controller detects a new worker endpoint by trying it: a worker that predates
-  it answers 404, and Controller falls back to the older behaviour.
-- Controller sends no new request fields to existing worker endpoints, because
-  workers reject unknown request fields.
+- **Protocol version.** A worker's `GET /api/health` reports
+  `{"status":"ok", ..., "protocol":N}`; `status` stays the first field. A
+  worker that omits `protocol` (up to v0.1.10) speaks protocol 1. Controller
+  supports protocols 1 to 2. A worker that reports a newer protocol is shown
+  offline with a message naming both versions, and its tasks wait until the
+  Controller is upgraded.
+- **Protocol 2** adds, all additively:
+  - a `code` on worker error replies, next to `error`. Controller reads the
+    code before the HTTP status: `workflow_name_invalid`, `workflow_not_found`,
+    `workflow_unreadable`, `workflow_invalid` and `job_store_unavailable` fail
+    a submission at once with the worker's reason (a worker 500 with one of
+    these codes is no longer retried); `queue_full` and `shutting_down` are
+    retried; without a known code the status decides, as with protocol 1. A
+    worker without a password that refuses the Host name Controller uses
+    answers 403 `host_not_allowed`; Controller shows the worker's reason
+    instead of blaming the saved password.
+  - `cancel_requested`, `cancel_requested_at` and `cancel_reason` (`user`,
+    `shutdown`, `restart`) on jobs. A job cancelled on the worker fails its task
+    with the matching reason. When Controller cancels a job, it waits until the
+    worker reports the job stopped (or gone) before deleting the task's worker
+    workspace.
+  - `GET /api/jobs/by-idempotency-key/{key}`: the job a keyed `POST /api/run`
+    created, or 404 `job_not_found`. Controller uses it to learn whether a
+    submission whose reply it lost was accepted when that task is cancelled,
+    so no job is created just to be cancelled. Against a protocol-1 worker it
+    still replays the keyed run.
+- **Unknown values.** Since v0.1.9, Controller ignores fields it does not know
+  in worker responses. Since protocol 2 it also reads an unknown job status,
+  health status, cancel reason or error code as "unknown": a job in an unknown
+  status keeps being polled, and an unknown error code falls back to the HTTP
+  status.
+- **Requests.** Workers since protocol 2 ignore request fields they do not
+  know on `POST /api/run` and `/api/run/validate` (they no longer use
+  `deny_unknown_fields` there), so a newer Controller can add a field without
+  breaking older protocol-2 workers. A worker answering 422 to a run request
+  cannot parse it at all; Controller fails the task before upload where it can
+  (through validation) and says to update the worker. Controller still sends no
+  new request fields, because protocol-1 workers reject unknown request fields.
+- **Minimum Controller.** Workers now add fields to health and job replies, which
+  Controllers up to v0.1.8 reject. A worker from this release needs Controller
+  v0.1.9 or later.
+- Controller detects other new worker endpoints by trying them: a worker that
+  predates one answers 404, and Controller falls back to the older behaviour.
 
 ## Troubleshooting
 

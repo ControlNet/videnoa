@@ -70,6 +70,8 @@ fn known_fields_are_still_required() {
 
 #[test]
 fn current_health_appends_capacity_and_protocol() {
+    // `status` stays first: scripts/tests/docker_slimming_contract_test.sh
+    // matches the body against `^{"status":"ok"[,}]`.
     let health = HealthResponse {
         status: HealthStatus::Ok,
         gpu_slots: Some(1),
