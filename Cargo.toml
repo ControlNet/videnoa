@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/core", "crates/app", "crates/desktop", "crates/controller", "crates/transport"]
+members = ["crates/core", "crates/app", "crates/desktop", "crates/controller", "crates/transport", "crates/protocol"]
 resolver = "2"
 
 [workspace.package]
@@ -8,6 +8,7 @@ rust-version = "1.98.0"
 
 [workspace.dependencies]
 videnoa-transport = { path = "crates/transport" }
+videnoa-protocol = { path = "crates/protocol" }
 ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "cuda", "tensorrt", "ndarray", "load-dynamic", "half", "api-23"] }
 half = "2"
 ndarray = "0.17"

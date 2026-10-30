@@ -8065,6 +8065,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "videnoa-protocol"
+version = "0.1.10"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "videnoa-transport"
 version = "0.1.10"
 dependencies = [
