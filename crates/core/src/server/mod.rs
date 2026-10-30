@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path as StdPath, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -84,6 +84,9 @@ struct AppStateInner {
     node_registry: NodeRegistry,
     model_registry: ModelRegistry,
     progress_senders: DashMap<String, broadcast::Sender<JobWsEvent>>,
+    /// Latest debug value per node, per job, replayed to WebSocket subscribers
+    /// that connect after the node ran.
+    debug_values: DashMap<String, BTreeMap<String, JobWsEvent>>,
     /// Presets loaded at startup. Nothing serves them any more: `/api/presets`
     /// and `/api/run` read `presets_dir` live. Kept so `AppState::new` keeps
     /// its signature; drop both together.
@@ -108,6 +111,24 @@ const RERUN_COMPLETED_REJECTION: &str = "cannot rerun completed job";
 const PREVIEW_VSYNC_MODE: &str = "vfr";
 /// Budget for the preview's metadata probe, separate from the extraction's.
 const PREVIEW_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+impl AppStateInner {
+    /// Keep `event` as the latest value of its node, so `job_ws` can replay it
+    /// to a subscriber that connects after the node ran (Print usually runs
+    /// before the editor's socket is open).
+    fn record_debug_value(&self, job_id: &str, event: &NodeDebugValueEvent) {
+        if !self.debug_values.contains_key(job_id) {
+            // Values are replayed only while the job's progress channel lives;
+            // drop those of jobs that finished or were deleted.
+            self.debug_values
+                .retain(|id, _| self.progress_senders.contains_key(id));
+        }
+        self.debug_values
+            .entry(job_id.to_string())
+            .or_default()
+            .insert(event.node_id.clone(), JobWsEvent::from(event.clone()));
+    }
+}
 
 impl AppState {
     pub fn ensure_auth_ready(&self) -> Result<()> {
@@ -187,6 +208,7 @@ impl AppState {
                 node_registry,
                 model_registry,
                 progress_senders: DashMap::new(),
+                debug_values: DashMap::new(),
                 presets,
                 config: RwLock::new(config),
                 config_path,
@@ -1872,11 +1894,31 @@ async fn job_ws(
         .get(&id)
         .map(|sender| sender.subscribe())
         .ok_or_else(|| AppError::NotFound(format!("no progress channel for job: {id}")))?;
+    // Read after subscribing, so a value recorded in between is sent twice
+    // (harmless, the client keeps the latest per node) rather than lost.
+    let replay: Vec<JobWsEvent> = state
+        .inner
+        .debug_values
+        .get(&id)
+        .map(|values| values.values().cloned().collect())
+        .unwrap_or_default();
 
-    Ok(ws.on_upgrade(move |socket| handle_ws(socket, rx)))
+    Ok(ws.on_upgrade(move |socket| handle_ws(socket, rx, replay)))
 }
 
-async fn handle_ws(mut socket: WebSocket, mut rx: broadcast::Receiver<JobWsEvent>) {
+async fn handle_ws(
+    mut socket: WebSocket,
+    mut rx: broadcast::Receiver<JobWsEvent>,
+    replay: Vec<JobWsEvent>,
+) {
+    for event in replay {
+        let Ok(json) = serde_json::to_string(&event) else {
+            continue;
+        };
+        if socket.send(Message::Text(json.into())).await.is_err() {
+            return;
+        }
+    }
     loop {
         tokio::select! {
             result = rx.recv() => {
@@ -2981,6 +3023,8 @@ async fn run_job(state: AppState, job_id: String) {
             let ws_tx_for_debug = ws_tx.clone();
 
             let inner_for_cb = Arc::clone(&inner);
+            let inner_for_debug = Arc::clone(&inner);
+            let job_id_for_debug = job_id_for_closure.clone();
             let progress_cb: ProgressCallback =
                 Box::new(move |current_frame, total_frames, _hint| {
                     let now = Instant::now();
@@ -3024,6 +3068,8 @@ async fn run_job(state: AppState, job_id: String) {
             let mut debug_throttle =
                 NodeDebugEventThrottle::new(Duration::from_millis(PRINT_PREVIEW_THROTTLE_MS));
             let mut node_debug_cb = move |event: NodeDebugValueEvent| {
+                // Recorded before throttling, so the replayed value is the latest.
+                inner_for_debug.record_debug_value(&job_id_for_debug, &event);
                 if !debug_throttle.should_emit(&event.node_id, Instant::now()) {
                     return;
                 }
@@ -5846,6 +5892,162 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("transitioned to 'cancelled' for retry safety"));
+    }
+
+    /// Blocks a scalar workflow after its upstream nodes ran, until released.
+    struct GateNode {
+        reached: Arc<std::sync::atomic::AtomicBool>,
+        release: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl crate::node::Node for GateNode {
+        fn node_type(&self) -> &str {
+            "test_gate"
+        }
+        fn input_ports(&self) -> Vec<crate::node::PortDefinition> {
+            vec![crate::node::PortDefinition {
+                name: "value".to_string(),
+                port_type: PortType::Str,
+                required: true,
+                default_value: None,
+            }]
+        }
+        fn output_ports(&self) -> Vec<crate::node::PortDefinition> {
+            vec![]
+        }
+        fn execute(
+            &mut self,
+            _inputs: &std::collections::HashMap<String, crate::types::PortData>,
+            _ctx: &crate::node::ExecutionContext,
+        ) -> Result<std::collections::HashMap<String, crate::types::PortData>> {
+            use std::sync::atomic::Ordering;
+            self.reached.store(true, Ordering::SeqCst);
+            for _ in 0..1000 {
+                if self.release.load(Ordering::SeqCst) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Ok(std::collections::HashMap::new())
+        }
+    }
+
+    /// Read one unmasked server text frame from a raw WebSocket stream.
+    async fn read_ws_text_frame(stream: &mut tokio::net::TcpStream) -> serde_json::Value {
+        use tokio::io::AsyncReadExt;
+        assert_eq!(stream.read_u8().await.unwrap(), 0x81);
+        let length = match stream.read_u8().await.unwrap() {
+            126 => usize::from(stream.read_u16().await.unwrap()),
+            127 => usize::try_from(stream.read_u64().await.unwrap()).unwrap(),
+            short => usize::from(short),
+        };
+        let mut body = vec![0; length];
+        stream.read_exact(&mut body).await.unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    /// A Print node usually runs before the editor's WebSocket connects, and
+    /// its value was only broadcast live, so it was lost. The socket now
+    /// starts with the latest value of every node that already printed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_job_ws_replays_print_values_to_late_subscribers() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let reached = Arc::new(AtomicBool::new(false));
+        let release = Arc::new(AtomicBool::new(false));
+        let mut node_registry = NodeRegistry::new();
+        register_all_nodes(&mut node_registry);
+        {
+            let (reached, release) = (Arc::clone(&reached), Arc::clone(&release));
+            node_registry.register("test_gate", move |_params| {
+                Ok(Box::new(GateNode {
+                    reached: Arc::clone(&reached),
+                    release: Arc::clone(&release),
+                }))
+            });
+        }
+        let state = AppState::new(
+            node_registry,
+            ModelRegistry::with_builtin_models(test_models_dir()),
+            DashMap::new(),
+            AppConfig::default(),
+            test_config_path(),
+            test_data_dir(),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut app = app_router(state.clone());
+        let server = tokio::spawn({
+            let router = app.clone();
+            async move { axum::serve(listener, router).await.unwrap() }
+        });
+
+        let workflow = serde_json::json!({
+            "nodes": [
+                {"id": "text", "node_type": "Constant", "params": {"type": "Str", "value": "hello late subscriber"}},
+                {"id": "print", "node_type": "Print", "params": {"value_type": "Str"}},
+                {"id": "gate", "node_type": "test_gate", "params": {}}
+            ],
+            "connections": [
+                {"from_node": "text", "from_port": "value", "to_node": "print", "to_port": "value", "port_type": "Str"},
+                {"from_node": "print", "from_port": "value", "to_node": "gate", "to_port": "value", "port_type": "Str"}
+            ]
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/jobs")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({ "workflow": workflow })).unwrap(),
+            ))
+            .unwrap();
+        let resp = send_request(&mut app, req).await;
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let job_id = serde_json::from_slice::<serde_json::Value>(&body).unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !reached.load(Ordering::SeqCst) {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the gate node should run after Print");
+
+        let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+        stream.write_all(format!("GET /api/jobs/{job_id}/ws HTTP/1.1\r\nHost: {address}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n").as_bytes()).await.unwrap();
+        let mut headers = Vec::new();
+        while !headers.ends_with(b"\r\n\r\n") {
+            headers.push(stream.read_u8().await.unwrap());
+        }
+        assert!(headers.starts_with(b"HTTP/1.1 101"));
+
+        let replayed = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            read_ws_text_frame(&mut stream),
+        )
+        .await
+        .expect("the Print value should be replayed on connect");
+        assert_eq!(replayed["type"], "node_debug_value");
+        assert_eq!(replayed["node_id"], "print");
+        assert!(replayed["value_preview"]
+            .as_str()
+            .unwrap()
+            .contains("hello late subscriber"));
+
+        release.store(true, Ordering::SeqCst);
+        assert_eq!(
+            wait_for_job_terminal_status(&state, &job_id).await,
+            JobStatus::Completed
+        );
+        drop(stream);
+        server.abort();
     }
 
     #[tokio::test]
