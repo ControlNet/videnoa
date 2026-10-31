@@ -9,6 +9,7 @@ use serde::de::Error as DeError;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::node::PortDefinition;
+use crate::nodes::workflow_io::validate_nested_workflow;
 use crate::registry::NodeRegistry;
 use crate::types::PortType;
 
@@ -216,6 +217,11 @@ impl PipelineGraph {
             self.check_required_inputs(*idx, input_ports)?;
         }
 
+        for node in self.nodes().filter(|node| node.node_type == "Workflow") {
+            validate_nested_workflow(&node.params)
+                .with_context(|| format!("node '{}' of type 'Workflow'", node.id))?;
+        }
+
         Ok(())
     }
 
@@ -279,6 +285,10 @@ impl PipelineGraph {
         toposort(&self.graph, None).map_err(|_| anyhow!("cycle detected in pipeline graph"))
     }
 
+    pub fn nodes(&self) -> impl Iterator<Item = &NodeInstance> {
+        self.graph.node_weights()
+    }
+
     pub fn node(&self, idx: NodeIndex) -> &NodeInstance {
         self.graph
             .node_weight(idx)
@@ -312,8 +322,25 @@ impl PipelineGraph {
                         instance.id, instance.node_type
                     )
                 })?;
+            let input_ports = node.input_ports();
 
-            definitions.insert(idx, (node.input_ports(), node.output_ports()));
+            // A renamed or misspelled param would otherwise run with the
+            // port's default without any notice.
+            let mut keys: Vec<&String> = instance.params.keys().collect();
+            keys.sort();
+            for key in keys {
+                if !input_ports.iter().any(|port| port.name == *key)
+                    && !node.accepts_config_param(key)
+                {
+                    bail!(
+                        "node '{}' of type '{}' has unknown param '{key}'",
+                        instance.id,
+                        instance.node_type
+                    );
+                }
+            }
+
+            definitions.insert(idx, (input_ports, node.output_ports()));
         }
 
         Ok(definitions)
@@ -326,8 +353,61 @@ impl Default for PipelineGraph {
     }
 }
 
+/// Version of the saved workflow format this build reads and writes.
+///
+/// Bump it when the format changes in a way older builds would misread, and
+/// add the step from the previous version to [`migrate_workflow`].
+pub const WORKFLOW_SCHEMA_VERSION: u32 = 1;
+
+/// The version of a workflow saved before `schema_version` existed.
+const LEGACY_WORKFLOW_SCHEMA_VERSION: u32 = 1;
+
+/// The `schema_version` of a workflow document; legacy when absent.
+fn workflow_schema_version(document: &serde_json::Value) -> Result<u32> {
+    match document.get("schema_version") {
+        None => Ok(LEGACY_WORKFLOW_SCHEMA_VERSION),
+        Some(value) => value
+            .as_u64()
+            .filter(|version| *version >= 1)
+            .and_then(|version| u32::try_from(version).ok())
+            .ok_or_else(|| {
+                anyhow!("workflow schema_version must be a positive integer, got {value}")
+            }),
+    }
+}
+
+/// Bring a workflow document saved as `version` to the current format.
+///
+/// All workflow migrations live here, one step per version, e.g.
+/// `1 => migrate_v1_to_v2(document)?`. Version 1 is the current format, so
+/// there is no step yet.
+fn migrate_workflow(document: serde_json::Value, version: u32) -> Result<serde_json::Value> {
+    if version > WORKFLOW_SCHEMA_VERSION {
+        bail!(
+            "workflow schema_version {version} is newer than this version of Videnoa supports \
+             ({WORKFLOW_SCHEMA_VERSION}); upgrade Videnoa to open it"
+        );
+    }
+    Ok(document)
+}
+
+/// A copy of a workflow document with the current `schema_version`, for a
+/// document that does not state one (the editor sends the current format).
+pub fn versioned_workflow(document: &serde_json::Value) -> serde_json::Value {
+    let mut document = document.clone();
+    if let Some(object) = document.as_object_mut() {
+        object
+            .entry("schema_version")
+            .or_insert_with(|| serde_json::json!(WORKFLOW_SCHEMA_VERSION));
+    }
+    document
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct PipelineGraphSerde {
+    /// Read by `migrate_workflow` before this struct is deserialized.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    schema_version: Option<u32>,
     nodes: Vec<NodeInstance>,
     connections: Vec<PipelineConnectionSerde>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -385,6 +465,7 @@ impl Serialize for PipelineGraph {
         });
 
         PipelineGraphSerde {
+            schema_version: Some(WORKFLOW_SCHEMA_VERSION),
             nodes,
             connections,
             interface: self.interface.clone(),
@@ -398,7 +479,12 @@ impl<'de> Deserialize<'de> for PipelineGraph {
     where
         D: Deserializer<'de>,
     {
-        let serialized = PipelineGraphSerde::deserialize(deserializer)?;
+        let document = serde_json::Value::deserialize(deserializer)?;
+        let document = workflow_schema_version(&document)
+            .and_then(|version| migrate_workflow(document, version))
+            .map_err(D::Error::custom)?;
+        let serialized: PipelineGraphSerde =
+            serde_json::from_value(document).map_err(D::Error::custom)?;
         let mut graph = PipelineGraph::new();
         graph.interface = serialized.interface;
 
@@ -876,6 +962,120 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_rejects_unknown_param_key() {
+        let registry = build_default_registry();
+        let mut graph = PipelineGraph::new();
+        graph
+            .add_node(NodeInstance {
+                id: "join".to_string(),
+                node_type: "PathJoiner".to_string(),
+                params: HashMap::from([
+                    ("file_name".to_string(), serde_json::json!("out.mkv")),
+                    ("filename".to_string(), serde_json::json!("out.mkv")),
+                ]),
+            })
+            .expect("node should be added");
+
+        let err = graph
+            .validate(&registry)
+            .expect_err("a misspelled param must not be ignored");
+
+        assert_eq!(
+            err.to_string(),
+            "node 'join' of type 'PathJoiner' has unknown param 'filename'"
+        );
+    }
+
+    #[test]
+    fn test_validate_keeps_the_specific_message_for_a_renamed_param() {
+        let registry = build_default_registry();
+        let mut graph = PipelineGraph::new();
+        graph
+            .add_node(NodeInstance {
+                id: "fi".to_string(),
+                node_type: "FrameInterpolation".to_string(),
+                params: HashMap::from([(
+                    "inference_concurrency".to_string(),
+                    serde_json::json!(2),
+                )]),
+            })
+            .expect("node should be added");
+
+        let err = graph
+            .validate(&registry)
+            .expect_err("the renamed param must be rejected");
+
+        assert!(
+            format!("{err:#}").contains("'inference_concurrency' was renamed to 'num_workers'"),
+            "{err:#}"
+        );
+    }
+
+    /// Every key the editor, the presets, the batch endpoint and the job
+    /// params write into node params must stay accepted.
+    #[test]
+    fn test_validate_accepts_every_param_key_the_writers_use() {
+        let registry = build_default_registry();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let nested = dir.path().join("nested.json");
+        std::fs::write(&nested, r#"{"nodes": [], "connections": []}"#).expect("write nested");
+        let workflow = serde_json::json!({
+            "nodes": [
+                {"id": "wi", "node_type": "WorkflowInput", "params": {
+                    "ports": [{"name": "input", "port_type": "Path"}],
+                    "input": "/videos/in.mkv",
+                    "output": "/videos/out.mkv"
+                }},
+                {"id": "wo", "node_type": "WorkflowOutput", "params": {
+                    "ports": [{"name": "result", "port_type": "Str"}]
+                }},
+                {"id": "wf", "node_type": "Workflow", "params": {
+                    "workflow_path": nested,
+                    "interface_inputs": [],
+                    "interface_outputs": []
+                }},
+                {"id": "template", "node_type": "StringTemplate", "params": {
+                    "num_input": 1, "template": "{str0}", "strict": true,
+                    "str0": "a", "str3": "left behind when num_input was lowered"
+                }},
+                {"id": "constant", "node_type": "Constant", "params": {"type": "Str", "value": "x"}},
+                {"id": "print", "node_type": "Print", "params": {"value_type": "Str", "value": "x"}},
+                {"id": "convert", "node_type": "TypeConversion", "params": {
+                    "input_type": "Int", "output_type": "Str", "value": 1
+                }}
+            ],
+            "connections": [
+                {"from_node": "template", "from_port": "value", "to_node": "wo", "to_port": "result", "port_type": "Str"}
+            ]
+        });
+        let graph: PipelineGraph = serde_json::from_value(workflow).expect("graph parses");
+
+        graph
+            .validate(&registry)
+            .expect("config keys written by the editor and the server must validate");
+    }
+
+    #[test]
+    fn test_shipped_presets_validate() {
+        let registry = build_default_registry();
+        let presets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../presets");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&presets).expect("presets dir") {
+            let path = entry.expect("preset entry").path();
+            let document: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).expect("read preset"))
+                    .expect("preset is JSON");
+            let graph: PipelineGraph = serde_json::from_value(document["workflow"].clone())
+                .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            graph
+                .validate(&registry)
+                .unwrap_or_else(|e| panic!("{}: {e:#}", path.display()));
+            checked += 1;
+        }
+        assert!(checked > 0, "no presets found in {}", presets.display());
+    }
+
+    #[test]
     fn test_workflow_json_roundtrip() {
         let mut graph = PipelineGraph::new();
         graph
@@ -913,6 +1113,73 @@ mod tests {
         let reserialized = serde_json::to_value(&restored).expect("graph should reserialize");
 
         assert_eq!(serialized, reserialized);
+    }
+
+    #[test]
+    fn test_workflow_without_schema_version_loads_as_version_1_and_saves_it() {
+        let legacy = serde_json::json!({
+            "nodes": [{"id": "a", "node_type": "Print", "params": {}}],
+            "connections": []
+        });
+
+        let graph: PipelineGraph =
+            serde_json::from_value(legacy).expect("a legacy workflow must still load");
+        let saved = serde_json::to_value(&graph).expect("graph should serialize");
+
+        assert_eq!(saved["schema_version"], serde_json::json!(1));
+        assert_eq!(WORKFLOW_SCHEMA_VERSION, 1);
+    }
+
+    #[test]
+    fn test_workflow_with_newer_schema_version_is_rejected() {
+        let newer = serde_json::json!({
+            "schema_version": WORKFLOW_SCHEMA_VERSION + 1,
+            "nodes": [],
+            "connections": []
+        });
+
+        let err = serde_json::from_value::<PipelineGraph>(newer)
+            .expect_err("a workflow from a newer version must not load silently");
+
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "workflow schema_version {} is newer than this version of Videnoa supports \
+                 ({WORKFLOW_SCHEMA_VERSION}); upgrade Videnoa to open it",
+                WORKFLOW_SCHEMA_VERSION + 1
+            )
+        );
+    }
+
+    #[test]
+    fn test_workflow_with_invalid_schema_version_is_rejected() {
+        for invalid in [
+            serde_json::json!("1"),
+            serde_json::json!(0),
+            serde_json::json!(-1),
+        ] {
+            let document = serde_json::json!({
+                "schema_version": invalid,
+                "nodes": [],
+                "connections": []
+            });
+            let err = serde_json::from_value::<PipelineGraph>(document)
+                .expect_err("an invalid schema_version must be rejected");
+            assert!(err.to_string().contains("schema_version"), "{err}");
+        }
+    }
+
+    #[test]
+    fn test_versioned_workflow_stamps_the_current_version() {
+        let stamped = versioned_workflow(&serde_json::json!({"nodes": [], "connections": []}));
+        assert_eq!(
+            stamped["schema_version"],
+            serde_json::json!(WORKFLOW_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            versioned_workflow(&serde_json::json!(null)),
+            serde_json::json!(null)
+        );
     }
 
     #[test]

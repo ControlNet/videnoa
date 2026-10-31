@@ -204,4 +204,24 @@ describe("PathAutocomplete", () => {
 			expect(screen.getByText("未找到条目")).toBeInTheDocument();
 		});
 	});
+
+	// A failed listing (401, 500, network) used to read as "No entries found".
+	it("tells the user when the directory cannot be listed", async () => {
+		vi.mocked(browseDirectory).mockRejectedValue(new Error("HTTP 500"));
+
+		render(<PathAutocomplete value="/home/" onChange={vi.fn()} />);
+		const input = screen.getByPlaceholderText("path/to/file");
+
+		await act(async () => {
+			fireEvent.focus(input);
+			await vi.advanceTimersByTimeAsync(300);
+		});
+
+		await waitFor(() => {
+			expect(screen.getByRole("alert")).toHaveTextContent(
+				"Could not list this folder",
+			);
+		});
+		expect(screen.queryByText("No entries found")).not.toBeInTheDocument();
+	});
 });

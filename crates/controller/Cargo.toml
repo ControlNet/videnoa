@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 videnoa-transport.workspace = true
+videnoa-protocol.workspace = true
 anyhow.workspace = true
 argon2.workspace = true
 axum.workspace = true

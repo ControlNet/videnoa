@@ -10,6 +10,8 @@ mod mock_videnoa;
 mod cancellation;
 #[path = "task20/cancellation_downstream.rs"]
 mod cancellation_downstream;
+#[path = "task20/dead_worker.rs"]
+mod dead_worker;
 #[path = "task20/fault_matrix.rs"]
 mod fault_matrix;
 #[path = "task20/fault_matrix_local.rs"]
@@ -26,8 +28,12 @@ mod orchestration;
 mod outage_matrix;
 #[path = "task20/pause.rs"]
 mod pause;
+#[path = "task20/release.rs"]
+mod release;
 #[path = "task20/remote_isolation.rs"]
 mod remote_isolation;
+#[path = "task20/remote_scope.rs"]
+mod remote_scope;
 #[path = "task20/retry.rs"]
 mod retry;
 #[path = "task20/shutdown.rs"]
@@ -40,3 +46,5 @@ mod submission_retry;
 mod support;
 #[path = "task20/worker_health.rs"]
 mod worker_health;
+#[path = "task20/worker_protocol.rs"]
+mod worker_protocol;

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use anyhow::{anyhow, Context, Result};
 use rusqlite::{params, OptionalExtension, TransactionBehavior};
 
-use super::{parse_status, parse_timestamp, status_to_str, JobsPersistence};
+use super::{cancel_reason_to_str, parse_status, parse_timestamp, status_to_str, JobsPersistence};
 use crate::server::{idempotency::RequestFingerprint, CreateJobResponse, Job};
 
 pub(crate) enum IdempotentJobClaim {
@@ -40,6 +40,23 @@ impl JobsPersistence {
         .with_context(|| "failed to inspect durable idempotent job submission")
     }
 
+    /// The job a run with `key` created, whatever its request was.
+    pub(crate) fn idempotent_job(&self, key: &str) -> Result<Option<CreateJobResponse>> {
+        self.with_connection(|connection| {
+            let Some(existing) = Self::load_idempotency_mapping(connection, key)? else {
+                return Ok(None);
+            };
+            let status = parse_status(&existing.status)
+                .ok_or_else(|| anyhow!("persisted idempotency job has invalid status"))?;
+            Ok(Some(CreateJobResponse {
+                id: existing.id,
+                status: status.into(),
+                created_at: parse_timestamp(&existing.created_at)?,
+            }))
+        })
+        .with_context(|| "failed to look up durable idempotent job submission")
+    }
+
     pub(crate) fn claim_idempotent_job(
         &self,
         key: &str,
@@ -58,9 +75,11 @@ impl JobsPersistence {
                         "INSERT INTO jobs (
                             id, status, workflow_json, created_at, started_at, completed_at,
                             progress_json, error, params_json, workflow_name, workflow_source,
-                            rerun_of_job_id, updated_at, idempotency_key, request_fingerprint
+                            rerun_of_job_id, updated_at, idempotency_key, request_fingerprint,
+                            cancel_requested_at, cancel_reason
                          ) VALUES (
-                            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15
+                            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+                            ?16, ?17
                          )",
                         params![
                             row.id,
@@ -78,6 +97,8 @@ impl JobsPersistence {
                             chrono::Utc::now().to_rfc3339(),
                             key,
                             fingerprint,
+                            row.cancel_requested_at.map(|value| value.to_rfc3339()),
+                            row.cancel_reason.map(cancel_reason_to_str),
                         ],
                     )?;
                     IdempotentJobClaim::Created
@@ -144,13 +165,15 @@ impl JobsPersistence {
             .ok_or_else(|| anyhow!("persisted idempotency job has invalid status"))?;
         Ok(IdempotentJobLookup::Replayed(CreateJobResponse {
             id: existing.id,
-            status,
+            status: status.into(),
             created_at: parse_timestamp(&existing.created_at)?,
         }))
     }
 
-    pub(super) fn migrate_idempotency_schema(connection: &mut rusqlite::Connection) -> Result<()> {
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    /// Runs inside the schema migration's transaction.
+    pub(super) fn migrate_idempotency_schema(
+        transaction: &rusqlite::Transaction<'_>,
+    ) -> Result<()> {
         let mut statement = transaction.prepare("PRAGMA table_info(jobs)")?;
         let columns = statement
             .query_map([], |row| row.get::<_, String>(1))?
@@ -181,7 +204,6 @@ impl JobsPersistence {
                 [],
             )
             .with_context(|| "failed to enforce unique idempotency key")?;
-        transaction.commit()?;
         Ok(())
     }
 }

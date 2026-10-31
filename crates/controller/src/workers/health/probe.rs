@@ -1,7 +1,10 @@
+use std::borrow::Cow;
+
 use crate::persistence::WorkerRecord;
 use crate::recovery::StagePermit;
 use crate::remote::{
     CacheInvalidation, CompatibilityCatalog, PayloadLimits, VidenoaClient, VidenoaClientError,
+    PROTOCOL_VERSION,
 };
 use crate::scheduler::RuntimeSettings;
 
@@ -27,24 +30,48 @@ pub(super) enum ProbeFailure {
     Health,
     Capabilities,
     Authentication,
+    Incompatible,
+    /// The Worker speaks a protocol version this Controller does not.
+    Protocol {
+        worker: u32,
+    },
+    /// The Worker refused the Host name it was addressed by, saying why.
+    HostNotAllowed {
+        reason: Option<String>,
+    },
 }
 
 impl ProbeFailure {
     pub(super) const fn invalidation(&self) -> CacheInvalidation {
         match self {
             Self::Health => CacheInvalidation::HealthFailure,
-            Self::Client | Self::Capabilities | Self::Authentication => {
-                CacheInvalidation::RemoteError
-            }
+            Self::Client
+            | Self::Capabilities
+            | Self::Authentication
+            | Self::Incompatible
+            | Self::Protocol { .. }
+            | Self::HostNotAllowed { .. } => CacheInvalidation::RemoteError,
         }
     }
 
-    pub(super) const fn message(&self) -> &'static str {
+    pub(super) fn message(&self) -> Cow<'static, str> {
         match self {
-            Self::Authentication => "worker authentication failed; check the saved worker password",
-            Self::Client => "worker remote client initialization failed",
-            Self::Health => "worker health check failed",
-            Self::Capabilities => "worker capability refresh failed",
+            Self::Authentication => super::AUTHENTICATION_FAILED.into(),
+            Self::Client => "worker remote client initialization failed".into(),
+            Self::Health => "worker health check failed".into(),
+            Self::Capabilities => "worker capability refresh failed".into(),
+            Self::Incompatible => {
+                "worker tunnel is incompatible with this Controller; update the worker or the Controller".into()
+            }
+            Self::Protocol { worker } => format!(
+                "worker speaks protocol {worker}, but this Controller supports protocols 1 to \
+                 {PROTOCOL_VERSION}; update the Controller"
+            )
+            .into(),
+            Self::HostNotAllowed { reason } => match reason {
+                Some(reason) => format!("worker refused this Controller: {reason}").into(),
+                None => "worker refused the host name this Controller uses for it".into(),
+            },
         }
     }
 }
@@ -69,6 +96,15 @@ pub(super) async fn probe(
         };
     };
     match client.health().await {
+        Ok(health) if health.is_healthy() && !health.protocol_supported() => {
+            tracing::warn!(worker_id = %worker.record.id, protocol = health.protocol(), "Worker speaks an unsupported protocol");
+            return ProbeOutcome::Failed {
+                worker,
+                failure: ProbeFailure::Protocol {
+                    worker: health.protocol(),
+                },
+            };
+        }
         Ok(health) if health.is_healthy() => {}
         Err(error) => {
             tracing::warn!(worker_id = %worker.record.id, error = %error, "Worker health request failed");
@@ -101,14 +137,17 @@ pub(super) async fn probe(
 }
 
 fn classify_error(error: &VidenoaClientError, fallback: ProbeFailure) -> ProbeFailure {
-    if matches!(
-        error,
-        VidenoaClientError::ClientStatus {
-            status: 401 | 403,
-            ..
+    if let VidenoaClientError::ClientStatus { reason, .. } = error {
+        if error.is_host_not_allowed() {
+            return ProbeFailure::HostNotAllowed {
+                reason: reason.clone(),
+            };
         }
-    ) {
+    }
+    if error.is_authentication() {
         ProbeFailure::Authentication
+    } else if *error == VidenoaClientError::Incompatible {
+        ProbeFailure::Incompatible
     } else {
         fallback
     }
@@ -119,7 +158,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn authentication_is_independent_of_probe_stage() {
+    fn authentication_and_incompatibility_are_independent_of_probe_stage() {
         for status in [401, 403] {
             for stage in [ProbeFailure::Health, ProbeFailure::Capabilities] {
                 assert_eq!(
@@ -127,12 +166,19 @@ mod tests {
                         &VidenoaClientError::ClientStatus {
                             status,
                             reason: None,
+                            code: None,
                         },
                         stage,
                     ),
                     ProbeFailure::Authentication
                 );
             }
+        }
+        for stage in [ProbeFailure::Health, ProbeFailure::Capabilities] {
+            assert_eq!(
+                classify_error(&VidenoaClientError::Incompatible, stage),
+                ProbeFailure::Incompatible
+            );
         }
         for error in [
             VidenoaClientError::Network,
@@ -143,6 +189,7 @@ mod tests {
             VidenoaClientError::ClientStatus {
                 status: 429,
                 reason: None,
+                code: None,
             },
             VidenoaClientError::ServerStatus { status: 503 },
         ] {
@@ -155,5 +202,16 @@ mod tests {
                 ProbeFailure::Capabilities
             );
         }
+    }
+    #[test]
+    fn incompatibility_has_its_own_health_message() {
+        assert_eq!(
+            ProbeFailure::Incompatible.message(),
+            "worker tunnel is incompatible with this Controller; update the worker or the Controller"
+        );
+        assert_ne!(
+            ProbeFailure::Incompatible.message(),
+            ProbeFailure::Health.message()
+        );
     }
 }

@@ -8,8 +8,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use serde::Serialize;
-use serde_json::json;
 
+use super::domain::ErrorResponse;
 use super::journal::{snapshot_headers, JournalOutcome, JournalRequest, Route};
 use super::state::SharedState;
 
@@ -33,6 +33,7 @@ pub(crate) fn router(state: Arc<SharedState>) -> Router {
         .route("/api/run", post(jobs::run))
         .route("/api/run/validate", post(jobs::validate))
         .route("/api/jobs/{id}", get(jobs::poll).delete(jobs::cancel))
+        .route("/api/jobs/by-idempotency-key/{key}", get(jobs::lookup))
         .route(
             "/api/files/{*path}",
             get(files::get).put(files::upload).delete(files::delete),
@@ -142,8 +143,14 @@ pub(crate) fn raw_json_response(status: StatusCode, bytes: Vec<u8>) -> Response 
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
-pub(crate) fn error_response(status: StatusCode, code: &str) -> Response {
-    json_response(status, &json!({"error": code}))
+pub(crate) fn error_response(status: StatusCode, error: &str) -> Response {
+    json_response(
+        status,
+        &ErrorResponse {
+            error: error.to_owned(),
+            code: None,
+        },
+    )
 }
 
 pub(crate) fn invalid_remote_path_response(path: &str) -> Option<Response> {

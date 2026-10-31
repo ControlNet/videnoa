@@ -207,7 +207,8 @@ describe("authenticated Controller shell", () => {
       ["password", "synthetic-passphrase"],
       ["password_confirmation", "synthetic-passphrase"],
     ]))
-    expect(localStorage).toHaveLength(1)
+    // The task view is stored by a passive effect, which can run after the heading appears.
+    await waitFor(() => expect(localStorage).toHaveLength(1))
     expect(localStorage.key(0)).toBe(taskViewStorageKey)
     expect(localStorage.getItem(taskViewStorageKey)).not.toContain("synthetic-passphrase")
     expect(sessionStorage).toHaveLength(0)

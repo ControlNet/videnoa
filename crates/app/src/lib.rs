@@ -329,6 +329,8 @@ async fn run_server(
 
     let state = app_state_with_config(config, cfg_path, data_dir);
     state.ensure_auth_ready()?;
+    state.ensure_jobs_ready()?;
+    let shutdown_state = state.clone();
     if let Err(error) = state.reconcile_iroh().await {
         warn!(%error, "Iroh unavailable; local HTTP service remains available");
     }
@@ -358,10 +360,79 @@ async fn run_server(
     info!(%addr, "Starting videnoa server");
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    videnoa_core::server::http_server::HttpServer::new(listener, app)
-        .serve()
-        .await?;
+    let (stop_accepting, stop_accepting_rx) = tokio::sync::oneshot::channel::<()>();
+    let mut server = tokio::spawn(
+        videnoa_core::server::http_server::HttpServer::new(listener, app)
+            .serve_with_graceful_shutdown(async {
+                let _ = stop_accepting_rx.await;
+            }),
+    );
+    tokio::select! {
+        served = &mut server => {
+            served.context("HTTP server task failed")??;
+            return Ok(());
+        }
+        () = shutdown_signal() => {}
+    }
+
+    // Keep serving while jobs stop, so clients can see them end; a second
+    // signal skips the wait.
+    info!(
+        grace_secs = JOB_SHUTDOWN_GRACE.as_secs(),
+        "Shutdown requested; stopping jobs"
+    );
+    shutdown_state.begin_shutdown();
+    let still_running = tokio::select! {
+        still_running = shutdown_state.wait_for_jobs_to_stop(JOB_SHUTDOWN_GRACE) => still_running,
+        () = shutdown_signal() => {
+            warn!("Second shutdown signal; not waiting for jobs");
+            Vec::new()
+        }
+    };
+    if !still_running.is_empty() {
+        warn!(
+            job_ids = ?still_running,
+            "Jobs still running at exit; the next start marks them cancelled and removes their staged outputs"
+        );
+    }
+    let _ = stop_accepting.send(());
+    // WebSockets and event streams never finish by themselves.
+    if tokio::time::timeout(HTTP_SHUTDOWN_GRACE, server)
+        .await
+        .is_err()
+    {
+        info!("Closing connections that are still open");
+    }
+    info!("Server stopped");
     Ok(())
+}
+
+/// How long a shutdown waits for jobs to stop, and then for open connections
+/// to finish. Together they stay below Docker's default 10 s `docker stop`
+/// grace period.
+const JOB_SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(6);
+const HTTP_SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Completes on Ctrl-C or, on Unix, SIGTERM (`docker stop`, systemd).
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut terminate) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = terminate.recv() => {}
+                }
+                return;
+            }
+            Err(error) => warn!(%error, "Cannot listen for SIGTERM; only Ctrl-C stops the server"),
+        }
+    }
+    if let Err(error) = tokio::signal::ctrl_c().await {
+        warn!(%error, "Cannot listen for Ctrl-C");
+        std::future::pending::<()>().await;
+    }
 }
 
 fn format_duration(secs: f64) -> String {
@@ -578,7 +649,9 @@ fn parse_dynamic_args(args: &[String], workflow_ports: &[String]) -> HashMap<Str
 /// the server reads, so `paths.trt_cache_dir` applies to CLI runs as well.
 fn cli_compile_context(data_dir: &Path) -> Result<VideoCompileContext> {
     let config = AppConfig::load_from_path(&config_path(data_dir))?;
-    Ok(VideoCompileContext::new(config.paths.trt_cache_dir))
+    Ok(VideoCompileContext::new(
+        config.paths.resolved_trt_cache_dir(),
+    ))
 }
 
 async fn run_workflow(
@@ -643,7 +716,11 @@ async fn run_workflow(
         all_params.insert(key.to_string(), value.to_string());
     }
 
-    let workflow_value = inject_params_into_workflow_input(&workflow_value, &all_params)?;
+    let mut workflow_value = inject_params_into_workflow_input(&workflow_value, &all_params)?;
+    // Model paths resolve against `paths.models_dir`, as they do for jobs.
+    AppConfig::load_from_path(&config_path(&data_dir))?
+        .paths
+        .resolve_model_paths_in(&mut workflow_value);
 
     let graph: PipelineGraph = serde_json::from_value(workflow_value)
         .with_context(|| format!("Failed to parse workflow JSON: {}", workflow_path.display()))?;
@@ -903,7 +980,7 @@ mod cli_compile_context_tests {
         let ctx = cli_compile_context(&data_dir).expect("compile context should build");
         assert_eq!(
             ctx.trt_cache_dir(),
-            AppConfig::default().paths.trt_cache_dir.as_path()
+            AppConfig::default().paths.resolved_trt_cache_dir()
         );
     }
 }

@@ -1,0 +1,1 @@
+[{"filename":"my-workflow.json","name":"My Workflow","description":"","workflow":{"connections":[],"interface":{"inputs":[{"name":"input","port_type":"Path"}],"outputs":[]},"nodes":[]},"has_interface":true}]

@@ -3,6 +3,7 @@ use sqlx::{Sqlite, Transaction};
 use crate::lifecycle::{PairedTransition, TransitionEvidence};
 
 use super::codec::{sqlite_u64, task_status, timestamp};
+use super::status_sql::COMPUTE;
 use super::PersistenceError;
 
 pub(super) async fn update_task_status(
@@ -30,7 +31,7 @@ pub(super) async fn update_task_status(
         .map(|evidence| sqlite_u64("expected_output_size", evidence.size))
         .transpose()?;
     let expected_sha = download.map(|evidence| evidence.sha256.as_bytes().to_vec());
-    let result = sqlx::query(
+    let sql = format!(
         "UPDATE tasks SET status = ?, version = version + 1, updated_at_ms = ?,
             upload_started_at_ms = CASE WHEN ? = 'uploading' THEN ? ELSE upload_started_at_ms END,
             staged_at_ms = CASE WHEN ? = 'staged' THEN ? ELSE staged_at_ms END,
@@ -52,22 +53,52 @@ pub(super) async fn update_task_status(
                ? = 0
                AND (SELECT COUNT(*) FROM tasks active
                     WHERE active.worker_id = tasks.worker_id
-                      AND active.status IN ('submitting', 'processing')) <
+                      AND active.status IN {COMPUTE}) <
                    (SELECT compute_slots FROM workers worker WHERE worker.id = tasks.worker_id)
            ))
            AND id = ? AND status = ? AND version = ?",
-    )
-    .bind(status).bind(occurred_at)
-    .bind(status).bind(occurred_at).bind(status).bind(occurred_at)
-    .bind(status).bind(occurred_at).bind(status).bind(occurred_at)
-    .bind(status).bind(occurred_at).bind(status).bind(occurred_at)
-    .bind(status).bind(occurred_at).bind(status).bind(occurred_at)
-    .bind(status).bind(occurred_at).bind(status).bind(occurred_at)
-    .bind(status).bind(expected_size).bind(status).bind(expected_sha)
-    .bind(status).bind(staging_name).bind(status).bind(status).bind(status).bind(paused).bind(status).bind(paused)
-    .bind(write.task_id.to_string()).bind(task_status(write.from))
-    .bind(sqlite_u64("task_version", write.task_version)?)
-    .execute(&mut **transaction).await?;
+        COMPUTE = *COMPUTE,
+    );
+    let result = sqlx::query(&sql)
+        .bind(status)
+        .bind(occurred_at)
+        .bind(status)
+        .bind(occurred_at)
+        .bind(status)
+        .bind(occurred_at)
+        .bind(status)
+        .bind(occurred_at)
+        .bind(status)
+        .bind(occurred_at)
+        .bind(status)
+        .bind(occurred_at)
+        .bind(status)
+        .bind(occurred_at)
+        .bind(status)
+        .bind(occurred_at)
+        .bind(status)
+        .bind(occurred_at)
+        .bind(status)
+        .bind(occurred_at)
+        .bind(status)
+        .bind(occurred_at)
+        .bind(status)
+        .bind(expected_size)
+        .bind(status)
+        .bind(expected_sha)
+        .bind(status)
+        .bind(staging_name)
+        .bind(status)
+        .bind(status)
+        .bind(status)
+        .bind(paused)
+        .bind(status)
+        .bind(paused)
+        .bind(write.task_id.to_string())
+        .bind(task_status(write.from))
+        .bind(sqlite_u64("task_version", write.task_version)?)
+        .execute(&mut **transaction)
+        .await?;
     Ok(result.rows_affected())
 }
 

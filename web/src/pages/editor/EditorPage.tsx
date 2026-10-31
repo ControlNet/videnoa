@@ -17,14 +17,16 @@ import {
 } from "@xyflow/react";
 import { Layers, Sparkles } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { v4 as uuidv4 } from "uuid";
 import { Button } from "@/components/ui/button";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useJobStore } from "@/stores/job-store";
 import { useNodeDefinitions } from "@/stores/node-definitions-store";
 import { useUIStore } from "@/stores/ui-store";
-import { useWorkflowStore } from "@/stores/workflow-store";
+import { selectIsDirty, useWorkflowStore } from "@/stores/workflow-store";
 import {
+	type NodeParamValue,
 	type NodeTypeName,
 	type PipelineNodeData,
 	PORT_COLORS,
@@ -97,12 +99,23 @@ function isTensorPassthrough(
 }
 
 function EditorCanvas() {
+	const { t } = useTranslation("editor");
 	const reactFlowWrapper = useRef<HTMLDivElement>(null);
 	const { screenToFlowPosition, fitView } = useReactFlow();
 
 	useEffect(() => {
-		useNodeDefinitions.getState().fetch();
+		void useNodeDefinitions.getState().fetch();
+		// The worker may have been upgraded (or the last load failed) while
+		// this tab was in the background.
+		const reload = () => {
+			void useNodeDefinitions.getState().fetch({ force: true });
+		};
+		window.addEventListener("focus", reload);
+		return () => {
+			window.removeEventListener("focus", reload);
+		};
 	}, []);
+	const definitionsError = useNodeDefinitions((s) => s.error);
 
 	const nodes = useWorkflowStore((s) => s.nodes);
 	const edges = useWorkflowStore((s) => s.edges);
@@ -117,6 +130,7 @@ function EditorCanvas() {
 	const fetchJobs = useJobStore((s) => s.fetchJobs);
 	const subscribeToJob = useJobStore((s) => s.subscribeToJob);
 	const unsubscribeFromJob = useJobStore((s) => s.unsubscribeFromJob);
+	const submittedJobId = useWorkflowStore((s) => s.submittedJobId);
 
 	useEffect(() => {
 		void fetchJobs();
@@ -124,12 +138,16 @@ function EditorCanvas() {
 		return () => clearInterval(id);
 	}, [fetchJobs]);
 
+	// Only the job started from this canvas: another workflow's job may reuse
+	// the same node ids, and its previews would land on the wrong nodes.
 	const trackedJob = useMemo(
 		() =>
-			jobs.find((job) => job.status === "running") ??
-			jobs.find((job) => job.status === "queued") ??
-			null,
-		[jobs],
+			jobs.find(
+				(job) =>
+					job.id === submittedJobId &&
+					(job.status === "running" || job.status === "queued"),
+			) ?? null,
+		[jobs, submittedJobId],
 	);
 
 	useEffect(() => {
@@ -150,6 +168,20 @@ function EditorCanvas() {
 			useJobStore.getState().unsubscribeFromJob();
 		};
 	}, []);
+
+	const isDirty = useWorkflowStore(selectIsDirty);
+	useEffect(() => {
+		if (!isDirty) return;
+		// Closing or reloading the page would drop the unsaved canvas.
+		const confirmUnload = (event: BeforeUnloadEvent) => {
+			event.preventDefault();
+			event.returnValue = "";
+		};
+		window.addEventListener("beforeunload", confirmUnload);
+		return () => {
+			window.removeEventListener("beforeunload", confirmUnload);
+		};
+	}, [isDirty]);
 
 	const onNodesChange = useCallback(
 		(changes: NodeChange[]) => {
@@ -193,13 +225,13 @@ function EditorCanvas() {
 				sourceNode.data.nodeType as NodeTypeName,
 				connection.sourceHandle,
 				"output",
-				sourceNode.data.params as Record<string, string | number | boolean>,
+				sourceNode.data.params as Record<string, NodeParamValue>,
 			);
 			const targetPortType = getPortType(
 				targetNode.data.nodeType as NodeTypeName,
 				connection.targetHandle,
 				"input",
-				targetNode.data.params as Record<string, string | number | boolean>,
+				targetNode.data.params as Record<string, NodeParamValue>,
 			);
 
 			return sourcePortType !== undefined && sourcePortType === targetPortType;
@@ -219,7 +251,7 @@ function EditorCanvas() {
 					sourceNode.data.nodeType as NodeTypeName,
 					connection.sourceHandle,
 					"output",
-					sourceNode.data.params as Record<string, string | number | boolean>,
+					sourceNode.data.params as Record<string, NodeParamValue>,
 				) ?? "Str";
 
 			const targetNode = nodes.find((n) => n.id === connection.target);
@@ -268,7 +300,7 @@ function EditorCanvas() {
 				y: event.clientY,
 			});
 
-			const defaultParams: Record<string, string | number | boolean> = {};
+			const defaultParams: Record<string, NodeParamValue> = {};
 			for (const port of desc.inputs) {
 				if (
 					port.direction === "param" &&
@@ -306,7 +338,9 @@ function EditorCanvas() {
 				e.preventDefault();
 				redo();
 			}
-			if (e.key === "Escape") {
+			// A nested dialog (e.g. a delete confirmation) that consumed Escape
+			// must not also close the modal underneath it.
+			if (e.key === "Escape" && !e.defaultPrevented) {
 				useUIStore.getState().closeModal();
 			}
 		}
@@ -378,6 +412,26 @@ function EditorCanvas() {
 					onAutoLayout={handleAutoLayout}
 					onFitView={handleFitView}
 				/>
+				{definitionsError && (
+					<div
+						role="alert"
+						className="absolute top-14 left-1/2 -translate-x-1/2 z-10 flex items-center gap-2 rounded-md border border-destructive/50 bg-card/95 px-3 py-1.5 text-xs text-destructive shadow-lg"
+					>
+						<span>
+							{t("nodeDefinitions.loadFailed", { error: definitionsError })}
+						</span>
+						<Button
+							variant="outline"
+							size="sm"
+							className="h-6 px-2 text-xs"
+							onClick={() => {
+								void useNodeDefinitions.getState().fetch({ force: true });
+							}}
+						>
+							{t("nodeDefinitions.retry")}
+						</Button>
+					</div>
+				)}
 				<ReactFlow
 					nodes={nodes}
 					edges={styledEdges}
@@ -456,10 +510,10 @@ function EditorCanvas() {
 							</div>
 							<div>
 								<p className="text-sm font-medium text-foreground/80">
-									Drag nodes from the sidebar to build a pipeline
+									{t("canvas.empty.title")}
 								</p>
 								<p className="text-xs text-muted-foreground mt-1">
-									Or load a preset to get started
+									{t("canvas.empty.hint")}
 								</p>
 							</div>
 							<Button
@@ -470,7 +524,7 @@ function EditorCanvas() {
 								}}
 							>
 								<Sparkles className="h-3.5 w-3.5" />
-								Load a Preset
+								{t("canvas.empty.loadPreset")}
 							</Button>
 						</div>
 					</div>

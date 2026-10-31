@@ -5,8 +5,8 @@ use chrono::{DateTime, Utc};
 
 use crate::domain::{FailureCode, FailureStage, TaskStatus};
 use crate::lifecycle::{AdvanceCommand, Lifecycle, LifecycleFailure, LifecycleService};
-use crate::persistence::{AttemptRecord, Store, SubmissionOwner, TaskRecord};
-use crate::remote::VidenoaClient;
+use crate::persistence::{AttemptRecord, Store, SubmissionOwner, TaskRecord, WorkerRecord};
+use crate::remote::{VidenoaClient, VidenoaClientError};
 
 use super::{
     local_first_command, RecoveryCommandKind, RecoveryConfig, RecoveryError, RecoveryReport,
@@ -19,6 +19,14 @@ const RECOVERY_PAGE_SIZE: NonZeroU16 = match NonZeroU16::new(256) {
     Some(value) => value,
     None => NonZeroU16::MIN,
 };
+
+/// The worker a task is assigned to, with a client for it.
+pub(super) struct AssignedWorker {
+    pub(super) record: WorkerRecord,
+    pub(super) client: VidenoaClient,
+    /// The protocol its last health reply reported.
+    pub(super) protocol: u32,
+}
 
 #[derive(Clone)]
 pub struct Reconciler {
@@ -144,21 +152,38 @@ impl Reconciler {
             self.config.limits,
             worker.password.as_ref(),
         )?;
-        match client.health().await {
-            Ok(_) => {}
-            Err(error) if error.is_transient() => {
-                self.defer_worker(&worker, task.id, now, stage, report)
-                    .await?;
-                return Ok(());
+        // No health reply is evidence about this task: whatever the worker
+        // answered, its tasks wait for it.
+        let protocol = match client.health().await {
+            Ok(health) if health.is_healthy() && health.protocol_supported() => health.protocol(),
+            Ok(health) => {
+                let error = if health.is_healthy() {
+                    VidenoaClientError::Incompatible
+                } else {
+                    // A status a newer worker added.
+                    VidenoaClientError::MalformedPayload
+                };
+                return self
+                    .defer_for_worker(&worker, task.id, &error, now, stage, report)
+                    .await;
             }
-            Err(error) => return Err(error.into()),
-        }
+            Err(error) => {
+                return self
+                    .defer_for_worker(&worker, task.id, &error, now, stage, report)
+                    .await;
+            }
+        };
+        let worker = AssignedWorker {
+            record: worker,
+            client,
+            protocol,
+        };
         if task.cancel_requested_at.is_some() {
             return self
-                .reconcile_cancellation(task, attempt, &client, now, stage, report)
+                .reconcile_cancellation(task, attempt, &worker, now, stage, report)
                 .await;
         }
-        self.dispatch(task, attempt, &client, now, stage, report)
+        self.dispatch(task, attempt, &worker, now, stage, report)
             .await
     }
 
@@ -166,7 +191,7 @@ impl Reconciler {
         &self,
         task: TaskRecord,
         attempt: AttemptRecord,
-        client: &VidenoaClient,
+        worker: &AssignedWorker,
         now: DateTime<Utc>,
         stage: &StagePermit,
         report: &mut RecoveryReport,
@@ -181,11 +206,11 @@ impl Reconciler {
             }
             crate::lifecycle::RecoveryAction::BeginSubmission
             | crate::lifecycle::RecoveryAction::ReconcileSubmission => {
-                self.reconcile_submission(task, attempt, client, now, stage, report)
+                self.reconcile_submission(task, attempt, worker, now, stage, report)
                     .await?;
             }
             crate::lifecycle::RecoveryAction::PollProcessing => {
-                self.reconcile_processing(task, attempt, client, now, stage, report)
+                self.reconcile_processing(task, attempt, worker, now, stage, report)
                     .await?;
             }
             crate::lifecycle::RecoveryAction::BeginDownload

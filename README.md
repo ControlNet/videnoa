@@ -43,6 +43,14 @@ directory and other Worker data. Reuse these host directories when recreating or
 upgrading the container. TensorRT builds engine caches on first use and reuses
 `./trt_cache` on subsequent runs.
 
+`docker stop` (SIGTERM) and Ctrl-C stop the Worker in order: it refuses new
+jobs, cancels running ones (reported as `cancelled` with `cancel_reason`
+`shutdown`), waits up to 6 seconds for them to stop, and exits within Docker's
+default 10-second grace period. A second Ctrl-C exits without waiting. A job
+that was still running at exit is marked cancelled on the next start, and the
+hidden staged files it left beside its output (`.<name>.XXXXXX.videnoa-*`)
+are removed.
+
 If workflows need access to existing host media, additionally mount the media
 directory by adding `-v "$HOME/Videos:/media"` before the image name, then use
 `/media/...` paths in the Worker. This media mount is separate from `/app/data`.
@@ -82,26 +90,69 @@ container and `./data/config.toml` on the host. If you override `--data-dir` or
 `data/controller.toml`; its persistence mount is shown in the Controller example.
 
 ```toml
+version = 2
 locale = "en"
 
 [paths]
 models_dir = "models"
 trt_cache_dir = "trt_cache"
 presets_dir = "presets"
-workflows_dir = "data/workflows"
+workflows_dir = "workflows"
 
 [server]
 port = 3000
 host = "0.0.0.0"
+allowed_hosts = []
 
 [performance]
 profiling_enabled = false
 ```
 
+While no Worker password is set, the Worker accepts a request only when its
+`Host` names an IP address (for example `192.168.1.20:3000`), `localhost` or a
+`*.localhost` name, this machine's own host name (its full name, first label, or
+`<first label>.local`), or a name listed in `server.allowed_hosts`. Other names
+get HTTP 403, including on WebSockets, `/api/health` and first-password setup;
+this stops a web page that rebinds its own domain to the Worker's address
+(DNS rebinding) from using the open API. If you reach a passwordless Worker
+through any other DNS name, for example `http://nas.local:3000` when the
+machine's own name is different (always the case inside Docker, where the
+container has its own host name), or register it in the Controller by such a
+name, add the name without scheme or port:
+
+```toml
+[server]
+allowed_hosts = ["nas.local", "videnoa.home.arpa"]
+```
+
+Matching ignores case and port. Restart the Worker after editing
+`config.toml`; changes saved through `PUT /api/config` apply immediately.
+Alternatively set a password: with a password, every host
+name is accepted as before, because session cookies and Bearer credentials
+already stop rebinding.
+
 CLI flags override config values (`--host`, `--port`, `--data-dir`). For the
 server port the precedence is `--port`, then the `PORT` environment variable,
 then `server.port` from the config. `videnoa run` (CLI) reads the same config
 and stores TensorRT engines in `paths.trt_cache_dir`.
+
+Relative paths have fixed anchors, independent of where Videnoa is started from:
+
+- `workflows_dir` (saved workflows) is relative to the data directory.
+  Workflows an older release saved in `./data/workflows` are copied over on
+  first start when the data directory is elsewhere; the originals stay.
+- `models_dir`, `presets_dir` and `trt_cache_dir` are relative to the first of
+  the working directory, the executable's directory, and its parent that
+  contains `presets_dir` (Docker's `/app`, the repository root, or the release
+  folder).
+- A relative `model_path` in a workflow is looked up in `models_dir`, also
+  without a leading `models/`.
+
+`config.toml` records a `version`. Keys this release does not know (written by
+a newer one) are kept when settings are saved.
+
+Only one Worker can use a data directory at a time; a second one started on
+the same directory exits with an error and leaves it untouched.
 
 The HTTP server closes an HTTP/1.1 connection whose request head (request line
 and headers) does not arrive within 30 seconds, including the next request on an

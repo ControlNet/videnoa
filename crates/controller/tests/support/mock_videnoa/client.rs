@@ -5,8 +5,8 @@ use reqwest::{Response, StatusCode};
 use serde_json::{json, Value};
 
 use super::domain::{
-    CreateJobResponse, FileStatResponse, HttpResult, JobResponse, PresetResponse, UploadResponse,
-    WorkflowEntry, WorkflowInterface,
+    CreateJobResponse, FileStatResponse, HealthResponse, HttpResult, JobResponse, PresetResponse,
+    UploadResponse, WorkflowEntry, WorkflowInterface,
 };
 
 #[derive(Clone)]
@@ -43,7 +43,7 @@ impl MockClient {
         })
     }
 
-    pub async fn health(&self) -> Result<Health, reqwest::Error> {
+    pub async fn health(&self) -> Result<HealthResponse, reqwest::Error> {
         self.health_raw().await?.error_for_status()?.json().await
     }
 
@@ -91,9 +91,13 @@ impl MockClient {
             eligibility.insert(workflow.filename, is_eligible(&interface));
         }
         for preset in presets {
+            let interface = preset
+                .workflow
+                .get("interface")
+                .and_then(|interface| serde_json::from_value(interface.clone()).ok());
             eligibility
                 .entry(preset.id)
-                .or_insert_with(|| preset.workflow.interface.as_ref().is_some_and(is_eligible));
+                .or_insert_with(|| interface.as_ref().is_some_and(is_eligible));
         }
         Ok(Catalog { eligibility })
     }
@@ -177,11 +181,6 @@ impl MockClient {
             .await?
             .status())
     }
-}
-
-#[derive(serde::Deserialize)]
-pub struct Health {
-    pub status: String,
 }
 
 fn is_eligible(interface: &WorkflowInterface) -> bool {

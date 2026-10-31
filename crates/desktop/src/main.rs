@@ -3,7 +3,7 @@
 use std::net::TcpListener;
 use std::path::Path;
 
-use tauri::{webview::WebviewWindowBuilder, WebviewUrl};
+use tauri::{webview::WebviewWindowBuilder, Manager, RunEvent, WebviewUrl};
 use tracing::{error, info, warn};
 use tracing_subscriber::prelude::*;
 
@@ -13,7 +13,10 @@ use videnoa_core::logging::{
     PanicHookInstallPlan, RuntimeLogMode, DEFAULT_LOG_FILTER,
 };
 use videnoa_core::server::http_server::HttpServer;
-use videnoa_core::server::{app_router_with_static, app_state_with_config};
+use videnoa_core::server::{app_router_with_static, app_state_with_config, AppState};
+
+/// How long closing the app waits for running jobs to stop.
+const JOB_SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(6);
 
 fn init_logging(data_dir: std::path::PathBuf) {
     let panic_hook_plan = install_panic_hook(Some(data_dir.as_path()));
@@ -210,6 +213,8 @@ fn main() {
 
             let state = app_state_with_config(config, cfg_path, data_dir.clone());
             state.ensure_auth_ready()?;
+            state.ensure_jobs_ready()?;
+            app.manage(state.clone());
 
             #[cfg(debug_assertions)]
             let static_path = {
@@ -271,6 +276,28 @@ fn main() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if let RunEvent::Exit = event {
+                if let Some(state) = app.try_state::<AppState>() {
+                    stop_jobs(state.inner().clone());
+                }
+            }
+        });
+}
+
+/// Asks running jobs to stop and waits briefly, so they end as cancelled
+/// by the shutdown instead of disappearing with the process.
+fn stop_jobs(state: AppState) {
+    tauri::async_runtime::block_on(async move {
+        state.begin_shutdown();
+        let still_running = state.wait_for_jobs_to_stop(JOB_SHUTDOWN_GRACE).await;
+        if !still_running.is_empty() {
+            warn!(
+                job_ids = ?still_running,
+                "Jobs still running at exit; the next start marks them cancelled and removes their staged outputs"
+            );
+        }
+    });
 }

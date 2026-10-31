@@ -1,6 +1,7 @@
 use std::error::Error;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 
 use axum::body::{to_bytes, Body};
@@ -11,7 +12,7 @@ use chrono::Utc;
 use serde_json::Value;
 use tempfile::TempDir;
 use videnoa_controller::auth::{hash_password, AuthService};
-use videnoa_controller::config::ConfigBootstrap;
+use videnoa_controller::config::{ConfigBootstrap, ControllerConfig};
 use videnoa_controller::operations::{EventHub, OperationsDependencies, OperationsState};
 use videnoa_controller::paths::PathCapabilities;
 use videnoa_controller::persistence::{Database, DatabaseOptions, Store};
@@ -37,11 +38,28 @@ pub struct Fixture {
 
 impl Fixture {
     pub async fn new() -> TestResult<Self> {
-        Self::with_iroh_relays(&[]).await
+        Self::start(None).await
     }
 
     /// A fixture whose `controller.toml` lists these iroh relays.
     pub async fn with_iroh_relays(relay_urls: &[&str]) -> TestResult<Self> {
+        let relay_urls: Vec<String> = relay_urls.iter().map(|url| (*url).to_owned()).collect();
+        Self::start(Some(&|config: &mut ControllerConfig| {
+            config.iroh.relay_urls.clone_from(&relay_urls);
+        }))
+        .await
+    }
+
+    /// A fixture whose `controller.toml` keeps task history for `days`.
+    pub async fn with_history_retention(days: NonZeroU32) -> TestResult<Self> {
+        Self::start(Some(&|config: &mut ControllerConfig| {
+            config.history.retention_days = Some(days);
+        }))
+        .await
+    }
+
+    /// Starts a fixture; `configure` edits a `controller.toml` written first.
+    async fn start(configure: Option<&dyn Fn(&mut ControllerConfig)>) -> TestResult<Self> {
         let directory = TempDir::new()?;
         let workspace = directory.path().canonicalize()?;
         let input = workspace.join("input/source.mkv");
@@ -49,11 +67,10 @@ impl Fixture {
         fs::create_dir(workspace.join("input"))?;
         fs::create_dir(workspace.join("output"))?;
         fs::write(&input, b"synthetic video fixture")?;
-        if !relay_urls.is_empty() {
+        if let Some(configure) = configure {
             let data_root = ConfigBootstrap::prepare_data_root(&workspace)?;
-            let mut config =
-                videnoa_controller::config::ControllerConfig::for_workspace(&workspace)?;
-            config.iroh.relay_urls = relay_urls.iter().map(|url| (*url).to_owned()).collect();
+            let mut config = ControllerConfig::for_workspace(&workspace)?;
+            configure(&mut config);
             fs::write(data_root.join("controller.toml"), config.to_toml()?)?;
         }
 

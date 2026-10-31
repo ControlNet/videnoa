@@ -1,0 +1,1 @@
+[{"id":"anime-2x","name":"Anime 2x","description":"Upscale anime 2x","workflow":{"connections":[],"interface":{"inputs":[{"name":"input","port_type":"Path"},{"name":"output","port_type":"Path"}],"outputs":[]},"nodes":[]}}]

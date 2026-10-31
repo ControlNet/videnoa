@@ -422,6 +422,7 @@ async fn anonymous_websocket_survives_password_rotation_and_disable() {
             workflow_name: "socket-test".into(),
             workflow_source: "test".into(),
             rerun_of_job_id: None,
+            cancel_request: None,
         },
     );
     let (sender, _) = tokio::sync::broadcast::channel(8);
@@ -584,4 +585,285 @@ async fn bearer_cache_is_ephemeral_and_tracks_committed_password_rotation() {
     let database = service.0.database.lock().unwrap();
     assert!(database.cached_password_digest.is_none());
     assert!(stored_hash(&database.connection).unwrap().is_none());
+}
+
+fn open_access_state(dir: &Path, mut config: crate::config::AppConfig) -> AppState {
+    config.paths.workflows_dir = dir.join("workflows");
+    let state =
+        super::super::app_state_with_config(config, dir.join("config.toml"), dir.to_owned());
+    state.ensure_auth_ready().unwrap();
+    state
+}
+
+/// A browser request whose Origin matches its Host, as a rebinding page sends it.
+fn host_request(
+    method: &str,
+    uri: &str,
+    host: &str,
+    body: Value,
+) -> axum::http::Request<axum::body::Body> {
+    axum::http::Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(header::HOST, host)
+        .header(header::ORIGIN, format!("http://{host}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(axum::body::Body::from(body.to_string()))
+        .unwrap()
+}
+
+async fn error_message(response: Response) -> String {
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    serde_json::from_slice::<Value>(&body).unwrap()["error"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+#[tokio::test]
+async fn open_access_rejects_rebound_host_on_business_and_setup_routes() {
+    use tower::ServiceExt;
+    let dir = tempfile::tempdir().unwrap();
+    let state = open_access_state(dir.path(), crate::config::AppConfig::default());
+    let router = super::super::app_router(state.clone());
+    let workflow =
+        json!({"name": "rebind", "description": "", "workflow": {"nodes": [], "connections": []}});
+
+    let response = router
+        .clone()
+        .oneshot(host_request(
+            "POST",
+            "/api/workflows",
+            "evil.example:38123",
+            workflow,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_slice(&body).unwrap();
+    let message = body["error"].as_str().unwrap_or_default();
+    assert!(message.contains("evil.example"), "{message}");
+    assert!(message.contains("server.allowed_hosts"), "{message}");
+    // A Controller tells this refusal from rejected credentials by its code.
+    assert_eq!(body["code"], "host_not_allowed", "{body}");
+    assert!(!dir.path().join("workflows/rebind.json").exists());
+
+    // The rebinding page must not be able to claim the first password either.
+    let password = json!({"password": "taken", "password_confirmation": "taken"});
+    let response = router
+        .clone()
+        .oneshot(host_request(
+            "PUT",
+            "/api/auth/password",
+            "evil.example:38123",
+            password,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(!state
+        .inner
+        .auth
+        .as_ref()
+        .unwrap()
+        .password_enabled()
+        .unwrap());
+
+    for (method, uri) in [
+        ("GET", "/api/fs/list?path=/"),
+        ("GET", "/api/auth/session"),
+        ("POST", "/api/auth/login"),
+        ("GET", "/api/jobs/missing/ws"),
+        ("GET", "/api/missing"),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(host_request(method, uri, "evil.example", Value::Null))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{method} {uri}");
+    }
+}
+
+#[tokio::test]
+async fn open_access_rejects_rebound_websocket_upgrade() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let dir = tempfile::tempdir().unwrap();
+    let state = open_access_state(dir.path(), crate::config::AppConfig::default());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let router = super::super::app_router(state);
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+    stream.write_all(format!("GET /api/jobs/socket-test/ws HTTP/1.1\r\nHost: evil.example:{}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n", address.port()).as_bytes()).await.unwrap();
+    let mut status = [0; 12];
+    tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        stream.read_exact(&mut status),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(&status, b"HTTP/1.1 403");
+    server.abort();
+}
+
+#[tokio::test]
+async fn open_access_accepts_ip_loopback_machine_and_configured_hosts() {
+    use tower::ServiceExt;
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = crate::config::AppConfig::default();
+    config.server.allowed_hosts = vec!["Media-Box.lan".into()];
+    let state = open_access_state(dir.path(), config);
+    let router = super::super::app_router(state.clone());
+    let mut hosts = vec![
+        "127.0.0.1:3000".to_owned(),
+        "127.0.0.1".to_owned(),
+        "[::1]:3000".to_owned(),
+        "192.168.1.20:3000".to_owned(),
+        "[fe80::1]".to_owned(),
+        "localhost:3000".to_owned(),
+        "LOCALHOST".to_owned(),
+        "app.localhost:5173".to_owned(),
+        "media-box.lan:3000".to_owned(),
+        "MEDIA-BOX.LAN.".to_owned(),
+    ];
+    hosts.extend(
+        local_machine_names()
+            .iter()
+            .map(|name| format!("{name}:3000")),
+    );
+    for host in hosts {
+        let response = router
+            .clone()
+            .oneshot(host_request("GET", "/api/config", &host, Value::Null))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{host}");
+    }
+    // Configured names take effect without a restart.
+    state.inner.config.write().await.server.allowed_hosts = vec!["nas.local".into()];
+    for (host, status) in [
+        ("nas.local:3000", StatusCode::OK),
+        ("media-box.lan:3000", StatusCode::FORBIDDEN),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(host_request("GET", "/api/config", host, Value::Null))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status, "{host}");
+    }
+    // Requests without Host are not from a browser and keep working, as before.
+    let request = axum::http::Request::builder()
+        .uri("/api/config")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    assert_eq!(
+        router.clone().oneshot(request).await.unwrap().status(),
+        StatusCode::OK
+    );
+    let mut config = state.inner.config.read().await.clone();
+    config.server.allowed_hosts = vec!["nas.local:3000".into()];
+    let response = router
+        .oneshot(host_request(
+            "PUT",
+            "/api/config",
+            "localhost:3000",
+            serde_json::to_value(config).unwrap(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(error_message(response)
+        .await
+        .contains("server.allowed_hosts"));
+}
+
+#[test]
+fn host_names_reject_lookalikes_and_credentials() {
+    let machine = machine_names(Some("Worker-01.example.lan.".into()));
+    assert_eq!(
+        machine,
+        ["worker-01.example.lan", "worker-01", "worker-01.local"]
+    );
+    assert!(machine_names(None).is_empty());
+    for host in ["worker-01:3000", "worker-01.local", "WORKER-01.EXAMPLE.LAN"] {
+        assert!(host_allowed(host, &machine, &[]), "{host}");
+    }
+    for host in [
+        "",
+        "evil.example",
+        "localhost.evil.example",
+        "worker-01.evil.example",
+        "evil.example@127.0.0.1",
+        "127.0.0.1/evil",
+        "localhost:99999",
+        "evil example",
+        "::1",
+    ] {
+        assert!(!host_allowed(host, &machine, &[]), "{host}");
+    }
+}
+
+#[tokio::test]
+async fn password_protection_is_unchanged_for_any_host() {
+    use tower::ServiceExt;
+    let dir = tempfile::tempdir().unwrap();
+    let state = open_access_state(dir.path(), crate::config::AppConfig::default());
+    let auth = state.inner.auth.as_ref().unwrap().clone();
+    let password = uuid::Uuid::new_v4().to_string();
+    auth.execute(context(None), setup(&password)).await.unwrap();
+    let router = super::super::app_router(state);
+
+    let mut request = host_request("GET", "/api/config", "nas.example:3000", Value::Null);
+    request.headers_mut().insert(
+        header::AUTHORIZATION,
+        format!("Bearer {password}").parse().unwrap(),
+    );
+    request.extensions_mut().insert(ConnectInfo(
+        "192.168.1.30:50000".parse::<SocketAddr>().unwrap(),
+    ));
+    assert_eq!(
+        router.clone().oneshot(request).await.unwrap().status(),
+        StatusCode::OK
+    );
+    let response = router
+        .clone()
+        .oneshot(host_request(
+            "GET",
+            "/api/config",
+            "nas.example:3000",
+            Value::Null,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let response = router
+        .oneshot(host_request(
+            "GET",
+            "/api/auth/session",
+            "nas.example:3000",
+            Value::Null,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Disabling the password makes the Host check apply again.
+    let session = auth
+        .execute(context(None), Action::Login { password })
+        .await
+        .unwrap();
+    auth.execute(context(Some(&session)), Action::Disable)
+        .await
+        .unwrap();
+    assert!(!auth.0.password_set.load(Ordering::SeqCst));
 }

@@ -27,7 +27,7 @@ pub(crate) mod upload_input;
 
 pub(crate) use checkpoints::noop_observer;
 pub use checkpoints::{TransferCheckpointObserver, TransferCheckpointPoint};
-pub(crate) use cleanup::remove_task_workspace;
+pub(crate) use cleanup::{local_files_unneeded, remove_task_workspace};
 pub use dispatch_error::{SchedulerError, SchedulerErrorCode, TransferError, TransferLimitError};
 use hashing_writer::HashingWriter;
 pub use model::{AssignmentClass, ScheduledAssignment, UploadCandidate, UploadPriority};

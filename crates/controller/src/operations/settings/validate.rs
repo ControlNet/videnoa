@@ -13,7 +13,8 @@ const MAX_DURATION_SECONDS: u64 = 7 * 24 * 60 * 60;
 const MAX_RETRY_ATTEMPTS: u32 = 100;
 
 /// Applies a settings request to `current`. Settings outside the API, such as
-/// workspace roots, and iroh relays the request omits are kept.
+/// workspace roots and history retention, and iroh relays the request omits
+/// are kept.
 pub(super) fn build_config(
     current: &ControllerConfig,
     request: &SettingsUpdateRequest,
@@ -63,6 +64,7 @@ pub(super) fn build_config(
                 .ok_or(OperationsError::InvalidRequest)?,
         },
         iroh,
+        history: current.history,
     })
 }
 

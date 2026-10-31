@@ -1,6 +1,7 @@
 import type { Edge, Node } from '@xyflow/react';
 import { create } from 'zustand';
 import type {
+  NodeParamValue,
   NodeTypeName,
   PipelineNodeData,
   PortType,
@@ -9,19 +10,26 @@ import type {
   WorkflowInterface,
   WorkflowPort,
 } from '../types';
+import { useJobStore } from './job-store';
 import { useNodeDefinitions } from './node-definitions-store';
 
 const MAX_HISTORY = 50;
 
+/**
+ * Params as the editor holds them. The structured params the editor edits as
+ * text (`ports`, `interface_*`) are held as JSON strings and parsed back on
+ * export; every other value stays the JSON value the workflow holds, so a
+ * `null` or a list is saved back unchanged rather than as a string.
+ */
 export function normalizeParams(
   params: Record<string, unknown>,
-): Record<string, string | number | boolean> {
-  const out: Record<string, string | number | boolean> = {};
+): Record<string, NodeParamValue> {
+  const out: Record<string, NodeParamValue> = {};
   for (const [k, v] of Object.entries(params)) {
-    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
-      out[k] = v;
-    } else {
+    if (STRUCTURED_EXPORT_PARAM_KEYS.has(k) && typeof v !== 'string') {
       out[k] = JSON.stringify(v);
+    } else {
+      out[k] = v as NodeParamValue;
     }
   }
   return out;
@@ -46,7 +54,7 @@ interface WorkflowState {
   /** Merge params into a node; keys set to `undefined` are removed. */
   updateNodeParams: (
     nodeId: string,
-    params: Record<string, string | number | boolean | undefined>,
+    params: Record<string, NodeParamValue | undefined>,
   ) => void;
   addEdge: (edge: Edge) => void;
   removeEdge: (edgeId: string) => void;
@@ -61,13 +69,25 @@ interface WorkflowState {
   currentFile: { filename: string; name: string; description: string } | null;
   setCurrentFile: (file: { filename: string; name: string; description: string } | null) => void;
 
+  /** Job submitted from this canvas; the editor shows runtime previews only for it. */
+  submittedJobId: string | null;
+  setSubmittedJobId: (jobId: string | null) => void;
+
+  /** Fingerprint of the graph as last loaded, cleared or saved; see `selectIsDirty`. */
+  savedFingerprint: string;
+  /**
+   * Record a graph as saved: the one passed (as it was when the save started,
+   * so edits made while it ran stay unsaved) or else the current one.
+   */
+  markSaved: (saved?: { nodes: Node<PipelineNodeData>[]; edges: Edge[] }) => void;
+
   exportWorkflow: () => Workflow;
 }
 
 function mergeParams(
-  current: Record<string, string | number | boolean>,
-  updates: Record<string, string | number | boolean | undefined>,
-): Record<string, string | number | boolean> {
+  current: Record<string, NodeParamValue>,
+  updates: Record<string, NodeParamValue | undefined>,
+): Record<string, NodeParamValue> {
   const merged = { ...current };
   for (const [key, value] of Object.entries(updates)) {
     if (value === undefined) {
@@ -113,6 +133,31 @@ function parseStructuredExportParam(key: string, value: string): unknown {
   }
 }
 
+/**
+ * Params the editor refreshes by itself (a Workflow node re-reads its
+ * sub-workflow's interface on mount); a change there is not the user's edit.
+ */
+const DERIVED_PARAM_KEYS = new Set<string>(['interface_inputs', 'interface_outputs']);
+
+/** What Save writes, minus node positions and derived params. */
+function graphFingerprint(nodes: Node<PipelineNodeData>[], edges: Edge[]): string {
+  return JSON.stringify({
+    nodes: nodes.map((n) => [
+      n.id,
+      n.data.nodeType,
+      Object.entries(n.data.params)
+        .filter(([key]) => !DERIVED_PARAM_KEYS.has(key))
+        .sort(([a], [b]) => a.localeCompare(b)),
+    ]),
+    edges: edges.map((e) => [e.source, e.sourceHandle, e.target, e.targetHandle]),
+  });
+}
+
+/** Whether the canvas differs from what was last loaded, cleared or saved. */
+export function selectIsDirty(state: WorkflowState): boolean {
+  return graphFingerprint(state.nodes, state.edges) !== state.savedFingerprint;
+}
+
 function snapshot(state: { nodes: Node<PipelineNodeData>[]; edges: Edge[] }): HistoryEntry {
   return {
     nodes: structuredClone(state.nodes),
@@ -120,7 +165,7 @@ function snapshot(state: { nodes: Node<PipelineNodeData>[]; edges: Edge[] }): Hi
   };
 }
 
-function parseIfacePorts(params: Record<string, string | number | boolean>, key: string): WorkflowPort[] {
+function parseIfacePorts(params: Record<string, NodeParamValue>, key: string): WorkflowPort[] {
   const raw = params[key];
   if (!raw || typeof raw !== 'string') return [];
   try {
@@ -138,7 +183,7 @@ function toPortType(value: unknown): PortType | undefined {
 
 function resolveDescriptorPortType(
   port: { port_type: string; dynamic_type_param: string | null },
-  params: Record<string, string | number | boolean>,
+  params: Record<string, NodeParamValue>,
 ): PortType | undefined {
   if (port.dynamic_type_param) {
     const dynamicType = toPortType(params[port.dynamic_type_param]);
@@ -148,7 +193,7 @@ function resolveDescriptorPortType(
 }
 
 function parseStringTemplateDynamicInputs(
-  params: Record<string, string | number | boolean>,
+  params: Record<string, NodeParamValue>,
 ): WorkflowPort[] {
   const raw = params.num_input;
   const parsed = typeof raw === 'number' ? raw : Number(raw ?? 0);
@@ -224,7 +269,7 @@ function resolvePortType(
   return 'Str';
 }
 
-function parseDynPorts(params: Record<string, string | number | boolean>): WorkflowPort[] {
+function parseDynPorts(params: Record<string, NodeParamValue>): WorkflowPort[] {
   const raw = params.ports;
   if (!raw || typeof raw !== 'string') return [];
   try {
@@ -234,7 +279,7 @@ function parseDynPorts(params: Record<string, string | number | boolean>): Workf
   }
 }
 
-function parseDynamicPortConfig(raw: string | number | boolean | undefined): DynamicPortConfig[] {
+function parseDynamicPortConfig(raw: NodeParamValue | undefined): DynamicPortConfig[] {
   if (typeof raw !== 'string') return [];
   try {
     const parsed = JSON.parse(raw);
@@ -356,7 +401,7 @@ function extractWorkflowInterface(
 
   if (!inputNode && !outputNode) return null;
 
-  const parsePortConfig = (params: Record<string, string | number | boolean>): WorkflowPort[] => {
+  const parsePortConfig = (params: Record<string, NodeParamValue>): WorkflowPort[] => {
     const portsRaw = params.ports;
     if (!portsRaw || typeof portsRaw !== 'string') return [];
     try {
@@ -383,6 +428,13 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   past: [],
   future: [],
   currentFile: null,
+  submittedJobId: null,
+  savedFingerprint: graphFingerprint([], []),
+
+  markSaved: (saved) => {
+    const { nodes, edges } = saved ?? get();
+    set({ savedFingerprint: graphFingerprint(nodes, edges) });
+  },
 
   setNodes: (nodes) => {
     const state = get();
@@ -486,7 +538,6 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   },
 
   loadWorkflow: (workflow, nodePositions) => {
-    const state = get();
     const nodes: Node<PipelineNodeData>[] = workflow.nodes.map((wn, i) => ({
       id: wn.id,
       type: 'pipeline',
@@ -506,27 +557,37 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
       data: { port_type: conn.port_type },
     }));
 
+    // History holds only the graph, not the file it belongs to: undoing past
+    // a load would show the previous graph under this file's name, and Save
+    // would write it there. A load or clear therefore starts a new history.
     set({
-      past: [...state.past, snapshot(state)].slice(-MAX_HISTORY),
+      past: [],
       future: [],
       nodes,
       edges,
+      savedFingerprint: graphFingerprint(nodes, edges),
       currentFile: null,
+      submittedJobId: null,
     });
+    useJobStore.getState().unsubscribeFromJob();
   },
 
   clear: () => {
-    const state = get();
     set({
-      past: [...state.past, snapshot(state)].slice(-MAX_HISTORY),
+      past: [],
       future: [],
       nodes: [],
       edges: [],
+      savedFingerprint: graphFingerprint([], []),
       currentFile: null,
+      submittedJobId: null,
     });
+    useJobStore.getState().unsubscribeFromJob();
   },
 
   setCurrentFile: (file) => set({ currentFile: file }),
+
+  setSubmittedJobId: (jobId) => set({ submittedJobId: jobId }),
 
   undo: () => {
     const state = get();

@@ -115,7 +115,14 @@ export const useJobStore = create<JobState>((set, get) => ({
 	deleteJobHistory: async (jobId) => {
 		await api.deleteJobHistory(jobId);
 		mutationGeneration += 1;
-		set((state) => ({ jobs: state.jobs.filter((job) => job.id !== jobId) }));
+		set((state) => {
+			const runtimePreviewsByJobId = { ...state.runtimePreviewsByJobId };
+			delete runtimePreviewsByJobId[jobId];
+			return {
+				jobs: state.jobs.filter((job) => job.id !== jobId),
+				runtimePreviewsByJobId,
+			};
+		});
 		void get().fetchJobs().catch(() => undefined);
 	},
 

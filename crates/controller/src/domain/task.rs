@@ -3,8 +3,9 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use super::{
     AttemptId, FailureCode, FailureStage, InputExtension, InputPath, OutputExtension, OutputPath,
-    PageRequest, RemoteJobId, RemotePath, SortDirection, SourceReference, SubmissionKey, TaskId,
-    TaskProgress, TaskSortField, TaskSource, TaskStatus, WorkerId, WorkflowName,
+    PageRequest, RemoteJobId, RemotePath, SortDirection, SourceReference, SubmissionKey,
+    TaskAction, TaskId, TaskProgress, TaskSortField, TaskSource, TaskStatus, WorkerId, WorkerName,
+    WorkflowName,
 };
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -41,6 +42,10 @@ pub struct TaskAttempt {
     pub task_id: TaskId,
     pub attempt_number: u32,
     pub worker_id: Option<WorkerId>,
+    /// The name of the Worker that ran this attempt, kept when that Worker is
+    /// deleted and `worker_id` becomes null.
+    #[serde(default)]
+    pub worker_name: Option<WorkerName>,
     pub status: TaskStatus,
     pub submission_key: SubmissionKey,
     pub remote_job_id: Option<RemoteJobId>,
@@ -78,9 +83,15 @@ pub struct Task {
     pub attempt_count: u32,
     pub failure: Option<FailureInfo>,
     pub cancel_requested_at: Option<DateTime<Utc>>,
+    /// When an operator discarded this failed task; it can no longer be retried.
+    #[serde(default)]
+    pub discarded_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
+    /// The operator actions the task accepts now, in a stable order.
+    #[serde(default)]
+    pub allowed_actions: Vec<TaskAction>,
 }
 
 pub type TaskSummary = Task;

@@ -1,11 +1,12 @@
 import type { Edge, Node } from '@xyflow/react';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import presetJson from '../../../../presets/anime-2x-interpolation-2x.json';
 import type { PipelineNodeData, Workflow, WorkflowPort } from '../../types';
+import { useJobStore } from '../job-store';
 import type { NodeDescriptor } from '../node-definitions-store';
 import { useNodeDefinitions } from '../node-definitions-store';
-import { useWorkflowStore } from '../workflow-store';
+import { selectIsDirty, useWorkflowStore } from '../workflow-store';
 
 const preset: Workflow = presetJson.workflow as Workflow;
 
@@ -160,6 +161,7 @@ beforeEach(() => {
     edges: [],
     past: [],
     future: [],
+    submittedJobId: null,
   });
 });
 
@@ -422,6 +424,38 @@ describe('undo / redo', () => {
     expect(useWorkflowStore.getState().nodes).toHaveLength(1);
     expect(useWorkflowStore.getState().nodes[0].id).toBe('n1');
   });
+
+  // History holds only nodes and edges. Undo after loading B used to bring
+  // back A's graph while currentFile still named B, and Save then wrote A's
+  // graph into B.json.
+  it('does not undo across a workflow load', () => {
+    const wfA: Workflow = { nodes: [{ id: 'a1', node_type: 'Print', params: { value: 'A' } }], connections: [] };
+    const wfB: Workflow = { nodes: [{ id: 'b1', node_type: 'Print', params: { value: 'B' } }], connections: [] };
+    const store = useWorkflowStore.getState();
+    store.loadWorkflow(wfA);
+    store.setCurrentFile({ filename: 'A.json', name: 'A', description: '' });
+    store.loadWorkflow(wfB);
+    store.setCurrentFile({ filename: 'B.json', name: 'B', description: '' });
+
+    useWorkflowStore.getState().undo();
+
+    const after = useWorkflowStore.getState();
+    expect(after.currentFile?.filename).toBe('B.json');
+    expect(after.exportWorkflow().nodes[0].params.value).toBe('B');
+    expect(after.past).toHaveLength(0);
+    expect(after.future).toHaveLength(0);
+  });
+
+  it('does not undo a clear back onto a canvas with no file', () => {
+    const store = useWorkflowStore.getState();
+    store.addNode(makeNode('n1', 'VideoInput'));
+    store.clear();
+
+    useWorkflowStore.getState().undo();
+
+    expect(useWorkflowStore.getState().nodes).toHaveLength(0);
+    expect(useWorkflowStore.getState().past).toHaveLength(0);
+  });
 });
 
 describe('loadWorkflow', () => {
@@ -495,5 +529,95 @@ describe('currentFile', () => {
     useWorkflowStore.getState().loadWorkflow(preset);
 
     expect(useWorkflowStore.getState().currentFile).toBeNull();
+  });
+});
+
+describe('submittedJobId', () => {
+  function associateRunningJob(): ReturnType<typeof vi.fn> {
+    const unsubscribeFromJob = vi.fn();
+    useJobStore.setState({ unsubscribeFromJob });
+    useWorkflowStore.getState().setSubmittedJobId('job-1');
+    return unsubscribeFromJob;
+  }
+
+  it('keeps the association when the canvas is saved under a file name', () => {
+    const unsubscribeFromJob = associateRunningJob();
+
+    useWorkflowStore.getState().setCurrentFile({ filename: 'a.json', name: 'A', description: '' });
+
+    expect(useWorkflowStore.getState().submittedJobId).toBe('job-1');
+    expect(unsubscribeFromJob).not.toHaveBeenCalled();
+  });
+
+  it('loadWorkflow drops the association and the runtime previews', () => {
+    const unsubscribeFromJob = associateRunningJob();
+
+    useWorkflowStore.getState().loadWorkflow(preset);
+
+    expect(useWorkflowStore.getState().submittedJobId).toBeNull();
+    expect(unsubscribeFromJob).toHaveBeenCalledTimes(1);
+  });
+
+  it('clear drops the association and the runtime previews', () => {
+    const unsubscribeFromJob = associateRunningJob();
+
+    useWorkflowStore.getState().clear();
+
+    expect(useWorkflowStore.getState().submittedJobId).toBeNull();
+    expect(unsubscribeFromJob).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('unsaved changes', () => {
+  const dirty = () => selectIsDirty(useWorkflowStore.getState());
+  const wf: Workflow = {
+    nodes: [
+      { id: 'p1', node_type: 'Print', params: { value: 'x' } },
+      { id: 'sub', node_type: 'Workflow', params: { workflow_path: 'inner.json' } },
+    ],
+    connections: [],
+  };
+
+  it('is clean after a load and dirty after an edit', () => {
+    useWorkflowStore.getState().loadWorkflow(wf);
+    expect(dirty()).toBe(false);
+
+    useWorkflowStore.getState().updateNodeParams('p1', { value: 'y' });
+    expect(dirty()).toBe(true);
+  });
+
+  it('is clean again after the canvas is saved or cleared', () => {
+    useWorkflowStore.getState().loadWorkflow(wf);
+    useWorkflowStore.getState().removeNode('p1');
+    expect(dirty()).toBe(true);
+
+    useWorkflowStore.getState().markSaved();
+    expect(dirty()).toBe(false);
+
+    useWorkflowStore.getState().addNode(makeNode('n1', 'VideoInput'));
+    expect(dirty()).toBe(true);
+    useWorkflowStore.getState().clear();
+    expect(dirty()).toBe(false);
+  });
+
+  it('ignores node moves and the sub-workflow interface refreshed on mount', () => {
+    useWorkflowStore.getState().loadWorkflow(wf);
+    const nodes = useWorkflowStore.getState().nodes;
+    useWorkflowStore.setState({
+      nodes: nodes.map((n) => ({ ...n, position: { x: 999, y: 999 } })),
+    });
+    useWorkflowStore.getState().updateNodeParams('sub', {
+      interface_inputs: '[{"name":"a","port_type":"Str"}]',
+      interface_outputs: '[]',
+    });
+
+    expect(dirty()).toBe(false);
+  });
+
+  it('counts a new graph on an empty canvas as unsaved', () => {
+    useWorkflowStore.getState().clear();
+    useWorkflowStore.getState().addNode(makeNode('n1', 'VideoInput'));
+
+    expect(dirty()).toBe(true);
   });
 });

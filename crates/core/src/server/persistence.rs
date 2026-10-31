@@ -1,16 +1,30 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
-use super::{Job, JobStatus, PipelineGraph, ProgressUpdate};
+use super::{CancelReason, CancelRequest, Job, JobStatus, PipelineGraph, ProgressUpdate};
 
 mod idempotency;
+#[cfg(test)]
+mod tests;
 pub(crate) use idempotency::{IdempotentJobClaim, IdempotentJobLookup};
+
+/// Version of the `jobs.db` schema, kept in `PRAGMA user_version`.
+///
+/// 1. The jobs table with its idempotency columns and index. Databases from
+///    before versioning (version 0) reach it through the original idempotent
+///    `CREATE TABLE IF NOT EXISTS` and column probing.
+/// 2. `cancel_requested_at` and `cancel_reason`.
+///
+/// A database with a higher version came from a newer build and is refused,
+/// so a downgrade cannot rewrite rows it does not understand.
+const SCHEMA_VERSION: i64 = 2;
 
 const STATUS_QUEUED: &str = "queued";
 const STATUS_RUNNING: &str = "running";
@@ -32,11 +46,17 @@ struct PersistedJobRow {
     workflow_name: String,
     workflow_source: String,
     rerun_of_job_id: Option<String>,
+    cancel_requested_at: Option<DateTime<Utc>>,
+    cancel_reason: Option<CancelReason>,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct JobsPersistence {
     db_path: PathBuf,
+    /// One connection for the life of the store. A connection per operation
+    /// made every write also checkpoint and delete the WAL when it closed,
+    /// several extra fsyncs and file creations per job transition.
+    connection: Arc<Mutex<Connection>>,
 }
 
 impl JobsPersistence {
@@ -48,8 +68,15 @@ impl JobsPersistence {
             )
         })?;
 
+        let db_path = data_dir.join("jobs.db");
+        let connection = Connection::open(&db_path)
+            .with_context(|| format!("failed to open jobs db: {}", db_path.display()))?;
+        connection
+            .busy_timeout(std::time::Duration::from_secs(5))
+            .context("failed to set jobs db busy timeout")?;
         let persistence = Self {
-            db_path: data_dir.join("jobs.db"),
+            db_path,
+            connection: Arc::new(Mutex::new(connection)),
         };
         persistence.initialize_schema()?;
         Ok(persistence)
@@ -70,7 +97,8 @@ impl JobsPersistence {
         self.with_connection(|conn| {
             conn.execute(
                 "UPDATE jobs SET status = ?2, started_at = ?3, completed_at = ?4,
-                 progress_json = ?5, error = ?6, updated_at = ?7 WHERE id = ?1",
+                 progress_json = ?5, error = ?6, updated_at = ?7,
+                 cancel_requested_at = ?8, cancel_reason = ?9 WHERE id = ?1",
                 params![
                     row.id,
                     status_to_str(row.status),
@@ -78,14 +106,57 @@ impl JobsPersistence {
                     row.completed_at.map(|ts| ts.to_rfc3339()),
                     row.progress_json,
                     row.error,
-                    Utc::now().to_rfc3339()
+                    Utc::now().to_rfc3339(),
+                    row.cancel_requested_at.map(|ts| ts.to_rfc3339()),
+                    row.cancel_reason.map(cancel_reason_to_str),
                 ],
             )?;
             Ok(())
         })
     }
 
+    /// Records a cancel request without touching the job's other columns, so
+    /// it can be written after the job's lock is released without
+    /// overwriting a newer status.
+    pub(crate) fn record_cancel_request(
+        &self,
+        job_id: &str,
+        request: &CancelRequest,
+    ) -> Result<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "UPDATE jobs SET cancel_requested_at = ?2, cancel_reason = ?3, updated_at = ?4
+                 WHERE id = ?1",
+                params![
+                    job_id,
+                    request.requested_at.to_rfc3339(),
+                    cancel_reason_to_str(request.reason),
+                    Utc::now().to_rfc3339(),
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Holds the store's connection, so a test can stall every write.
+    #[cfg(test)]
+    pub(crate) fn lock_connection(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.connection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    #[cfg(test)]
     pub(crate) fn load_jobs_for_startup(&self) -> Result<Vec<Job>> {
+        self.load_jobs_for_startup_with_interrupted()
+            .map(|(jobs, _)| jobs)
+    }
+
+    /// Loads every job, marking those left queued or running by the previous
+    /// instance as cancelled, and returns them with the ids of the jobs that
+    /// were `running`. Their executors may have left staged output files
+    /// behind.
+    pub(crate) fn load_jobs_for_startup_with_interrupted(&self) -> Result<(Vec<Job>, Vec<String>)> {
         self.with_connection(|conn| {
             let mut stmt = conn.prepare(
                 "SELECT
@@ -100,88 +171,48 @@ impl JobsPersistence {
                     params_json,
                     workflow_name,
                     workflow_source,
-                    rerun_of_job_id
+                    rerun_of_job_id,
+                    cancel_requested_at,
+                    cancel_reason
                  FROM jobs
                  ORDER BY created_at ASC, id ASC",
             )?;
 
+            // Each row carries its id separately, so a row that cannot be
+            // decoded is still reported by id.
             let raw_rows = stmt.query_map([], |row| {
-                let status_raw: String = row.get(1)?;
-                let status = parse_status(&status_raw).ok_or_else(|| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        1,
-                        rusqlite::types::Type::Text,
-                        Box::new(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            format!("unknown persisted status: {status_raw}"),
-                        )),
-                    )
-                })?;
-
-                Ok(PersistedJobRow {
-                    id: row.get(0)?,
-                    status,
-                    workflow_json: row.get(2)?,
-                    created_at: parse_timestamp(row.get::<_, String>(3)?.as_str()).map_err(|e| {
-                        rusqlite::Error::FromSqlConversionFailure(
-                            3,
-                            rusqlite::types::Type::Text,
-                            Box::new(std::io::Error::new(
-                                std::io::ErrorKind::InvalidData,
-                                e.to_string(),
-                            )),
-                        )
-                    })?,
-                    started_at: parse_optional_timestamp(row.get::<_, Option<String>>(4)?).map_err(
-                        |e| {
-                            rusqlite::Error::FromSqlConversionFailure(
-                                4,
-                                rusqlite::types::Type::Text,
-                                Box::new(std::io::Error::new(
-                                    std::io::ErrorKind::InvalidData,
-                                    e.to_string(),
-                                )),
-                            )
-                        },
-                    )?,
-                    completed_at: parse_optional_timestamp(row.get::<_, Option<String>>(5)?).map_err(
-                        |e| {
-                            rusqlite::Error::FromSqlConversionFailure(
-                                5,
-                                rusqlite::types::Type::Text,
-                                Box::new(std::io::Error::new(
-                                    std::io::ErrorKind::InvalidData,
-                                    e.to_string(),
-                                )),
-                            )
-                        },
-                    )?,
-                    progress_json: row.get(6)?,
-                    error: row.get(7)?,
-                    params_json: row.get(8)?,
-                    workflow_name: row.get(9)?,
-                    workflow_source: row.get(10)?,
-                    rerun_of_job_id: row.get(11)?,
-                })
+                Ok((row.get::<_, String>(0)?, Self::decode_row(row)))
             })?;
 
             let startup_now = Utc::now();
             let mut jobs = Vec::new();
+            let mut skipped = Vec::new();
+            let mut interrupted = Vec::new();
 
             for row_result in raw_rows {
-                let mut row = match row_result {
+                let (id, decoded) = row_result?;
+                let mut row = match decoded {
                     Ok(row) => row,
                     Err(err) => {
-                        warn!(error = %err, "Skipping invalid persisted job row");
+                        warn!(job_id = %id, error = %err, "Skipping persisted job row that cannot be decoded");
+                        skipped.push(id);
                         continue;
                     }
                 };
 
                 if matches!(row.status, JobStatus::Queued | JobStatus::Running) {
                     let previous_status = row.status;
+                    if previous_status == JobStatus::Running {
+                        interrupted.push(row.id.clone());
+                    }
                     row.status = JobStatus::Cancelled;
                     row.completed_at = Some(row.completed_at.unwrap_or(startup_now));
                     row.error = Some(startup_reconciliation_error(previous_status, row.error.as_deref()));
+                    // A cancel a user asked for before the stop keeps its reason.
+                    if row.cancel_reason.is_none() {
+                        row.cancel_requested_at = Some(startup_now);
+                        row.cancel_reason = Some(CancelReason::Restart);
+                    }
 
                     self.upsert_row(conn, &row).with_context(|| {
                         format!("failed to reconcile startup status for job {}", row.id)
@@ -192,6 +223,7 @@ impl JobsPersistence {
                     Ok(workflow) => workflow,
                     Err(err) => {
                         warn!(job_id = %row.id, error = %err, "Skipping persisted job with invalid workflow snapshot");
+                        skipped.push(row.id);
                         continue;
                     }
                 };
@@ -202,6 +234,7 @@ impl JobsPersistence {
                             Ok(parsed) => Some(parsed),
                             Err(err) => {
                                 warn!(job_id = %row.id, error = %err, "Skipping persisted job with invalid params snapshot");
+                                skipped.push(row.id);
                                 continue;
                             }
                         },
@@ -219,6 +252,13 @@ impl JobsPersistence {
                     None => None,
                 };
 
+                let cancel_request = row
+                    .cancel_reason
+                    .zip(row.cancel_requested_at)
+                    .map(|(reason, requested_at)| CancelRequest {
+                        requested_at,
+                        reason,
+                    });
                 jobs.push(Job {
                     id: row.id,
                     status: row.status,
@@ -233,10 +273,97 @@ impl JobsPersistence {
                     workflow_name: row.workflow_name,
                     workflow_source: row.workflow_source,
                     rerun_of_job_id: row.rerun_of_job_id,
+                    cancel_request,
                 });
             }
 
-            Ok(jobs)
+            if !skipped.is_empty() {
+                warn!(
+                    count = skipped.len(),
+                    job_ids = ?skipped,
+                    "Persisted jobs that cannot be loaded are not listed; DELETE /api/jobs/{{id}} removes them"
+                );
+            }
+
+            Ok((jobs, interrupted))
+        })
+    }
+
+    /// Decodes one `jobs` row selected by
+    /// [`Self::load_jobs_for_startup_with_interrupted`].
+    fn decode_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PersistedJobRow> {
+        let status_raw: String = row.get(1)?;
+        let status = parse_status(&status_raw).ok_or_else(|| {
+            rusqlite::Error::FromSqlConversionFailure(
+                1,
+                rusqlite::types::Type::Text,
+                Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("unknown persisted status: {status_raw}"),
+                )),
+            )
+        })?;
+
+        Ok(PersistedJobRow {
+            id: row.get(0)?,
+            status,
+            workflow_json: row.get(2)?,
+            created_at: parse_timestamp(row.get::<_, String>(3)?.as_str()).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    3,
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        e.to_string(),
+                    )),
+                )
+            })?,
+            started_at: parse_optional_timestamp(row.get::<_, Option<String>>(4)?).map_err(
+                |e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        4,
+                        rusqlite::types::Type::Text,
+                        Box::new(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            e.to_string(),
+                        )),
+                    )
+                },
+            )?,
+            completed_at: parse_optional_timestamp(row.get::<_, Option<String>>(5)?).map_err(
+                |e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        5,
+                        rusqlite::types::Type::Text,
+                        Box::new(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            e.to_string(),
+                        )),
+                    )
+                },
+            )?,
+            progress_json: row.get(6)?,
+            error: row.get(7)?,
+            params_json: row.get(8)?,
+            workflow_name: row.get(9)?,
+            workflow_source: row.get(10)?,
+            rerun_of_job_id: row.get(11)?,
+            cancel_requested_at: parse_optional_timestamp(row.get::<_, Option<String>>(12)?)
+                .map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        12,
+                        rusqlite::types::Type::Text,
+                        Box::new(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            e.to_string(),
+                        )),
+                    )
+                })?,
+            // A reason this build does not know reads as no reason.
+            cancel_reason: row
+                .get::<_, Option<String>>(13)?
+                .as_deref()
+                .and_then(parse_cancel_reason),
         })
     }
 
@@ -251,9 +378,42 @@ impl JobsPersistence {
 
     fn initialize_schema(&self) -> Result<()> {
         self.with_connection(|conn| {
-            conn.execute_batch(
-                "PRAGMA journal_mode = WAL;
-                 CREATE TABLE IF NOT EXISTS jobs (
+            conn.execute_batch("PRAGMA journal_mode = WAL;")
+                .with_context(|| format!("failed to open jobs db: {}", self.db_path.display()))?;
+            // Pending migrations run in order in one transaction: a new
+            // database costs one commit, and a failed step leaves the file as
+            // it was.
+            let transaction =
+                conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let version: i64 =
+                transaction.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+            if version > SCHEMA_VERSION {
+                bail!(
+                    "jobs db {} has schema version {version}, newer than this build supports \
+                     ({SCHEMA_VERSION}); run a newer Videnoa or move the file away",
+                    self.db_path.display()
+                );
+            }
+            if version < 1 {
+                self.migrate_to_v1(&transaction)?;
+            }
+            if version < 2 {
+                Self::migrate_to_v2(&transaction).with_context(|| {
+                    format!(
+                        "failed to migrate jobs db to schema version 2: {}",
+                        self.db_path.display()
+                    )
+                })?;
+            }
+            transaction.commit()?;
+            Ok(())
+        })
+    }
+
+    fn migrate_to_v1(&self, transaction: &rusqlite::Transaction<'_>) -> Result<()> {
+        transaction
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS jobs (
                     id TEXT PRIMARY KEY,
                     status TEXT NOT NULL,
                     workflow_json TEXT NOT NULL,
@@ -279,21 +439,34 @@ impl JobsPersistence {
                     self.db_path.display()
                 )
             })?;
-            Self::migrate_idempotency_schema(conn).map_err(|error| {
-                anyhow::anyhow!(
-                    "failed to migrate jobs idempotency schema at {}: {error:#}",
-                    self.db_path.display()
-                )
-            })?;
-            Ok(())
-        })
+        Self::migrate_idempotency_schema(transaction).map_err(|error| {
+            anyhow::anyhow!(
+                "failed to migrate jobs idempotency schema at {}: {error:#}",
+                self.db_path.display()
+            )
+        })?;
+        transaction.execute_batch("PRAGMA user_version = 1;")?;
+        Ok(())
+    }
+
+    fn migrate_to_v2(transaction: &rusqlite::Transaction<'_>) -> Result<()> {
+        let columns = table_columns(transaction)?;
+        for column in ["cancel_requested_at", "cancel_reason"] {
+            if !columns.iter().any(|existing| existing == column) {
+                transaction.execute(&format!("ALTER TABLE jobs ADD COLUMN {column} TEXT"), [])?;
+            }
+        }
+        transaction.execute_batch("PRAGMA user_version = 2;")?;
+        Ok(())
     }
 
     fn with_connection<T>(&self, op: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
-        let mut conn = Connection::open(&self.db_path)
-            .with_context(|| format!("failed to open jobs db: {}", self.db_path.display()))?;
-        conn.busy_timeout(std::time::Duration::from_secs(5))
-            .context("failed to set jobs db busy timeout")?;
+        // A panic while holding the lock leaves no open transaction behind
+        // (rusqlite rolls back on drop), so the connection stays usable.
+        let mut conn = self
+            .connection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         op(&mut conn)
     }
 
@@ -314,8 +487,10 @@ impl JobsPersistence {
                 workflow_name,
                 workflow_source,
                 rerun_of_job_id,
-                updated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                updated_at,
+                cancel_requested_at,
+                cancel_reason
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
              ON CONFLICT(id) DO UPDATE SET
                 status = excluded.status,
                 workflow_json = excluded.workflow_json,
@@ -328,7 +503,9 @@ impl JobsPersistence {
                 workflow_name = excluded.workflow_name,
                 workflow_source = excluded.workflow_source,
                 rerun_of_job_id = excluded.rerun_of_job_id,
-                updated_at = excluded.updated_at",
+                updated_at = excluded.updated_at,
+                cancel_requested_at = excluded.cancel_requested_at,
+                cancel_reason = excluded.cancel_reason",
             params![
                 row.id,
                 status_to_str(row.status),
@@ -343,6 +520,8 @@ impl JobsPersistence {
                 row.workflow_source,
                 row.rerun_of_job_id,
                 updated_at,
+                row.cancel_requested_at.map(|ts| ts.to_rfc3339()),
+                row.cancel_reason.map(cancel_reason_to_str),
             ],
         )
         .with_context(|| format!("failed to upsert persisted job {}", row.id))?;
@@ -367,7 +546,34 @@ impl JobsPersistence {
             workflow_name: job.workflow_name.clone(),
             workflow_source: job.workflow_source.clone(),
             rerun_of_job_id: job.rerun_of_job_id.clone(),
+            cancel_requested_at: job.cancel_request.map(|request| request.requested_at),
+            cancel_reason: job.cancel_request.map(|request| request.reason),
         })
+    }
+}
+
+fn table_columns(connection: &Connection) -> rusqlite::Result<Vec<String>> {
+    let mut statement = connection.prepare("PRAGMA table_info(jobs)")?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect();
+    columns
+}
+
+fn cancel_reason_to_str(reason: CancelReason) -> &'static str {
+    match reason {
+        CancelReason::User => "user",
+        CancelReason::Shutdown => "shutdown",
+        CancelReason::Restart => "restart",
+    }
+}
+
+fn parse_cancel_reason(value: &str) -> Option<CancelReason> {
+    match value {
+        "user" => Some(CancelReason::User),
+        "shutdown" => Some(CancelReason::Shutdown),
+        "restart" => Some(CancelReason::Restart),
+        _ => None,
     }
 }
 

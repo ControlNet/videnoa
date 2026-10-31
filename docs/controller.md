@@ -107,6 +107,15 @@ lifetime; increasing the policy does not extend an existing session's deadline.
 Its optional `[iroh]` section (`relay_urls`, `use_public_relays`) is edited in Web Settings or the
 file and read at startup, so a change applies after the next Controller start.
 See [self-hosted relays](../docs/iroh.md#self-hosted-relays).
+Its optional `[history]` section takes `retention_days`, a positive number of
+days. It is off by default, which keeps every task. When set, an hourly sweep
+purges a completed, cancelled or discarded task, or a failed task that Retry
+cannot resume, once it has not changed for that many days. It removes the
+task's Controller temporary files, attempts and `Idempotency-Key`; afterwards
+that key can create a new task. Failed tasks that Retry can still resume stay
+until they are retried or discarded, and published outputs and Worker folders
+are never touched. The section is only edited in the file, is kept when Web
+Settings saves, and applies after the next Controller start.
 The in-memory `ControllerConfig` is the active runtime configuration.
 `controller.sqlite3` holds durable operational/application state: tasks, attempts,
 workers, recovery evidence, idempotency, administrator credential, and sessions.
@@ -282,8 +291,11 @@ Each health refresh also asks the worker to validate every eligible name with
 creating a job. A name the worker rejects is not scheduled there and is listed
 under `capabilities.invalid_workflows` with the worker's reason; the Workers
 page shows the count in the error column and the reasons in its tooltip.
-Workers older than v0.1.9 answer 404, and a validation request that fails for
-any other reason (timeout, 5xx) also leaves the name eligible.
+Workers older than v0.1.9 answer a bare 404, and a validation request that fails
+for any other reason (timeout, 5xx without a code) also leaves the name
+eligible. A protocol-2 worker's coded rejection, including 404
+`workflow_not_found`, marks the name invalid, as does a 422 (the worker cannot
+read the request; update the worker).
 
 Task and batch creation, including batch preview, return 400 with a `workflow`
 field error when every worker that reports the workflow reports it invalid and
@@ -292,8 +304,12 @@ waits in the queue as before.
 
 Worker updates use `PUT /api/workers/{id}` with the current version and all
 mutable fields. Enable and disable use `POST /api/workers/{id}/enable` and
-`/disable`. Delete uses `DELETE /api/workers/{id}?version=N` and succeeds only
-for an unreferenced current record.
+`/disable`. Delete uses `DELETE /api/workers/{id}?version=N` and succeeds once
+every task that ran on or is assigned to the Worker is terminal (completed,
+failed or cancelled); otherwise it returns 409. Finished tasks and attempts are
+detached from the deleted Worker: their `worker_id` becomes null and each
+attempt keeps the Worker's name in `worker_name`. A failed task whose Worker was
+deleted can no longer be retried; create a new task instead.
 
 Every worker must persist its Videnoa data. `jobs.db` stores keyed job identity,
 and worker task workspaces remain recovery evidence until cleanup. Losing this
@@ -356,8 +372,31 @@ its Worker even while that Worker is offline; deleting the Worker lets any
 Worker take it, and cancelling the task removes it from the queue.
 
 Cancellation is accepted from queued through verifying. Publishing, remote
-cleanup, and terminal tasks reject cancellation. Publication ambiguity permits
-manual retry on the existing attempt; remote-state ambiguity remains non-retryable.
+cleanup, and terminal tasks reject cancellation. From uploading on, cancellation
+completes only after the Worker confirms that the job stopped and its task folder
+was deleted. When the Worker is gone for good, `POST /api/tasks/{id}/abandon`
+with `{"version": N}` ends a task whose cancellation is still waiting: the task
+fails with `worker_unavailable` at `remote_cleanup` and a message saying that the
+Worker did not confirm the job stopped or the folder was deleted, releases its
+Controller temporary files and its Worker capacity, and nothing is sent to the
+Worker. Abandon requires a requested cancellation; once the Worker's tasks are
+all terminal, the Worker can be deleted. Publication ambiguity permits manual
+retry on the existing attempt; remote-state ambiguity remains non-retryable.
+
+A task that fails in a way no retry can resume (for example `output_exists` or
+`remote_state_ambiguous`) releases its Controller temporary files, including a
+downloaded output, as soon as the failure is recorded; startup releases any such
+files a crash left behind. Failures that Retry can resume keep them, because
+download, verification and publication retries reuse the verified output. The
+destination file and the Worker's task folder are not touched.
+
+`POST /api/tasks/{id}/discard` with `{"version": N}` gives up on a failed task
+that the operator will not retry. The task stays `failed`, gains
+`discarded_at`, and rejects Retry and another Discard with 409. Its Controller
+temporary files are released, and its task folder on the Worker is deleted when
+the Worker is online and the task's job, if any, has ended; the response's
+`worker_folder_deleted` says whether that folder is known to be gone. The
+published destination is never touched.
 
 ## No-Clobber and Ambiguity
 
@@ -549,7 +588,8 @@ and request returns the original batch membership and response without rescannin
 files or creating tasks, including after a Controller restart. A successful replay
 returns HTTP 200; a stored partial result remains HTTP 207. Reusing the key with
 different options returns HTTP 409. Batch keys are scoped separately from individual
-task keys. Without a key, every request remains an independent submission.
+task keys and expire seven days after the first request; after that the key
+starts a new batch. Without a key, every request remains an independent submission.
 
 For keyed requests, task inserts and the batch response commit together. A database
 failure saving the response rolls back the entire transaction. Preview/validation
@@ -588,8 +628,12 @@ task; all normal path and request validation still applies.
 `source`, `failure_stage`, `search`, `sort`, and `direction`. `GET
 /api/tasks/{id}` returns the task plus a paginated attempts array.
 
-`POST /api/tasks/{id}/cancel` and `POST /api/tasks/{id}/retry` require the
-current `version`. Retry also accepts an optional `worker_id` to queue the task
+`POST /api/tasks/{id}/cancel`, `POST /api/tasks/{id}/retry`,
+`POST /api/tasks/{id}/abandon` and `POST /api/tasks/{id}/discard` require the
+current `version`. Every task lists the actions it accepts now in
+`allowed_actions` (`cancel`, `abandon`, `retry`, `retry_on_another_worker`,
+`discard`); the Web UI offers exactly those, and clients should ignore values
+they do not know. Retry also accepts an optional `worker_id` to queue the task
 for another Worker; the response's `attempt_id` is `null` when the task was
 queued, and the task's `requested_worker_id` names the Worker it waits for. `GET /api/status-counts` returns all lifecycle categories,
 including zero counts.
@@ -676,19 +720,53 @@ manual migration command or supported migration downgrade.
 
 ### Worker API compatibility
 
-Controller and workers can be upgraded separately within these rules:
+Controller and workers can be upgraded separately within these rules. The wire
+types both sides use live in one crate, `videnoa-protocol`, with fixture tests
+that pin the v0.1.10 JSON byte for byte.
 
-- Since v0.1.9, Controller ignores fields it does not know in worker
-  responses. Known fields and status values are still checked strictly.
-- Controllers up to v0.1.8 reject unknown fields in worker responses. Workers
-  therefore do not add fields to the responses those Controllers read (health,
-  workflow and preset lists, interfaces, run receipts, jobs, uploads and file
-  metadata); a Worker unit test pins these field sets. New information is served
-  from new endpoints instead.
-- Controller detects a new worker endpoint by trying it: a worker that predates
-  it answers 404, and Controller falls back to the older behaviour.
-- Controller sends no new request fields to existing worker endpoints, because
-  workers reject unknown request fields.
+- **Protocol version.** A worker's `GET /api/health` reports
+  `{"status":"ok", ..., "protocol":N}`; `status` stays the first field. A
+  worker that omits `protocol` (up to v0.1.10) speaks protocol 1. Controller
+  supports protocols 1 to 2. A worker that reports a newer protocol is shown
+  offline with a message naming both versions, and its tasks wait until the
+  Controller is upgraded.
+- **Protocol 2** adds, all additively:
+  - a `code` on worker error replies, next to `error`. Controller reads the
+    code before the HTTP status: `workflow_name_invalid`, `workflow_not_found`,
+    `workflow_unreadable`, `workflow_invalid` and `job_store_unavailable` fail
+    a submission at once with the worker's reason (a worker 500 with one of
+    these codes is no longer retried); `queue_full` and `shutting_down` are
+    retried; without a known code the status decides, as with protocol 1. A
+    worker without a password that refuses the Host name Controller uses
+    answers 403 `host_not_allowed`; Controller shows the worker's reason
+    instead of blaming the saved password.
+  - `cancel_requested`, `cancel_requested_at` and `cancel_reason` (`user`,
+    `shutdown`, `restart`) on jobs. A job cancelled on the worker fails its task
+    with the matching reason. When Controller cancels a job, it waits until the
+    worker reports the job stopped (or gone) before deleting the task's worker
+    workspace.
+  - `GET /api/jobs/by-idempotency-key/{key}`: the job a keyed `POST /api/run`
+    created, or 404 `job_not_found`. Controller uses it to learn whether a
+    submission whose reply it lost was accepted when that task is cancelled,
+    so no job is created just to be cancelled. Against a protocol-1 worker it
+    still replays the keyed run.
+- **Unknown values.** Since v0.1.9, Controller ignores fields it does not know
+  in worker responses. Since protocol 2 it also reads an unknown job status,
+  health status, cancel reason or error code as "unknown": a job in an unknown
+  status keeps being polled, and an unknown error code falls back to the HTTP
+  status.
+- **Requests.** Workers since protocol 2 ignore request fields they do not
+  know on `POST /api/run` and `/api/run/validate` (they no longer use
+  `deny_unknown_fields` there), so a newer Controller can add a field without
+  breaking older protocol-2 workers. A worker answering 422 to a run request
+  cannot parse it at all; Controller fails the task before upload where it can
+  (through validation) and says to update the worker. Controller still sends no
+  new request fields, because protocol-1 workers reject unknown request fields.
+- **Minimum Controller.** Workers now add fields to health and job replies, which
+  Controllers up to v0.1.8 reject. A worker from this release needs Controller
+  v0.1.9 or later.
+- Controller detects other new worker endpoints by trying them: a worker that
+  predates one answers 404, and Controller falls back to the older behaviour.
 
 ## Troubleshooting
 

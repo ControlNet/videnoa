@@ -1,3 +1,5 @@
+use videnoa_protocol::ErrorCode;
+
 #[derive(Debug, thiserror::Error)]
 pub enum ClientConfigError {
     #[error("remote client timeouts must be greater than zero")]
@@ -20,8 +22,11 @@ pub enum VidenoaClientError {
     ClientStatus {
         status: u16,
         /// The Worker's bounded rejection reason; set only for a rejected
-        /// submission (`POST /api/run` answered 400 with a JSON `error`).
+        /// submission (`POST /api/run` answered with a JSON `error`).
         reason: Option<String>,
+        /// The Worker's machine-readable code (protocol 2), when it is one
+        /// this Controller knows.
+        code: Option<ErrorCode>,
     },
     #[error("remote service failed with HTTP {status}")]
     ServerStatus { status: u16 },
@@ -43,6 +48,10 @@ pub enum VidenoaClientError {
     InvalidFilePath,
     #[error("failed to construct a remote endpoint URL")]
     EndpointUrl,
+    /// The Worker's tunnel or API speaks another protocol version; retrying
+    /// cannot help until one side is upgraded.
+    #[error("worker is incompatible with this Controller")]
+    Incompatible,
 }
 
 fn reason_suffix(reason: Option<&str>) -> String {
@@ -52,6 +61,49 @@ fn reason_suffix(reason: Option<&str>) -> String {
 }
 
 impl VidenoaClientError {
+    /// Whether the Worker rejected this Controller's credentials, which says
+    /// nothing about the request itself.
+    #[must_use]
+    pub const fn is_authentication(&self) -> bool {
+        matches!(
+            self,
+            Self::ClientStatus {
+                status: 401 | 403,
+                ..
+            }
+        ) && !self.is_host_not_allowed()
+    }
+
+    /// Whether the Worker refused the Host name this Controller addressed it
+    /// by: it has no password and the name is not in its `allowed_hosts`.
+    /// The credentials are not at fault; the Worker's reason says what is.
+    #[must_use]
+    pub const fn is_host_not_allowed(&self) -> bool {
+        matches!(
+            self,
+            Self::ClientStatus {
+                status: 403,
+                code: Some(ErrorCode::HostNotAllowed),
+                ..
+            }
+        )
+    }
+
+    /// Whether the failure is about the Worker rather than the request: it is
+    /// unreachable or overloaded, rejected the credentials, rate limited this
+    /// Controller, sits behind a redirecting proxy, or speaks another tunnel
+    /// protocol. Such a failure must never fail the task that sent it.
+    #[must_use]
+    pub const fn is_worker_level(&self) -> bool {
+        self.is_transient()
+            || self.is_authentication()
+            || self.is_host_not_allowed()
+            || matches!(
+                self,
+                Self::RateLimited | Self::UnexpectedStatus { .. } | Self::Incompatible
+            )
+    }
+
     #[must_use]
     pub const fn is_transient(&self) -> bool {
         match self {
@@ -65,7 +117,8 @@ impl VidenoaClientError {
             | Self::OversizedPayload { .. }
             | Self::LocalIo
             | Self::InvalidFilePath
-            | Self::EndpointUrl => false,
+            | Self::EndpointUrl
+            | Self::Incompatible => false,
         }
     }
 }
@@ -90,6 +143,7 @@ mod tests {
             VidenoaClientError::ClientStatus {
                 status: 400,
                 reason: None,
+                code: None,
             },
             VidenoaClientError::UnexpectedStatus { status: 300 },
             VidenoaClientError::MalformedPayload,
@@ -97,11 +151,51 @@ mod tests {
             VidenoaClientError::LocalIo,
             VidenoaClientError::InvalidFilePath,
             VidenoaClientError::EndpointUrl,
+            VidenoaClientError::Incompatible,
         ];
 
         // When: the runtime classifies each error for automatic retry.
         // Then: only transport and server availability failures are transient.
         assert!(transient.iter().all(VidenoaClientError::is_transient));
         assert!(fatal.iter().all(|error| !error.is_transient()));
+    }
+
+    #[test]
+    fn worker_level_failures_are_the_ones_no_request_can_be_blamed_for() {
+        let worker_level = [
+            VidenoaClientError::ServerStatus { status: 503 },
+            VidenoaClientError::Network,
+            VidenoaClientError::Timeout,
+            VidenoaClientError::Stall,
+            VidenoaClientError::RateLimited,
+            VidenoaClientError::ClientStatus {
+                status: 401,
+                reason: None,
+                code: None,
+            },
+            VidenoaClientError::ClientStatus {
+                status: 403,
+                reason: None,
+                code: None,
+            },
+            VidenoaClientError::UnexpectedStatus { status: 302 },
+            VidenoaClientError::Incompatible,
+        ];
+        let request_level = [
+            VidenoaClientError::NotFound,
+            VidenoaClientError::Conflict,
+            VidenoaClientError::ClientStatus {
+                status: 400,
+                reason: Some("invalid workflow".to_owned()),
+                code: None,
+            },
+            VidenoaClientError::MalformedPayload,
+            VidenoaClientError::OversizedPayload { limit: 1 },
+            VidenoaClientError::LocalIo,
+            VidenoaClientError::InvalidFilePath,
+            VidenoaClientError::EndpointUrl,
+        ];
+        assert!(worker_level.iter().all(VidenoaClientError::is_worker_level));
+        assert!(request_level.iter().all(|error| !error.is_worker_level()));
     }
 }

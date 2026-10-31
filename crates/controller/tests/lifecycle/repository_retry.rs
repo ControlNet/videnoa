@@ -1,7 +1,8 @@
 use videnoa_controller::domain::{AttemptId, RemoteJobId, SubmissionKey, TaskStatus};
 use videnoa_controller::lifecycle::{
-    AdvanceCommand, DownstreamFailure, DurableAction, LifecycleFailure, RemoteTerminalStatus,
-    RequeueRetryCommand, ReserveCommand, TerminalRemoteEvidence, WorkspaceCleaned,
+    AdvanceCommand, DownstreamFailure, DurableAction, LifecycleErrorCode, LifecycleFailure,
+    RemoteTerminalStatus, RequeueRetryCommand, ReserveCommand, TerminalRemoteEvidence,
+    WorkspaceCleaned,
 };
 
 use super::support::{fixture, reserve, upload_evidence, TestResult};
@@ -60,6 +61,70 @@ async fn downstream_retry_resumes_same_attempt_without_repeating_compute() -> Te
     assert_eq!(stored_task.attempt_count, 1);
     assert_eq!(attempts.len(), 1);
     assert_eq!(attempts[0].attempt.id, attempt_id);
+    Ok(())
+}
+
+#[tokio::test]
+async fn discarded_failure_cannot_be_retried_or_discarded_again() -> TestResult {
+    // Given: a download failure that Retry could resume.
+    let fixture = fixture().await?;
+    let attempt_id = reserve(&fixture).await?;
+    advance_to_downloading(&fixture, attempt_id).await?;
+    let task = fixture
+        .store
+        .task(fixture.task_id)
+        .await?
+        .ok_or_else(|| std::io::Error::other("task missing"))?;
+    let attempt = fixture
+        .store
+        .attempt(attempt_id)
+        .await?
+        .ok_or_else(|| std::io::Error::other("attempt missing"))?;
+    fixture
+        .service
+        .fail(
+            &task,
+            Some(&attempt),
+            LifecycleFailure::downstream(DownstreamFailure::Download, "download failed"),
+            fixture.now,
+        )
+        .await?;
+    let failed = fixture
+        .store
+        .task(fixture.task_id)
+        .await?
+        .ok_or_else(|| std::io::Error::other("task missing"))?;
+
+    // When: the operator discards it.
+    let committed = fixture.service.discard(&failed, fixture.now).await?;
+
+    // Then: it stays failed, and neither Retry nor Discard applies again.
+    let discarded = fixture
+        .store
+        .task(fixture.task_id)
+        .await?
+        .ok_or_else(|| std::io::Error::other("task missing"))?;
+    let attempt = fixture
+        .store
+        .attempt(attempt_id)
+        .await?
+        .ok_or_else(|| std::io::Error::other("attempt missing"))?;
+    assert_eq!(committed.status(), TaskStatus::Failed);
+    assert_eq!(discarded.status, TaskStatus::Failed);
+    assert_eq!(discarded.discarded_at, Some(fixture.now));
+    let retry = fixture
+        .service
+        .retry_downstream(&discarded, &attempt, fixture.now)
+        .await;
+    assert!(matches!(
+        retry.map_err(|error| error.code()),
+        Err(LifecycleErrorCode::IllegalCommand)
+    ));
+    let again = fixture.service.discard(&discarded, fixture.now).await;
+    assert!(matches!(
+        again.map_err(|error| error.code()),
+        Err(LifecycleErrorCode::IllegalCommand)
+    ));
     Ok(())
 }
 

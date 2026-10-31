@@ -1,27 +1,33 @@
 use chrono::{DateTime, Utc};
 
-use crate::domain::{FailureCode, FailureStage, TaskStatus};
+use crate::domain::{FailureCode, FailureStage, RemoteJobId, TaskId, TaskStatus};
 use crate::lifecycle::{LifecycleFailure, LifecycleService, RemoteAmbiguityStage};
-use crate::persistence::{AttemptRecord, TaskRecord};
-use crate::remote::VidenoaClientError;
+use crate::persistence::{AttemptRecord, TaskRecord, WorkerRecord};
+use crate::remote::{JobStatus, VidenoaClientError};
 
-use super::{Reconciler, RecoveryCommandKind, RecoveryError, RecoveryReport, StagePermit};
-
-#[derive(Clone, Copy)]
-pub(super) enum RemoteFailureOperation {
-    Submission,
-    Processing,
-}
-
-struct RemoteFailureContext<'a> {
-    task: &'a TaskRecord,
-    attempt: &'a AttemptRecord,
-    now: DateTime<Utc>,
-    stage: &'a StagePermit,
-    report: &'a mut RecoveryReport,
-}
+use super::{
+    AssignedWorker, Reconciler, RecoveryCommandKind, RecoveryError, RecoveryReport, StagePermit,
+};
 
 impl Reconciler {
+    /// Keeps a submission whose worker, not the request, failed: acceptance
+    /// is unknown, so the attempt is confirmed with the same key later.
+    pub(super) async fn defer_submission(
+        &self,
+        attempt: &AttemptRecord,
+        worker: &WorkerRecord,
+        error: VidenoaClientError,
+        now: DateTime<Utc>,
+        stage: &StagePermit,
+        report: &mut RecoveryReport,
+    ) -> Result<(), RecoveryError> {
+        self.retry_submission(attempt, now, stage, &error).await?;
+        self.defer_remote(worker, attempt.attempt.task_id, error, now, stage, report)
+            .await
+    }
+
+    /// Fails a submission the worker answered for this request. Worker-level
+    /// failures are deferred by the caller and never reach this.
     pub(super) async fn resolve_submission_failure(
         &self,
         task: &TaskRecord,
@@ -31,103 +37,86 @@ impl Reconciler {
         stage: &StagePermit,
         report: &mut RecoveryReport,
     ) -> Result<(), RecoveryError> {
-        if error.is_transient() || matches!(error, VidenoaClientError::RateLimited) {
-            self.retry_submission(attempt, now, stage, &error).await?;
-            if matches!(error, VidenoaClientError::RateLimited) {
-                report.defer(task.id);
-                return Ok(());
+        let message = error.to_string();
+        let task_failure = match error {
+            VidenoaClientError::NotFound | VidenoaClientError::ClientStatus { .. } => {
+                LifecycleFailure::terminal(
+                    TaskStatus::Submitting,
+                    FailureStage::Submission,
+                    FailureCode::RemoteSubmissionFailed,
+                    message,
+                )
             }
-            return Err(error.into());
-        }
-        self.resolve_remote_failure(
-            RemoteFailureOperation::Submission,
-            error,
-            RemoteFailureContext {
-                task,
-                attempt,
-                now,
-                stage,
-                report,
-            },
-        )
-        .await
+            VidenoaClientError::Conflict
+            | VidenoaClientError::MalformedPayload
+            | VidenoaClientError::OversizedPayload { .. } => {
+                LifecycleFailure::remote_state_ambiguous(RemoteAmbiguityStage::Submission, message)
+            }
+            VidenoaClientError::ServerStatus { .. }
+            | VidenoaClientError::Network
+            | VidenoaClientError::Timeout
+            | VidenoaClientError::Stall
+            | VidenoaClientError::RateLimited
+            | VidenoaClientError::UnexpectedStatus { .. }
+            | VidenoaClientError::Incompatible
+            | VidenoaClientError::LocalIo
+            | VidenoaClientError::InvalidFilePath
+            | VidenoaClientError::EndpointUrl => return Err(error.into()),
+        };
+        let _write = stage.begin_write();
+        LifecycleService::new(self.store.clone())
+            .fail(task, Some(attempt), task_failure, now)
+            .await?;
+        report.push(task.id, RecoveryCommandKind::Terminal);
+        Ok(())
     }
 
+    /// A failed poll is no evidence about the job, so it never fails the
+    /// task. `NotFound` is decided by the caller, after the worker passed its
+    /// health check.
     pub(super) async fn resolve_processing_failure(
         &self,
         task: &TaskRecord,
-        attempt: &AttemptRecord,
+        worker: &AssignedWorker,
         error: VidenoaClientError,
         now: DateTime<Utc>,
         stage: &StagePermit,
         report: &mut RecoveryReport,
     ) -> Result<(), RecoveryError> {
-        self.resolve_remote_failure(
-            RemoteFailureOperation::Processing,
-            error,
-            RemoteFailureContext {
-                task,
-                attempt,
-                now,
-                stage,
-                report,
-            },
-        )
-        .await
+        if error == VidenoaClientError::MalformedPayload {
+            // For example a job status added by a newer worker: the job is
+            // still there, so keep treating it as running.
+            tracing::warn!(task_id = %task.id, worker_id = %worker.record.id, "Remote job status is unreadable; polling continues");
+            report.push(task.id, RecoveryCommandKind::Poll);
+            return Ok(());
+        }
+        self.defer_remote(&worker.record, task.id, error, now, stage, report)
+            .await
     }
+}
 
-    async fn resolve_remote_failure(
-        &self,
-        operation: RemoteFailureOperation,
-        error: VidenoaClientError,
-        context: RemoteFailureContext<'_>,
-    ) -> Result<(), RecoveryError> {
-        let message = error.to_string();
-        let task_failure = match error {
-            VidenoaClientError::ServerStatus { .. }
-            | VidenoaClientError::Network
-            | VidenoaClientError::Timeout
-            | VidenoaClientError::Stall
-            | VidenoaClientError::LocalIo
-            | VidenoaClientError::InvalidFilePath
-            | VidenoaClientError::EndpointUrl => return Err(error.into()),
-            VidenoaClientError::NotFound
-            | VidenoaClientError::RateLimited
-            | VidenoaClientError::ClientStatus { .. } => match operation {
-                RemoteFailureOperation::Submission => LifecycleFailure::terminal(
-                    TaskStatus::Submitting,
-                    FailureStage::Submission,
-                    FailureCode::RemoteSubmissionFailed,
-                    message,
-                ),
-                RemoteFailureOperation::Processing => LifecycleFailure::remote_state_ambiguous(
-                    RemoteAmbiguityStage::Processing,
-                    message,
-                ),
-            },
-            VidenoaClientError::Conflict
-            | VidenoaClientError::UnexpectedStatus { .. }
-            | VidenoaClientError::MalformedPayload
-            | VidenoaClientError::OversizedPayload { .. } => {
-                let stage = match operation {
-                    RemoteFailureOperation::Submission => RemoteAmbiguityStage::Submission,
-                    RemoteFailureOperation::Processing => RemoteAmbiguityStage::Processing,
-                };
-                LifecycleFailure::remote_state_ambiguous(stage, message)
-            }
-        };
-        let _write = context.stage.begin_write();
-        LifecycleService::new(self.store.clone())
-            .fail(
-                context.task,
-                Some(context.attempt),
-                task_failure,
-                context.now,
-            )
-            .await?;
-        context
-            .report
-            .push(context.task.id, RecoveryCommandKind::Terminal);
-        Ok(())
+/// Best-effort removal of a remote job that a task stopped tracking while it
+/// may still run, so its GPU work is not orphaned. The task outcome is
+/// already durable; a failure is only logged.
+pub(super) async fn cancel_abandoned_job(
+    worker: &AssignedWorker,
+    task_id: TaskId,
+    remote_job_id: RemoteJobId,
+    status: JobStatus,
+) {
+    // An unknown status may be an active one.
+    if !matches!(
+        status,
+        JobStatus::Queued | JobStatus::Running | JobStatus::Unknown
+    ) {
+        return;
+    }
+    match worker.client.cancel_job(remote_job_id).await {
+        Ok(()) | Err(VidenoaClientError::NotFound) => {
+            tracing::info!(%task_id, worker_id = %worker.record.id, %remote_job_id, "Abandoned remote job cancelled");
+        }
+        Err(error) => {
+            tracing::warn!(%task_id, worker_id = %worker.record.id, %remote_job_id, %error, "Abandoned remote job could not be cancelled");
+        }
     }
 }

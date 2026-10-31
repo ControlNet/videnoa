@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Workflow } from '../../types';
 import {
   ApiError,
+  browseDirectory,
   cancelJob,
   deleteJobHistory,
   deleteWorkflow,
@@ -11,6 +12,7 @@ import {
   getPerformanceExport,
   getPerformanceOverview,
   healthCheck,
+  listDirectory,
   listJobs,
   listWorkflows,
   rerunJob,
@@ -616,5 +618,39 @@ describe('subscribeToProgress()', () => {
     vi.advanceTimersByTime(2_000);
 
     expect(FakeWebSocket.instances).toHaveLength(2);
+  });
+});
+
+describe('directory listing errors', () => {
+  // A 401 or 500 used to come back as an empty listing, which reads as
+  // "nothing here" instead of "this failed".
+  it('browseDirectory throws ApiError when the server fails', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: 'boom', code: 'internal' }), { status: 500 }),
+    );
+
+    await expect(browseDirectory('/data')).rejects.toMatchObject({
+      name: 'ApiError',
+      status: 500,
+      message: 'boom',
+    });
+  });
+
+  it('listDirectory throws ApiError when the server fails', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: 'unauthorized' }), { status: 401 }),
+    );
+
+    await expect(listDirectory('models')).rejects.toMatchObject({
+      name: 'ApiError',
+      status: 401,
+    });
+  });
+
+  it('browseDirectory still returns the entries on success', async () => {
+    const entries = [{ name: 'a', is_dir: true, path: '/data/a' }];
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(entries), { status: 200 }));
+
+    await expect(browseDirectory('/data')).resolves.toEqual(entries);
   });
 });

@@ -139,6 +139,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libnvjitlink-12-8=${NVJITLINK_VERSION} \
         ca-certificates \
         curl \
+        tini \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -166,5 +167,8 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:3000/api/health || exit 1
 
-ENTRYPOINT []
+# tini runs as PID 1: it forwards `docker stop`'s SIGTERM to videnoa, which
+# then stops its jobs (see README), and reaps exited child processes.
+STOPSIGNAL SIGTERM
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["videnoa"]

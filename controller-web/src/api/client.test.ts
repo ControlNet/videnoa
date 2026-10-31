@@ -146,6 +146,17 @@ describe("same-origin API client", () => {
     expect(parsed.success).toBe(true)
   })
 
+  it("reads a rate-limited operation error", () => {
+    // Given: the Controller's 429 for an operations route.
+    const response = { error: { code: "rate_limited", message: "too many requests", retryable: true, field_errors: [] } }
+
+    // When: the nested operation error crosses the boundary.
+    const parsed = apiErrorSchema.safeParse(response)
+
+    // Then: the UI gets the typed code instead of a parse failure.
+    expect(parsed.success && parsed.data.code).toBe("rate_limited")
+  })
+
   it("rejects a field error code outside the Rust enum", () => {
     // Given: a plausible but unsupported field error code.
     const response = { error: { code: "invalid_request", message: "request validation failed", retryable: false, field_errors: [{ field: "output_path", code: "outside_root", message: "invalid" }] } }

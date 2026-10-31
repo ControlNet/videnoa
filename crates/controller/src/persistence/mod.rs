@@ -4,6 +4,7 @@ pub(crate) use batch_idempotency::{finish_batch, insert_batch_task, BatchAdmissi
 mod attempt_query;
 mod codec;
 mod credential;
+mod history_retention;
 mod idempotency;
 mod lifecycle_evidence;
 mod lifecycle_retry;
@@ -17,6 +18,7 @@ mod scheduler;
 mod session;
 #[path = "database.rs"]
 mod sqlite;
+mod status_sql;
 #[path = "error.rs"]
 mod storage_error;
 mod submission_claim;

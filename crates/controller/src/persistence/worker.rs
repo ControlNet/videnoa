@@ -9,6 +9,7 @@ use super::codec::{
 use super::models::{
     CasOutcome, NewWorker, WorkerHealthUpdate, WorkerRecord, WorkerUpdate, WorkerUpdateOutcome,
 };
+use super::status_sql::COMPUTE;
 use super::{PersistenceError, Store};
 
 impl Store {
@@ -66,55 +67,65 @@ impl Store {
         update: &WorkerUpdate,
     ) -> Result<WorkerUpdateOutcome, PersistenceError> {
         let mut transaction = self.database.pool().begin().await?;
-        let updated_version: Option<i64> = sqlx::query_scalar(
+        let sql = format!(
             "UPDATE workers SET password = CASE WHEN ? THEN ? ELSE password END,
                 online = CASE WHEN (? OR api_url <> ?) THEN 0 ELSE online END,
                 next_health_check_at_ms = CASE WHEN (? OR api_url <> ?) THEN NULL ELSE next_health_check_at_ms END,
                 health_retry_count = CASE WHEN (? OR api_url <> ?) THEN 0 ELSE health_retry_count END,
-                capabilities_json = CASE WHEN (? OR api_url <> ?) THEN '{\"workflows\":[],\"refreshed_at\":null}' ELSE capabilities_json END,
+                capabilities_json = CASE WHEN (? OR api_url <> ?) THEN '{{\"workflows\":[],\"refreshed_at\":null}}' ELSE capabilities_json END,
                 name = ?, api_url = ?, enabled = ?, compute_slots = ?,
                 version = version + 1, updated_at_ms = ?
              WHERE id = ? AND version = ?
                AND (SELECT COUNT(*) FROM tasks assigned
                     WHERE assigned.worker_id = workers.id
-                      AND assigned.status IN ('submitting', 'processing')) <= ?
+                      AND assigned.status IN {COMPUTE}) <= ?
              RETURNING version",
-        )
-        .bind(update.password.is_some())
-        .bind(update.password.as_ref().and_then(Option::as_ref).map(crate::domain::SecretString::expose))
-        .bind(update.password.is_some())
-        .bind(update.api_url.as_url().as_str())
-        .bind(update.password.is_some())
-        .bind(update.api_url.as_url().as_str())
-        .bind(update.password.is_some())
-        .bind(update.api_url.as_url().as_str())
-        .bind(update.password.is_some())
-        .bind(update.api_url.as_url().as_str())
-        .bind(update.name.as_str())
-        .bind(update.api_url.as_url().as_str())
-        .bind(update.enabled)
-        .bind(i64::from(update.compute_slots.get()))
-        .bind(timestamp(update.updated_at))
-        .bind(update.id.to_string())
-        .bind(sqlite_u64("expected_version", update.expected_version)?)
-        .bind(i64::from(update.compute_slots.get()))
-        .fetch_optional(&mut *transaction)
-        .await?;
+            COMPUTE = *COMPUTE,
+        );
+        let updated_version: Option<i64> = sqlx::query_scalar(&sql)
+            .bind(update.password.is_some())
+            .bind(
+                update
+                    .password
+                    .as_ref()
+                    .and_then(Option::as_ref)
+                    .map(crate::domain::SecretString::expose),
+            )
+            .bind(update.password.is_some())
+            .bind(update.api_url.as_url().as_str())
+            .bind(update.password.is_some())
+            .bind(update.api_url.as_url().as_str())
+            .bind(update.password.is_some())
+            .bind(update.api_url.as_url().as_str())
+            .bind(update.password.is_some())
+            .bind(update.api_url.as_url().as_str())
+            .bind(update.name.as_str())
+            .bind(update.api_url.as_url().as_str())
+            .bind(update.enabled)
+            .bind(i64::from(update.compute_slots.get()))
+            .bind(timestamp(update.updated_at))
+            .bind(update.id.to_string())
+            .bind(sqlite_u64("expected_version", update.expected_version)?)
+            .bind(i64::from(update.compute_slots.get()))
+            .fetch_optional(&mut *transaction)
+            .await?;
         let outcome = if let Some(version) = updated_version {
             WorkerUpdateOutcome::Applied {
                 new_version: rust_u64("version", version)?,
             }
         } else {
-            let state: Option<(i64, i64)> = sqlx::query_as(
+            let sql = format!(
                 "SELECT worker.version,
                     (SELECT COUNT(*) FROM tasks assigned
                      WHERE assigned.worker_id = worker.id
-                       AND assigned.status IN ('submitting', 'processing'))
+                       AND assigned.status IN {COMPUTE})
                  FROM workers worker WHERE worker.id = ?",
-            )
-            .bind(update.id.to_string())
-            .fetch_optional(&mut *transaction)
-            .await?;
+                COMPUTE = *COMPUTE,
+            );
+            let state: Option<(i64, i64)> = sqlx::query_as(&sql)
+                .bind(update.id.to_string())
+                .fetch_optional(&mut *transaction)
+                .await?;
             match state {
                 Some((version, used_slots))
                     if rust_u64("version", version)? == update.expected_version
@@ -161,13 +172,14 @@ impl Store {
     /// # Errors
     /// Returns an error when `SQLite` access or count conversion fails.
     pub async fn worker_used_slots(&self, id: WorkerId) -> Result<u64, PersistenceError> {
-        let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM tasks
-             WHERE worker_id = ? AND status IN ('submitting', 'processing')",
-        )
-        .bind(id.to_string())
-        .fetch_one(self.database.pool())
-        .await?;
+        let sql = format!(
+            "SELECT COUNT(*) FROM tasks WHERE worker_id = ? AND status IN {COMPUTE}",
+            COMPUTE = *COMPUTE,
+        );
+        let count: i64 = sqlx::query_scalar(&sql)
+            .bind(id.to_string())
+            .fetch_one(self.database.pool())
+            .await?;
         rust_u64("used_slots", count)
     }
 }

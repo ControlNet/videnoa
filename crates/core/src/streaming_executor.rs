@@ -5,7 +5,7 @@ use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use tokio::sync::{mpsc, watch};
 
-use crate::node::{ExecutionContext, FrameProcessor};
+use crate::node::{ExecutionContext, FrameProcessor, WorkflowCancelled};
 use crate::types::Frame;
 
 mod parallel_interpolator;
@@ -149,6 +149,10 @@ impl StreamingExecutor {
         .await
     }
 
+    /// Runs the pipeline to the end of its input.
+    ///
+    /// When `cancel` is set the pipeline stops, discards its output and
+    /// returns [`WorkflowCancelled`] (see [`crate::node::is_cancellation`]).
     pub async fn execute_pipeline_stages<D, E>(
         &self,
         decoder: D,
@@ -163,15 +167,22 @@ impl StreamingExecutor {
         E: FrameSink,
     {
         if *cancel.borrow() {
-            return Ok(());
+            return Err(WorkflowCancelled.into());
         }
 
         let (error_tx, mut error_rx) = mpsc::unbounded_channel::<anyhow::Error>();
         let (cancel_tx, _) = watch::channel(false);
         let cancel_state = Arc::new(AtomicBool::new(false));
+        // `cancel_state` is also set when a stage fails; this one only when
+        // the caller cancelled.
+        let cancelled_externally = Arc::new(AtomicBool::new(false));
 
-        let external_cancel_handle =
-            spawn_external_cancel_watcher(cancel, cancel_state.clone(), cancel_tx.clone());
+        let external_cancel_handle = spawn_external_cancel_watcher(
+            cancel,
+            cancel_state.clone(),
+            cancelled_externally.clone(),
+            cancel_tx.clone(),
+        );
 
         let mut handles = Vec::new();
 
@@ -319,6 +330,9 @@ impl StreamingExecutor {
             }
         }
 
+        // Read before stopping the watcher: a cancel that arrives from here on
+        // finds the output already finalized.
+        let cancelled = cancelled_externally.load(Ordering::SeqCst);
         signal_cancel(&cancel_state, &cancel_tx);
         external_cancel_handle.abort();
         if let Err(join_error) = external_cancel_handle.await {
@@ -327,6 +341,14 @@ impl StreamingExecutor {
             }
         }
 
+        if cancelled {
+            // Stages that stop on a cancel may report errors on the way out;
+            // the outcome is still the caller's cancel.
+            if let Some(error) = first_error {
+                tracing::debug!(error = %format!("{error:#}"), "Pipeline error after cancellation");
+            }
+            return Err(WorkflowCancelled.into());
+        }
         if let Some(error) = first_error {
             return Err(error);
         }
@@ -344,10 +366,12 @@ impl Default for StreamingExecutor {
 fn spawn_external_cancel_watcher(
     mut cancel: watch::Receiver<bool>,
     cancel_state: Arc<AtomicBool>,
+    cancelled_externally: Arc<AtomicBool>,
     cancel_tx: watch::Sender<bool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         if *cancel.borrow() {
+            cancelled_externally.store(true, Ordering::SeqCst);
             signal_cancel(&cancel_state, &cancel_tx);
             return;
         }
@@ -356,6 +380,7 @@ fn spawn_external_cancel_watcher(
             match cancel.changed().await {
                 Ok(()) => {
                     if *cancel.borrow() {
+                        cancelled_externally.store(true, Ordering::SeqCst);
                         signal_cancel(&cancel_state, &cancel_tx);
                         return;
                     }
@@ -883,7 +908,7 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
     use std::sync::Mutex;
 
-    use crate::node::{Node, PortDefinition};
+    use crate::node::{is_cancellation, Node, PortDefinition};
     use crate::types::PortData;
     use anyhow::bail;
 
@@ -1284,11 +1309,12 @@ mod tests {
             let _ = cancel_tx.send(true);
         });
 
-        executor
+        let error = executor
             .execute_pipeline(frames, Vec::new(), sink, None, cancel_rx, None)
             .await
-            .expect("canceled pipeline should exit cleanly");
+            .expect_err("a cancelled pipeline must not report success");
 
+        assert!(is_cancellation(&error), "unexpected error: {error:#}");
         assert!(
             state.written_count() < 10_000,
             "cancel should stop processing before completion"
@@ -1298,6 +1324,49 @@ mod tests {
             0,
             "a cancelled pipeline must not finalize a truncated output"
         );
+    }
+
+    #[tokio::test]
+    async fn cancellation_before_start_reports_cancelled() {
+        let state = SharedSinkState::new();
+        let (_cancel_tx, cancel_rx) = watch::channel(true);
+
+        let error = StreamingExecutor::new(4)
+            .execute_pipeline(
+                (0_u8..10).map(sample_frame).map(Ok),
+                Vec::new(),
+                CollectingSink::new(state.clone()),
+                Some(10),
+                cancel_rx,
+                None,
+            )
+            .await
+            .expect_err("an already cancelled pipeline must not report success");
+
+        assert!(is_cancellation(&error), "unexpected error: {error:#}");
+        assert_eq!(state.written_count(), 0);
+        assert_eq!(state.finished_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn stage_error_is_not_reported_as_cancellation() {
+        let processors: Vec<Box<dyn FrameProcessor>> =
+            vec![Box::new(AddProcessor::new("failing", 1).fail_on(3))];
+        let (_cancel_tx, cancel_rx) = watch::channel(false);
+
+        let error = StreamingExecutor::new(2)
+            .execute_pipeline(
+                (0_u8..10).map(sample_frame).map(Ok),
+                processors,
+                CollectingSink::new(SharedSinkState::new()),
+                Some(10),
+                cancel_rx,
+                None,
+            )
+            .await
+            .expect_err("a failing stage must fail the pipeline");
+
+        assert!(!is_cancellation(&error), "unexpected error: {error:#}");
     }
 
     struct ReleaseCountingSink {

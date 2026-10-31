@@ -60,10 +60,24 @@ describe("settings API schemas", () => {
       },
     }
 
-    // When: the obsolete shape crosses the strict response boundary.
-    const parsed = settingsResponseSchema.safeParse(legacy)
+    // When: the obsolete shape crosses the response boundary.
+    const parsed = settingsResponseSchema.parse(legacy)
 
-    // Then: browser-visible root and hash fields are refused.
+    // Then: the root and hash fields are dropped before they reach the UI.
+    expect(parsed.paths).toEqual(testOnlySettings.paths)
+  })
+
+  it("still refuses unknown fields in an update it sends", () => {
+    const parsed = settingsUpdateRequestSchema.safeParse({
+      version: testOnlySettings.version,
+      paths: testOnlySettings.paths,
+      server: testOnlySettings.server,
+      auth: { secure_cookie: true, session_absolute_seconds: 60, session_idle_seconds: 60 },
+      scheduler: { ...testOnlySettings.scheduler, added_later: true },
+      timeouts: testOnlySettings.timeouts,
+      retry: testOnlySettings.retry,
+    })
+
     expect(parsed.success).toBe(false)
   })
 

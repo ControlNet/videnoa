@@ -249,7 +249,9 @@ async fn same_generation_cancellation_retries_uncertain_submission_after_backoff
         fixture.store.task(task.id).await?.expect("task").status,
         TaskStatus::Cancelled
     );
-    assert_eq!(worker.counters().await.get(Route::Run), 2);
+    // A protocol-2 worker is asked about the submission; nothing is resubmitted.
+    assert_eq!(worker.counters().await.get(Route::Run), 1);
+    assert_eq!(worker.counters().await.get(Route::JobLookup), 1);
     assert_eq!(worker.counters().await.get(Route::JobCancel), 1);
     Ok(())
 }

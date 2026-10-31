@@ -1,4 +1,4 @@
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -17,7 +17,8 @@ use crate::streaming_executor::{FrameInterpolator, FrameSink, PipelineStage};
 use crate::types::{Frame, PortData, PortType};
 
 use crate::nodes::backend::{
-    model_trt_cache_dir, InferenceBackend, TrtCacheIdentity, TrtTileIdentity,
+    model_trt_cache_dir, read_device_id, InferenceBackend, TrtCacheIdentity, TrtRuntimeIdentity,
+    TrtTileIdentity,
 };
 use crate::nodes::frame_interpolation::{
     FrameInterpolationNode, FrameInterpolationPostprocess, ModelFormat,
@@ -190,6 +191,11 @@ pub struct VideoCompileContext {
     trt_cache_dir: PathBuf,
     /// Frame buffers shared by the decoder, pooled stages and encoder of a job.
     frame_pool: Arc<FramePool>,
+    /// Cancellation of the execution being compiled, checked before each
+    /// model load (every inference lane loads its own session).
+    cancellation: RefCell<Option<tokio::sync::watch::Receiver<bool>>>,
+    /// Runtime part of the TensorRT cache key, detected on first use.
+    trt_runtime: OnceCell<TrtRuntimeIdentity>,
 }
 
 impl Drop for VideoCompileContext {
@@ -343,6 +349,16 @@ impl VideoCompileContext {
             pipe_bit_depth: Cell::new(8),
             trt_cache_dir,
             frame_pool: FramePool::shared(),
+            cancellation: RefCell::new(None),
+            trt_runtime: OnceCell::new(),
+        }
+    }
+
+    /// The context nodes initialised by this compile context execute under.
+    fn node_execution_context(&self) -> ExecutionContext {
+        ExecutionContext {
+            cancellation: self.cancellation.borrow().clone(),
+            ..ExecutionContext::default()
         }
     }
 
@@ -418,8 +434,11 @@ impl VideoCompileContext {
         )? {
             node.set_trt_cache_dir(cache_dir);
         }
-        node.execute(inputs, &ExecutionContext::default())
+        let exec_ctx = self.node_execution_context();
+        exec_ctx.check_cancelled()?;
+        node.execute(inputs, &exec_ctx)
             .context("failed to initialize SuperResolution node")?;
+        exec_ctx.check_cancelled()?;
         Ok(node)
     }
 
@@ -428,8 +447,11 @@ impl VideoCompileContext {
         if let Some(cache_dir) = self.resolve_trt_cache_dir(inputs, 32)? {
             node.set_trt_cache_dir(cache_dir);
         }
-        node.execute(inputs, &ExecutionContext::default())
+        let exec_ctx = self.node_execution_context();
+        exec_ctx.check_cancelled()?;
+        node.execute(inputs, &exec_ctx)
             .context("failed to initialize FrameInterpolation node")?;
+        exec_ctx.check_cancelled()?;
         Ok(node)
     }
 
@@ -483,12 +505,16 @@ impl VideoCompileContext {
             None => None,
         };
         let identity = TrtCacheIdentity {
-            device_id: 0,
+            device_id: usize::try_from(read_device_id(inputs)?)
+                .context("device_id exceeds usize")?,
             input_h,
             input_w,
             tile,
         };
-        model_trt_cache_dir(&self.trt_cache_dir, model_path, identity).map(Some)
+        let runtime = self
+            .trt_runtime
+            .get_or_init(|| TrtRuntimeIdentity::current().clone());
+        model_trt_cache_dir(&self.trt_cache_dir, model_path, identity, runtime).map(Some)
     }
 
     fn create_superres_stages(
@@ -943,6 +969,10 @@ impl CompileContext for VideoCompileContext {
 
     fn total_output_frames(&self) -> Option<u64> {
         self.total_output_frames.get()
+    }
+
+    fn bind_execution_context(&self, exec_ctx: &ExecutionContext) {
+        self.cancellation.replace(exec_ctx.cancellation.clone());
     }
 
     fn create_stages(
@@ -1576,6 +1606,34 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_compile_stops_before_loading_a_model() {
+        let context = context_with_output(1280, 720);
+        let (_cancel_tx, cancel_rx) = tokio::sync::watch::channel(true);
+        context.bind_execution_context(&ExecutionContext {
+            cancellation: Some(cancel_rx),
+            ..ExecutionContext::default()
+        });
+        let inputs = HashMap::from([(
+            "model_path".to_string(),
+            PortData::Path(PathBuf::from("missing-model.onnx")),
+        )]);
+
+        for (node, is_interpolator) in [
+            (Box::new(SuperResNode::new()) as Box<dyn Node>, false),
+            (Box::new(FrameInterpolationNode::new()), true),
+        ] {
+            let error = context
+                .create_stages(node, &inputs, is_interpolator)
+                .err()
+                .expect("a cancelled compile must not load the model");
+            assert!(
+                crate::node::is_cancellation(&error),
+                "expected a cancellation, got: {error:#}"
+            );
+        }
+    }
+
+    #[test]
     fn processing_after_output_resize_is_rejected_before_model_loading() {
         let context = context_with_output(1280, 720);
         context
@@ -1985,6 +2043,7 @@ mod tests {
         std::fs::write(&model_path, b"test model identity")
             .expect("temporary model should be written");
         let context = VideoCompileContext::new(root.join("cache"));
+        set_test_trt_runtime(&context);
         context.output_width.set(1920);
         context.output_height.set(1080);
         let inputs = HashMap::from([
@@ -2067,6 +2126,55 @@ mod tests {
         assert!(!ctx.is_interpolator_type("VideoInput"));
     }
 
+    /// Tests must not load ONNX Runtime or TensorRT to key the cache.
+    fn set_test_trt_runtime(ctx: &VideoCompileContext) {
+        ctx.trt_runtime
+            .set(TrtRuntimeIdentity {
+                tensorrt: "100900".to_string(),
+                onnxruntime: "a83fc4d58c".to_string(),
+            })
+            .expect("the runtime identity is set once, before first use");
+    }
+
+    #[test]
+    fn video_compile_context_cache_namespace_follows_the_selected_device() {
+        let temp = tempfile::tempdir().expect("create temporary cache fixture");
+        let model_path = temp.path().join("model.onnx");
+        std::fs::write(&model_path, b"model").expect("write model fixture");
+        let ctx = VideoCompileContext::new(temp.path().join("trt-cache"));
+        set_test_trt_runtime(&ctx);
+        ctx.output_width.set(1920);
+        ctx.output_height.set(1080);
+        let inputs_on = |device_id: Option<i64>| {
+            let mut inputs = HashMap::from([
+                ("model_path".to_string(), PortData::Path(model_path.clone())),
+                ("backend".to_string(), PortData::Str("tensorrt".to_string())),
+            ]);
+            if let Some(device_id) = device_id {
+                inputs.insert("device_id".to_string(), PortData::Int(device_id));
+            }
+            inputs
+        };
+        let namespace = |device_id| {
+            ctx.resolve_trt_cache_dir(&inputs_on(device_id), 32)
+                .expect("resolve cache namespace")
+                .expect("TensorRT uses a cache namespace")
+                .file_name()
+                .expect("cache namespace has a name")
+                .to_string_lossy()
+                .into_owned()
+        };
+
+        assert!(namespace(None).contains("device-0_"), "{}", namespace(None));
+        assert!(
+            namespace(Some(1)).contains("device-1_"),
+            "{}",
+            namespace(Some(1))
+        );
+        ctx.resolve_trt_cache_dir(&inputs_on(Some(-1)), 32)
+            .expect_err("a negative device_id must be rejected");
+    }
+
     #[test]
     fn video_compile_context_when_rife_input_resolution_changes_uses_separate_cache_namespace() {
         // Given: one RIFE model and a TensorRT video compile context.
@@ -2074,6 +2182,7 @@ mod tests {
         let model_path = temp.path().join("rife.onnx");
         std::fs::write(&model_path, b"rife-model").expect("write model fixture");
         let ctx = VideoCompileContext::new(temp.path().join("trt-cache"));
+        set_test_trt_runtime(&ctx);
         let inputs = HashMap::from([
             ("model_path".to_string(), PortData::Path(model_path)),
             ("backend".to_string(), PortData::Str("tensorrt".to_string())),
@@ -2119,6 +2228,7 @@ mod tests {
         let model_path = temp.path().join("superres.onnx");
         std::fs::write(&model_path, b"superres-model").expect("write model fixture");
         let ctx = VideoCompileContext::new(temp.path().join("trt-cache"));
+        set_test_trt_runtime(&ctx);
         ctx.output_width.set(1920);
         ctx.output_height.set(1080);
         let mut inputs = HashMap::from([
@@ -2149,6 +2259,7 @@ mod tests {
         let model_path = temp.path().join("superres.onnx");
         std::fs::write(&model_path, b"superres-model").expect("write model fixture");
         let ctx = VideoCompileContext::new(temp.path().join("trt-cache"));
+        set_test_trt_runtime(&ctx);
         let inputs = HashMap::from([
             ("model_path".to_string(), PortData::Path(model_path)),
             ("backend".to_string(), PortData::Str("tensorrt".to_string())),

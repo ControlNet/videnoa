@@ -20,6 +20,10 @@ mod probe;
 
 const MAX_CONCURRENT_PROBES: usize = 8;
 
+/// The last error of a worker that rejected the saved credentials.
+pub(crate) const AUTHENTICATION_FAILED: &str =
+    "worker authentication failed; check the saved worker password";
+
 #[derive(Debug, thiserror::Error)]
 pub enum WorkerHealthError {
     #[error(transparent)]
@@ -182,8 +186,17 @@ impl WorkerHealthService {
                         capabilities: worker.record.capabilities,
                         last_seen_at: worker.record.last_seen_at,
                         health_retry_count: retry_count,
-                        next_health_check_at: Some(deadline(now, delay)?),
-                        last_error: Some(failure.message().to_owned()),
+                        // Rejected credentials have no retry deadline: the
+                        // worker's tasks wait until a probe succeeds, rather
+                        // than retrying the credential against the worker's
+                        // login limiter. Probes resume on a registration edit
+                        // or a restart.
+                        next_health_check_at: if authentication_failed {
+                            None
+                        } else {
+                            Some(deadline(now, delay)?)
+                        },
+                        last_error: Some(failure.message().into_owned()),
                         updated_at: now,
                     },
                     worker.stage,

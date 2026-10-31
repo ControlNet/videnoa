@@ -84,9 +84,10 @@ export function RunFromEditorDialog({
 					return node;
 				}),
 			};
-			await useJobStore.getState().submitJob(modifiedWorkflow, {
+			const jobId = await useJobStore.getState().submitJob(modifiedWorkflow, {
 				workflowName,
 			});
+			useWorkflowStore.getState().setSubmittedJobId(jobId);
 			toast.success(t("runDialog.success.submitted"));
 			onOpenChange(false);
 			void navigate("/jobs");

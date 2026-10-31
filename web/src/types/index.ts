@@ -74,9 +74,18 @@ export interface Workflow {
 
 // ─── React Flow node data ────────────────────────────────────────────────────
 
+/** A node param as the saved workflow holds it: any JSON value. */
+export type NodeParamValue =
+  | string
+  | number
+  | boolean
+  | null
+  | NodeParamValue[]
+  | { [key: string]: NodeParamValue };
+
 export interface PipelineNodeData {
   nodeType: NodeTypeName;
-  params: Record<string, string | number | boolean>;
+  params: Record<string, NodeParamValue>;
   [key: string]: unknown;
 }
 

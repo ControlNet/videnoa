@@ -22,7 +22,7 @@ mod upload_activity;
 use mock_videnoa::server::MockVidenoa;
 use mock_videnoa::{
     checkpoints::Checkpoint,
-    domain::{JobProgress as MockJobProgress, JobStatus as MockJobStatus},
+    domain::{job_progress, JobStatus as MockJobStatus},
     faults::{Fault, OfflineMode, ResponseFault},
     journal::Route,
 };
@@ -33,8 +33,8 @@ use videnoa_controller::domain::{
 };
 use videnoa_controller::remote::{
     sibling_output_path, CacheInvalidation, CapabilityCache, Compatibility, CompatibilityEntry,
-    CompatibilityEvidence, FileApiPath, MonotonicClock, PayloadLimits, RemoteTimeouts, RunOutcome,
-    RunValidation, VidenoaClient, VidenoaClientError,
+    CompatibilityEvidence, ErrorCode, FileApiPath, MonotonicClock, PayloadLimits, RemoteTimeouts,
+    RunOutcome, RunValidation, VidenoaClient, VidenoaClientError,
 };
 
 type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -332,6 +332,210 @@ async fn capabilities_keep_workflows_eligible_when_validation_is_unavailable() -
     Ok(())
 }
 
+#[tokio::test]
+async fn a_malformed_preset_is_listed_invalid_without_hiding_the_others() -> TestResult {
+    // Given: a Worker whose preset listing mixes a readable preset, one with
+    // an unreadable interface, and one without an id.
+    let server = MockVidenoa::start().await?;
+    let client = test_client(
+        &server,
+        Duration::from_secs(5),
+        Duration::from_secs(1),
+        JSON_LIMIT,
+    )?;
+    server
+        .set_fault(Fault::Response(ResponseFault {
+            route: Route::Presets,
+            status: 200,
+            body: serde_json::to_vec(&serde_json::json!([
+                {
+                    "id": "eligible-preset",
+                    "name": "Eligible preset",
+                    "description": "",
+                    "workflow": {"interface": {
+                        "inputs": [
+                            {"name": "input", "port_type": "Path"},
+                            {"name": "output", "port_type": "Path"},
+                        ],
+                        "outputs": [],
+                    }},
+                },
+                {
+                    "id": "broken-preset",
+                    "name": "Broken preset",
+                    "description": "",
+                    "workflow": {"interface": {"inputs": "input", "outputs": []}},
+                },
+                {"name": "Preset without an id"},
+            ]))?,
+        }))
+        .await;
+
+    // When: the catalog is refreshed.
+    let capabilities = client.capabilities().await?;
+
+    // Then: only the broken preset is excluded, with a reason, and the rest
+    // of the catalog is intact.
+    assert_eq!(
+        capabilities.compatibility(&WorkflowName::new("eligible-preset")),
+        Some(Compatibility::Eligible)
+    );
+    assert_eq!(
+        capabilities.compatibility(&WorkflowName::new("eligible-workflow.json")),
+        Some(Compatibility::Eligible)
+    );
+    assert_eq!(
+        capabilities.compatibility(&WorkflowName::new("broken-preset")),
+        Some(Compatibility::Incompatible)
+    );
+    assert_eq!(
+        capabilities.invalid_workflows(),
+        vec![InvalidWorkflow {
+            name: WorkflowName::new("broken-preset"),
+            kind: WorkflowKind::Preset,
+            reason: "the worker lists this preset in a form this Controller cannot read".to_owned(),
+        }]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_malformed_workflow_interface_is_listed_invalid_without_hiding_the_others() -> TestResult
+{
+    // Given: a Worker whose saved workflow listing has an unreadable entry
+    // and whose first interface reply is unreadable.
+    let server = MockVidenoa::start().await?;
+    let client = test_client(
+        &server,
+        Duration::from_secs(5),
+        Duration::from_secs(1),
+        JSON_LIMIT,
+    )?;
+    server
+        .set_fault(Fault::Response(ResponseFault {
+            route: Route::Workflows,
+            status: 200,
+            body: serde_json::to_vec(&serde_json::json!([
+                {
+                    "filename": "eligible-workflow.json",
+                    "name": "Eligible",
+                    "description": "",
+                    "workflow": {},
+                    "has_interface": true,
+                },
+                {
+                    "filename": "broken-listing.json",
+                    "name": "Broken listing",
+                    "description": "",
+                    "workflow": {},
+                    "has_interface": "yes",
+                },
+                {
+                    "filename": "other-workflow.json",
+                    "name": "Other",
+                    "description": "",
+                    "workflow": {},
+                    "has_interface": false,
+                },
+            ]))?,
+        }))
+        .await;
+    server
+        .set_fault(Fault::Response(ResponseFault {
+            route: Route::Interface,
+            status: 200,
+            body: br#"{"inputs":"input"}"#.to_vec(),
+        }))
+        .await;
+
+    // When: the catalog is refreshed.
+    let capabilities = client.capabilities().await?;
+
+    // Then: both unreadable workflows are invalid with a reason and the
+    // presets are untouched.
+    assert_eq!(
+        capabilities.compatibility(&WorkflowName::new("other-workflow.json")),
+        Some(Compatibility::Incompatible)
+    );
+    assert_eq!(
+        capabilities.compatibility(&WorkflowName::new("eligible-preset")),
+        Some(Compatibility::Eligible)
+    );
+    assert_eq!(
+        capabilities.invalid_workflows(),
+        vec![
+            InvalidWorkflow {
+                name: WorkflowName::new("broken-listing.json"),
+                kind: WorkflowKind::Workflow,
+                reason: "the worker lists this workflow in a form this Controller cannot read"
+                    .to_owned(),
+            },
+            InvalidWorkflow {
+                name: WorkflowName::new("eligible-workflow.json"),
+                kind: WorkflowKind::Workflow,
+                reason: "the worker reports an interface this Controller cannot read".to_owned(),
+            },
+        ]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_preset_shadowed_by_a_saved_workflow_is_invalid() -> TestResult {
+    // Given: a Worker with a saved workflow `eligible-workflow.json` and a
+    // preset `eligible-workflow`, which `/api/run` resolves to the workflow.
+    let server = MockVidenoa::start().await?;
+    let client = test_client(
+        &server,
+        Duration::from_secs(5),
+        Duration::from_secs(1),
+        JSON_LIMIT,
+    )?;
+    server
+        .set_fault(Fault::Response(ResponseFault {
+            route: Route::Presets,
+            status: 200,
+            body: serde_json::to_vec(&serde_json::json!([
+                {
+                    "id": "eligible-workflow",
+                    "name": "Shadowed preset",
+                    "description": "",
+                    "workflow": {"interface": {
+                        "inputs": [
+                            {"name": "input", "port_type": "Path"},
+                            {"name": "output", "port_type": "Path"},
+                        ],
+                        "outputs": [],
+                    }},
+                },
+            ]))?,
+        }))
+        .await;
+
+    // When: the catalog is refreshed.
+    let capabilities = client.capabilities().await?;
+
+    // Then: the preset cannot be scheduled, because a task for it would run
+    // the saved workflow; the saved workflow itself still runs as named.
+    assert_eq!(
+        capabilities.compatibility(&WorkflowName::new("eligible-workflow")),
+        Some(Compatibility::Incompatible)
+    );
+    assert_eq!(
+        capabilities.compatibility(&WorkflowName::new("eligible-workflow.json")),
+        Some(Compatibility::Eligible)
+    );
+    assert_eq!(
+        capabilities.invalid_workflows(),
+        vec![InvalidWorkflow {
+            name: WorkflowName::new("eligible-workflow"),
+            kind: WorkflowKind::Preset,
+            reason: "a saved workflow with the same name runs instead of this preset; rename that workflow on the worker".to_owned(),
+        }]
+    );
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn remote_lifecycle_streams_files_and_preserves_workflow_paths() -> TestResult {
     // Given: payloads larger than the configured client chunk and a tracked streaming reader.
@@ -378,7 +582,7 @@ async fn remote_lifecycle_streams_files_and_preserves_workflow_paths() -> TestRe
         .set_job(
             &submission.receipt.id.to_string(),
             MockJobStatus::Running,
-            Some(MockJobProgress::new(7, Some(20), 3.5, Some(4.0))),
+            Some(job_progress(7, Some(20), 3.5, Some(4.0))),
         )
         .await?;
     let running = client.job(submission.receipt.id).await?;
@@ -455,6 +659,7 @@ async fn json_and_status_failures_are_bounded_typed_and_redacted() -> TestResult
             VidenoaClientError::ClientStatus {
                 status: 418,
                 reason: None,
+                code: None,
             },
         ),
         (503, VidenoaClientError::ServerStatus { status: 503 }),
@@ -634,6 +839,7 @@ async fn rejected_run_carries_only_the_bounded_worker_reason() -> TestResult {
             VidenoaClientError::ClientStatus {
                 status,
                 reason: reason.clone(),
+                code: None,
             },
             "case {index}"
         );
@@ -642,6 +848,185 @@ async fn rejected_run_carries_only_the_bounded_worker_reason() -> TestResult {
             None => assert!(!format!("{error:?} {error}").contains("sensitive-marker")),
         }
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_rejected_run_is_classified_by_its_code_before_its_status() -> TestResult {
+    // Given: a protocol-2 Worker that answers runs with coded rejections.
+    let server = MockVidenoa::start().await?;
+    let client = test_client(
+        &server,
+        Duration::from_secs(5),
+        Duration::from_secs(1),
+        JSON_LIMIT,
+    )?;
+    let params = BTreeMap::new();
+    let workflow = WorkflowName::new("eligible-workflow.json");
+    let unreadable = "failed to read workflow: Permission denied (os error 13)";
+    let cases = [
+        // A 500 that retrying cannot fix is a rejection, with its reason.
+        (
+            500,
+            format!(r#"{{"error":"{unreadable}","code":"workflow_unreadable"}}"#),
+            VidenoaClientError::ClientStatus {
+                status: 500,
+                reason: Some(unreadable.to_owned()),
+                code: Some(ErrorCode::WorkflowUnreadable),
+            },
+        ),
+        (
+            404,
+            r#"{"error":"workflow not found: gone","code":"workflow_not_found"}"#.to_owned(),
+            VidenoaClientError::ClientStatus {
+                status: 404,
+                reason: Some("workflow not found: gone".to_owned()),
+                code: Some(ErrorCode::WorkflowNotFound),
+            },
+        ),
+        // A full queue or a shutdown is worth retrying whatever the status.
+        (
+            503,
+            r#"{"error":"job queue is full","code":"queue_full"}"#.to_owned(),
+            VidenoaClientError::ServerStatus { status: 503 },
+        ),
+        (
+            503,
+            r#"{"error":"worker is shutting down","code":"shutting_down"}"#.to_owned(),
+            VidenoaClientError::ServerStatus { status: 503 },
+        ),
+        // Without a known code the status decides, as with protocol 1.
+        (
+            500,
+            r#"{"error":"boom","code":"added_by_a_newer_worker"}"#.to_owned(),
+            VidenoaClientError::ServerStatus { status: 500 },
+        ),
+        (
+            404,
+            r#"{"error":"api endpoint not found"}"#.to_owned(),
+            VidenoaClientError::NotFound,
+        ),
+        // The Worker cannot parse this Controller's request at all.
+        (
+            422,
+            "Failed to deserialize the JSON body".to_owned(),
+            VidenoaClientError::ClientStatus {
+                status: 422,
+                reason: Some(
+                    "the worker cannot read this Controller's run request; update the worker"
+                        .to_owned(),
+                ),
+                code: None,
+            },
+        ),
+    ];
+    for (index, (status, body, expected)) in cases.into_iter().enumerate() {
+        server
+            .set_fault(Fault::Response(ResponseFault {
+                route: Route::Run,
+                status,
+                body: body.into_bytes(),
+            }))
+            .await;
+        let key: SubmissionKey = format!("00000000-0000-4000-8000-0000000008{index:02}").parse()?;
+
+        // When: the Controller submits.
+        let error = client
+            .run(&workflow, key, &params)
+            .await
+            .expect_err("scripted rejection must fail");
+
+        // Then: a known code decides retryability; the status is the fallback.
+        assert_eq!(error, expected, "case {index}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn run_validation_reads_the_same_codes() -> TestResult {
+    let server = MockVidenoa::start().await?;
+    let client = test_client(
+        &server,
+        Duration::from_secs(5),
+        Duration::from_secs(1),
+        JSON_LIMIT,
+    )?;
+    let workflow = WorkflowName::new("eligible-workflow.json");
+    // A missing workflow is invalid, while a bare 404 still means a Worker
+    // without the route (covered with the other validation answers).
+    server
+        .set_fault(Fault::Response(ResponseFault {
+            route: Route::RunValidate,
+            status: 404,
+            body: br#"{"error":"workflow not found: gone","code":"workflow_not_found"}"#.to_vec(),
+        }))
+        .await;
+    assert_eq!(
+        client.validate_run(&workflow).await?,
+        RunValidation::Invalid {
+            reason: "workflow not found: gone".to_owned()
+        }
+    );
+    server
+        .set_fault(Fault::Response(ResponseFault {
+            route: Route::RunValidate,
+            status: 422,
+            body: b"Failed to deserialize the JSON body".to_vec(),
+        }))
+        .await;
+    assert_eq!(
+        client.validate_run(&workflow).await?,
+        RunValidation::Invalid {
+            reason: "the worker cannot read this Controller's run request; update the worker"
+                .to_owned()
+        }
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_refused_host_name_is_reported_by_every_job_request() -> TestResult {
+    // Given: a Worker whose job routes refuse the Host this Controller uses.
+    let server = MockVidenoa::start().await?;
+    let client = test_client(
+        &server,
+        Duration::from_secs(5),
+        Duration::from_secs(1),
+        JSON_LIMIT,
+    )?;
+    let params = BTreeMap::new();
+    let workflow = WorkflowName::new("eligible-workflow.json");
+    let key: SubmissionKey = "00000000-0000-4000-8000-000000000990".parse()?;
+    let job = client.run(&workflow, key, &params).await?.receipt.id;
+    let reason = "host 'nas.local' is not allowed; add it to the worker's allowed hosts";
+    let body = format!(r#"{{"error":"{reason}","code":"host_not_allowed"}}"#).into_bytes();
+    let refused = VidenoaClientError::ClientStatus {
+        status: 403,
+        reason: Some(reason.to_owned()),
+        code: Some(ErrorCode::HostNotAllowed),
+    };
+    for route in [Route::Run, Route::RunValidate, Route::JobCancel] {
+        server
+            .set_fault(Fault::Response(ResponseFault {
+                route,
+                status: 403,
+                body: body.clone(),
+            }))
+            .await;
+    }
+
+    // When: the Controller submits, validates and cancels.
+    let key: SubmissionKey = "00000000-0000-4000-8000-000000000991".parse()?;
+    let run = client.run(&workflow, key, &params).await;
+    let validation = client.validate_run(&workflow).await;
+    let cancel = client.cancel_job(job).await;
+
+    // Then: each says the Worker refused the host, not that the password is
+    // wrong, and validation does not call the workflow invalid.
+    assert_eq!(run.expect_err("refused run"), refused);
+    assert_eq!(validation.expect_err("refused validation"), refused);
+    assert_eq!(cancel.expect_err("refused cancel"), refused);
+    assert!(refused.is_host_not_allowed() && !refused.is_authentication());
     Ok(())
 }
 

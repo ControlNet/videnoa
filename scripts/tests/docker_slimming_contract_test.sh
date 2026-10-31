@@ -201,7 +201,8 @@ if [[ -n "$WORKER_IMAGE" ]]; then
       attempt=$((attempt + 1))
       sleep 0.5
     done
-    test "$(cat /tmp/health.json)" = "{\"status\":\"ok\"}"
+    # Health also reports capacity fields; only the status is fixed.
+    grep -q "^{\"status\":\"ok\"[,}]" /tmp/health.json
     curl --fail --silent http://127.0.0.1:3000/ | grep -q "<div id=\"root\"></div>"
   ' || fail 'Worker embedded WebUI HTTP smoke failed'
 fi

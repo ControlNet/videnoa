@@ -8,6 +8,7 @@ edition = "2021"
 cap-std.workspace = true
 tempfile = "3"
 videnoa-transport.workspace = true
+videnoa-protocol.workspace = true
 argon2 = { workspace = true }
 rand_core = { workspace = true }
 anyhow = { workspace = true }
@@ -48,6 +49,14 @@ prost = "0.14"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_System_JobObjects",
+  "Win32_System_Threading",
+] }
 
 [build-dependencies]
 prost-build = "0.14"

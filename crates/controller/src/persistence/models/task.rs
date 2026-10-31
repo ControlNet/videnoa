@@ -65,6 +65,8 @@ pub struct TaskRecord {
     pub failure: Option<FailureInfo>,
     pub retry: RetryMetadata,
     pub cancel_requested_at: Option<DateTime<Utc>>,
+    /// When an operator discarded this failed task; it can no longer be retried.
+    pub discarded_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub lifecycle: TaskLifecycle,

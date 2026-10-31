@@ -4,6 +4,7 @@ use crate::domain::{SortDirection, TaskListQuery, TaskSortField, TaskStatus};
 
 use super::codec::{failure_stage, parse_task_status, task_source, task_status};
 use super::models::{PageResult, TaskRecord};
+use super::status_sql::TERMINAL;
 use super::task_row::{map_task, TASK_COLUMNS};
 use super::{PersistenceError, Store};
 
@@ -62,15 +63,15 @@ impl Store {
     /// # Errors
     /// Returns an error when `SQLite` cannot explain the recovery query.
     pub async fn explain_recovery_plan(&self) -> Result<Vec<String>, PersistenceError> {
-        plan(
-            self,
+        let sql = format!(
             "EXPLAIN QUERY PLAN SELECT id FROM tasks
-             WHERE status NOT IN ('completed', 'failed', 'cancelled')
+             WHERE status NOT IN {TERMINAL}
                AND (updated_at_ms, id) > (0, '00000000-0000-4000-8000-000000000000')
                AND (updated_at_ms, id) <= (9223372036854775807, 'ffffffff-ffff-4fff-bfff-ffffffffffff')
              ORDER BY updated_at_ms ASC, id ASC LIMIT 100",
-        )
-        .await
+            TERMINAL = *TERMINAL,
+        );
+        plan(self, &sql).await
     }
 
     /// # Errors

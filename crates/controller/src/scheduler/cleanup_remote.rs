@@ -51,20 +51,25 @@ impl TransferExecutor {
                     .await?;
                 Ok(PublicationOutcome::Completed)
             }
+            // The worker, not the cleanup, failed: retry later.
             Err(
                 VidenoaClientError::ServerStatus { .. }
                 | VidenoaClientError::Network
                 | VidenoaClientError::Timeout
-                | VidenoaClientError::Stall,
+                | VidenoaClientError::Stall
+                | VidenoaClientError::RateLimited
+                | VidenoaClientError::ClientStatus {
+                    status: 401 | 403, ..
+                }
+                | VidenoaClientError::UnexpectedStatus { .. }
+                | VidenoaClientError::Incompatible,
             ) => {
                 self.cleanup_retry(task, attempt, DownstreamFailure::RemoteCleanup, now, jitter)
                     .await
             }
             Err(
                 VidenoaClientError::Conflict
-                | VidenoaClientError::RateLimited
                 | VidenoaClientError::ClientStatus { .. }
-                | VidenoaClientError::UnexpectedStatus { .. }
                 | VidenoaClientError::MalformedPayload
                 | VidenoaClientError::OversizedPayload { .. }
                 | VidenoaClientError::LocalIo

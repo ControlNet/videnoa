@@ -1,0 +1,1 @@
+{"inputs":[{"name":"input","port_type":"Path"},{"name":"scale","port_type":"Int","default_value":2}],"outputs":[{"name":"output","port_type":"Path"}]}

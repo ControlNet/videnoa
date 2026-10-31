@@ -1,5 +1,27 @@
 import { z } from "zod"
 
+/*
+ * Response schemas are not strict: a field a newer Controller adds is dropped,
+ * so a Controller upgraded before the browser reloads does not break the UI.
+ * Request schemas stay strict, since this UI builds them.
+ */
+
+/**
+ * A list a newer Controller may extend: each row is parsed on its own, so a
+ * row this UI cannot read (say, a status it does not know yet) is left out
+ * instead of failing the whole list.
+ */
+export function rowsOf<Row extends z.ZodType>(row: Row) {
+  return z.array(z.unknown()).transform((rows): z.output<Row>[] =>
+    rows.flatMap((value) => {
+      const parsed = row.safeParse(value)
+      if (parsed.success) return [parsed.data]
+      console.warn("Left out a list row this page cannot read.", parsed.error.issues)
+      return []
+    }),
+  )
+}
+
 export const sessionSchema = z
   .object({
     id: z.string().uuid(),
@@ -8,11 +30,10 @@ export const sessionSchema = z
     expires_at: z.iso.datetime(),
     idle_expires_at: z.iso.datetime(),
   })
-  .strict()
 
-export const loginResponseSchema = z.object({ session: sessionSchema }).strict()
-export const logoutResponseSchema = z.object({ logged_out: z.literal(true) }).strict()
-export const setupStatusSchema = z.object({ initialized: z.boolean() }).strict()
+export const loginResponseSchema = z.object({ session: sessionSchema })
+export const logoutResponseSchema = z.object({ logged_out: z.literal(true) })
+export const setupStatusSchema = z.object({ initialized: z.boolean() })
 
 /*
  * Narrowed to HTTP(S) before it can reach an `href`. The Controller sends a
@@ -32,7 +53,6 @@ export const aboutSchema = z
     version: z.string().min(1),
     source_url: sourceUrlSchema,
   })
-  .strict()
 
 export type About = z.infer<typeof aboutSchema>
 
@@ -64,6 +84,7 @@ const operationsErrorCodeSchema = z.enum([
   "invalid_request",
   "not_found",
   "conflict",
+  "rate_limited",
   "remote_state_ambiguous",
   "publication_ambiguous",
   "unavailable",
@@ -89,7 +110,6 @@ const flatApiErrorSchema = z
   .object({
     error: authErrorCodeSchema,
   })
-  .strict()
   .transform(({ error }): ParsedApiError => ({ code: error, message: error, retryable: false, fieldErrors: [] }))
 
 const nestedApiErrorSchema = z
@@ -105,13 +125,10 @@ const nestedApiErrorSchema = z
               field: z.string(),
               code: fieldErrorCodeSchema,
               message: z.string(),
-            })
-            .strict(),
+            }),
         ),
-      })
-      .strict(),
+      }),
   })
-  .strict()
   .transform(
     ({ error }): ParsedApiError => ({
       code: error.code,

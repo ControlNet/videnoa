@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest"
 
-import type { FailureCode, FailureStage, Task } from "../api/taskSchemas"
-import { canCancelTask, canRetryOnAnotherWorker, canRetryTask, failureGuidance } from "./taskActionPolicy"
+import type { Task } from "../api/taskSchemas"
+import {
+  canAbandonTask,
+  canCancelTask,
+  canDiscardTask,
+  canRetryOnAnotherWorker,
+  canRetryTask,
+  failureGuidance,
+} from "./taskActionPolicy"
 
 const task = {
   id: "00000000-0000-4000-8000-000000000001",
@@ -26,134 +33,61 @@ const task = {
   created_at: "2026-09-02T00:00:00Z",
   updated_at: "2026-09-02T00:00:00Z",
   completed_at: null,
+  allowed_actions: [],
 } as const satisfies Task
 
+const offered = (candidate: Task) => ({
+  cancel: canCancelTask(candidate),
+  abandon: canAbandonTask(candidate),
+  retry: canRetryTask(candidate),
+  retryOnAnotherWorker: canRetryOnAnotherWorker(candidate),
+  discard: canDiscardTask(candidate),
+})
+
 describe("task lifecycle action policy", () => {
-  it("allows manual retry of historical input changes marked nonretryable", () => {
-    const failed = {
-      ...task, status: "failed",
-      failure: { failure_stage: "upload", failure_code: "input_changed", message: "input changed", retryable: false },
-    } as const
-    expect(canRetryTask(failed)).toBe(true)
-    expect(failureGuidance("input_changed", "upload").kind).toBe("stage_retry")
-    expect(canRetryTask({ ...failed, status: "uploading" })).toBe(false)
-    expect(canRetryTask({ ...failed, failure: { ...failed.failure, failure_stage: "processing" } })).toBe(false)
-  })
-
-  it("allows manual resubmission of a Worker rejection marked nonretryable", () => {
-    const rejected = {
-      ...task, status: "failed",
-      failure: { failure_stage: "submission", failure_code: "remote_submission_failed", message: "rejected: missing model", retryable: false },
-    } as const
-    expect(canRetryTask(rejected)).toBe(true)
-    expect(failureGuidance("remote_submission_failed", "submission").kind).toBe("stage_retry")
-    expect(canRetryTask({ ...rejected, failure: { ...rejected.failure, failure_stage: "processing" } })).toBe(false)
-    expect(failureGuidance("remote_submission_failed", "processing").kind).toBe("blocked")
-  })
-
-  it("offers another Worker only for failures before any output exists", () => {
-    // Given: failed tasks at each retryable stage.
-    const failedAt = (failure_code: FailureCode, failure_stage: FailureStage, retryable = true): Task => ({
-      ...task,
-      status: "failed",
-      failure: { failure_code, failure_stage, message: "failed", retryable },
-    })
-
-    // Then: compute, upload and rejected submission may move; later stages hold output on the Worker.
-    expect(canRetryOnAnotherWorker(failedAt("processing_failed", "processing"))).toBe(true)
-    expect(canRetryOnAnotherWorker(failedAt("transfer_failed", "upload"))).toBe(true)
-    expect(canRetryOnAnotherWorker(failedAt("input_changed", "upload", false))).toBe(true)
-    expect(canRetryOnAnotherWorker(failedAt("remote_submission_failed", "submission", false))).toBe(true)
-    expect(canRetryOnAnotherWorker(failedAt("transfer_failed", "download"))).toBe(false)
-    expect(canRetryOnAnotherWorker(failedAt("publication_failed", "publication"))).toBe(false)
-    expect(canRetryOnAnotherWorker(failedAt("processing_failed", "processing", false))).toBe(false)
-  })
-
-  it("allows cancellation only from queued through verifying", () => {
-    // Given/When: every boundary status is evaluated.
-    const allowed = ["queued", "reserved", "uploading", "staged", "submitting", "processing", "remote_completed", "downloading", "verifying"] as const
-    const blocked = ["publishing", "remote_cleanup", "completed", "failed", "cancelled"] as const
-
-    // Then: the UI matches the backend cancellation window.
-    expect(allowed.every((status) => canCancelTask({ ...task, status }))).toBe(true)
-    expect(blocked.every((status) => !canCancelTask({ ...task, status }))).toBe(true)
-  })
-
-  it("blocks cancellation after cancellation intent is persisted", () => {
-    // Given: an otherwise cancellable processing task with durable cancellation intent.
-    const cancelling = { ...task, cancel_requested_at: "2026-09-02T00:06:00Z" }
-
-    // When: action eligibility is derived from authoritative detail.
-    const allowed = canCancelTask(cancelling)
-
-    // Then: the UI cannot issue a repeated cancellation request.
-    expect(allowed).toBe(false)
-  })
-
-  it("requires explicit retryable evidence and blocks ambiguity", () => {
-    // Given: retryable processing evidence and contradictory ambiguity evidence.
-    const processing = {
+  it("offers exactly the actions the Controller allows", () => {
+    // Given: a failed task whose failure looks retryable, and the Controller's verdicts.
+    const failed: Task = {
       ...task,
       status: "failed",
       failure: { failure_stage: "processing", failure_code: "processing_failed", message: "failed", retryable: true },
-    } as const
-    const ambiguous = { ...processing, failure: { ...processing.failure, failure_code: "remote_state_ambiguous" } } as const
+      allowed_actions: ["retry", "retry_on_another_worker", "discard"],
+    }
 
-    // When/Then: retry is enabled only for explicit safe evidence.
-    expect(canRetryTask(processing)).toBe(true)
-    expect(canRetryTask(ambiguous)).toBe(false)
-    expect(canRetryTask({ ...processing, failure: { ...processing.failure, retryable: false } })).toBe(false)
+    // When/Then: the UI follows the list, not its own reading of the failure.
+    expect(offered(failed)).toEqual({ cancel: false, abandon: false, retry: true, retryOnAnotherWorker: true, discard: true })
+    expect(offered({ ...failed, allowed_actions: ["discard"] })).toEqual({
+      cancel: false,
+      abandon: false,
+      retry: false,
+      retryOnAnotherWorker: false,
+      discard: true,
+    })
+    expect(offered({ ...task, allowed_actions: ["cancel"] }).cancel).toBe(true)
+    expect(offered({ ...task, cancel_requested_at: "2026-09-02T00:06:00Z", allowed_actions: ["abandon"] })).toEqual({
+      cancel: false,
+      abandon: true,
+      retry: false,
+      retryOnAnotherWorker: false,
+      discard: false,
+    })
   })
 
-  it.each([
-    ["processing_failed", "processing"],
-    ["transfer_failed", "upload"],
-    ["transfer_failed", "download"],
-    ["verification_failed", "verification"],
-    ["publication_failed", "publication"],
-    ["publication_ambiguous", "publication"],
-    ["cleanup_failed", "local_cleanup"],
-    ["cleanup_failed", "remote_cleanup"],
-  ] as const)("allows the Rust-supported %s and %s retry pair", (failureCode, failureStage) => {
-    // Given: a failed task with explicit retryability and one supported code/stage pair.
-    const retryable = {
-      ...task,
-      status: "failed",
-      failure: { failure_stage: failureStage, failure_code: failureCode, message: "failed", retryable: true },
-    } as const
+  it("offers nothing the Controller did not list, including actions it does not know", () => {
+    // Given: a task with no allowed actions, and one with only a future action.
+    const none = offered(task)
+    const future = offered({ ...task, allowed_actions: ["rewind"] })
 
-    // When/Then: the frontend mirrors the Rust retry classifier.
-    expect(canRetryTask(retryable)).toBe(true)
+    // Then: no button is offered for either.
+    expect(Object.values(none).some(Boolean)).toBe(false)
+    expect(Object.values(future).some(Boolean)).toBe(false)
   })
 
-  it.each([
-    ["processing_failed", "download"],
-    ["transfer_failed", "processing"],
-    ["verification_failed", "publication"],
-    ["publication_failed", "verification"],
-    ["cleanup_failed", "upload"],
-  ] as const)("blocks the contradictory %s and %s retry pair", (failureCode, failureStage) => {
-    // Given: explicit retryability attached to a Rust-unsupported code/stage pair.
-    const contradictory = {
-      ...task,
-      status: "failed",
-      failure: { failure_stage: failureStage, failure_code: failureCode, message: "failed", retryable: true },
-    } as const
-
-    // When/Then: contradictory persisted evidence remains blocked.
-    expect(canRetryTask(contradictory)).toBe(false)
-  })
-
-  it.each(["remote_state_ambiguous", "publication_ambiguous"] as const)("blocks %s despite contradictory retryable metadata", (failureCode) => {
-    // Given: ambiguity evidence incorrectly marked retryable.
-    const ambiguous = {
-      ...task,
-      status: "failed",
-      failure: { failure_stage: "processing", failure_code: failureCode, message: "ambiguous", retryable: true },
-    } as const
-
-    // When/Then: ambiguity outranks retryable metadata.
-    expect(canRetryTask(ambiguous)).toBe(false)
+  it("explains manual retries of failures recorded as nonretryable", () => {
+    expect(failureGuidance("input_changed", "upload").kind).toBe("stage_retry")
+    expect(failureGuidance("input_changed", "processing").kind).toBe("blocked")
+    expect(failureGuidance("remote_submission_failed", "submission").kind).toBe("stage_retry")
+    expect(failureGuidance("remote_submission_failed", "processing").kind).toBe("blocked")
   })
 
   it("routes collision and processing guidance without changing task paths", () => {

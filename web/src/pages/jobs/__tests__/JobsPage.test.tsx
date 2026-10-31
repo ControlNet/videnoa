@@ -247,6 +247,34 @@ describe("JobsPage print debug visibility", () => {
 	});
 });
 
+describe("JobsPage print output translation", () => {
+	it("labels Print output in the selected language", async () => {
+		await i18n.changeLanguage("zh-CN");
+		useJobStore.setState({
+			jobs: [makeJob({ id: "print-job-1", status: "completed" })],
+			runtimePreviewsByJobId: {
+				"print-job-1": {
+					"node-print-1": {
+						node_id: "node-print-1",
+						node_type: "Print",
+						value_preview: "print-debug-value",
+						truncated: false,
+						preview_max_chars: 512,
+						updated_at_ms: 123,
+					},
+				},
+			},
+		});
+
+		render(<JobsPage />);
+		fireEvent.click(screen.getByText("print-jo").closest("button") as HTMLButtonElement);
+
+		await waitFor(() => {
+			expect(screen.getByText("打印输出")).toBeInTheDocument();
+		});
+	});
+});
+
 describe("JobsPage history actions", () => {
 	it("shows delete for completed rows and hides retry", () => {
 		useJobStore.setState({

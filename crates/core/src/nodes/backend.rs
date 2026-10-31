@@ -3,22 +3,30 @@
 //! Provides [`InferenceBackend`] enum and [`build_session`] helper to create
 //! `ort::Session` with the appropriate execution providers and optional TRT engine caching.
 
+use std::collections::HashMap;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, RecvTimeoutError};
 use std::sync::{Arc, Once, OnceLock};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use ort::{
     environment::Environment,
     ep::{CUDAExecutionProvider, ExecutionProvider, TensorRTExecutionProvider},
     memory::{AllocationDevice, Allocator, AllocatorType, MemoryInfo, MemoryType},
-    session::{builder::GraphOptimizationLevel, Session},
+    session::{
+        builder::{GraphOptimizationLevel, SessionBuilder},
+        Session,
+    },
     value::{DynTensorValueType, DynValue},
 };
 use sha2::{Digest, Sha256};
 use tracing::{debug, error, info, warn};
+
+use crate::node::PortDefinition;
+use crate::types::{PortData, PortType};
 
 /// Inference backend selection.
 ///
@@ -54,6 +62,31 @@ pub struct SessionConfig<'a> {
     pub model_path: &'a Path,
     pub backend: &'a InferenceBackend,
     pub trt_cache_dir: Option<&'a Path>,
+    /// CUDA device the session runs on, for both the TensorRT and CUDA EPs.
+    pub device_id: i32,
+}
+
+/// The `device_id` input of an inference node: the CUDA device to run on,
+/// 0 when unset.
+pub fn read_device_id(inputs: &HashMap<String, PortData>) -> Result<i32> {
+    match inputs.get("device_id") {
+        None => Ok(0),
+        Some(PortData::Int(value)) => i32::try_from(*value)
+            .ok()
+            .filter(|id| *id >= 0)
+            .ok_or_else(|| anyhow!("device_id must be a non-negative Int, got {value}")),
+        Some(_) => bail!("device_id must be an Int"),
+    }
+}
+
+/// The `device_id` input port shared by the inference nodes.
+pub fn device_id_port() -> PortDefinition {
+    PortDefinition {
+        name: "device_id".to_string(),
+        port_type: PortType::Int,
+        required: false,
+        default_value: Some(serde_json::json!(0)),
+    }
 }
 
 fn output_memory_contract(cuda_pinned: bool) -> (AllocationDevice, MemoryType) {
@@ -195,132 +228,27 @@ pub fn build_session(config: &SessionConfig<'_>) -> Result<Session> {
         .map_err(|error| -> ort::Error { error.into() })?;
 
     let session = match config.backend {
-        InferenceBackend::Tensorrt => {
-            let cache_dir = config
-                .trt_cache_dir
-                .unwrap_or_else(|| Path::new("trt_cache"));
-
-            if let Err(e) = std::fs::create_dir_all(cache_dir) {
-                warn!(
-                    dir = %cache_dir.display(),
-                    error = %e,
-                    "Failed to create TRT cache directory"
-                );
-            }
-
-            let cache_path = cache_dir.to_string_lossy().to_string();
-            let before = cache_stats(cache_dir);
-            let started = Instant::now();
-
-            debug!(
-                backend = "tensorrt",
-                cache_dir = %cache_dir.display(),
-                "Building session with TensorRT EP (CUDA EP fallback)"
-            );
-
-            info!(
-                cache_dir = %cache_dir.display(),
-                cache_files = before.file_count,
-                cache_bytes = before.total_bytes,
-                "Initializing TensorRT session (first run may take several minutes)"
-            );
-
-            let (stop_tx, stop_rx) = channel::<()>();
-            let cache_dir_for_log = cache_dir.display().to_string();
-            let progress_thread = thread::spawn(move || {
-                let tick = Duration::from_secs(15);
-                let mut elapsed = 15_u64;
-                loop {
-                    match stop_rx.recv_timeout(tick) {
-                        Ok(_) | Err(RecvTimeoutError::Disconnected) => break,
-                        Err(RecvTimeoutError::Timeout) => {
-                            info!(
-                                elapsed_secs = elapsed,
-                                cache_dir = %cache_dir_for_log,
-                                "TensorRT session initialization still in progress"
-                            );
-                            elapsed += 15;
-                        }
-                    }
-                }
-            });
-
-            // TRT EP may fail at runtime if libnvinfer.so.10 (or nvinfer.dll) is not installed.
-            // The fallback CUDA EP ensures inference still works.
-            let session_result = builder
-                .with_execution_providers([
-                    TensorRTExecutionProvider::default()
-                        .with_engine_cache(true)
-                        .with_engine_cache_path(&cache_path)
-                        .with_fp16(true)
-                        .with_device_id(0)
-                        .build(),
-                    CUDAExecutionProvider::default().build(),
-                ])
-                .map_err(|error| -> ort::Error { error.into() })?
-                .commit_from_file(config.model_path)
-                .with_context(|| {
-                    format!("Failed to load ONNX model: {}", config.model_path.display())
-                });
-
-            let _ = stop_tx.send(());
-            let _ = progress_thread.join();
-
-            let elapsed = started.elapsed().as_secs_f64();
-            match session_result {
-                Ok(session) => {
-                    let after = cache_stats(cache_dir);
-                    let cache_updated = after.file_count > before.file_count
-                        || after.total_bytes > before.total_bytes;
-
-                    if cache_updated {
-                        info!(
-                            elapsed_secs = elapsed,
-                            cache_dir = %cache_dir.display(),
-                            cache_files_before = before.file_count,
-                            cache_files_after = after.file_count,
-                            cache_bytes_before = before.total_bytes,
-                            cache_bytes_after = after.total_bytes,
-                            "TensorRT session ready; engine cache updated"
-                        );
-                    } else {
-                        info!(
-                            elapsed_secs = elapsed,
-                            cache_dir = %cache_dir.display(),
-                            cache_files = after.file_count,
-                            cache_bytes = after.total_bytes,
-                            "TensorRT session ready; using existing cache"
-                        );
-                    }
-
-                    session
-                }
-                Err(error_value) => {
-                    let after = cache_stats(cache_dir);
-                    error!(
-                        elapsed_secs = elapsed,
-                        cache_dir = %cache_dir.display(),
-                        cache_files_before = before.file_count,
-                        cache_files_after = after.file_count,
-                        cache_bytes_before = before.total_bytes,
-                        cache_bytes_after = after.total_bytes,
-                        error = %error_value,
-                        "TensorRT session initialization failed"
-                    );
-                    return Err(error_value);
-                }
-            }
-        }
+        InferenceBackend::Tensorrt => match config.trt_cache_dir {
+            Some(entry) => open_trt_cache_entry(entry, |cache_dir| {
+                commit_tensorrt_session(builder.clone(), config, cache_dir)
+            })?,
+            None => commit_tensorrt_session(builder, config, Path::new("trt_cache"))?,
+        },
         InferenceBackend::Cuda => {
             let cuda = CUDAExecutionProvider::default();
             if !cuda.is_available().unwrap_or(false) {
                 warn!("CUDA EP is not available — inference will fall back to CPU");
             }
 
-            debug!(backend = "cuda", "Building session with CUDA EP");
+            debug!(
+                backend = "cuda",
+                device_id = config.device_id,
+                "Building session with CUDA EP"
+            );
 
             builder
                 .with_execution_providers([CUDAExecutionProvider::default()
+                    .with_device_id(config.device_id)
                     .build()
                     .error_on_failure()])
                 .map_err(|error| -> ort::Error { error.into() })?
@@ -332,6 +260,128 @@ pub fn build_session(config: &SessionConfig<'_>) -> Result<Session> {
     };
 
     Ok(session)
+}
+
+/// Create a session with the TensorRT EP (CUDA EP fallback) whose engine
+/// cache is `cache_dir`. A missing engine is built and written there, which
+/// can take several minutes: while the session is created for static input
+/// shapes, at the first run for dynamic ones (see [`open_trt_cache_entry`]).
+fn commit_tensorrt_session(
+    builder: SessionBuilder,
+    config: &SessionConfig<'_>,
+    cache_dir: &Path,
+) -> Result<Session> {
+    if let Err(e) = std::fs::create_dir_all(cache_dir) {
+        warn!(
+            dir = %cache_dir.display(),
+            error = %e,
+            "Failed to create TRT cache directory"
+        );
+    }
+
+    let cache_path = cache_dir.to_string_lossy().to_string();
+    let before = cache_stats(cache_dir);
+    let started = Instant::now();
+
+    debug!(
+        backend = "tensorrt",
+        device_id = config.device_id,
+        cache_dir = %cache_dir.display(),
+        "Building session with TensorRT EP (CUDA EP fallback)"
+    );
+
+    info!(
+        cache_dir = %cache_dir.display(),
+        cache_files = before.file_count,
+        cache_bytes = before.total_bytes,
+        "Initializing TensorRT session (first run may take several minutes)"
+    );
+
+    let (stop_tx, stop_rx) = channel::<()>();
+    let cache_dir_for_log = cache_dir.display().to_string();
+    let progress_thread = thread::spawn(move || {
+        let tick = Duration::from_secs(15);
+        let mut elapsed = 15_u64;
+        loop {
+            match stop_rx.recv_timeout(tick) {
+                Ok(_) | Err(RecvTimeoutError::Disconnected) => break,
+                Err(RecvTimeoutError::Timeout) => {
+                    info!(
+                        elapsed_secs = elapsed,
+                        cache_dir = %cache_dir_for_log,
+                        "TensorRT session initialization still in progress"
+                    );
+                    elapsed += 15;
+                }
+            }
+        }
+    });
+
+    // TRT EP may fail at runtime if libnvinfer.so.10 (or nvinfer.dll) is not installed.
+    // The fallback CUDA EP ensures inference still works.
+    let session_result = builder
+        .with_execution_providers([
+            TensorRTExecutionProvider::default()
+                .with_engine_cache(true)
+                .with_engine_cache_path(&cache_path)
+                .with_fp16(true)
+                .with_device_id(config.device_id)
+                .build(),
+            CUDAExecutionProvider::default()
+                .with_device_id(config.device_id)
+                .build(),
+        ])
+        .map_err(|error| -> ort::Error { error.into() })?
+        .commit_from_file(config.model_path)
+        .with_context(|| format!("Failed to load ONNX model: {}", config.model_path.display()));
+
+    let _ = stop_tx.send(());
+    let _ = progress_thread.join();
+
+    let elapsed = started.elapsed().as_secs_f64();
+    match session_result {
+        Ok(session) => {
+            let after = cache_stats(cache_dir);
+            let cache_updated =
+                after.file_count > before.file_count || after.total_bytes > before.total_bytes;
+
+            if cache_updated {
+                info!(
+                    elapsed_secs = elapsed,
+                    cache_dir = %cache_dir.display(),
+                    cache_files_before = before.file_count,
+                    cache_files_after = after.file_count,
+                    cache_bytes_before = before.total_bytes,
+                    cache_bytes_after = after.total_bytes,
+                    "TensorRT session ready; engine cache updated"
+                );
+            } else {
+                info!(
+                    elapsed_secs = elapsed,
+                    cache_dir = %cache_dir.display(),
+                    cache_files = after.file_count,
+                    cache_bytes = after.total_bytes,
+                    "TensorRT session ready; using existing cache"
+                );
+            }
+
+            Ok(session)
+        }
+        Err(error_value) => {
+            let after = cache_stats(cache_dir);
+            error!(
+                elapsed_secs = elapsed,
+                cache_dir = %cache_dir.display(),
+                cache_files_before = before.file_count,
+                cache_files_after = after.file_count,
+                cache_bytes_before = before.total_bytes,
+                cache_bytes_after = after.total_bytes,
+                error = %error_value,
+                "TensorRT session initialization failed"
+            );
+            Err(error_value)
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -349,11 +399,89 @@ pub struct TrtCacheIdentity {
     pub tile: Option<TrtTileIdentity>,
 }
 
-/// Format: `device-{device_id}_{model_hash}_{input_h}x{input_w}[_tile-{tile_size}_orig-{original_h}x{original_w}]`
-pub fn trt_cache_key(identity: TrtCacheIdentity, model_hash: &str) -> String {
+/// The inference runtime a TensorRT engine was built with.
+///
+/// A serialized engine only loads in the TensorRT build that wrote it, and the
+/// TensorRT EP of ONNX Runtime leaves stale engines to the user, so both are
+/// part of the cache key: upgrading either builds new engines instead of
+/// loading old ones.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrtRuntimeIdentity {
+    /// `getInferLibVersion()` of the TensorRT library, e.g. `100900` for
+    /// 10.9.0, or `none` when it cannot be loaded (the session then falls
+    /// back to the CUDA EP and writes no engine).
+    pub tensorrt: String,
+    /// The git commit of the ONNX Runtime build, from its build info. The
+    /// build info of the bundled library reports no version number.
+    pub onnxruntime: String,
+}
+
+impl TrtRuntimeIdentity {
+    /// The runtime of this process. The first call loads ONNX Runtime and the
+    /// TensorRT library.
+    pub fn current() -> &'static Self {
+        static CURRENT: OnceLock<TrtRuntimeIdentity> = OnceLock::new();
+        CURRENT.get_or_init(|| Self {
+            tensorrt: tensorrt_library_version()
+                .map_or_else(|| "none".to_string(), |version| version.to_string()),
+            onnxruntime: onnxruntime_build_identity(ort::info()),
+        })
+    }
+}
+
+#[cfg(unix)]
+const TENSORRT_LIBRARIES: &[&str] = &["libnvinfer.so.10"];
+#[cfg(windows)]
+const TENSORRT_LIBRARIES: &[&str] = &["nvinfer_10.dll", "nvinfer.dll"];
+
+/// `getInferLibVersion()` of the TensorRT library the TensorRT EP loads.
+fn tensorrt_library_version() -> Option<i32> {
+    TENSORRT_LIBRARIES.iter().find_map(|name| {
+        // SAFETY: this loads the TensorRT library by the name the TensorRT EP
+        // resolves (it is normally resident already) and calls
+        // `getInferLibVersion`, an argument-less C function returning the
+        // library version. The handle is leaked so the library stays mapped,
+        // as it does for the EP.
+        unsafe {
+            let library = libloading::Library::new(*name).ok()?;
+            let version = library
+                .get::<unsafe extern "C" fn() -> i32>(b"getInferLibVersion")
+                .ok()
+                .map(|get_version| get_version());
+            std::mem::forget(library);
+            version
+        }
+    })
+}
+
+/// The `git-commit-id` field of `ort::info()`, or the first 12 hex digits of
+/// the build info's SHA-256 when it has none.
+fn onnxruntime_build_identity(build_info: &str) -> String {
+    build_info
+        .split(',')
+        .find_map(|field| field.trim().strip_prefix("git-commit-id="))
+        .map(str::trim)
+        .filter(|commit| !commit.is_empty() && commit.chars().all(|c| c.is_ascii_alphanumeric()))
+        .map_or_else(
+            || format!("{:x}", Sha256::digest(build_info))[..12].to_string(),
+            str::to_string,
+        )
+}
+
+/// Format: `trt-{tensorrt}_ort-{onnxruntime}_device-{device_id}_{model_hash}_{input_h}x{input_w}[_tile-{tile_size}_orig-{original_h}x{original_w}]`
+pub fn trt_cache_key(
+    identity: TrtCacheIdentity,
+    model_hash: &str,
+    runtime: &TrtRuntimeIdentity,
+) -> String {
     let base = format!(
-        "device-{}_{}_{}x{}",
-        identity.device_id, model_hash, identity.input_h, identity.input_w
+        "trt-{}_ort-{}_device-{}_{}_{}x{}",
+        runtime.tensorrt,
+        runtime.onnxruntime,
+        identity.device_id,
+        model_hash,
+        identity.input_h,
+        identity.input_w
     );
     match identity.tile {
         Some(tile) => format!(
@@ -375,12 +503,123 @@ pub fn model_trt_cache_dir(
     base_dir: &Path,
     model_path: &Path,
     identity: TrtCacheIdentity,
+    runtime: &TrtRuntimeIdentity,
 ) -> Result<PathBuf> {
     let model = std::fs::read(model_path)
         .with_context(|| format!("failed to read ONNX model: {}", model_path.display()))?;
     let model_hash = format!("{:x}", Sha256::digest(model));
-    let key = trt_cache_key(identity, &model_hash);
+    let key = trt_cache_key(identity, &model_hash, runtime);
     Ok(resolve_trt_cache_dir(base_dir, Some(&key)))
+}
+
+/// Open a session whose TensorRT engine cache is the keyed directory `entry`.
+/// `open` creates the session with the engine cache at the path it is given.
+///
+/// The session is always opened on `entry` itself. For a model with dynamic
+/// input shapes (all shipped SR and FI models) and no explicit TensorRT
+/// profiles, the TensorRT EP loads or builds the engine at the first run,
+/// after the session exists, so the engine cannot be built aside and renamed
+/// into place. For a model with static input shapes, the EP loads or builds
+/// it while the session is created.
+///
+/// - Session creation holds an exclusive lock on `<entry>.lock`, so processes
+///   that share the cache never create sessions on the same entry at the
+///   same time. For static shapes this means one build; the next opener waits
+///   and loads it.
+/// - If the session cannot be created because the cached engine does not
+///   deserialize, the entry is moved aside to `<entry>.broken-<unix-ms>` and
+///   the session is created once more on a fresh entry. The EP reports a bad
+///   engine this way only for static shapes; for dynamic shapes the error
+///   comes from the first run.
+pub(crate) fn open_trt_cache_entry<T>(
+    entry: &Path,
+    mut open: impl FnMut(&Path) -> Result<T>,
+) -> Result<T> {
+    let _lock = lock_trt_cache_entry(entry)?;
+    create_trt_cache_entry(entry)?;
+    match open(entry) {
+        Err(error) if is_engine_load_error(&error) => {
+            warn!(
+                entry = %entry.display(),
+                error = %format!("{error:#}"),
+                "Cached TensorRT engine cannot be loaded; building it again"
+            );
+            set_aside_trt_cache_entry(entry)?;
+            create_trt_cache_entry(entry)?;
+            open(entry)
+        }
+        result => result,
+    }
+}
+
+fn create_trt_cache_entry(entry: &Path) -> Result<()> {
+    std::fs::create_dir_all(entry)
+        .with_context(|| format!("failed to create TRT cache entry: {}", entry.display()))
+}
+
+/// `<entry>.<suffix>`, next to `entry`.
+fn trt_cache_sibling(entry: &Path, suffix: &str) -> PathBuf {
+    let mut name = entry.file_name().map(OsString::from).unwrap_or_default();
+    name.push(format!(".{suffix}"));
+    entry.with_file_name(name)
+}
+
+/// The TensorRT EP fails session creation with "TensorRT EP could not
+/// deserialize engine from cache: <path>" when a cached engine is unusable.
+fn is_engine_load_error(error: &anyhow::Error) -> bool {
+    format!("{error:#}").contains("deserialize engine")
+}
+
+fn lock_trt_cache_entry(entry: &Path) -> Result<std::fs::File> {
+    let lock_path = trt_cache_sibling(entry, "lock");
+    if let Some(parent) = lock_path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!("failed to create TRT cache directory: {}", parent.display())
+        })?;
+    }
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock_path)
+        .with_context(|| format!("failed to open TRT cache lock: {}", lock_path.display()))?;
+    match lock.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => {
+            info!(
+                entry = %entry.display(),
+                "Waiting for another process to finish opening this TensorRT engine"
+            );
+            lock.lock().with_context(|| {
+                format!("failed to lock TRT cache entry: {}", lock_path.display())
+            })?;
+        }
+        Err(std::fs::TryLockError::Error(error)) => {
+            return Err(error).with_context(|| {
+                format!("failed to lock TRT cache entry: {}", lock_path.display())
+            });
+        }
+    }
+    Ok(lock)
+}
+
+fn set_aside_trt_cache_entry(entry: &Path) -> Result<()> {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis());
+    let broken = trt_cache_sibling(entry, &format!("broken-{millis}"));
+    std::fs::rename(entry, &broken).with_context(|| {
+        format!(
+            "failed to move unusable TRT cache entry {} aside",
+            entry.display()
+        )
+    })?;
+    warn!(
+        entry = %entry.display(),
+        moved_to = %broken.display(),
+        "Moved unusable TensorRT engine cache aside"
+    );
+    Ok(())
 }
 
 #[cfg(test)]
@@ -478,6 +717,13 @@ mod tests {
         assert_eq!(InferenceBackend::Tensorrt.to_string(), "tensorrt");
     }
 
+    fn runtime(tensorrt: &str, onnxruntime: &str) -> TrtRuntimeIdentity {
+        TrtRuntimeIdentity {
+            tensorrt: tensorrt.to_string(),
+            onnxruntime: onnxruntime.to_string(),
+        }
+    }
+
     #[test]
     fn test_trt_cache_key() {
         let key = trt_cache_key(
@@ -488,8 +734,9 @@ mod tests {
                 tile: None,
             },
             "abc123",
+            &runtime("100900", "a83fc4d58c"),
         );
-        assert_eq!(key, "device-0_abc123_1080x1920");
+        assert_eq!(key, "trt-100900_ort-a83fc4d58c_device-0_abc123_1080x1920");
     }
 
     #[test]
@@ -506,8 +753,220 @@ mod tests {
                 }),
             },
             "def456",
+            &runtime("100700", "a83fc4d58c"),
         );
-        assert_eq!(key, "device-1_def456_160x240_tile-64_orig-157x239");
+        assert_eq!(
+            key,
+            "trt-100700_ort-a83fc4d58c_device-1_def456_160x240_tile-64_orig-157x239"
+        );
+    }
+
+    #[test]
+    fn trt_cache_key_changes_with_the_tensorrt_or_onnxruntime_build() {
+        let identity = TrtCacheIdentity {
+            device_id: 0,
+            input_h: 1088,
+            input_w: 1920,
+            tile: None,
+        };
+        let baseline = trt_cache_key(identity, "model", &runtime("100700", "a83fc4d58c"));
+
+        assert_ne!(
+            baseline,
+            trt_cache_key(identity, "model", &runtime("100900", "a83fc4d58c"))
+        );
+        assert_ne!(
+            baseline,
+            trt_cache_key(identity, "model", &runtime("100700", "5c1b7ccbff"))
+        );
+    }
+
+    #[test]
+    fn onnxruntime_build_identity_uses_the_commit_or_a_hash_of_the_build_info() {
+        assert_eq!(
+            onnxruntime_build_identity(
+                "ORT Build Info: git-branch=HEAD, git-commit-id=a83fc4d58c, build type=Release"
+            ),
+            "a83fc4d58c"
+        );
+        let hashed = onnxruntime_build_identity("ORT Build Info: build type=Release");
+        assert_eq!(hashed.len(), 12);
+        assert!(hashed.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(
+            hashed,
+            onnxruntime_build_identity("ORT Build Info: build type=Debug")
+        );
+    }
+
+    #[test]
+    #[ignore = "loads the ONNX Runtime and TensorRT libraries"]
+    fn trt_runtime_identity_reads_the_loaded_libraries() {
+        let runtime = TrtRuntimeIdentity::current();
+
+        assert!(runtime.tensorrt.parse::<i32>().is_ok(), "{runtime:?}");
+        assert!(!runtime.onnxruntime.is_empty(), "{runtime:?}");
+    }
+
+    fn write_engine(dir: &Path, contents: &str) -> Result<()> {
+        std::fs::write(dir.join("model.engine"), contents)?;
+        Ok(())
+    }
+
+    fn siblings(entry: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(entry.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn trt_cache_session_is_opened_on_the_entry_itself() {
+        // The TensorRT EP writes the engine at the first run for models with
+        // dynamic input shapes, after the session exists, so the session
+        // must point at the final entry.
+        let temp = tempfile::tempdir().unwrap();
+        let entry = temp.path().join("key");
+        let mut opened = Vec::new();
+
+        open_trt_cache_entry(&entry, |dir| {
+            opened.push(dir.to_path_buf());
+            assert!(dir.is_dir(), "the entry must exist before the session");
+            write_engine(dir, "engine")
+        })
+        .expect("open should succeed");
+
+        assert_eq!(opened, vec![entry.clone()]);
+        assert_eq!(
+            std::fs::read_to_string(entry.join("model.engine")).unwrap(),
+            "engine"
+        );
+        assert_eq!(siblings(&entry), vec!["key", "key.lock"]);
+    }
+
+    #[test]
+    fn existing_trt_cache_entry_is_loaded_in_place() {
+        let temp = tempfile::tempdir().unwrap();
+        let entry = temp.path().join("key");
+        std::fs::create_dir_all(&entry).unwrap();
+        write_engine(&entry, "cached").unwrap();
+        let mut opened = Vec::new();
+
+        open_trt_cache_entry(&entry, |dir| {
+            opened.push(dir.to_path_buf());
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(opened, vec![entry.clone()]);
+    }
+
+    #[test]
+    fn undeserializable_trt_cache_entry_is_moved_aside_and_rebuilt_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let entry = temp.path().join("key");
+        std::fs::create_dir_all(&entry).unwrap();
+        write_engine(&entry, "stale").unwrap();
+        let mut opened = Vec::new();
+
+        open_trt_cache_entry(&entry, |dir| {
+            opened.push(dir.to_path_buf());
+            if std::fs::read_to_string(dir.join("model.engine")).is_ok_and(|e| e == "stale") {
+                anyhow::bail!(
+                    "TensorRT EP could not deserialize engine from cache: {}",
+                    dir.display()
+                );
+            }
+            write_engine(dir, "rebuilt")
+        })
+        .expect("the entry should be rebuilt");
+
+        assert_eq!(opened, vec![entry.clone(), entry.clone()]);
+        assert_eq!(
+            std::fs::read_to_string(entry.join("model.engine")).unwrap(),
+            "rebuilt"
+        );
+        let names = siblings(&entry);
+        assert_eq!(names.len(), 3, "{names:?}");
+        assert!(names[1].starts_with("key.broken-"), "{names:?}");
+        assert_eq!(names[2], "key.lock");
+    }
+
+    #[test]
+    fn trt_cache_entry_that_stays_undeserializable_is_not_retried_again() {
+        let temp = tempfile::tempdir().unwrap();
+        let entry = temp.path().join("key");
+        std::fs::create_dir_all(&entry).unwrap();
+        write_engine(&entry, "stale").unwrap();
+        let mut calls = 0;
+
+        open_trt_cache_entry(&entry, |dir| -> Result<()> {
+            calls += 1;
+            anyhow::bail!(
+                "TensorRT EP could not deserialize engine from cache: {}",
+                dir.display()
+            )
+        })
+        .expect_err("the second failure must be returned");
+
+        assert_eq!(calls, 2);
+    }
+
+    #[test]
+    fn other_errors_on_an_existing_trt_cache_entry_keep_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let entry = temp.path().join("key");
+        std::fs::create_dir_all(&entry).unwrap();
+        write_engine(&entry, "cached").unwrap();
+        let mut calls = 0;
+
+        let error = open_trt_cache_entry(&entry, |_| -> Result<()> {
+            calls += 1;
+            anyhow::bail!("CUDA out of memory")
+        })
+        .expect_err("the error must be returned");
+
+        assert_eq!(error.to_string(), "CUDA out of memory");
+        assert_eq!(calls, 1);
+        assert_eq!(siblings(&entry), vec!["key", "key.lock"]);
+    }
+
+    #[test]
+    fn concurrent_opens_of_a_trt_cache_entry_take_turns() {
+        let temp = tempfile::tempdir().unwrap();
+        let entry = temp.path().join("key");
+        let builds = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let opening = Arc::new(std::sync::Barrier::new(2));
+
+        // Builds the engine unless it is already in the entry, as the
+        // TensorRT EP does for a model with static input shapes.
+        let open = |builds: &std::sync::atomic::AtomicUsize, dir: &Path| -> Result<()> {
+            if !dir.join("model.engine").exists() {
+                builds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                write_engine(dir, "engine")?;
+            }
+            Ok(())
+        };
+
+        let first = {
+            let entry = entry.clone();
+            let builds = Arc::clone(&builds);
+            let opening = Arc::clone(&opening);
+            thread::spawn(move || {
+                open_trt_cache_entry(&entry, |dir| {
+                    opening.wait();
+                    // Hold the lock while the second opener reaches it.
+                    thread::sleep(Duration::from_millis(200));
+                    open(&builds, dir)
+                })
+            })
+        };
+        opening.wait();
+        open_trt_cache_entry(&entry, |dir| open(&builds, dir)).unwrap();
+        first.join().unwrap().unwrap();
+
+        assert_eq!(builds.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -541,11 +1000,12 @@ mod tests {
             input_w: 1920,
             tile: None,
         };
-        let baseline = model_trt_cache_dir(&base, &model_a, baseline_identity)
+        let runtime = runtime("100900", "a83fc4d58c");
+        let baseline = model_trt_cache_dir(&base, &model_a, baseline_identity, &runtime)
             .expect("resolve baseline namespace");
-        let same = model_trt_cache_dir(&base, &model_a, baseline_identity)
+        let same = model_trt_cache_dir(&base, &model_a, baseline_identity, &runtime)
             .expect("resolve matching namespace");
-        let other_model = model_trt_cache_dir(&base, &model_b, baseline_identity)
+        let other_model = model_trt_cache_dir(&base, &model_b, baseline_identity, &runtime)
             .expect("resolve model namespace");
         let other_device = model_trt_cache_dir(
             &base,
@@ -554,6 +1014,7 @@ mod tests {
                 device_id: 1,
                 ..baseline_identity
             },
+            &runtime,
         )
         .expect("resolve device namespace");
         let other_shape = model_trt_cache_dir(
@@ -564,6 +1025,7 @@ mod tests {
                 input_w: 3840,
                 ..baseline_identity
             },
+            &runtime,
         )
         .expect("resolve shape namespace");
 
@@ -576,12 +1038,28 @@ mod tests {
     }
 
     #[test]
+    fn read_device_id_defaults_to_zero_and_rejects_invalid_ids() {
+        let device = |value: PortData| HashMap::from([("device_id".to_string(), value)]);
+
+        assert_eq!(read_device_id(&HashMap::new()).unwrap(), 0);
+        assert_eq!(read_device_id(&device(PortData::Int(1))).unwrap(), 1);
+        for invalid in [
+            PortData::Int(-1),
+            PortData::Int(i64::from(i32::MAX) + 1),
+            PortData::Str("1".to_string()),
+        ] {
+            read_device_id(&device(invalid)).expect_err("invalid device_id must be rejected");
+        }
+    }
+
+    #[test]
     fn test_session_config_tensorrt() {
         let trt_cache_dir = std::env::temp_dir().join("trt_cache");
         let config = SessionConfig {
             model_path: Path::new("model.onnx"),
             backend: &InferenceBackend::Tensorrt,
             trt_cache_dir: Some(trt_cache_dir.as_path()),
+            device_id: 0,
         };
         assert_eq!(config.backend, &InferenceBackend::Tensorrt);
         assert_eq!(config.trt_cache_dir.unwrap(), trt_cache_dir.as_path());

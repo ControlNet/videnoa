@@ -14,9 +14,17 @@ import {
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router";
-import { saveWorkflow } from "@/api/client";
+import { apiErrorCode, saveWorkflow } from "@/api/client";
 import { toast } from "@/components/shared/Toaster";
 import { Button } from "@/components/ui/button";
+import {
+	Dialog,
+	DialogContent,
+	DialogDescription,
+	DialogFooter,
+	DialogHeader,
+	DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import {
 	Popover,
@@ -30,8 +38,9 @@ import {
 } from "@/components/ui/tooltip";
 import { useJobStore } from "@/stores/job-store";
 import { useUIStore } from "@/stores/ui-store";
-import { useWorkflowStore } from "@/stores/workflow-store";
+import { selectIsDirty, useWorkflowStore } from "@/stores/workflow-store";
 import type { WorkflowPort } from "@/types";
+import { DiscardChangesDialog } from "./DiscardChangesDialog";
 import { RunFromEditorDialog } from "./RunFromEditorDialog";
 
 interface EditorToolbarProps {
@@ -57,6 +66,7 @@ function ToolbarButton({
 					variant="ghost"
 					size="icon"
 					className="size-8"
+					aria-label={label}
 					onClick={onClick}
 					disabled={disabled}
 				>
@@ -85,6 +95,9 @@ export function EditorToolbar({ onAutoLayout, onFitView }: EditorToolbarProps) {
 	const [savePopoverOpen, setSavePopoverOpen] = useState(false);
 	const [saveName, setSaveName] = useState("");
 	const [saveDesc, setSaveDesc] = useState("");
+	/** "Save as" name that already exists, waiting for the user to confirm replacing it. */
+	const [replaceTarget, setReplaceTarget] = useState<string | null>(null);
+	const [confirmClear, setConfirmClear] = useState(false);
 	const [runDialogOpen, setRunDialogOpen] = useState(false);
 	const [runInputs, setRunInputs] = useState<WorkflowPort[]>([]);
 
@@ -98,7 +111,10 @@ export function EditorToolbar({ onAutoLayout, onFitView }: EditorToolbarProps) {
 			setRunDialogOpen(true);
 		} else {
 			try {
-				await useJobStore.getState().submitJob(workflow, { workflowName });
+				const jobId = await useJobStore
+					.getState()
+					.submitJob(workflow, { workflowName });
+				useWorkflowStore.getState().setSubmittedJobId(jobId);
 				toast.success(t("toolbar.toast.jobSubmitted"));
 				void navigate("/jobs");
 			} catch (err) {
@@ -109,40 +125,63 @@ export function EditorToolbar({ onAutoLayout, onFitView }: EditorToolbarProps) {
 		}
 	};
 
+	const reportSaveError = (err: unknown, name: string) => {
+		if (apiErrorCode(err) === "workflow_name_is_preset") {
+			toast.error(t("toolbar.toast.presetName", { name }));
+		} else {
+			toast.error(t("toolbar.toast.saveFailed"));
+		}
+	};
+
 	const handleSave = async () => {
 		if (currentFile) {
 			try {
-				const workflow = useWorkflowStore.getState().exportWorkflow();
-				await saveWorkflow(currentFile.name, currentFile.description, workflow);
+				const { nodes, edges, exportWorkflow } = useWorkflowStore.getState();
+				// Write the file this workflow was loaded from: its JSON name may
+				// be shared with another file (e.g. a copy made on disk).
+				await saveWorkflow(currentFile.name, currentFile.description, exportWorkflow(), {
+					filename: currentFile.filename,
+					overwrite: true,
+				});
+				useWorkflowStore.getState().markSaved({ nodes, edges });
 				toast.success(t("toolbar.toast.workflowSaved"));
-			} catch {
-				toast.error(t("toolbar.toast.saveFailed"));
+			} catch (err) {
+				reportSaveError(err, currentFile.filename.replace(/\.json$/, ""));
 			}
 		} else {
 			setSavePopoverOpen(true);
 		}
 	};
 
-	const handleSaveConfirm = async () => {
-		if (!saveName.trim()) return;
+	const handleSaveConfirm = async (overwrite = false) => {
+		const name = saveName.trim();
+		if (!name) return;
 		try {
-			const workflow = useWorkflowStore.getState().exportWorkflow();
+			const { nodes, edges, exportWorkflow } = useWorkflowStore.getState();
 			const entry = await saveWorkflow(
-				saveName.trim(),
+				name,
 				saveDesc.trim(),
-				workflow,
+				exportWorkflow(),
+				overwrite ? { overwrite: true } : undefined,
 			);
 			useWorkflowStore.getState().setCurrentFile({
 				filename: entry.filename,
 				name: entry.name,
 				description: entry.description,
 			});
+			useWorkflowStore.getState().markSaved({ nodes, edges });
 			toast.success(t("toolbar.toast.workflowSaved"));
+			setReplaceTarget(null);
 			setSavePopoverOpen(false);
 			setSaveName("");
 			setSaveDesc("");
-		} catch {
-			toast.error(t("toolbar.toast.saveFailed"));
+		} catch (err) {
+			if (!overwrite && apiErrorCode(err) === "workflow_exists") {
+				setReplaceTarget(name);
+				return;
+			}
+			setReplaceTarget(null);
+			reportSaveError(err, name.replace(/\.json$/, ""));
 		}
 	};
 
@@ -193,7 +232,13 @@ export function EditorToolbar({ onAutoLayout, onFitView }: EditorToolbarProps) {
 				<ToolbarButton
 					icon={Trash2}
 					label={t("toolbar.clear")}
-					onClick={clear}
+					onClick={() => {
+						if (selectIsDirty(useWorkflowStore.getState())) {
+							setConfirmClear(true);
+						} else {
+							clear();
+						}
+					}}
 				/>
 
 				<Popover open={savePopoverOpen} onOpenChange={setSavePopoverOpen}>
@@ -298,6 +343,49 @@ export function EditorToolbar({ onAutoLayout, onFitView }: EditorToolbarProps) {
 				open={runDialogOpen}
 				onOpenChange={setRunDialogOpen}
 				inputs={runInputs}
+			/>
+			<Dialog
+				open={replaceTarget !== null}
+				onOpenChange={(open) => {
+					if (!open) setReplaceTarget(null);
+				}}
+			>
+				<DialogContent>
+					<DialogHeader>
+						<DialogTitle>{t("toolbar.replaceDialog.title")}</DialogTitle>
+						<DialogDescription>
+							{t("toolbar.replaceDialog.description", {
+								name: replaceTarget ?? "",
+							})}
+						</DialogDescription>
+					</DialogHeader>
+					<DialogFooter>
+						<Button
+							variant="outline"
+							onClick={() => {
+								setReplaceTarget(null);
+							}}
+						>
+							{t("toolbar.replaceDialog.cancel")}
+						</Button>
+						<Button
+							variant="destructive"
+							onClick={() => void handleSaveConfirm(true)}
+						>
+							{t("toolbar.replaceDialog.confirm")}
+						</Button>
+					</DialogFooter>
+				</DialogContent>
+			</Dialog>
+			<DiscardChangesDialog
+				open={confirmClear}
+				onCancel={() => {
+					setConfirmClear(false);
+				}}
+				onDiscard={() => {
+					setConfirmClear(false);
+					clear();
+				}}
 			/>
 		</>
 	);

@@ -19,7 +19,7 @@ export function TaskAttempts({ attempts }: TaskAttemptsProps) {
           </header>
           <dl className="detail-grid">
             <Detail label="Attempt ID" value={attempt.id} mono />
-            <Detail label="Worker" value={attempt.worker_id} mono />
+            <Detail label="Worker" value={attempt.worker_id ?? (attempt.worker_name == null ? null : `${attempt.worker_name} (deleted)`)} mono />
             <Detail label="Submission Key" value={attempt.submission_key} mono />
             <Detail label="Remote Job" value={attempt.remote_job_id} mono />
             <Detail label="Remote Input" value={attempt.remote_input_path} mono />

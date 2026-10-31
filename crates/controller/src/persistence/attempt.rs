@@ -2,7 +2,7 @@ use sqlx::Row;
 
 use crate::domain::{
     AttemptId, FailureInfo, RemoteJobId, RemotePath, RetryMetadata, SubmissionKey, TaskAttempt,
-    TaskId, TaskProgress, WorkerId,
+    TaskId, TaskProgress, WorkerId, WorkerName,
 };
 
 use super::codec::{
@@ -111,13 +111,13 @@ const ATTEMPT_SELECT: &str = "SELECT id, task_id, attempt_no, version, worker_id
     submission_key, remote_job_id, remote_input_path, remote_output_path, progress_json,
     retry_count, next_retry_at_ms, failure_stage, failure_code, failure_message,
     failure_retryable, created_at_ms, updated_at_ms, started_at_ms, submitted_at_ms,
-    completed_at_ms FROM task_attempts WHERE id = ?";
+    completed_at_ms, worker_name FROM task_attempts WHERE id = ?";
 pub(super) const ATTEMPT_SELECT_ALL: &str =
     "SELECT id, task_id, attempt_no, version, worker_id, status,
     submission_key, remote_job_id, remote_input_path, remote_output_path, progress_json,
     retry_count, next_retry_at_ms, failure_stage, failure_code, failure_message,
     failure_retryable, created_at_ms, updated_at_ms, started_at_ms, submitted_at_ms,
-    completed_at_ms FROM task_attempts WHERE 1 = 1";
+    completed_at_ms, worker_name FROM task_attempts WHERE 1 = 1";
 
 pub(super) fn map_attempt(
     row: &sqlx::sqlite::SqliteRow,
@@ -131,6 +131,9 @@ pub(super) fn map_attempt(
             task_id: parse_brand::<TaskId>("task_id", row.try_get("task_id")?)?,
             attempt_number: rust_u32("attempt_no", row.try_get("attempt_no")?)?,
             worker_id,
+            worker_name: row
+                .try_get::<Option<String>, _>("worker_name")?
+                .map(WorkerName::new),
             status: parse_task_status(row.try_get("status")?)?,
             submission_key: parse_brand::<SubmissionKey>(
                 "submission_key",

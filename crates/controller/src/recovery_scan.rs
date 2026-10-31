@@ -16,6 +16,10 @@ impl Orchestrator {
     /// Returns when durable scheduling cannot be scanned or a stage task panics.
     pub async fn run(mut self) -> Result<(), OrchestrationError> {
         tracing::info!("Task orchestration started; reconciling persisted tasks");
+        // No stage runs yet, so leftovers of finished tasks can go safely.
+        if let Err(error) = self.transfers.release_unneeded_workspaces().await {
+            tracing::warn!(%error, "Task temporary files were not swept");
+        }
         let cancellation = self.shutdown.cancellation_token();
         let mut stages = JoinSet::new();
         let mut active = HashSet::new();

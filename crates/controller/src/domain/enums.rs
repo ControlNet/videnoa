@@ -7,6 +7,11 @@ macro_rules! snake_case_enum {
         pub enum $name {
             $($variant),+
         }
+
+        impl $name {
+            /// Every value, in declaration order.
+            pub const ALL: &'static [Self] = &[$(Self::$variant),+];
+        }
     };
 }
 
@@ -26,6 +31,26 @@ snake_case_enum!(TaskStatus {
     Failed,
     Cancelled,
 });
+impl TaskStatus {
+    /// Holds one of its Worker's compute slots: the job is being submitted or runs.
+    #[must_use]
+    pub const fn occupies_compute(self) -> bool {
+        matches!(self, Self::Submitting | Self::Processing)
+    }
+
+    /// Assigned to a Worker ahead of compute: the prefetch that waits for a slot.
+    #[must_use]
+    pub const fn is_stage_in(self) -> bool {
+        matches!(self, Self::Reserved | Self::Uploading | Self::Staged)
+    }
+
+    /// No lifecycle command other than an explicit retry leaves this status.
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
+    }
+}
+
 snake_case_enum!(FailureStage {
     Reservation,
     Upload,
@@ -54,6 +79,14 @@ snake_case_enum!(FailureCode {
     Cancelled,
 });
 snake_case_enum!(TaskSource { Manual, Api });
+// Operator actions a task accepts in its current state.
+snake_case_enum!(TaskAction {
+    Cancel,
+    Abandon,
+    Retry,
+    RetryOnAnotherWorker,
+    Discard,
+});
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]

@@ -28,6 +28,23 @@ pub struct CancelTaskResponse {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
+pub struct AbandonTaskResponse {
+    pub task_id: TaskId,
+    pub status: TaskStatus,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DiscardTaskResponse {
+    pub task_id: TaskId,
+    pub status: TaskStatus,
+    /// Whether the task folder on its Worker is known to be gone. It is kept
+    /// when the Worker is offline or deleted, or its job may still run.
+    pub worker_folder_deleted: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RetryTaskResponse {
     pub task_id: TaskId,
     /// The resumed attempt, or `None` when the task went back to the queue.

@@ -13,6 +13,21 @@ pub(super) struct RawControllerConfig {
     pub retry: RawRetryConfig,
     #[serde(default, skip_serializing_if = "RawIrohConfig::is_empty")]
     pub iroh: RawIrohConfig,
+    #[serde(default, skip_serializing_if = "RawHistoryConfig::is_empty")]
+    pub history: RawHistoryConfig,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RawHistoryConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_days: Option<u64>,
+}
+
+impl RawHistoryConfig {
+    const fn is_empty(&self) -> bool {
+        self.retention_days.is_none()
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -115,6 +130,7 @@ impl Default for RawControllerConfig {
                 max_attempts: 5,
             },
             iroh: RawIrohConfig::default(),
+            history: RawHistoryConfig::default(),
         }
     }
 }

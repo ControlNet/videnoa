@@ -82,10 +82,30 @@ impl Drop for ScratchState {
     }
 }
 
+/// The error an execution returns when its cancellation was requested.
+///
+/// Callers recognise it with [`is_cancellation`], which also finds it under
+/// added context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkflowCancelled;
+
+impl std::fmt::Display for WorkflowCancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("workflow execution cancelled")
+    }
+}
+
+impl std::error::Error for WorkflowCancelled {}
+
+/// Whether `error` means the execution was cancelled rather than failed.
+pub fn is_cancellation(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| cause.is::<WorkflowCancelled>())
+}
+
 impl ExecutionContext {
     pub fn check_cancelled(&self) -> Result<()> {
         if self.cancellation.as_ref().is_some_and(|rx| *rx.borrow()) {
-            anyhow::bail!("workflow execution cancelled");
+            return Err(WorkflowCancelled.into());
         }
         Ok(())
     }
@@ -105,6 +125,13 @@ pub trait Node: Send + Sync {
     fn node_type(&self) -> &str;
     fn input_ports(&self) -> Vec<PortDefinition>;
     fn output_ports(&self) -> Vec<PortDefinition>;
+
+    /// Whether `key` is a configuration param of this node that is not an
+    /// input port, such as the port list of a WorkflowOutput. Validation
+    /// rejects any other param that does not name an input port.
+    fn accepts_config_param(&self, _key: &str) -> bool {
+        false
+    }
     fn execute(
         &mut self,
         inputs: &HashMap<String, PortData>,
@@ -146,5 +173,30 @@ mod tests {
         assert_eq!(output.port_type, PortType::Float);
         assert!(!output.required);
         assert_eq!(output.default_value, Some(serde_json::json!(1.0)));
+    }
+
+    #[test]
+    fn check_cancelled_reports_a_recognisable_cancellation() {
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let ctx = ExecutionContext {
+            cancellation: Some(rx),
+            ..Default::default()
+        };
+        ctx.check_cancelled().expect("not cancelled yet");
+
+        tx.send(true).expect("receiver is alive");
+        let error = ctx
+            .check_cancelled()
+            .expect_err("a cancelled context must fail")
+            .context("execution failed for node 'sr'");
+
+        assert!(is_cancellation(&error), "{error:#}");
+        assert_eq!(
+            format!("{error:#}"),
+            "execution failed for node 'sr': workflow execution cancelled"
+        );
+        assert!(!is_cancellation(&anyhow::anyhow!(
+            "workflow execution cancelled"
+        )));
     }
 }

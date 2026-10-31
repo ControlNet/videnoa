@@ -226,10 +226,8 @@ async fn serve_stream(
             TunnelError::Protocol => 400,
             TunnelError::Unavailable => 503,
         };
-        send.write_all(
-            format!("HTTP/1.1 {status} Tunnel rejected\r\nContent-Length: 0\r\n\r\n").as_bytes(),
-        )
-        .await?;
+        let response = format!("HTTP/1.1 {status} Tunnel rejected\r\nContent-Length: 0\r\n\r\n");
+        respond(&mut send, response.as_bytes()).await?;
         send.finish()?;
         return Ok(());
     }
@@ -247,11 +245,45 @@ async fn serve_stream(
         .insert(local, remote);
     let _guard = PeerGuard(peers, local);
     let mut tcp = tokio::time::timeout(HANDSHAKE_TIMEOUT, socket.connect(target)).await??;
-    send.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-        .await?;
+    respond(&mut send, b"HTTP/1.1 200 Connection Established\r\n\r\n").await?;
     let mut stream = tokio::io::join(recv, send);
     tokio::io::copy_bidirectional(&mut stream, &mut tcp).await?;
     Ok(())
+}
+
+/// Writes a CONNECT response within the handshake deadline. A peer that grants
+/// no stream credit would otherwise stall the write, and the stream permit with
+/// it, forever; on timeout the stream is reset so the task can end.
+async fn respond(send: &mut iroh::endpoint::SendStream, response: &[u8]) -> Result<()> {
+    match tokio::time::timeout(HANDSHAKE_TIMEOUT, send.write_all(response)).await {
+        Ok(written) => Ok(written?),
+        Err(_) => {
+            let _ = send.reset(0u32.into());
+            anyhow::bail!("tunnel peer did not accept the CONNECT response")
+        }
+    }
+}
+
+/// Whether a QUIC handshake failed because the peer runs another tunnel
+/// protocol: it refused the tunnel ALPN, or shares no QUIC version.
+fn incompatible_handshake(error: &iroh::endpoint::ConnectError) -> bool {
+    use iroh::endpoint::{ConnectError, ConnectingError, ConnectionError, TransportErrorCode};
+    let connection = match error {
+        ConnectError::Connecting {
+            source: ConnectingError::ConnectionError { source, .. },
+            ..
+        }
+        | ConnectError::Connection { source, .. } => source,
+        _ => return false,
+    };
+    match connection {
+        ConnectionError::VersionMismatch => true,
+        // TLS alert 120, `no_application_protocol`: the ALPN was refused.
+        ConnectionError::ConnectionClosed(close) => {
+            close.error_code == TransportErrorCode::crypto(120)
+        }
+        _ => false,
+    }
 }
 
 /// Shared controller endpoint; one persistent identity and connection per peer.
@@ -299,7 +331,16 @@ impl Client {
                 let conn =
                     tokio::time::timeout(HANDSHAKE_TIMEOUT, self.endpoint.connect(peer, ALPN))
                         .await
-                        .context("iroh connection timeout")??;
+                        .context("iroh connection timeout")?
+                        .map_err(|error| {
+                            let incompatible = incompatible_handshake(&error);
+                            let error = anyhow::Error::from(error);
+                            if incompatible {
+                                error.context(TunnelError::Protocol)
+                            } else {
+                                error
+                            }
+                        })?;
                 *stored = Some(conn.clone());
                 conn
             }
@@ -320,6 +361,8 @@ impl Client {
                 iroh_proxy_utils::HttpResponse::parse(&bytes)?.ok_or(TunnelError::Protocol)?;
             match response.status.as_u16() {
                 200 => Ok(tokio::io::join(recv, send)),
+                // The worker could not parse this CONNECT: another tunnel dialect.
+                400 => Err(TunnelError::Protocol.into()),
                 401 | 403 => Err(TunnelError::Unauthorized.into()),
                 429 => Err(TunnelError::RateLimited.into()),
                 _ => Err(TunnelError::Unavailable.into()),
@@ -572,6 +615,196 @@ mod public_network_tests {
         origin.await??;
         client.shutdown().await;
         server.shutdown().await;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod permit_exhaustion_tests {
+    use super::*;
+    use iroh::endpoint::{presets, QuicTransportConfig, VarInt};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn rejected_connects_to_a_zero_window_peer_release_their_stream_permits() -> Result<()> {
+        // Given: a worker tunnel whose loopback target echoes, and a synthetic
+        // test credential.
+        const PASSWORD: &str = "permit exhaustion test credential";
+        let auth: Authorizer = Arc::new(|_, supplied| {
+            Box::pin(async move {
+                if supplied == PASSWORD {
+                    Ok(())
+                } else {
+                    Err(TunnelError::Unauthorized)
+                }
+            })
+        });
+        let target_listener = TcpListener::bind("127.0.0.1:0").await?;
+        let target = target_listener.local_addr()?;
+        tokio::spawn(async move {
+            while let Ok((mut tcp, _)) = target_listener.accept().await {
+                tokio::spawn(async move {
+                    let (mut r, mut w) = tcp.split();
+                    let _ = tokio::io::copy(&mut r, &mut w).await;
+                });
+            }
+        });
+        let server = Server::with_endpoint(
+            Endpoint::bind(presets::Minimal).await?,
+            target,
+            auth,
+            PeerMap::default(),
+        )?;
+        let server_addr = server.addr();
+
+        // When: a peer without the password advertises a zero stream receive
+        // window, so no rejection can ever reach it, and sends more
+        // unauthenticated CONNECTs than there are stream permits. Its handles
+        // stay alive, so the rejection writes stay blocked.
+        let attacker = Endpoint::builder(presets::Minimal)
+            .transport_config(
+                QuicTransportConfig::builder()
+                    .stream_receive_window(VarInt::from_u32(0))
+                    .build(),
+            )
+            .bind()
+            .await?;
+        let mut conns = Vec::new();
+        let mut streams = Vec::new();
+        for _ in 0..4 {
+            let conn = attacker.connect(server_addr.clone(), ALPN).await?;
+            for _ in 0..80 {
+                let (mut send, recv) = conn.open_bi().await?;
+                send.write_all(
+                    format!("CONNECT {TARGET} HTTP/1.1\r\nHost: {TARGET}\r\n\r\n").as_bytes(),
+                )
+                .await?;
+                streams.push((send, recv));
+            }
+            conns.push(conn);
+        }
+
+        // Then: once the stalled rejections time out, a correctly
+        // authenticated tunnel works again while the attacker is still
+        // connected.
+        let root = tempfile::tempdir()?;
+        let legit = Client {
+            endpoint: Endpoint::bind(presets::Minimal).await?,
+            connections: Default::default(),
+            network: Network::default(),
+            _identity: Identity::open(root.path())?,
+        };
+        let deadline = tokio::time::Instant::now() + HANDSHAKE_TIMEOUT * 3;
+        let mut stream = loop {
+            match legit.tunnel(server_addr.clone(), PASSWORD).await {
+                Ok(stream) => break stream,
+                Err(_) if tokio::time::Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+                Err(error) => {
+                    return Err(error.context("stream permits stayed exhausted"));
+                }
+            }
+        };
+        stream.write_all(b"pong!").await?;
+        let mut buf = [0u8; 5];
+        stream.read_exact(&mut buf).await?;
+        assert_eq!(&buf, b"pong!");
+
+        drop(streams);
+        drop(conns);
+        attacker.close().await;
+        legit.shutdown().await;
+        server.shutdown().await;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod incompatibility_tests {
+    use super::*;
+    use iroh::endpoint::presets;
+
+    // Ephemeral identities and a test-only credential; no production peers.
+    const PASSWORD: &str = "incompatibility test credential";
+
+    async fn client(root: &std::path::Path) -> Result<Client> {
+        Ok(Client {
+            endpoint: Endpoint::bind(presets::Minimal).await?,
+            connections: Default::default(),
+            network: Network::default(),
+            _identity: Identity::open(root)?,
+        })
+    }
+
+    #[tokio::test]
+    async fn a_worker_that_rejects_the_connect_request_is_incompatible() -> Result<()> {
+        // Given: a peer on the tunnel ALPN that answers every CONNECT with
+        // 400, as a worker with a different tunnel dialect does.
+        let worker = Endpoint::builder(presets::Minimal)
+            .alpns(vec![ALPN.to_vec()])
+            .bind()
+            .await?;
+        let address = worker.addr();
+        let acceptor = worker.clone();
+        tokio::spawn(async move {
+            while let Some(incoming) = acceptor.accept().await {
+                let Ok(conn) = incoming.await else { continue };
+                while let Ok((mut send, mut recv)) = conn.accept_bi().await {
+                    let _ = read_headers(&mut recv).await;
+                    let _ = send
+                        .write_all(b"HTTP/1.1 400 Tunnel rejected\r\nContent-Length: 0\r\n\r\n")
+                        .await;
+                    let _ = send.finish();
+                }
+            }
+        });
+        let root = tempfile::tempdir()?;
+        let client = client(root.path()).await?;
+
+        // When: the Controller opens a tunnel.
+        let error = client.tunnel(address, PASSWORD).await.err();
+
+        // Then: the rejection is reported as incompatibility, not an outage.
+        assert_eq!(
+            error.as_ref().and_then(|e| e.downcast_ref::<TunnelError>()),
+            Some(&TunnelError::Protocol),
+            "{error:?}"
+        );
+        client.shutdown().await;
+        worker.close().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_worker_without_the_tunnel_alpn_is_incompatible() -> Result<()> {
+        // Given: a reachable peer that accepts only another ALPN, as a worker
+        // built against a different tunnel protocol does.
+        let worker = Endpoint::builder(presets::Minimal)
+            .alpns(vec![b"videnoa/test-other-tunnel".to_vec()])
+            .bind()
+            .await?;
+        let address = worker.addr();
+        let acceptor = worker.clone();
+        tokio::spawn(async move {
+            while let Some(incoming) = acceptor.accept().await {
+                let _ = incoming.await;
+            }
+        });
+        let root = tempfile::tempdir()?;
+        let client = client(root.path()).await?;
+
+        // When: the Controller opens a tunnel.
+        let error = client.tunnel(address, PASSWORD).await.err();
+
+        // Then: the failed ALPN negotiation is reported as incompatibility.
+        assert_eq!(
+            error.as_ref().and_then(|e| e.downcast_ref::<TunnelError>()),
+            Some(&TunnelError::Protocol),
+            "{error:?}"
+        );
+        client.shutdown().await;
+        worker.close().await;
         Ok(())
     }
 }

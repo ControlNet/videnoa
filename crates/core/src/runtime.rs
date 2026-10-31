@@ -141,10 +141,12 @@ fn find_binary_in_dirs(binary: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
 }
 
 pub fn command_for(binary: &str) -> ProcessCommand {
-    if let Some(path) = find_binary_in_dirs(binary, &candidate_bin_dirs()) {
-        return ProcessCommand::new(path);
-    }
-    ProcessCommand::new(binary)
+    let mut command = match find_binary_in_dirs(binary, &candidate_bin_dirs()) {
+        Some(path) => ProcessCommand::new(path),
+        None => ProcessCommand::new(binary),
+    };
+    crate::subprocess::configure_child(&mut command);
+    command
 }
 
 fn find_ort_dylib_in_dirs(dirs: &[PathBuf]) -> Option<PathBuf> {

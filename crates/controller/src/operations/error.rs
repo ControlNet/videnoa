@@ -61,7 +61,9 @@ impl OperationsError {
             WorkerRegistryErrorCode::DuplicateApiUrl => {
                 Self::Conflict("worker API URL is already registered")
             }
-            WorkerRegistryErrorCode::Referenced => Self::Conflict("worker is referenced by tasks"),
+            WorkerRegistryErrorCode::Referenced => {
+                Self::Conflict("worker still has unfinished tasks")
+            }
             WorkerRegistryErrorCode::CapacityBelowUsage => {
                 Self::Conflict("worker capacity is below durable usage")
             }
@@ -106,7 +108,8 @@ impl OperationsError {
             | VidenoaClientError::UnexpectedStatus { .. }
             | VidenoaClientError::Network
             | VidenoaClientError::Timeout
-            | VidenoaClientError::Stall => Self::Unavailable,
+            | VidenoaClientError::Stall
+            | VidenoaClientError::Incompatible => Self::Unavailable,
             VidenoaClientError::MalformedPayload
             | VidenoaClientError::OversizedPayload { .. }
             | VidenoaClientError::LocalIo

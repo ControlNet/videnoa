@@ -1,5 +1,6 @@
 import { z } from "zod"
 
+import { rowsOf } from "./schemas"
 import { taskProgressSchema } from "./taskSchemas"
 
 const unsignedIntegerSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
@@ -49,7 +50,6 @@ const workflowSummarySchema = z
     name: z.string(),
     kind: z.enum(["workflow", "preset"]),
   })
-  .strict()
 
 const invalidWorkflowSchema = z
   .object({
@@ -57,7 +57,6 @@ const invalidWorkflowSchema = z
     kind: z.enum(["workflow", "preset"]),
     reason: z.string(),
   })
-  .strict()
 
 const workerCapacitySchema = z
   .object({
@@ -70,7 +69,6 @@ const workerCapacitySchema = z
     active_downloads: z.number().int().nonnegative().max(65_535),
     progress: taskProgressSchema.nullable(),
   })
-  .strict()
 
 export const workerSchema = z
   .object({
@@ -83,14 +81,12 @@ export const workerSchema = z
     enabled: z.boolean(),
     online: z.boolean(),
     compute_slots: positiveU16Schema,
-    capabilities: z
-      .object({
-        workflows: z.array(workflowSummarySchema),
-        // Omitted by the Controller when empty.
-        invalid_workflows: z.array(invalidWorkflowSchema).default([]),
-        refreshed_at: z.iso.datetime().nullable(),
-      })
-      .strict(),
+    capabilities: z.object({
+      workflows: z.array(workflowSummarySchema),
+      // Omitted by the Controller when empty.
+      invalid_workflows: z.array(invalidWorkflowSchema).default([]),
+      refreshed_at: z.iso.datetime().nullable(),
+    }),
     capacity: workerCapacitySchema,
     last_seen_at: z.iso.datetime().nullable(),
     last_assigned_at: z.iso.datetime().nullable(),
@@ -99,28 +95,25 @@ export const workerSchema = z
     last_error: z.string().nullable(),
     has_password: z.boolean().optional(),
   })
-  .strict().superRefine(validateEndpoint)
+  .superRefine(validateEndpoint)
 
 export const workerListSchema = z
   .object({
-    items: z.array(workerSchema),
+    items: rowsOf(workerSchema),
     total: unsignedIntegerSchema,
   })
-  .strict()
 
 export const workerDeleteResponseSchema = z
   .object({
     worker_id: z.string().uuid(),
     deleted: z.boolean(),
   })
-  .strict()
 
 export const workerUpdatedEventSchema = z
   .object({
     type: z.literal("worker_updated"),
-    data: z.object({ event_id: z.string().uuid(), worker: workerSchema }).strict(),
+    data: z.object({ event_id: z.string().uuid(), worker: workerSchema }),
   })
-  .strict()
 
 export type Worker = z.infer<typeof workerSchema>
 export type WorkerCreateRequest = z.infer<typeof workerCreateRequestSchema>

@@ -1,7 +1,9 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import type React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { getWorkflowInterface } from '@/api/client';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { i18n } from '@/i18n';
 import { useJobStore } from '@/stores/job-store';
 import { useNodeDefinitions } from '@/stores/node-definitions-store';
 import { useWorkflowStore } from '@/stores/workflow-store';
@@ -15,6 +17,7 @@ vi.mock('@xyflow/react', () => ({
     Left: 'left',
     Right: 'right',
   },
+  useUpdateNodeInternals: () => () => undefined,
 }));
 
 vi.mock('@/api/client', () => ({
@@ -153,6 +156,81 @@ beforeEach(() => {
     activeProgress: null,
     runtimePreviewsByNodeId: {},
     wsCleanup: null,
+  });
+});
+
+describe('CustomNode drift from the worker', () => {
+  function loadNode(nodeType: string, params: Record<string, unknown>) {
+    useWorkflowStore.getState().loadWorkflow({
+      nodes: [{ id: 'n1', node_type: nodeType, params }],
+      connections: [],
+    });
+    return useWorkflowStore.getState().nodes[0].data.params;
+  }
+
+  // An old workflow can name a node this worker no longer has. It used to
+  // render nothing while still being exported, so it could not be seen or
+  // removed.
+  it('shows a node of an unknown type as a deletable placeholder', async () => {
+    const params = loadNode('RemovedNode', { x: 1 });
+    await renderNode('RemovedNode', 'n1', params as Record<string, string | number | boolean>);
+
+    expect(screen.getByText('RemovedNode')).toBeInTheDocument();
+    expect(screen.getByText('This worker has no node of this type.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Remove node' }));
+    expect(useWorkflowStore.getState().nodes).toHaveLength(0);
+  });
+
+  it('lists params the node does not know as unsupported and lets them be removed', async () => {
+    const params = loadNode('Print', { value: 'x', renamed_param: 3 });
+    await renderNode('Print', 'n1', params as Record<string, string | number | boolean>);
+
+    expect(screen.getByText('Unsupported params')).toBeInTheDocument();
+    expect(screen.getByText('renamed_param')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Remove param renamed_param' }));
+    expect(useWorkflowStore.getState().exportWorkflow().nodes[0].params).toEqual({ value: 'x' });
+  });
+
+  it('keeps null, array and object params as JSON values', () => {
+    loadNode('X', { opt: null, list: [1, 2], obj: { a: true }, text: '[1]' });
+
+    expect(useWorkflowStore.getState().exportWorkflow().nodes[0].params).toEqual({
+      opt: null,
+      list: [1, 2],
+      obj: { a: true },
+      text: '[1]',
+    });
+  });
+});
+
+describe('CustomNode sub-workflow interface', () => {
+  const WORKFLOW_DESCRIPTOR = {
+    node_type: 'Workflow',
+    display_name: 'Workflow',
+    category: 'utility',
+    accent_color: '#0EA5E9',
+    icon: 'workflow',
+    inputs: [],
+    outputs: [],
+  };
+
+  // A failed interface fetch used to wipe the node's ports, dropping the
+  // handles its connections hang off, with nothing telling the user why.
+  it('keeps the stored ports and shows an error when the interface cannot be loaded', async () => {
+    useNodeDefinitions.setState({ descriptors: [WORKFLOW_DESCRIPTOR] });
+    vi.mocked(getWorkflowInterface).mockRejectedValueOnce(new Error('HTTP 500'));
+
+    await renderNode('Workflow', 'wf-1', {
+      workflow_path: 'sub.json',
+      interface_inputs: JSON.stringify([{ name: 'clip', port_type: 'Path' }]),
+      interface_outputs: JSON.stringify([{ name: 'result', port_type: 'Path' }]),
+    });
+
+    expect(screen.getByTestId('handle-target-clip')).toBeInTheDocument();
+    expect(screen.getByTestId('handle-source-result')).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Could not load the interface of sub.json',
+    );
   });
 });
 
@@ -323,5 +401,41 @@ describe('modelSelectionParams', () => {
     expect(modelSelectionParams('FrameInterpolation', 'models/rife.onnx', model(4))).toEqual({
       model_path: 'models/rife.onnx',
     });
+  });
+});
+
+describe('CustomNode translations', () => {
+  it('shows the Print preview labels in the selected language', async () => {
+    await i18n.changeLanguage('zh-CN');
+    useJobStore.setState({
+      runtimePreviewsByNodeId: {
+        'print-1': {
+          node_id: 'print-1',
+          node_type: 'Print',
+          value_preview: 'abc',
+          truncated: true,
+          preview_max_chars: 3,
+          updated_at_ms: 1,
+        },
+      },
+    });
+
+    await renderNode('Print', 'print-1');
+
+    expect(screen.getByText('运行时预览')).toBeInTheDocument();
+    expect(screen.getByTestId('print-runtime-preview-truncated')).toHaveTextContent(
+      '已截断为 3 个字符',
+    );
+  });
+
+  it('shows the add-port button of workflow IO nodes in the selected language', async () => {
+    await i18n.changeLanguage('zh-CN');
+    useNodeDefinitions.setState({
+      descriptors: [{ ...VIDEO_INPUT_DESCRIPTOR, node_type: 'WorkflowInput', display_name: 'Workflow Input' }],
+    });
+
+    await renderNode('WorkflowInput', 'wi-1', { ports: '[]' });
+
+    expect(screen.getByRole('button', { name: '添加端口' })).toBeInTheDocument();
   });
 });

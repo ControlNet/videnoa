@@ -22,6 +22,7 @@ pub(super) const TASK_COLUMNS: &str = "id, version, status, input_path, output_p
     input_extension, output_extension, workflow, priority, source, source_reference, input_size, \
     input_mtime_ms, input_identity, input_content_identity, worker_id, requested_worker_id, progress_json, attempt_count, failure_stage, failure_code, \
     failure_message, failure_retryable, retry_count, next_retry_at_ms, cancel_requested_at_ms, \
+    discarded_at_ms, \
     created_at_ms, updated_at_ms, reserved_at_ms, upload_started_at_ms, staged_at_ms, \
     submission_started_at_ms, processing_started_at_ms, remote_completed_at_ms, \
     download_started_at_ms, verified_at_ms, publishing_started_at_ms, \
@@ -117,6 +118,7 @@ pub(super) fn map_task(row: &SqliteRow) -> Result<TaskRecord, PersistenceError> 
             "cancel_requested_at_ms",
             row.try_get("cancel_requested_at_ms")?,
         )?,
+        discarded_at: optional_time(row, "discarded_at_ms")?,
         created_at: parse_timestamp("created_at_ms", row.try_get("created_at_ms")?)?,
         updated_at: parse_timestamp("updated_at_ms", row.try_get("updated_at_ms")?)?,
         lifecycle: lifecycle(row)?,

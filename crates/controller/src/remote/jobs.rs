@@ -5,8 +5,9 @@ use serde_json::Value;
 
 use crate::domain::{RemoteJobId, SubmissionKey, WorkflowName};
 
-use super::dto::{RunRequest, ValidateRunRequest};
-use super::transport::ensure_success;
+use videnoa_protocol::{ErrorCode, RunWorkflowRequest};
+
+use super::transport::{ensure_success, forbidden, Rejection};
 use super::{
     Job, RunOutcome, RunReceipt, RunSubmission, RunValidation, VidenoaClient, VidenoaClientError,
 };
@@ -27,22 +28,18 @@ impl VidenoaClient {
                 self.http
                     .post(self.endpoint(&["api", "run"])?)
                     .header("idempotency-key", key.to_string())
-                    .json(&RunRequest {
-                        workflow_name: workflow.run_name(),
-                        params,
+                    .json(&RunWorkflowRequest {
+                        workflow_name: Some(workflow.run_name().to_owned()),
+                        params: Some(params.clone()),
                     }),
             )
             .await?;
         let outcome = match response.status() {
             StatusCode::CREATED => RunOutcome::Created,
             StatusCode::OK => RunOutcome::Replayed,
-            StatusCode::BAD_REQUEST => {
-                // The Worker validates the workflow on submission; keep its
-                // reason so the task failure says what to fix.
-                return Err(VidenoaClientError::ClientStatus {
-                    status: StatusCode::BAD_REQUEST.as_u16(),
-                    reason: self.rejection_reason(response).await,
-                });
+            status if status.is_client_error() || status.is_server_error() => {
+                let rejection = self.rejection(response).await;
+                return Err(run_rejection(status, rejection));
             }
             status => {
                 ensure_success(status)?;
@@ -66,27 +63,76 @@ impl VidenoaClient {
             .send_authenticated(
                 self.http
                     .post(self.endpoint(&["api", "run", "validate"])?)
-                    .json(&ValidateRunRequest {
-                        workflow_name: workflow.run_name(),
+                    .json(&RunWorkflowRequest {
+                        workflow_name: Some(workflow.run_name().to_owned()),
+                        params: None,
                     }),
             )
             .await?;
-        match response.status() {
-            StatusCode::NO_CONTENT => Ok(RunValidation::Valid),
-            StatusCode::BAD_REQUEST => Ok(RunValidation::Invalid {
-                reason: self
-                    .rejection_reason(response)
-                    .await
-                    .unwrap_or_else(|| "the worker rejected this workflow".to_owned()),
-            }),
-            StatusCode::NOT_FOUND => Ok(RunValidation::Unknown),
-            status => {
-                ensure_success(status)?;
-                Err(VidenoaClientError::UnexpectedStatus {
-                    status: status.as_u16(),
-                })
-            }
+        let status = response.status();
+        if status == StatusCode::NO_CONTENT {
+            return Ok(RunValidation::Valid);
         }
+        if !(status.is_client_error() || status.is_server_error()) {
+            ensure_success(status)?;
+            return Err(VidenoaClientError::UnexpectedStatus {
+                status: status.as_u16(),
+            });
+        }
+        let rejection = self.rejection(response).await;
+        match run_rejection(status, rejection) {
+            // A refused Host is about the Worker, not this workflow.
+            error if error.is_host_not_allowed() => Err(error),
+            VidenoaClientError::ClientStatus {
+                status: 400 | 422,
+                reason,
+                ..
+            }
+            | VidenoaClientError::ClientStatus {
+                reason,
+                code: Some(_),
+                ..
+            } => Ok(RunValidation::Invalid {
+                reason: reason.unwrap_or_else(|| "the worker rejected this workflow".to_owned()),
+            }),
+            // Workers that predate the route answer a bare 404.
+            VidenoaClientError::NotFound => Ok(RunValidation::Unknown),
+            error => Err(error),
+        }
+    }
+
+    /// Finds the job a run with `key` created, without creating one. Only
+    /// protocol-2 Workers serve this.
+    ///
+    /// # Errors
+    /// Returns [`VidenoaClientError::NotFound`] when the Worker created no job
+    /// with the key, and other [`VidenoaClientError`]s for transport, status,
+    /// bounds, or payload failures. A 404 without the Worker's `job_not_found`
+    /// code is no evidence about the key and reads as an unexpected status.
+    pub async fn job_by_submission_key(
+        &self,
+        key: SubmissionKey,
+    ) -> Result<RunReceipt, VidenoaClientError> {
+        let key = key.to_string();
+        let response = self
+            .send_authenticated(self.http.get(self.endpoint(&[
+                "api",
+                "jobs",
+                "by-idempotency-key",
+                &key,
+            ])?))
+            .await?;
+        if response.status() == StatusCode::NOT_FOUND {
+            let rejection = self.rejection(response).await;
+            return Err(if rejection.code == Some(ErrorCode::JobNotFound) {
+                VidenoaClientError::NotFound
+            } else {
+                VidenoaClientError::UnexpectedStatus {
+                    status: StatusCode::NOT_FOUND.as_u16(),
+                }
+            });
+        }
+        self.json(response).await
     }
 
     /// Polls one remote job by typed identifier.
@@ -110,6 +156,60 @@ impl VidenoaClient {
         let response = self
             .send_authenticated(self.http.delete(self.endpoint(&["api", "jobs", &id])?))
             .await?;
+        if response.status() == StatusCode::FORBIDDEN {
+            return Err(self.forbidden(response).await);
+        }
         ensure_success(response.status())
+    }
+}
+
+/// Why a submission failed, when a Worker answers 422 to the run request
+/// itself rather than to the workflow.
+const INCOMPATIBLE_RUN_REQUEST: &str =
+    "the worker cannot read this Controller's run request; update the worker";
+
+/// Reads a rejected run by its code first, since the code says whether a
+/// retry can help whatever the status. Without a known code the status
+/// decides, as it does for protocol-1 Workers.
+fn run_rejection(status: StatusCode, rejection: Rejection) -> VidenoaClientError {
+    let Rejection { reason, code } = rejection;
+    match code {
+        Some(ErrorCode::QueueFull | ErrorCode::ShuttingDown) => VidenoaClientError::ServerStatus {
+            status: status.as_u16(),
+        },
+        Some(ErrorCode::IdempotencyConflict) => VidenoaClientError::Conflict,
+        Some(
+            code @ (ErrorCode::InvalidIdempotencyKey
+            | ErrorCode::WorkflowNameInvalid
+            | ErrorCode::WorkflowNotFound
+            | ErrorCode::WorkflowUnreadable
+            | ErrorCode::WorkflowInvalid
+            | ErrorCode::JobStoreUnavailable),
+        ) => VidenoaClientError::ClientStatus {
+            status: status.as_u16(),
+            reason,
+            code: Some(code),
+        },
+        _ => match status {
+            StatusCode::FORBIDDEN => forbidden(Rejection { reason, code }),
+            // The Worker validates the workflow on submission; keep its
+            // reason so the task failure says what to fix.
+            StatusCode::BAD_REQUEST => VidenoaClientError::ClientStatus {
+                status: status.as_u16(),
+                reason,
+                code,
+            },
+            StatusCode::UNPROCESSABLE_ENTITY => VidenoaClientError::ClientStatus {
+                status: status.as_u16(),
+                reason: Some(INCOMPATIBLE_RUN_REQUEST.to_owned()),
+                code: None,
+            },
+            status => match ensure_success(status) {
+                Err(error) => error,
+                Ok(()) => VidenoaClientError::UnexpectedStatus {
+                    status: status.as_u16(),
+                },
+            },
+        },
     }
 }

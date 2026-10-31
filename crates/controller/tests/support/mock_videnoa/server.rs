@@ -6,7 +6,7 @@ use tempfile::TempDir;
 use tokio::net::TcpListener;
 
 use super::checkpoints::{Checkpoint, CheckpointTicket};
-use super::domain::{JobProgress, JobStatus};
+use super::domain::{CancelReason, JobProgress, JobStatus};
 use super::faults::{Fault, OfflineMode, RestartMode, RestartOutcome};
 use super::journal::{sanitize_entries, JournalEntry, RouteCounters};
 use super::persistence::{self, PersistentState};
@@ -70,6 +70,28 @@ impl MockVidenoa {
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    /// Makes health report this protocol version; `None` omits the field,
+    /// as Workers up to v0.1.10 do.
+    #[allow(
+        dead_code,
+        reason = "Shared harness protocol reporting is exercised by Task 20"
+    )]
+    pub async fn report_protocol(&self, protocol: Option<u32>) {
+        *self.state.protocol.lock().await = protocol;
+    }
+
+    /// Drops every job and its idempotency key, as if their history was
+    /// deleted on the worker.
+    #[allow(
+        dead_code,
+        reason = "Shared harness job forgetting is exercised by Task 20"
+    )]
+    pub async fn forget_jobs(&self) {
+        let mut inner = self.state.inner.lock().await;
+        inner.persistent.jobs.clear();
+        inner.persistent.idempotency.clear();
+    }
+
     pub fn base_url(&self) -> &str {
         &self.base_url
     }
@@ -97,6 +119,20 @@ impl MockVidenoa {
         progress: Option<JobProgress>,
     ) -> Result<(), HarnessError> {
         self.state.set_job(id, status, progress).await
+    }
+
+    /// Records a cancel request on a job with `reason`; `settled` also ends it.
+    #[allow(
+        dead_code,
+        reason = "Shared harness cancel requests are exercised by Task 20"
+    )]
+    pub async fn request_cancel(
+        &self,
+        id: &str,
+        reason: CancelReason,
+        settled: bool,
+    ) -> Result<(), HarnessError> {
+        self.state.request_cancel(id, reason, settled).await
     }
 
     pub async fn complete_job(

@@ -1,8 +1,11 @@
-import { act, render } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { i18n } from "@/i18n";
 import { useJobStore } from "@/stores/job-store";
 import { useNodeDefinitions } from "@/stores/node-definitions-store";
+import { useUIStore } from "@/stores/ui-store";
 import { useWorkflowStore } from "@/stores/workflow-store";
+import type { Job } from "@/types";
 import { EditorPage } from "../EditorPage";
 
 const reactFlowMock = vi.hoisted(() => {
@@ -151,6 +154,18 @@ const VIDEO_INPUT_DESCRIPTOR = {
 	],
 };
 
+function makeJob(id: string, status: Job["status"]): Job {
+	return {
+		id,
+		status,
+		progress: null,
+		created_at: "2026-02-14T00:00:00Z",
+		started_at: null,
+		completed_at: null,
+		error: null,
+	};
+}
+
 function getOnDropHandler() {
 	const onDrop = reactFlowMock.props.onDrop;
 	expect(onDrop).toBeTypeOf("function");
@@ -170,6 +185,7 @@ beforeEach(() => {
 		past: [],
 		future: [],
 		currentFile: null,
+		submittedJobId: null,
 	});
 
 	jobStoreMocks.fetchJobs.mockResolvedValue(undefined);
@@ -358,20 +374,9 @@ describe("EditorPage drag-and-drop", () => {
 		expect(invalidWhenBool).toBe(false);
 	});
 
-	it("subscribes to running jobs and cleans up on unmount", () => {
-		useJobStore.setState({
-			jobs: [
-				{
-					id: "job-1",
-					status: "running",
-					progress: null,
-					created_at: "2026-02-14T00:00:00Z",
-					started_at: null,
-					completed_at: null,
-					error: null,
-				},
-			],
-		});
+	it("subscribes to the job submitted from this canvas and cleans up on unmount", () => {
+		useJobStore.setState({ jobs: [makeJob("job-1", "running")] });
+		useWorkflowStore.setState({ submittedJobId: "job-1" });
 
 		const view = render(<EditorPage />);
 
@@ -382,11 +387,142 @@ describe("EditorPage drag-and-drop", () => {
 		expect(jobStoreMocks.unsubscribeFromJob).toHaveBeenCalled();
 	});
 
+	it("does not track a running job that was not submitted from this canvas", () => {
+		useJobStore.setState({ jobs: [makeJob("job-elsewhere", "running")] });
+
+		render(<EditorPage />);
+
+		expect(jobStoreMocks.subscribeToJob).not.toHaveBeenCalled();
+	});
+
+	it("tracks the canvas job even while another job runs", () => {
+		useJobStore.setState({
+			jobs: [makeJob("job-elsewhere", "running"), makeJob("job-1", "queued")],
+		});
+		useWorkflowStore.setState({ submittedJobId: "job-1" });
+
+		render(<EditorPage />);
+
+		expect(jobStoreMocks.subscribeToJob).toHaveBeenCalledTimes(1);
+		expect(jobStoreMocks.subscribeToJob).toHaveBeenCalledWith("job-1");
+	});
+
+	it("stops tracking the canvas job once it has finished", () => {
+		useJobStore.setState({
+			jobs: [makeJob("job-1", "completed")],
+			activeJobId: "job-1",
+		});
+		useWorkflowStore.setState({ submittedJobId: "job-1" });
+
+		render(<EditorPage />);
+
+		expect(jobStoreMocks.subscribeToJob).not.toHaveBeenCalled();
+		expect(jobStoreMocks.unsubscribeFromJob).toHaveBeenCalled();
+	});
+
 	it("unsubscribes when no tracked job exists but active job id is set", () => {
 		useJobStore.setState({ activeJobId: "job-stale" });
 
 		render(<EditorPage />);
 
 		expect(jobStoreMocks.unsubscribeFromJob).toHaveBeenCalled();
+	});
+});
+
+describe("EditorPage Escape shortcut", () => {
+	it("closes the open modal on Escape", () => {
+		useUIStore.setState({ activeModal: "presets" });
+		render(<EditorPage />);
+
+		fireEvent.keyDown(document.body, { key: "Escape" });
+
+		expect(useUIStore.getState().activeModal).toBeNull();
+	});
+
+	it("leaves the modal open when a nested dialog already handled Escape", () => {
+		useUIStore.setState({ activeModal: "presets" });
+		render(<EditorPage />);
+		// Radix dismisses its top-most layer from a document capture listener
+		// and marks the event handled with preventDefault().
+		const dismissNestedDialog = (event: KeyboardEvent) => {
+			event.preventDefault();
+		};
+		document.addEventListener("keydown", dismissNestedDialog, { capture: true, once: true });
+
+		fireEvent.keyDown(document.body, { key: "Escape" });
+
+		expect(useUIStore.getState().activeModal).toBe("presets");
+	});
+});
+
+describe("EditorPage node definitions", () => {
+	it("shows a failed /api/nodes load and retries it", () => {
+		const fetchDefinitions = vi.fn().mockResolvedValue(undefined);
+		useNodeDefinitions.setState({
+			descriptors: [],
+			error: "HTTP 500",
+			fetch: fetchDefinitions,
+		});
+		render(<EditorPage />);
+
+		expect(screen.getByRole("alert")).toHaveTextContent(
+			"Could not load node definitions: HTTP 500",
+		);
+		fetchDefinitions.mockClear();
+		fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+		expect(fetchDefinitions).toHaveBeenCalledWith({ force: true });
+	});
+
+	it("reloads node definitions when the window regains focus", () => {
+		const fetchDefinitions = vi.fn().mockResolvedValue(undefined);
+		useNodeDefinitions.setState({ fetch: fetchDefinitions });
+		render(<EditorPage />);
+		fetchDefinitions.mockClear();
+
+		act(() => {
+			window.dispatchEvent(new Event("focus"));
+		});
+
+		expect(fetchDefinitions).toHaveBeenCalledWith({ force: true });
+	});
+});
+
+describe("EditorPage unsaved changes", () => {
+	function unload(): Event {
+		const event = new Event("beforeunload", { cancelable: true });
+		window.dispatchEvent(event);
+		return event;
+	}
+
+	it("asks the browser to confirm closing the page only while there are unsaved changes", () => {
+		useWorkflowStore.getState().clear();
+		render(<EditorPage />);
+		expect(unload().defaultPrevented).toBe(false);
+
+		act(() => {
+			useWorkflowStore.getState().addNode({
+				id: "n1",
+				type: "pipeline",
+				position: { x: 0, y: 0 },
+				data: { nodeType: "VideoInput", params: {} },
+			});
+		});
+		expect(unload().defaultPrevented).toBe(true);
+
+		act(() => {
+			useWorkflowStore.getState().markSaved();
+		});
+		expect(unload().defaultPrevented).toBe(false);
+	});
+});
+
+describe("EditorPage empty canvas", () => {
+	it("shows the empty-canvas hints in the selected language", async () => {
+		await i18n.changeLanguage("zh-CN");
+		render(<EditorPage />);
+
+		expect(screen.getByText("从侧边栏拖入节点以构建管线")).toBeInTheDocument();
+		expect(screen.getByText("或加载一个预设开始")).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "加载预设" })).toBeInTheDocument();
 	});
 });

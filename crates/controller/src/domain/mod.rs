@@ -16,12 +16,15 @@ mod values;
 #[path = "task.rs"]
 mod work_items;
 
-pub use actions::{CancelTaskResponse, RetryTaskRequest, RetryTaskResponse, TaskActionRequest};
+pub use actions::{
+    AbandonTaskResponse, CancelTaskResponse, DiscardTaskResponse, RetryTaskRequest,
+    RetryTaskResponse, TaskActionRequest,
+};
 pub use auth::{LoginRequest, LoginResponse, LogoutResponse, SessionResponse};
 pub use enums::{
     ApiErrorCode, AuthMethod, FailureCode, FailureStage, FieldErrorCode, HealthStatus,
-    ReadinessStatus, SortDirection, SseEventKind, TaskFilterField, TaskSortField, TaskSource,
-    TaskStatus, WorkflowKind,
+    ReadinessStatus, SortDirection, SseEventKind, TaskAction, TaskFilterField, TaskSortField,
+    TaskSource, TaskStatus, WorkflowKind,
 };
 pub use errors::{ApiError, ApiErrorEnvelope, FieldError};
 pub use execution_nodes::{

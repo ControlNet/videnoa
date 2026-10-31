@@ -28,6 +28,46 @@ export const useAuthStore = create<AuthState>((set) => ({
     }
   },
 }));
+/** Channel shared by this browser's tabs of this worker UI. */
+const AUTH_CHANNEL = 'videnoa-auth';
+const PASSWORD_CHANGED = 'password-changed';
+
+// One channel per tab: a channel does not receive its own messages, so the tab
+// that changed the password is not told about it again.
+let authChannel: BroadcastChannel | null = null;
+const passwordChangeListeners = new Set<() => void>();
+function channel(): BroadcastChannel | null {
+  if (typeof BroadcastChannel === 'undefined') return null;
+  if (!authChannel) {
+    authChannel = new BroadcastChannel(AUTH_CHANNEL);
+    authChannel.onmessage = (event: MessageEvent) => {
+      if (event.data === PASSWORD_CHANGED) passwordChangeListeners.forEach((listener) => { listener(); });
+    };
+  }
+  return authChannel;
+}
+
+/** Tell this browser's other tabs that the password changed, so they refresh their session. */
+export function announcePasswordChange(): void {
+  channel()?.postMessage(PASSWORD_CHANGED);
+}
+
+/** Call `onChange` when another tab announces a password change; returns the unsubscribe. */
+export function onPasswordChangeElsewhere(onChange: () => void): () => void {
+  channel();
+  passwordChangeListeners.add(onChange);
+  return () => { passwordChangeListeners.delete(onChange); };
+}
+
+const AUTH_ERROR_KEYS = ['unauthorized', 'rateLimited', 'requestFailed', 'passwordInvalid'] as const;
+export type AuthErrorKey = (typeof AUTH_ERROR_KEYS)[number];
+
+/** The `auth.*` message key for a failed auth request; anything unexpected is `requestFailed`. */
+export function authErrorKey(error: unknown): AuthErrorKey {
+  const message = error instanceof Error ? error.message : '';
+  return AUTH_ERROR_KEYS.find((key) => key === message) ?? 'requestFailed';
+}
+
 export async function authRequest(url: string, method = 'GET', body?: unknown): Promise<Session> {
   const response = await authenticatedFetch(url, {
     method,

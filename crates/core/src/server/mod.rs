@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path as StdPath, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -30,6 +30,7 @@ pub mod iroh;
 mod persistence;
 mod preview;
 mod preview_cache;
+mod staged_outputs;
 
 #[cfg(test)]
 #[path = "tests/files/mod.rs"]
@@ -53,24 +54,15 @@ use crate::registry::{register_all_nodes, NodeRegistry};
 use crate::streaming_executor::ProgressCallback;
 use idempotency::{IdempotencyKey, RequestFingerprint};
 use persistence::{IdempotentJobClaim, IdempotentJobLookup, JobsPersistence};
+/// A job's progress, as stored and as reported.
+pub use videnoa_protocol::JobProgress as ProgressUpdate;
+pub use videnoa_protocol::{
+    CreateJobResponse, ErrorCode, ErrorResponse, HealthResponse, HealthStatus, JobResponse,
+    PresetResponse, RunWorkflowRequest, WorkflowEntry, PROTOCOL_VERSION,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Preset {
-    pub name: String,
-    pub description: String,
-    pub workflow: serde_json::Value,
-}
-
-#[derive(Serialize)]
-pub struct PresetResponse {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub workflow: serde_json::Value,
-}
-
-#[derive(Deserialize)]
-pub struct CreatePresetRequest {
     pub name: String,
     pub description: String,
     pub workflow: serde_json::Value,
@@ -86,11 +78,18 @@ struct AppStateInner {
     settings_lock: tokio::sync::Mutex<()>,
     auth: std::result::Result<auth::AuthService, String>,
     jobs: DashMap<String, Job>,
-    jobs_persistence: Option<JobsPersistence>,
+    jobs_persistence: std::result::Result<JobsPersistence, String>,
     gpu_semaphore: Arc<Semaphore>,
     node_registry: NodeRegistry,
     model_registry: ModelRegistry,
     progress_senders: DashMap<String, broadcast::Sender<JobWsEvent>>,
+    /// Latest debug value per node, per job, replayed to WebSocket subscribers
+    /// that connect after the node ran.
+    debug_values: DashMap<String, BTreeMap<String, JobWsEvent>>,
+    /// Presets loaded at startup. Nothing serves them any more: `/api/presets`
+    /// and `/api/run` read `presets_dir` live. Kept so `AppState::new` keeps
+    /// its signature; drop both together.
+    #[allow(dead_code)]
     presets: DashMap<String, Preset>,
     config: RwLock<AppConfig>,
     config_path: PathBuf,
@@ -98,6 +97,41 @@ struct AppStateInner {
     workspace_root: PathBuf,
     preview_cache: std::result::Result<Arc<preview_cache::PreviewCache>, String>,
     performance_series: Mutex<VecDeque<RuntimePerformanceSeriesSample>>,
+    /// Set by [`AppState::begin_shutdown`]; new jobs and previews are refused.
+    shutting_down: std::sync::atomic::AtomicBool,
+    /// Held for the life of the state. Declared last so it is released only
+    /// after every store above has closed: once `instance.lock` is free, a
+    /// new instance can open the data directory.
+    #[allow(dead_code)]
+    instance_lock: std::result::Result<std::fs::File, String>,
+}
+
+const INSTANCE_LOCK_FILE: &str = "instance.lock";
+
+/// Locks `<data_dir>/instance.lock` for this process; fails when another
+/// instance holds it.
+fn acquire_instance_lock(data_dir: &StdPath) -> Result<std::fs::File> {
+    use anyhow::Context as _;
+    std::fs::create_dir_all(data_dir)
+        .with_context(|| format!("failed to create data directory {}", data_dir.display()))?;
+    let path = data_dir.join(INSTANCE_LOCK_FILE);
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .with_context(|| format!("failed to open {}", path.display()))?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(std::fs::TryLockError::WouldBlock) => anyhow::bail!(
+            "another Videnoa instance is using the data directory {}; stop it first, or give this instance its own --data-dir or VIDENOA_DATA_DIR",
+            data_dir.display()
+        ),
+        Err(std::fs::TryLockError::Error(error)) => {
+            Err(error).with_context(|| format!("failed to lock {}", path.display()))
+        }
+    }
 }
 
 const PRINT_PREVIEW_THROTTLE_MS: u64 = 150;
@@ -111,8 +145,61 @@ const RERUN_COMPLETED_REJECTION: &str = "cannot rerun completed job";
 const PREVIEW_VSYNC_MODE: &str = "vfr";
 /// Budget for the preview's metadata probe, separate from the extraction's.
 const PREVIEW_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+/// Jobs (and previews) that may hold the GPU at once.
+const GPU_SLOTS: usize = 1;
+/// Queued plus running jobs the worker accepts; further submissions get 503
+/// until some finish, so a runaway client cannot grow the queue without bound.
+const MAX_ACTIVE_JOBS: usize = 64;
+/// How long a preview waits for the GPU before it reports that it is busy.
+/// The wait is FIFO behind queued jobs, so it must not be open-ended.
+const PREVIEW_GPU_WAIT: Duration = Duration::from_secs(2);
+/// Node types that never touch the GPU or run a frame pipeline. A job made
+/// only of these does not take the GPU permit; every other node type,
+/// including nested `Workflow` nodes and any type added later, does.
+const GPU_FREE_NODE_TYPES: &[&str] = &[
+    "WorkflowInput",
+    "WorkflowOutput",
+    "Constant",
+    "Print",
+    "PathDivider",
+    "PathJoiner",
+    "StringTemplate",
+    "StringReplace",
+    "TypeConversion",
+    "HttpRequest",
+    "Downloader",
+];
+
+impl AppStateInner {
+    /// Keep `event` as the latest value of its node, so `job_ws` can replay it
+    /// to a subscriber that connects after the node ran (Print usually runs
+    /// before the editor's socket is open).
+    fn record_debug_value(&self, job_id: &str, event: &NodeDebugValueEvent) {
+        if !self.debug_values.contains_key(job_id) {
+            // Values are replayed only while the job's progress channel lives;
+            // drop those of jobs that finished or were deleted.
+            self.debug_values
+                .retain(|id, _| self.progress_senders.contains_key(id));
+        }
+        self.debug_values
+            .entry(job_id.to_string())
+            .or_default()
+            .insert(event.node_id.clone(), JobWsEvent::from(event.clone()));
+    }
+}
 
 impl AppState {
+    /// Fails when the job store could not be opened or restored. The worker
+    /// must not start then: with in-memory jobs only, a restart would lose
+    /// every job a Controller is polling.
+    pub fn ensure_jobs_ready(&self) -> Result<()> {
+        self.inner
+            .jobs_persistence
+            .as_ref()
+            .map(|_| ())
+            .map_err(|e| anyhow::anyhow!(e.clone()))
+    }
+
     pub fn ensure_auth_ready(&self) -> Result<()> {
         self.inner
             .auth
@@ -129,8 +216,22 @@ impl AppState {
         config_path: PathBuf,
         data_dir: PathBuf,
     ) -> Self {
-        let auth =
-            auth::AuthService::open(&data_dir, config.auth.clone()).map_err(|e| e.to_string());
+        // One instance per data directory. Taken before anything in it is
+        // opened or written, so a second instance cannot touch the live
+        // instance's jobs (startup reconciliation rewrites running rows).
+        let instance_lock = acquire_instance_lock(&data_dir).map_err(|e| format!("{e:#}"));
+        let not_owned = instance_lock.as_ref().err().cloned();
+        if let Some(error) = &not_owned {
+            error!(%error, "Data directory is in use");
+        } else {
+            migrate_legacy_workflows(&config, &data_dir);
+        }
+        let auth = match &not_owned {
+            Some(error) => Err(error.clone()),
+            None => {
+                auth::AuthService::open(&data_dir, config.auth.clone()).map_err(|e| e.to_string())
+            }
+        };
         let jobs = DashMap::new();
         let workspace_root = data_dir.join("workspace");
         if let Err(err) = std::fs::create_dir_all(&workspace_root) {
@@ -141,44 +242,46 @@ impl AppState {
             );
         }
 
-        let jobs_persistence = match JobsPersistence::new(&data_dir) {
-            Ok(persistence) => Some(persistence),
-            Err(err) => {
-                warn!(
-                    error = %err,
-                    data_dir = %data_dir.display(),
-                    "Failed to initialize jobs persistence; running with in-memory job state only"
-                );
-                None
-            }
+        let jobs_persistence = match &not_owned {
+            Some(error) => Err(anyhow::anyhow!(error.clone())),
+            None => JobsPersistence::new(&data_dir),
         };
-
-        if let Some(persistence) = &jobs_persistence {
-            match persistence.load_jobs_for_startup() {
-                Ok(restored_jobs) => {
-                    let restored_count = restored_jobs.len();
-                    for job in restored_jobs {
-                        jobs.insert(job.id.clone(), job);
-                    }
-
-                    info!(
-                        restored_count,
-                        db_path = %persistence.db_path().display(),
-                        "Restored persisted jobs into runtime state"
-                    );
-                }
-                Err(err) => {
-                    warn!(
-                        error = %err,
-                        db_path = %persistence.db_path().display(),
-                        "Failed to restore persisted jobs; continuing with empty runtime jobs"
-                    );
-                }
+        let jobs_persistence = jobs_persistence.and_then(|persistence| {
+            let (restored_jobs, interrupted) =
+                persistence.load_jobs_for_startup_with_interrupted()?;
+            info!(
+                restored_count = restored_jobs.len(),
+                db_path = %persistence.db_path().display(),
+                "Restored persisted jobs into runtime state"
+            );
+            if !interrupted.is_empty() {
+                let removed = staged_outputs::sweep_interrupted_jobs(
+                    restored_jobs
+                        .iter()
+                        .filter(|job| interrupted.contains(&job.id)),
+                );
+                info!(
+                    interrupted = interrupted.len(),
+                    removed, "Cleaned up after jobs the previous run left running"
+                );
             }
-        }
+            for job in restored_jobs {
+                jobs.insert(job.id.clone(), job);
+            }
+            Ok(persistence)
+        });
+        let jobs_persistence = jobs_persistence.map_err(|err| {
+            error!(error = %format!("{err:#}"), data_dir = %data_dir.display(), "Job store unavailable");
+            format!(
+                "job store unavailable in {}: {err:#}",
+                data_dir.display()
+            )
+        });
 
-        let preview_cache =
-            preview_cache::PreviewCache::open(&data_dir).map_err(|e| format!("{e:#}"));
+        let preview_cache = match &not_owned {
+            Some(error) => Err(error.clone()),
+            None => preview_cache::PreviewCache::open(&data_dir).map_err(|e| format!("{e:#}")),
+        };
         Self {
             inner: Arc::new(AppStateInner {
                 auth,
@@ -186,10 +289,11 @@ impl AppState {
                 settings_lock: tokio::sync::Mutex::new(()),
                 jobs,
                 jobs_persistence,
-                gpu_semaphore: Arc::new(Semaphore::new(1)),
+                gpu_semaphore: Arc::new(Semaphore::new(GPU_SLOTS)),
                 node_registry,
                 model_registry,
                 progress_senders: DashMap::new(),
+                debug_values: DashMap::new(),
                 presets,
                 config: RwLock::new(config),
                 config_path,
@@ -197,20 +301,123 @@ impl AppState {
                 workspace_root,
                 preview_cache,
                 performance_series: Mutex::new(VecDeque::new()),
+                shutting_down: std::sync::atomic::AtomicBool::new(false),
+                instance_lock,
             }),
         }
     }
 
     fn persist_job_snapshot(&self, job: &Job) -> Result<()> {
-        if let Some(persistence) = &self.inner.jobs_persistence {
-            persistence.upsert_job(job)?;
+        self.job_store()?.upsert_job(job)
+    }
+
+    fn persist_job_transition(&self, job: &Job) -> Result<()> {
+        self.job_store()?.update_job(job)
+    }
+
+    fn job_store(&self) -> Result<&JobsPersistence> {
+        self.inner
+            .jobs_persistence
+            .as_ref()
+            .map_err(|e| anyhow::anyhow!(e.clone()))
+    }
+
+    /// Running, queued and cancelling (active, cancel requested) job counts.
+    fn active_job_counts(&self) -> (usize, usize, usize) {
+        let (mut running, mut queued, mut cancelling) = (0, 0, 0);
+        for job in self.inner.jobs.iter() {
+            match job.status {
+                JobStatus::Running => running += 1,
+                JobStatus::Queued => queued += 1,
+                _ => continue,
+            }
+            if job.cancel_request.is_some() {
+                cancelling += 1;
+            }
+        }
+        (running, queued, cancelling)
+    }
+
+    /// Starts an orderly stop. New jobs and previews are refused with 503,
+    /// and every queued or running job is asked to stop with reason
+    /// `shutdown`. The request is persisted, so a job whose executor does not
+    /// exit in time is restored with that reason on the next start.
+    pub fn begin_shutdown(&self) {
+        use std::sync::atomic::Ordering;
+        if self.inner.shutting_down.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        // Cancel every job first, then write. Writing while iterating held
+        // the job map's locks across disk I/O, so on a slow disk a queued job
+        // not yet reached could start, or even complete, mid-shutdown.
+        let requests: Vec<(String, CancelRequest)> = self
+            .inner
+            .jobs
+            .iter_mut()
+            .filter_map(|mut job| {
+                if job.status.is_terminal() {
+                    return None;
+                }
+                job.request_cancel(CancelReason::Shutdown);
+                Some((job.id.clone(), job.cancel_request?))
+            })
+            .collect();
+        let Ok(store) = self.job_store() else {
+            return;
+        };
+        for (job_id, request) in requests {
+            // Only the cancel columns: the executor may already have written
+            // a newer status.
+            if let Err(err) = store.record_cancel_request(&job_id, &request) {
+                error!(%job_id, error = ?err, "Failed to persist shutdown cancel request");
+            }
+        }
+    }
+
+    /// Waits up to `grace` for every job's executor to exit and returns the
+    /// ids of the jobs still running then. Those stay `running` in the job
+    /// store, with their cancel request; the next start marks them cancelled
+    /// and removes the staged outputs they left behind.
+    pub async fn wait_for_jobs_to_stop(&self, grace: Duration) -> Vec<String> {
+        let deadline = Instant::now() + grace;
+        loop {
+            let active: Vec<String> = self
+                .inner
+                .jobs
+                .iter()
+                .filter(|job| !job.status.is_terminal())
+                .map(|job| job.id.clone())
+                .collect();
+            if active.is_empty() || Instant::now() >= deadline {
+                return active;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    fn ensure_not_shutting_down(&self) -> Result<(), AppError> {
+        if self
+            .inner
+            .shutting_down
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(
+                AppError::ServiceUnavailable("worker is shutting down".to_owned())
+                    .with_code(ErrorCode::ShuttingDown),
+            );
         }
         Ok(())
     }
 
-    fn persist_job_transition(&self, job: &Job) -> Result<()> {
-        if let Some(persistence) = &self.inner.jobs_persistence {
-            persistence.update_job(job)?;
+    /// Refuses `additional` new jobs when they would exceed [`MAX_ACTIVE_JOBS`].
+    fn ensure_queue_capacity(&self, additional: usize) -> Result<(), AppError> {
+        self.ensure_not_shutting_down()?;
+        let (running, queued, _) = self.active_job_counts();
+        if running + queued + additional > MAX_ACTIVE_JOBS {
+            return Err(AppError::ServiceUnavailable(format!(
+                "job queue is full ({running} running, {queued} queued, limit {MAX_ACTIVE_JOBS}); retry after some jobs finish"
+            ))
+            .with_code(ErrorCode::QueueFull));
         }
         Ok(())
     }
@@ -222,43 +429,45 @@ impl AppState {
             .map_err(|e| AppError::Internal(e.clone()))
     }
 
-    /// Resolve workflows_dir relative to process current working directory.
+    /// Resolve workflows_dir relative to the data directory.
     pub async fn resolve_workflows_dir(&self) -> PathBuf {
         let config = self.inner.config.read().await;
-
-        let base_dir = match std::env::current_dir() {
-            Ok(cwd) => cwd,
-            Err(cwd_err) => {
-                warn!(
-                    error = %cwd_err,
-                    data_dir = %self.inner.data_dir.display(),
-                    "Failed to resolve current directory; falling back to executable directory for workflows_dir"
-                );
-
-                match std::env::current_exe() {
-                    Ok(exe_path) => match exe_path.parent() {
-                        Some(exe_dir) => exe_dir.to_path_buf(),
-                        None => {
-                            warn!(
-                                executable = %exe_path.display(),
-                                "Executable path has no parent directory; using workflows_dir value as provided"
-                            );
-                            return config.paths.workflows_dir.clone();
-                        }
-                    },
-                    Err(exe_err) => {
-                        warn!(
-                            error = %exe_err,
-                            "Failed to resolve executable path; using workflows_dir value as provided"
-                        );
-                        return config.paths.workflows_dir.clone();
-                    }
-                }
-            }
-        };
-
-        crate::config::resolve_relative_to(&base_dir, &config.paths.workflows_dir)
+        config.paths.resolved_workflows_dir(&self.inner.data_dir)
     }
+}
+
+/// Copies workflows an older build saved under `<cwd>/data/workflows` into
+/// the data directory's workflows folder; see
+/// [`crate::config::migrate_legacy_workflows_dir`].
+fn migrate_legacy_workflows(config: &AppConfig, data_dir: &StdPath) {
+    let Ok(cwd) = std::env::current_dir() else {
+        return;
+    };
+    match crate::config::migrate_legacy_workflows_dir(&config.paths, data_dir, &cwd) {
+        Ok(0) => {}
+        Ok(copied) => info!(
+            copied,
+            from = %cwd.join("data/workflows").display(),
+            to = %config.paths.resolved_workflows_dir(data_dir).display(),
+            "Copied saved workflows into the data directory; the originals were left in place"
+        ),
+        Err(error) => warn!(
+            error = %format!("{error:#}"),
+            "Failed to copy saved workflows from the old location into the data directory"
+        ),
+    }
+}
+
+/// The workflow with each relative `model_path` param resolved against
+/// `paths.models_dir` (see [`crate::config::PathsConfig::resolve_model_path`]).
+/// Only the executed copy changes; a job keeps the workflow as submitted.
+fn resolve_workflow_model_paths(
+    workflow: &PipelineGraph,
+    paths: &crate::config::PathsConfig,
+) -> Result<PipelineGraph> {
+    let mut document = serde_json::to_value(workflow)?;
+    paths.resolve_model_paths_in(&mut document);
+    Ok(serde_json::from_value(document)?)
 }
 
 pub fn load_builtin_presets(dir: &StdPath) -> DashMap<String, Preset> {
@@ -313,6 +522,9 @@ pub struct Job {
     pub workflow_name: String,
     pub workflow_source: String,
     pub rerun_of_job_id: Option<String>,
+    /// Set once something asked a queued or running job to stop. The job keeps
+    /// its status (and the GPU permit) until its executor has exited.
+    pub cancel_request: Option<CancelRequest>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -325,12 +537,79 @@ pub enum JobStatus {
     Cancelled,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProgressUpdate {
-    pub current_frame: u64,
-    pub total_frames: Option<u64>,
-    pub fps: f32,
-    pub eta_seconds: Option<f64>,
+impl JobStatus {
+    fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            JobStatus::Completed | JobStatus::Failed | JobStatus::Cancelled
+        )
+    }
+}
+
+/// Why a queued or running job was asked to stop. `cancelled` alone cannot
+/// tell a user's cancel from a restart, so responses carry this code too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CancelReason {
+    /// A client cancelled it (`DELETE /api/jobs/{id}` on an active job).
+    User,
+    /// The worker shut down while the job was active.
+    Shutdown,
+    /// The worker restarted (or crashed) while the job was active.
+    Restart,
+}
+
+impl CancelReason {
+    /// The `error` text of a job cancelled for this reason.
+    fn message(self) -> &'static str {
+        match self {
+            CancelReason::User => "job cancelled at user request",
+            CancelReason::Shutdown => "job interrupted by worker shutdown",
+            CancelReason::Restart => "job interrupted by worker restart",
+        }
+    }
+}
+
+impl From<JobStatus> for videnoa_protocol::JobStatus {
+    fn from(status: JobStatus) -> Self {
+        match status {
+            JobStatus::Queued => Self::Queued,
+            JobStatus::Running => Self::Running,
+            JobStatus::Completed => Self::Completed,
+            JobStatus::Failed => Self::Failed,
+            JobStatus::Cancelled => Self::Cancelled,
+        }
+    }
+}
+
+impl From<CancelReason> for videnoa_protocol::CancelReason {
+    fn from(reason: CancelReason) -> Self {
+        match reason {
+            CancelReason::User => Self::User,
+            CancelReason::Shutdown => Self::Shutdown,
+            CancelReason::Restart => Self::Restart,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CancelRequest {
+    pub requested_at: DateTime<Utc>,
+    pub reason: CancelReason,
+}
+
+impl Job {
+    /// Asks an active job to stop. The first request's reason wins.
+    fn request_cancel(&mut self, reason: CancelReason) {
+        if self.status.is_terminal() {
+            return;
+        }
+        self.cancel_request.get_or_insert(CancelRequest {
+            requested_at: Utc::now(),
+            reason,
+        });
+        self.cancel_token.cancel();
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -463,36 +742,15 @@ pub struct CreateJobRequest {
     pub params: Option<HashMap<String, serde_json::Value>>,
 }
 
+/// `POST /api/run`'s body. Fields a newer Controller adds are ignored, except
+/// `file_paths`: it belongs to `POST /api/batch`, and running the named
+/// workflow without those inputs would be wrong.
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RunWorkflowRequest {
+struct RunWorkflowBody {
+    #[serde(flatten)]
+    request: RunWorkflowRequest,
     #[serde(default)]
-    pub workflow_name: Option<String>,
-    #[serde(default)]
-    pub params: Option<HashMap<String, serde_json::Value>>,
-}
-
-#[derive(Serialize)]
-pub struct CreateJobResponse {
-    pub id: String,
-    pub status: JobStatus,
-    pub created_at: DateTime<Utc>,
-}
-
-#[derive(Serialize)]
-pub struct JobResponse {
-    pub id: String,
-    pub status: JobStatus,
-    pub created_at: DateTime<Utc>,
-    pub started_at: Option<DateTime<Utc>>,
-    pub completed_at: Option<DateTime<Utc>>,
-    pub progress: Option<ProgressUpdate>,
-    pub error: Option<String>,
-    pub workflow_name: String,
-    pub workflow_source: String,
-    pub params: Option<HashMap<String, serde_json::Value>>,
-    pub rerun_of_job_id: Option<String>,
-    pub duration_ms: Option<i64>,
+    file_paths: Option<serde::de::IgnoredAny>,
 }
 
 #[derive(Deserialize)]
@@ -507,11 +765,6 @@ pub struct BatchResponse {
     pub total: usize,
 }
 
-#[derive(Serialize)]
-pub struct HealthResponse {
-    pub status: String,
-}
-
 /// Build identity of the running server.
 ///
 /// The frontend is embedded in this binary, so a bundle-side constant would
@@ -522,13 +775,6 @@ pub struct AboutResponse {
     pub name: String,
     pub version: String,
     pub source_url: String,
-}
-
-#[derive(Serialize)]
-pub struct ErrorResponse {
-    pub error: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub code: Option<&'static str>,
 }
 
 #[derive(Deserialize)]
@@ -584,15 +830,14 @@ pub struct SaveWorkflowRequest {
     pub name: String,
     pub description: String,
     pub workflow: serde_json::Value,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct WorkflowEntry {
-    pub filename: String,
-    pub name: String,
-    pub description: String,
-    pub workflow: serde_json::Value,
-    pub has_interface: bool,
+    /// File to write, as `GET /api/workflows` lists it. When absent the file
+    /// name is derived from `name`.
+    #[serde(default)]
+    pub filename: Option<String>,
+    /// Replace an existing file. Without it the save is create-only and an
+    /// existing file answers 409 `workflow_exists`.
+    #[serde(default)]
+    pub overwrite: bool,
 }
 
 // ─── Embedded frontend assets (release builds only) ──────────────────────────
@@ -650,11 +895,15 @@ pub fn api_router(state: AppState) -> Router {
         .route("/api/run/validate", post(validate_run_workflow))
         .route("/api/jobs/{id}", get(get_job).delete(delete_job_history))
         .route("/api/jobs/{id}/rerun", post(rerun_job))
+        .route(
+            "/api/jobs/by-idempotency-key/{key}",
+            get(get_job_by_idempotency_key),
+        )
         .route("/api/nodes", get(list_nodes))
         .route("/api/models", get(list_models))
         .route("/api/models/{filename}/inspect", get(inspect_model))
         .route("/api/batch", post(create_batch))
-        .route("/api/presets", get(list_presets).post(create_preset))
+        .route("/api/presets", get(list_presets))
         .route("/api/workflows", get(list_workflows).post(save_workflow))
         .route(
             "/api/workflows/{filename}/interface",
@@ -694,6 +943,10 @@ pub fn api_router(state: AppState) -> Router {
             "/api/auth/password",
             axum::routing::put(auth::set_password).delete(auth::disable),
         )
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth::check_host,
+        ))
         .with_state(state)
 }
 
@@ -716,9 +969,15 @@ pub fn app_router_with_static(state: AppState, static_dir: Option<&StdPath>) -> 
     }
 }
 
-async fn health() -> Json<HealthResponse> {
+async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
+    let (running, queued, cancelling) = state.active_job_counts();
     Json(HealthResponse {
-        status: "ok".to_string(),
+        status: HealthStatus::Ok,
+        gpu_slots: Some(GPU_SLOTS),
+        running: Some(running),
+        queued: Some(queued),
+        cancelling: Some(cancelling),
+        protocol: Some(PROTOCOL_VERSION),
     })
 }
 
@@ -1289,16 +1548,45 @@ async fn api_route_not_found(Path(path): Path<String>) -> AppError {
     AppError::NotFound(format!("api endpoint not found: /api/{path}"))
 }
 
-async fn get_config(State(state): State<AppState>) -> Json<AppConfig> {
-    let config = state.inner.config.read().await.clone();
-    Json(config)
+/// Version tag of a config document: a hash of its JSON form, quoted as an
+/// HTTP entity tag.
+fn config_etag(config: &AppConfig) -> String {
+    use sha2::{Digest, Sha256};
+
+    let bytes = serde_json::to_vec(config).unwrap_or_default();
+    format!("\"{:x}\"", Sha256::digest(bytes))
 }
 
+fn with_config_etag(config: AppConfig) -> Response {
+    let etag = config_etag(&config);
+    ([(axum::http::header::ETAG, etag)], Json(config)).into_response()
+}
+
+async fn get_config(State(state): State<AppState>) -> Response {
+    let config = state.inner.config.read().await.clone();
+    with_config_etag(config)
+}
+
+/// Settings are saved as a whole document, so two editors (the Settings form
+/// and the desktop language switch) would revert each other. A PUT carrying
+/// `If-Match` is applied only to the version it was based on; without the
+/// header the write is unconditional, as before.
 async fn update_config(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(payload): Json<AppConfig>,
-) -> Result<Json<AppConfig>, AppError> {
+) -> Result<Response, AppError> {
     let _settings = state.inner.settings_lock.lock().await;
+    if let Some(if_match) = headers.get(axum::http::header::IF_MATCH) {
+        let current = config_etag(&*state.inner.config.read().await);
+        if if_match.to_str().ok().map(str::trim) != Some(current.as_str()) {
+            return Err(AppError::PreconditionFailed {
+                code: ErrorCode::ConfigChanged,
+                message: "settings were changed elsewhere; reload them and apply the change again"
+                    .into(),
+            });
+        }
+    }
     if payload.iroh.enabled && !state.iroh_password_enabled()? {
         return Err(AppError::BadRequest(
             "Set a worker password before enabling iroh".into(),
@@ -1310,6 +1598,10 @@ async fn update_config(
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
     payload
         .auth
+        .validate()
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+    payload
+        .server
         .validate()
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
     let auth = state
@@ -1326,7 +1618,7 @@ async fn update_config(
         .reconcile_iroh()
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
-    Ok(Json(payload))
+    Ok(with_config_etag(payload))
 }
 
 async fn create_job(
@@ -1364,12 +1656,25 @@ async fn create_job(
 async fn run_workflow_by_name(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(payload): Json<RunWorkflowRequest>,
+    Json(body): Json<RunWorkflowBody>,
 ) -> Result<(StatusCode, Json<CreateJobResponse>), AppError> {
+    if body.file_paths.is_some() {
+        return Err(AppError::Rejected {
+            status: StatusCode::UNPROCESSABLE_ENTITY,
+            code: None,
+            message: "file_paths belongs to POST /api/batch; POST /api/run takes workflow_name \
+                      and params"
+                .to_string(),
+        });
+    }
+    let payload = body.request;
+    let params: Option<HashMap<String, serde_json::Value>> =
+        payload.params.map(|params| params.into_iter().collect());
     let idempotency_key =
         IdempotencyKey::from_headers(&headers).map_err(|_| AppError::InvalidIdempotencyKey)?;
-    let workflow_name = validate_run_workflow_name(payload.workflow_name.as_deref())?;
-    let fingerprint = RequestFingerprint::for_run(&workflow_name, payload.params.as_ref())
+    let workflow_name = validate_run_workflow_name(payload.workflow_name.as_deref())
+        .map_err(|error| error.with_code(ErrorCode::WorkflowNameInvalid))?;
+    let fingerprint = RequestFingerprint::for_run(&workflow_name, params.as_ref())
         .map_err(|_| AppError::Internal("failed to fingerprint run request".to_string()))?;
     if let Some(key) = idempotency_key.as_ref() {
         let persistence = jobs_persistence(&state)?;
@@ -1388,7 +1693,7 @@ async fn run_workflow_by_name(
     let (workflow, workflow_source) = load_run_workflow(&state, &workflow_name).await?;
     let submission = JobSubmission {
         workflow,
-        params: payload.params,
+        params,
         workflow_name,
         workflow_source: workflow_source.to_string(),
         rerun_of_job_id: None,
@@ -1407,7 +1712,8 @@ async fn validate_run_workflow(
     State(state): State<AppState>,
     Json(payload): Json<RunWorkflowRequest>,
 ) -> Result<StatusCode, AppError> {
-    let workflow_name = validate_run_workflow_name(payload.workflow_name.as_deref())?;
+    let workflow_name = validate_run_workflow_name(payload.workflow_name.as_deref())
+        .map_err(|error| error.with_code(ErrorCode::WorkflowNameInvalid))?;
     load_run_workflow(&state, &workflow_name).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1419,16 +1725,21 @@ async fn load_run_workflow(
 ) -> Result<(PipelineGraph, &'static str), AppError> {
     let resolved = resolve_run_workflow_file(state, workflow_name).await?;
 
-    let workflow_document = std::fs::read_to_string(&resolved.path)
-        .map_err(|e| AppError::Internal(format!("failed to read workflow: {e}")))?;
-    let parsed_document: serde_json::Value = serde_json::from_str(&workflow_document)
-        .map_err(|e| AppError::BadRequest(format!("invalid JSON: {e}")))?;
+    let workflow_document = std::fs::read_to_string(&resolved.path).map_err(|e| {
+        AppError::Internal(format!("failed to read workflow: {e}"))
+            .with_code(ErrorCode::WorkflowUnreadable)
+    })?;
+    let parsed_document: serde_json::Value =
+        serde_json::from_str(&workflow_document).map_err(|e| {
+            AppError::BadRequest(format!("invalid JSON: {e}")).with_code(ErrorCode::WorkflowInvalid)
+        })?;
     let workflow_value = parsed_document
         .get("workflow")
         .cloned()
         .unwrap_or(parsed_document);
 
-    let workflow = parse_and_validate_workflow(state, workflow_value)?;
+    let workflow = parse_and_validate_workflow(state, workflow_value)
+        .map_err(|error| error.with_code(ErrorCode::WorkflowInvalid))?;
     Ok((workflow, resolved.workflow_source))
 }
 
@@ -1438,14 +1749,17 @@ fn parse_and_validate_workflow(
 ) -> Result<PipelineGraph, AppError> {
     let workflow: PipelineGraph =
         serde_json::from_value(workflow_json).map_err(|e| AppError::BadRequest(e.to_string()))?;
+    validate_workflow(state, &workflow)?;
+    Ok(workflow)
+}
 
+/// The checks every submission passes before it becomes a job.
+fn validate_workflow(state: &AppState, workflow: &PipelineGraph) -> Result<(), AppError> {
     workflow
         .validate(&state.inner.node_registry)
-        .and_then(|()| validate_video_workflow(&workflow, &state.inner.node_registry))
-        .and_then(|()| validate_workflow_encoders(&workflow))
-        .map_err(|e| AppError::BadRequest(format!("workflow validation failed: {e:#}")))?;
-
-    Ok(workflow)
+        .and_then(|()| validate_video_workflow(workflow, &state.inner.node_registry))
+        .and_then(|()| validate_workflow_encoders(workflow))
+        .map_err(|e| AppError::BadRequest(format!("workflow validation failed: {e:#}")))
 }
 
 struct JobSubmission {
@@ -1460,6 +1774,7 @@ fn create_and_spawn_job(
     state: &AppState,
     submission: JobSubmission,
 ) -> Result<CreateJobResponse, AppError> {
+    state.ensure_queue_capacity(1)?;
     let (job, response) = prepare_job(submission);
     state
         .persist_job_snapshot(&job)
@@ -1475,6 +1790,7 @@ fn create_idempotent_job(
     fingerprint: &RequestFingerprint,
 ) -> Result<(StatusCode, Json<CreateJobResponse>), AppError> {
     let persistence = jobs_persistence(state)?;
+    state.ensure_queue_capacity(1)?;
     let (job, response) = prepare_job(submission);
     match persistence
         .claim_idempotent_job(key.as_str(), fingerprint.as_str(), &job)
@@ -1495,7 +1811,7 @@ fn jobs_persistence(state: &AppState) -> Result<&JobsPersistence, AppError> {
         .inner
         .jobs_persistence
         .as_ref()
-        .ok_or_else(|| AppError::Internal("durable jobs persistence is unavailable".to_string()))
+        .map_err(|e| AppError::Internal(e.clone()).with_code(ErrorCode::JobStoreUnavailable))
 }
 
 fn prepare_job(submission: JobSubmission) -> (Job, CreateJobResponse) {
@@ -1516,10 +1832,11 @@ fn prepare_job(submission: JobSubmission) -> (Job, CreateJobResponse) {
         workflow_name: submission.workflow_name,
         workflow_source: submission.workflow_source,
         rerun_of_job_id: submission.rerun_of_job_id,
+        cancel_request: None,
     };
     let response = CreateJobResponse {
         id,
-        status: JobStatus::Queued,
+        status: JobStatus::Queued.into(),
         created_at: now,
     };
     (job, response)
@@ -1549,7 +1866,8 @@ async fn resolve_run_workflow_file(
     workflow_name: &str,
 ) -> Result<ResolvedWorkflowFile, AppError> {
     let filename = format!("{workflow_name}.json");
-    sanitize_workflow_filename(&filename)?;
+    sanitize_workflow_filename(&filename)
+        .map_err(|error| error.with_code(ErrorCode::WorkflowNameInvalid))?;
 
     let workflows_dir = state.resolve_workflows_dir().await;
     let workflows_path = workflows_dir.join(&filename);
@@ -1561,7 +1879,7 @@ async fn resolve_run_workflow_file(
     }
 
     let config = state.inner.config.read().await;
-    let presets_path = config.paths.presets_dir.join(&filename);
+    let presets_path = config.paths.resolved_presets_dir().join(&filename);
     if presets_path.exists() {
         return Ok(ResolvedWorkflowFile {
             path: presets_path,
@@ -1569,9 +1887,10 @@ async fn resolve_run_workflow_file(
         });
     }
 
-    Err(AppError::NotFound(format!(
-        "workflow not found: {workflow_name}"
-    )))
+    Err(
+        AppError::NotFound(format!("workflow not found: {workflow_name}"))
+            .with_code(ErrorCode::WorkflowNotFound),
+    )
 }
 
 fn validate_run_workflow_name(raw_name: Option<&str>) -> Result<String, AppError> {
@@ -1690,11 +2009,12 @@ async fn create_batch(
         prepared.push((file_path, job, response));
     }
 
+    state.ensure_queue_capacity(prepared.len())?;
     // Persist all jobs before spawning any; on a storage failure remove the
     // ones already stored so the batch leaves nothing behind.
     for (index, (_, job, _)) in prepared.iter().enumerate() {
         if let Err(error) = state.persist_job_snapshot(job) {
-            if let Some(persistence) = &state.inner.jobs_persistence {
+            if let Ok(persistence) = &state.inner.jobs_persistence {
                 for (_, stored, _) in &prepared[..index] {
                     if let Err(rollback_error) = persistence.delete_job(&stored.id) {
                         error!(
@@ -1745,6 +2065,27 @@ async fn get_job(
     Ok(Json(job_to_response(job.value())))
 }
 
+/// The job a `POST /api/run` with this `Idempotency-Key` created, without
+/// creating one (protocol 2). A Controller that lost the answer to a
+/// submission asks this to learn whether the job exists; 404 with code
+/// `job_not_found` means no run with the key was accepted.
+async fn get_job_by_idempotency_key(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+) -> Result<Json<CreateJobResponse>, AppError> {
+    let key = IdempotencyKey::parse(&key).map_err(|_| AppError::InvalidIdempotencyKey)?;
+    jobs_persistence(&state)?
+        .idempotent_job(key.as_str())
+        .map_err(|error| {
+            AppError::Internal(format!("failed to look up idempotent job: {error:#}"))
+        })?
+        .map(Json)
+        .ok_or_else(|| {
+            AppError::NotFound("no job was created with this idempotency key".to_owned())
+                .with_code(ErrorCode::JobNotFound)
+        })
+}
+
 async fn rerun_job(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -1769,6 +2110,9 @@ async fn rerun_job(
             source_job.workflow_source.clone(),
         )
     };
+    // The stored workflow may predate this build (removed node types, encoder
+    // changes), so it is checked like a new submission.
+    validate_workflow(&state, &workflow)?;
 
     let created = create_and_spawn_job(
         &state,
@@ -1784,32 +2128,52 @@ async fn rerun_job(
     Ok((StatusCode::CREATED, Json(created)))
 }
 
+/// Deletes a finished job's history, or cancels a queued or running job.
+///
+/// A cancelled job is not removed: it keeps its status and the GPU permit
+/// until its executor exits, then becomes `cancelled`. Deleting it again after
+/// that removes its history. Both answer 204, so clients that treat this route
+/// as "cancel" keep working.
 async fn delete_job_history(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, AppError> {
-    let entry = match state.inner.jobs.entry(id.clone()) {
+    let persistence = jobs_persistence(&state)?;
+    let mut entry = match state.inner.jobs.entry(id.clone()) {
         dashmap::mapref::entry::Entry::Occupied(entry) => entry,
         dashmap::mapref::entry::Entry::Vacant(_) => {
-            return Err(AppError::NotFound(format!("job not found: {id}")));
+            // A row that could not be loaded at startup is not listed, but it
+            // can still be removed. Every active job is in memory, so this
+            // never deletes one.
+            let rows = persistence.delete_job(&id).map_err(|e| {
+                AppError::Internal(format!("failed to delete job history row: {e:#}"))
+            })?;
+            if rows == 0 {
+                return Err(AppError::NotFound(format!("job not found: {id}")));
+            }
+            info!(job_id = %id, "Unloadable job history row deleted");
+            return Ok(StatusCode::NO_CONTENT);
         }
     };
-    // Hold the runtime entry until durable deletion succeeds. Failed deletion
-    // must never cancel a job whose queued/running state remains visible.
-    if let Some(persistence) = &state.inner.jobs_persistence {
-        let rows = persistence
-            .delete_job(&id)
-            .map_err(|e| AppError::Internal(format!("failed to delete job history row: {e:#}")))?;
-        if rows != 1 {
-            return Err(AppError::Internal(format!(
-                "expected exactly one persisted row deleted for job {id}, deleted {rows}"
-            )));
+    if !entry.get().status.is_terminal() {
+        entry.get_mut().request_cancel(CancelReason::User);
+        // Recorded so a restart before the executor exits keeps the reason.
+        if let Err(err) = persistence.update_job(entry.get()) {
+            error!(job_id = %id, error = ?err, "Failed to persist cancel request");
         }
+        info!(job_id = %id, "Job cancellation requested");
+        return Ok(StatusCode::NO_CONTENT);
     }
-    let job = entry.remove();
-    if matches!(job.status, JobStatus::Queued | JobStatus::Running) {
-        job.cancel_token.cancel();
+    // Hold the runtime entry until durable deletion succeeds.
+    let rows = persistence
+        .delete_job(&id)
+        .map_err(|e| AppError::Internal(format!("failed to delete job history row: {e:#}")))?;
+    if rows != 1 {
+        return Err(AppError::Internal(format!(
+            "expected exactly one persisted row deleted for job {id}, deleted {rows}"
+        )));
     }
+    entry.remove();
     state.inner.progress_senders.remove(&id);
     info!(job_id = %id, "Job history row deleted");
     Ok(StatusCode::NO_CONTENT)
@@ -1830,11 +2194,31 @@ async fn job_ws(
         .get(&id)
         .map(|sender| sender.subscribe())
         .ok_or_else(|| AppError::NotFound(format!("no progress channel for job: {id}")))?;
+    // Read after subscribing, so a value recorded in between is sent twice
+    // (harmless, the client keeps the latest per node) rather than lost.
+    let replay: Vec<JobWsEvent> = state
+        .inner
+        .debug_values
+        .get(&id)
+        .map(|values| values.values().cloned().collect())
+        .unwrap_or_default();
 
-    Ok(ws.on_upgrade(move |socket| handle_ws(socket, rx)))
+    Ok(ws.on_upgrade(move |socket| handle_ws(socket, rx, replay)))
 }
 
-async fn handle_ws(mut socket: WebSocket, mut rx: broadcast::Receiver<JobWsEvent>) {
+async fn handle_ws(
+    mut socket: WebSocket,
+    mut rx: broadcast::Receiver<JobWsEvent>,
+    replay: Vec<JobWsEvent>,
+) {
+    for event in replay {
+        let Ok(json) = serde_json::to_string(&event) else {
+            continue;
+        };
+        if socket.send(Message::Text(json.into())).await.is_err() {
+            return;
+        }
+    }
     loop {
         tokio::select! {
             result = rx.recv() => {
@@ -1883,7 +2267,7 @@ async fn inspect_model(
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
 
     let config = state.inner.config.read().await;
-    let models_dir = &config.paths.models_dir;
+    let models_dir = config.paths.resolved_models_dir();
     let path = models_dir.join(&filename);
 
     if !path.exists() {
@@ -1898,59 +2282,22 @@ async fn inspect_model(
     Ok(Json(inspection))
 }
 
+/// Presets are read from the configured `presets_dir` on every request: the
+/// same live lookup `/api/run` resolves preset names against, so the list
+/// cannot drift from what runs after `presets_dir` changes.
 async fn list_presets(State(state): State<AppState>) -> Json<Vec<PresetResponse>> {
-    let presets: Vec<PresetResponse> = state
-        .inner
-        .presets
-        .iter()
-        .map(|entry| PresetResponse {
-            id: entry.key().clone(),
-            name: entry.value().name.clone(),
-            description: entry.value().description.clone(),
-            workflow: entry.value().workflow.clone(),
+    let presets_dir = state.inner.config.read().await.paths.presets_dir.clone();
+    let mut presets: Vec<PresetResponse> = load_builtin_presets(&presets_dir)
+        .into_iter()
+        .map(|(id, preset)| PresetResponse {
+            id,
+            name: preset.name,
+            description: preset.description,
+            workflow: preset.workflow,
         })
         .collect();
+    presets.sort_by(|a, b| a.id.cmp(&b.id));
     Json(presets)
-}
-
-/// Upper bound on entries in the in-memory preset map (built-in presets
-/// included). Presets created through the API are not persisted, so the map
-/// must stay bounded for the lifetime of the process.
-const MAX_PRESETS: usize = 256;
-
-async fn create_preset(
-    State(state): State<AppState>,
-    Json(payload): Json<CreatePresetRequest>,
-) -> Result<(StatusCode, Json<PresetResponse>), (StatusCode, Json<ErrorResponse>)> {
-    if state.inner.presets.len() >= MAX_PRESETS {
-        return Err((
-            StatusCode::CONFLICT,
-            Json(ErrorResponse {
-                error: format!(
-                    "preset limit reached ({MAX_PRESETS} presets); API-created presets are kept in memory only, restart the server to clear them"
-                ),
-                code: Some("preset_limit_reached"),
-            }),
-        ));
-    }
-
-    let id = Uuid::new_v4().to_string();
-    let preset = Preset {
-        name: payload.name,
-        description: payload.description,
-        workflow: payload.workflow,
-    };
-
-    let response = PresetResponse {
-        id: id.clone(),
-        name: preset.name.clone(),
-        description: preset.description.clone(),
-        workflow: preset.workflow.clone(),
-    };
-
-    state.inner.presets.insert(id, preset);
-
-    Ok((StatusCode::CREATED, Json(response)))
 }
 
 // ---------------------------------------------------------------------------
@@ -2024,6 +2371,18 @@ async fn list_workflows(State(state): State<AppState>) -> Json<Vec<WorkflowEntry
     Json(entries)
 }
 
+/// Create `path` and write `bytes`, failing with `AlreadyExists` instead of
+/// replacing a file that is already there.
+fn write_new_workflow_file(path: &StdPath, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    file.write_all(bytes)
+}
+
 async fn save_workflow(
     State(state): State<AppState>,
     Json(payload): Json<SaveWorkflowRequest>,
@@ -2045,13 +2404,34 @@ async fn save_workflow(
         ));
     }
 
-    let filename = if trimmed.ends_with(".json") {
-        trimmed.clone()
-    } else {
-        format!("{trimmed}.json")
+    let filename = match payload.filename.as_deref() {
+        Some(filename) => {
+            sanitize_workflow_filename(filename)?;
+            if filename.trim() != filename || !filename.ends_with(".json") {
+                return Err(AppError::BadRequest(
+                    "filename must be a saved workflow's .json file name".into(),
+                ));
+            }
+            filename.to_string()
+        }
+        None if trimmed.ends_with(".json") => trimmed.clone(),
+        None => format!("{trimmed}.json"),
     };
 
     sanitize_workflow_filename(&filename)?;
+
+    // `/api/run` resolves a name in `workflows_dir` before `presets_dir`, so a
+    // saved workflow with a preset's run name would silently replace it.
+    let presets_dir = state.inner.config.read().await.paths.presets_dir.clone();
+    if presets_dir.join(&filename).exists() {
+        let run_name = filename.trim_end_matches(".json");
+        return Err(AppError::Conflict {
+            code: ErrorCode::WorkflowNameIsPreset,
+            message: format!(
+                "'{run_name}' is the run name of a preset; save the workflow under another name"
+            ),
+        });
+    }
 
     let dir = state.resolve_workflows_dir().await;
 
@@ -2061,14 +2441,27 @@ async fn save_workflow(
     let doc = serde_json::json!({
         "name": trimmed,
         "description": payload.description,
-        "workflow": payload.workflow,
+        "workflow": crate::graph::versioned_workflow(&payload.workflow),
     });
 
     let path = dir.join(&filename);
     let bytes = serde_json::to_vec_pretty(&doc)
         .map_err(|e| AppError::Internal(format!("failed to serialize workflow: {e}")))?;
-    std::fs::write(&path, bytes)
-        .map_err(|e| AppError::Internal(format!("failed to write workflow file: {e}")))?;
+    if payload.overwrite {
+        std::fs::write(&path, bytes)
+            .map_err(|e| AppError::Internal(format!("failed to write workflow file: {e}")))?;
+    } else {
+        write_new_workflow_file(&path, &bytes).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                AppError::Conflict {
+                    code: ErrorCode::WorkflowExists,
+                    message: format!("a saved workflow named {filename} already exists"),
+                }
+            } else {
+                AppError::Internal(format!("failed to write workflow file: {e}"))
+            }
+        })?;
+    }
 
     let has_interface = payload
         .workflow
@@ -2125,7 +2518,7 @@ async fn get_workflow_interface(
     let workflows_dir = state.resolve_workflows_dir().await;
     let config = state.inner.config.read().await;
     let workflows_path = workflows_dir.join(&filename);
-    let presets_path = config.paths.presets_dir.join(&filename);
+    let presets_path = config.paths.resolved_presets_dir().join(&filename);
 
     let contents = if workflows_path.exists() {
         std::fs::read_to_string(&workflows_path)
@@ -2160,8 +2553,8 @@ async fn list_fs(
 
     let base_name = params.base.as_deref().unwrap_or("models");
     let base_dir: PathBuf = match base_name {
-        "models" => config.paths.models_dir.clone(),
-        "presets" => config.paths.presets_dir.clone(),
+        "models" => config.paths.resolved_models_dir(),
+        "presets" => config.paths.resolved_presets_dir(),
         "workflows" => workflows_resolved,
         _ => {
             return Err(AppError::Forbidden(format!(
@@ -2764,14 +3157,28 @@ async fn process_frame(
     let filename = format!("processed-{}.png", Uuid::new_v4());
     let output = session.path().join(&filename);
     let result_slot = session.reserve_result()?;
-    let trt_cache = state.inner.config.read().await.paths.trt_cache_dir.clone();
-    let permit = state
-        .inner
-        .gpu_semaphore
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(|error| AppError::Internal(error.to_string()))?;
+    let (graph, trt_cache) = {
+        let config = state.inner.config.read().await;
+        let graph = resolve_workflow_model_paths(&graph, &config.paths)?;
+        (graph, config.paths.resolved_trt_cache_dir())
+    };
+    state.ensure_not_shutting_down()?;
+    // Jobs are ahead of a preview in the GPU's FIFO; report that instead of
+    // waiting behind every one of them.
+    let permit = match tokio::time::timeout(
+        PREVIEW_GPU_WAIT,
+        state.inner.gpu_semaphore.clone().acquire_owned(),
+    )
+    .await
+    {
+        Ok(permit) => permit.map_err(|error| AppError::Internal(error.to_string()))?,
+        Err(_) => {
+            let (running, queued, _) = state.active_job_counts();
+            return Err(AppError::ServiceUnavailable(format!(
+                "GPU is busy ({running} running, {queued} queued jobs); retry the preview when they finish"
+            )));
+        }
+    };
     let inner = state.inner.clone();
     tokio::task::spawn_blocking(move || {
         // The blocking work owns admission even if the HTTP caller disconnects.
@@ -2856,24 +3263,37 @@ fn job_cancellation_watch(
     (rx, bridge)
 }
 
+/// Whether a job must hold the GPU permit: true unless every node is one of
+/// [`GPU_FREE_NODE_TYPES`]. A graph whose order cannot be computed counts as
+/// GPU-bound.
+fn needs_gpu(workflow: &PipelineGraph) -> bool {
+    workflow.execution_order().map_or(true, |order| {
+        order
+            .into_iter()
+            .any(|index| !GPU_FREE_NODE_TYPES.contains(&workflow.node(index).node_type.as_str()))
+    })
+}
+
 async fn run_job(state: AppState, job_id: String) {
-    let _permit = {
-        let cancel_token = {
+    let permit = {
+        let (cancel_token, needs_gpu) = {
             let job = match state.inner.jobs.get(&job_id) {
                 Some(j) => j,
                 None => return,
             };
-            job.cancel_token.clone()
+            (job.cancel_token.clone(), needs_gpu(&job.workflow))
         };
 
         tokio::select! {
-            permit = state.inner.gpu_semaphore.clone().acquire_owned() => {
+            permit = state.inner.gpu_semaphore.clone().acquire_owned(), if needs_gpu => {
                 match permit {
-                    Ok(p) => p,
+                    Ok(p) => Some(p),
                     Err(_) => return,
                 }
             }
+            () = std::future::ready(()), if !needs_gpu => None,
             _ = cancel_token.cancelled() => {
+                finish_job(&state, &job_id, Ok(()));
                 return;
             }
         }
@@ -2881,9 +3301,6 @@ async fn run_job(state: AppState, job_id: String) {
 
     let running_snapshot = {
         if let Some(mut job) = state.inner.jobs.get_mut(&job_id) {
-            if job.status == JobStatus::Cancelled {
-                return;
-            }
             job.status = JobStatus::Running;
             job.started_at = Some(Utc::now());
             Some(job.clone())
@@ -2910,7 +3327,8 @@ async fn run_job(state: AppState, job_id: String) {
             )
         };
         let inner = Arc::clone(&state.inner);
-        let trt_cache_dir = state.inner.config.read().await.paths.trt_cache_dir.clone();
+        let paths = state.inner.config.read().await.paths.clone();
+        let trt_cache_dir = paths.resolved_trt_cache_dir();
 
         // Clone the broadcast sender before entering the blocking closure
         // to avoid holding the DashMap read lock across the block_in_place boundary.
@@ -2918,128 +3336,149 @@ async fn run_job(state: AppState, job_id: String) {
 
         let job_id_for_closure = job_id.clone();
 
-        if let Some(params) = job_params.as_ref() {
-            workflow.inject_workflow_input_params(params);
-        }
         // All workflows use declared input types and the same cancellation path.
         // The streaming executor uses block_in_place internally as well.
         tokio::task::block_in_place(move || {
-            let compile_ctx = VideoCompileContext::new(trt_cache_dir);
-            let fps_baseline = Mutex::new(None::<ProgressFpsBaseline>);
-            let ws_tx_for_progress = ws_tx.clone();
-            let ws_tx_for_debug = ws_tx.clone();
+            // A panic anywhere below (param injection, compile, a scalar node, a
+            // callback) must still end the job; otherwise it stays `running`.
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if let Some(params) = job_params.as_ref() {
+                    workflow.inject_workflow_input_params(params);
+                }
+                let workflow = resolve_workflow_model_paths(&workflow, &paths)?;
+                let compile_ctx = VideoCompileContext::new(trt_cache_dir);
+                let fps_baseline = Mutex::new(None::<ProgressFpsBaseline>);
+                let ws_tx_for_progress = ws_tx.clone();
+                let ws_tx_for_debug = ws_tx.clone();
 
-            let inner_for_cb = Arc::clone(&inner);
-            let progress_cb: ProgressCallback =
-                Box::new(move |current_frame, total_frames, _hint| {
-                    let now = Instant::now();
-                    let fps = {
-                        let mut baseline_guard = match fps_baseline.lock() {
-                            Ok(guard) => guard,
-                            Err(poisoned) => poisoned.into_inner(),
+                let inner_for_cb = Arc::clone(&inner);
+                let inner_for_debug = Arc::clone(&inner);
+                let job_id_for_debug = job_id_for_closure.clone();
+                let progress_cb: ProgressCallback =
+                    Box::new(move |current_frame, total_frames, _hint| {
+                        let now = Instant::now();
+                        let fps = {
+                            let mut baseline_guard = match fps_baseline.lock() {
+                                Ok(guard) => guard,
+                                Err(poisoned) => poisoned.into_inner(),
+                            };
+                            let (next_baseline, next_fps) = estimate_input_fps_from_second_frame(
+                                *baseline_guard,
+                                current_frame,
+                                now,
+                            );
+                            *baseline_guard = next_baseline;
+                            next_fps as f64
                         };
-                        let (next_baseline, next_fps) = estimate_input_fps_from_second_frame(
-                            *baseline_guard,
+                        let eta = total_frames.and_then(|total| {
+                            if fps > 0.0 && current_frame < total {
+                                Some((total - current_frame) as f64 / fps)
+                            } else {
+                                None
+                            }
+                        });
+
+                        let update = ProgressUpdate {
                             current_frame,
-                            now,
-                        );
-                        *baseline_guard = next_baseline;
-                        next_fps as f64
-                    };
-                    let eta = total_frames.and_then(|total| {
-                        if fps > 0.0 && current_frame < total {
-                            Some((total - current_frame) as f64 / fps)
-                        } else {
-                            None
+                            total_frames,
+                            fps: fps as f32,
+                            eta_seconds: eta,
+                        };
+
+                        if let Some(mut job) = inner_for_cb.jobs.get_mut(&job_id_for_closure) {
+                            job.progress = Some(update.clone());
+                        }
+
+                        if let Some(tx) = &ws_tx_for_progress {
+                            let _ = tx.send(JobWsEvent::from(update));
                         }
                     });
 
-                    let update = ProgressUpdate {
-                        current_frame,
-                        total_frames,
-                        fps: fps as f32,
-                        eta_seconds: eta,
-                    };
-
-                    if let Some(mut job) = inner_for_cb.jobs.get_mut(&job_id_for_closure) {
-                        job.progress = Some(update.clone());
+                let mut debug_throttle =
+                    NodeDebugEventThrottle::new(Duration::from_millis(PRINT_PREVIEW_THROTTLE_MS));
+                let mut node_debug_cb = move |event: NodeDebugValueEvent| {
+                    // Recorded before throttling, so the replayed value is the latest.
+                    inner_for_debug.record_debug_value(&job_id_for_debug, &event);
+                    if !debug_throttle.should_emit(&event.node_id, Instant::now()) {
+                        return;
                     }
-
-                    if let Some(tx) = &ws_tx_for_progress {
-                        let _ = tx.send(JobWsEvent::from(update));
+                    if let Some(tx) = &ws_tx_for_debug {
+                        let _ = tx.send(JobWsEvent::from(event));
                     }
-                });
+                };
 
-            let mut debug_throttle =
-                NodeDebugEventThrottle::new(Duration::from_millis(PRINT_PREVIEW_THROTTLE_MS));
-            let mut node_debug_cb = move |event: NodeDebugValueEvent| {
-                if !debug_throttle.should_emit(&event.node_id, Instant::now()) {
-                    return;
-                }
-                if let Some(tx) = &ws_tx_for_debug {
-                    let _ = tx.send(JobWsEvent::from(event));
-                }
-            };
+                let (cancel_watch_rx, _cancel_bridge) = job_cancellation_watch(cancel_token);
 
-            let (cancel_watch_rx, _cancel_bridge) = job_cancellation_watch(cancel_token);
-
-            SequentialExecutor::execute_with_context_and_debug_hook(
-                &workflow,
-                &inner.node_registry,
-                Some(&compile_ctx),
-                Some(progress_cb),
-                Some(cancel_watch_rx),
-                Some(&mut node_debug_cb),
-            )
+                SequentialExecutor::execute_with_context_and_debug_hook(
+                    &workflow,
+                    &inner.node_registry,
+                    Some(&compile_ctx),
+                    Some(progress_cb),
+                    Some(cancel_watch_rx),
+                    Some(&mut node_debug_cb),
+                )
+            }))
+            .unwrap_or_else(|payload| {
+                Err(anyhow::anyhow!(
+                    "job panicked: {}",
+                    crate::logging::panic_payload_to_string(payload.as_ref())
+                ))
+            })
         })
     };
 
-    match result {
-        Ok(_outputs) => {
-            let mut completed_snapshot = None;
-            if let Some(mut job) = state.inner.jobs.get_mut(&job_id) {
-                if job.status == JobStatus::Cancelled {
-                    return;
-                }
-                job.status = JobStatus::Completed;
-                job.completed_at = Some(Utc::now());
-                completed_snapshot = Some(job.clone());
-            }
+    // The executor has exited: free the GPU before the terminal state becomes
+    // visible, so a client that sees it can rely on the slot being free.
+    drop(permit);
+    finish_job(&state, &job_id, result.map(drop));
+}
 
-            if let Some(snapshot) = completed_snapshot {
-                if let Err(err) = state.persist_job_transition(&snapshot) {
-                    error!(job_id = %job_id, error = ?err, "Failed to persist completed transition");
+/// Records the terminal state of a job whose executor has exited (or never
+/// started). A job that was asked to stop ends `cancelled` whether the
+/// executor returned an error or ran to the end.
+fn finish_job(state: &AppState, job_id: &str, result: Result<()>) {
+    let mut snapshot = None;
+    if let Some(mut job) = state.inner.jobs.get_mut(job_id) {
+        if job.cancel_token.is_cancelled() {
+            let reason = job
+                .cancel_request
+                .get_or_insert(CancelRequest {
+                    requested_at: Utc::now(),
+                    reason: CancelReason::User,
+                })
+                .reason;
+            if let Err(err) = &result {
+                info!(job_id = %job_id, error = %format!("{err:#}"), "Cancelled job stopped with an error");
+            }
+            job.status = JobStatus::Cancelled;
+            job.error = Some(reason.message().to_owned());
+        } else {
+            match &result {
+                Ok(()) => job.status = JobStatus::Completed,
+                Err(err) => {
+                    error!(job_id = %job_id, error = ?err, "Job execution failed");
+                    job.status = JobStatus::Failed;
+                    job.error = Some(format!("{err:#}"));
                 }
             }
         }
-        Err(err) => {
-            error!(job_id = %job_id, error = ?err, "Job execution failed");
-            let mut failed_snapshot = None;
-            if let Some(mut job) = state.inner.jobs.get_mut(&job_id) {
-                if job.status == JobStatus::Cancelled {
-                    return;
-                }
-                job.status = JobStatus::Failed;
-                job.error = Some(format!("{:#}", err));
-                job.completed_at = Some(Utc::now());
-                failed_snapshot = Some(job.clone());
-            }
-
-            if let Some(snapshot) = failed_snapshot {
-                if let Err(persist_err) = state.persist_job_transition(&snapshot) {
-                    error!(
-                        job_id = %job_id,
-                        error = ?persist_err,
-                        "Failed to persist failed transition"
-                    );
-                }
-            }
-        }
+        job.completed_at = Some(Utc::now());
+        snapshot = Some(job.clone());
     }
 
-    state.inner.progress_senders.remove(&job_id);
+    if let Some(snapshot) = snapshot {
+        if let Err(err) = state.persist_job_transition(&snapshot) {
+            error!(
+                job_id = %job_id,
+                status = ?snapshot.status,
+                error = ?err,
+                "Failed to persist terminal transition"
+            );
+        }
+        info!(job_id = %job_id, status = ?snapshot.status, "Job finished");
+    }
 
-    info!(job_id = %job_id, "Job completed");
+    state.inner.progress_senders.remove(job_id);
 }
 
 #[derive(Debug)]
@@ -3049,8 +3488,49 @@ pub enum AppError {
     NotFound(String),
     Internal(String),
     TooManyRequests(String),
+    Conflict {
+        code: ErrorCode,
+        message: String,
+    },
+    PreconditionFailed {
+        code: ErrorCode,
+        message: String,
+    },
     InvalidIdempotencyKey,
     IdempotencyConflict,
+    ServiceUnavailable(String),
+    /// Any status, with an optional machine-readable code.
+    Rejected {
+        status: StatusCode,
+        code: Option<ErrorCode>,
+        message: String,
+    },
+}
+
+impl AppError {
+    /// Attaches a machine-readable code, keeping the status and message.
+    /// Variants that already carry a code keep it.
+    fn with_code(self, code: ErrorCode) -> Self {
+        let (status, message) = match self {
+            AppError::BadRequest(message) => (StatusCode::BAD_REQUEST, message),
+            AppError::Forbidden(message) => (StatusCode::FORBIDDEN, message),
+            AppError::NotFound(message) => (StatusCode::NOT_FOUND, message),
+            AppError::Internal(message) => (StatusCode::INTERNAL_SERVER_ERROR, message),
+            AppError::TooManyRequests(message) => (StatusCode::TOO_MANY_REQUESTS, message),
+            AppError::ServiceUnavailable(message) => (StatusCode::SERVICE_UNAVAILABLE, message),
+            AppError::Rejected {
+                status,
+                code: None,
+                message,
+            } => (status, message),
+            coded => return coded,
+        };
+        AppError::Rejected {
+            status,
+            code: Some(code),
+            message,
+        }
+    }
 }
 
 impl IntoResponse for AppError {
@@ -3061,16 +3541,26 @@ impl IntoResponse for AppError {
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg, None),
             AppError::TooManyRequests(msg) => (StatusCode::TOO_MANY_REQUESTS, msg, None),
             AppError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg, None),
+            AppError::Conflict { code, message } => (StatusCode::CONFLICT, message, Some(code)),
+            AppError::PreconditionFailed { code, message } => {
+                (StatusCode::PRECONDITION_FAILED, message, Some(code))
+            }
             AppError::InvalidIdempotencyKey => (
                 StatusCode::BAD_REQUEST,
                 "invalid idempotency key".to_string(),
-                Some("invalid_idempotency_key"),
+                Some(ErrorCode::InvalidIdempotencyKey),
             ),
             AppError::IdempotencyConflict => (
                 StatusCode::CONFLICT,
                 "idempotency key conflicts with an existing submission".to_string(),
-                Some("idempotency_conflict"),
+                Some(ErrorCode::IdempotencyConflict),
             ),
+            AppError::ServiceUnavailable(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg, None),
+            AppError::Rejected {
+                status,
+                code,
+                message,
+            } => (status, message, code),
         };
 
         let body = Json(ErrorResponse {
@@ -3090,7 +3580,7 @@ impl From<anyhow::Error> for AppError {
 fn job_to_response(job: &Job) -> JobResponse {
     JobResponse {
         id: job.id.clone(),
-        status: job.status,
+        status: job.status.into(),
         created_at: job.created_at,
         started_at: job.started_at,
         completed_at: job.completed_at,
@@ -3098,9 +3588,15 @@ fn job_to_response(job: &Job) -> JobResponse {
         error: job.error.clone(),
         workflow_name: job.workflow_name.clone(),
         workflow_source: job.workflow_source.clone(),
-        params: job.params.clone(),
+        params: job
+            .params
+            .as_ref()
+            .map(|params| params.clone().into_iter().collect()),
         rerun_of_job_id: job.rerun_of_job_id.clone(),
         duration_ms: job_duration_ms(job),
+        cancel_requested: job.cancel_request.is_some(),
+        cancel_requested_at: job.cancel_request.map(|request| request.requested_at),
+        cancel_reason: job.cancel_request.map(|request| request.reason.into()),
     }
 }
 
@@ -3168,11 +3664,11 @@ pub fn app_state_with_config(
 ) -> AppState {
     let mut node_registry = NodeRegistry::new();
     register_all_nodes(&mut node_registry);
-    let mut model_registry = ModelRegistry::with_builtin_models(config.paths.models_dir.clone());
+    let mut model_registry = ModelRegistry::with_builtin_models(config.paths.resolved_models_dir());
     if let Err(e) = model_registry.discover() {
         tracing::warn!(error = %e, "Failed to discover models on disk");
     }
-    let presets = load_builtin_presets(&config.paths.presets_dir);
+    let presets = load_builtin_presets(&config.paths.resolved_presets_dir());
     AppState::new(
         node_registry,
         model_registry,
@@ -3207,98 +3703,21 @@ mod tests {
         keys
     }
 
-    fn sorted(keys: &[&str]) -> Vec<String> {
-        let mut keys: Vec<String> = keys.iter().map(|key| (*key).to_owned()).collect();
-        keys.sort();
-        keys
-    }
-
-    /// Controllers up to v0.1.8 reject unknown fields in these responses, so
-    /// adding one would take those Controllers' workers offline or fail their
-    /// tasks. New data goes behind a new endpoint instead (docs/controller.md,
-    /// "Worker API compatibility").
+    /// The cancel fields appear only on jobs something asked to stop, so a job
+    /// that was never cancelled keeps its v0.1.10 field set (pinned in
+    /// `crates/protocol/tests/v0_1_10_compat.rs`).
     #[test]
-    fn controller_facing_responses_keep_the_fields_older_controllers_accept() {
-        let now = Utc::now();
-        assert_eq!(
-            json_keys(HealthResponse {
-                status: "ok".to_owned()
-            }),
-            sorted(&["status"])
-        );
-        assert_eq!(
-            json_keys(WorkflowEntry {
-                filename: "a.json".to_owned(),
-                name: String::new(),
-                description: String::new(),
-                workflow: serde_json::json!({}),
-                has_interface: false,
-            }),
-            sorted(&[
-                "filename",
-                "name",
-                "description",
-                "workflow",
-                "has_interface"
-            ])
-        );
-        assert_eq!(
-            json_keys(PresetResponse {
-                id: "a".to_owned(),
-                name: String::new(),
-                description: String::new(),
-                workflow: serde_json::json!({}),
-            }),
-            sorted(&["id", "name", "description", "workflow"])
-        );
-        assert_eq!(
-            json_keys(CreateJobResponse {
-                id: "a".to_owned(),
-                status: JobStatus::Queued,
-                created_at: now,
-            }),
-            sorted(&["id", "status", "created_at"])
-        );
-        assert_eq!(
-            json_keys(ProgressUpdate {
-                current_frame: 0,
-                total_frames: None,
-                fps: 0.0,
-                eta_seconds: None,
-            }),
-            sorted(&["current_frame", "total_frames", "fps", "eta_seconds"])
-        );
-        assert_eq!(
-            json_keys(JobResponse {
-                id: "a".to_owned(),
-                status: JobStatus::Running,
-                created_at: now,
-                started_at: None,
-                completed_at: None,
-                progress: None,
-                error: None,
-                workflow_name: String::new(),
-                workflow_source: String::new(),
-                params: None,
-                rerun_of_job_id: None,
-                duration_ms: None,
-            }),
-            sorted(&[
-                "id",
-                "status",
-                "created_at",
-                "started_at",
-                "completed_at",
-                "progress",
-                "error",
-                "workflow_name",
-                "workflow_source",
-                "params",
-                "rerun_of_job_id",
-                "duration_ms",
-            ])
-        );
-        files::assert_controller_facing_file_responses();
+    fn job_response_reports_a_cancel_request_only_when_there_is_one() {
+        let mut job = build_test_job("cancel-fields".into(), JobStatus::Running, None);
+        assert!(!json_keys(job_to_response(&job)).contains(&"cancel_requested".to_owned()));
+
+        job.request_cancel(CancelReason::User);
+        let response = serde_json::to_value(job_to_response(&job)).unwrap();
+        assert_eq!(response["status"], "running");
+        assert_eq!(response["cancel_requested"], true);
+        assert_eq!(response["cancel_reason"], "user");
+        assert!(response["cancel_requested_at"].is_string());
+        assert!(job.cancel_token.is_cancelled());
     }
 
     #[test]
@@ -3663,6 +4082,16 @@ mod tests {
                 .unwrap_or(0);
             Ok(Box::new(DelayNode { sleep_ms }))
         });
+        node_registry.register("test_panic", |_params| Ok(Box::new(PanicNode)));
+        node_registry.register("test_hold", |params| {
+            let name = params
+                .get("gate")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            Ok(Box::new(HoldNode {
+                gate: TestGate::named(name),
+            }))
+        });
 
         let model_registry = ModelRegistry::with_builtin_models(test_models_dir());
         AppState::new(
@@ -3788,6 +4217,102 @@ mod tests {
         })
     }
 
+    /// A gate a test opens to let a [`HoldNode`] finish. Unlike a timed
+    /// delay, it keeps an executor running for exactly as long as the test
+    /// needs, however slow the machine is.
+    struct TestGate {
+        open: Mutex<bool>,
+        opened: std::sync::Condvar,
+        /// Set once a [`HoldNode`] is inside `execute`. A persisted `running`
+        /// row comes earlier: the executor still checks for cancellation
+        /// before it starts the node, so a cancel in between ends the job
+        /// without ever holding it.
+        held: std::sync::atomic::AtomicBool,
+    }
+
+    impl TestGate {
+        fn named(name: &str) -> Arc<Self> {
+            static GATES: OnceLock<Mutex<HashMap<String, Arc<TestGate>>>> = OnceLock::new();
+            GATES
+                .get_or_init(Default::default)
+                .lock()
+                .unwrap()
+                .entry(name.to_owned())
+                .or_insert_with(|| {
+                    Arc::new(TestGate {
+                        open: Mutex::new(false),
+                        opened: std::sync::Condvar::new(),
+                        held: std::sync::atomic::AtomicBool::new(false),
+                    })
+                })
+                .clone()
+        }
+
+        fn open(&self) {
+            *self.open.lock().unwrap() = true;
+            self.opened.notify_all();
+        }
+
+        /// Waits until a [`HoldNode`] on this gate is running.
+        async fn wait_until_held(&self) {
+            let deadline = Instant::now() + WAIT_BUDGET;
+            while !self.held.load(std::sync::atomic::Ordering::SeqCst) {
+                assert!(Instant::now() < deadline, "no job reached the test gate");
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+    }
+
+    /// Runs until its gate opens, ignoring cancellation, like a first
+    /// TensorRT engine build.
+    struct HoldNode {
+        gate: Arc<TestGate>,
+    }
+
+    impl crate::node::Node for HoldNode {
+        fn node_type(&self) -> &str {
+            "test_hold"
+        }
+
+        fn accepts_config_param(&self, key: &str) -> bool {
+            key == "gate"
+        }
+
+        fn input_ports(&self) -> Vec<crate::node::PortDefinition> {
+            vec![]
+        }
+
+        fn output_ports(&self) -> Vec<crate::node::PortDefinition> {
+            vec![]
+        }
+
+        fn execute(
+            &mut self,
+            _inputs: &std::collections::HashMap<String, crate::types::PortData>,
+            _ctx: &crate::node::ExecutionContext,
+        ) -> Result<std::collections::HashMap<String, crate::types::PortData>> {
+            self.gate
+                .held
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            let open = self.gate.open.lock().unwrap();
+            let (open, _) = self
+                .gate
+                .opened
+                .wait_timeout_while(open, Duration::from_secs(120), |open| !*open)
+                .unwrap();
+            anyhow::ensure!(*open, "test gate was never opened");
+            Ok(std::collections::HashMap::new())
+        }
+    }
+
+    /// A workflow whose only node runs until the named gate opens.
+    fn gate_workflow_json(gate: &str) -> serde_json::Value {
+        serde_json::json!({
+            "nodes": [{"id": "hold", "node_type": "test_hold", "params": {"gate": gate}}],
+            "connections": []
+        })
+    }
+
     fn delay_workflow_json(sleep_ms: u64) -> serde_json::Value {
         serde_json::json!({
             "nodes": [
@@ -3881,6 +4406,7 @@ mod tests {
             workflow_name: "Source Workflow".to_string(),
             workflow_source: WORKFLOW_SOURCE_API_JOBS.to_string(),
             rerun_of_job_id: None,
+            cancel_request: None,
         }
     }
 
@@ -3920,9 +4446,74 @@ mod tests {
         }
     }
 
+    /// Panics when executed, standing in for a bug in a node or in session setup.
+    struct PanicNode;
+
+    impl crate::node::Node for PanicNode {
+        fn node_type(&self) -> &str {
+            "test_panic"
+        }
+
+        fn input_ports(&self) -> Vec<crate::node::PortDefinition> {
+            vec![]
+        }
+
+        fn output_ports(&self) -> Vec<crate::node::PortDefinition> {
+            vec![]
+        }
+
+        fn execute(
+            &mut self,
+            _inputs: &std::collections::HashMap<String, crate::types::PortData>,
+            _ctx: &crate::node::ExecutionContext,
+        ) -> Result<std::collections::HashMap<String, crate::types::PortData>> {
+            panic!("injected node panic");
+        }
+    }
+
+    /// Fails when run unless its `model_path` param names an existing file.
+    struct ModelPathNode {
+        model_path: PathBuf,
+    }
+
+    impl crate::node::Node for ModelPathNode {
+        fn node_type(&self) -> &str {
+            "test_model"
+        }
+
+        fn accepts_config_param(&self, key: &str) -> bool {
+            key == "model_path"
+        }
+
+        fn input_ports(&self) -> Vec<crate::node::PortDefinition> {
+            vec![]
+        }
+
+        fn output_ports(&self) -> Vec<crate::node::PortDefinition> {
+            vec![]
+        }
+
+        fn execute(
+            &mut self,
+            _inputs: &std::collections::HashMap<String, crate::types::PortData>,
+            _ctx: &crate::node::ExecutionContext,
+        ) -> Result<std::collections::HashMap<String, crate::types::PortData>> {
+            anyhow::ensure!(
+                self.model_path.is_file(),
+                "model not found: {}",
+                self.model_path.display()
+            );
+            Ok(std::collections::HashMap::new())
+        }
+    }
+
     impl crate::node::Node for DelayNode {
         fn node_type(&self) -> &str {
             "test_delay"
+        }
+
+        fn accepts_config_param(&self, key: &str) -> bool {
+            key == "sleep_ms"
         }
 
         fn input_ports(&self) -> Vec<crate::node::PortDefinition> {
@@ -3956,9 +4547,14 @@ mod tests {
             .unwrap()
     }
 
+    /// Upper bound of the waits below. They return as soon as the condition
+    /// holds; the bound only has to outlast the job store's fsyncs, which
+    /// take seconds when the whole suite (and other builds) share one disk.
+    const WAIT_BUDGET: Duration = Duration::from_secs(30);
+
     async fn wait_for_job_terminal_status(state: &AppState, job_id: &str) -> JobStatus {
-        const MAX_POLLS: usize = 80;
         const POLL_INTERVAL_MS: u64 = 50;
+        const MAX_POLLS: usize = (WAIT_BUDGET.as_millis() / POLL_INTERVAL_MS as u128) as usize;
 
         for _ in 0..MAX_POLLS {
             if let Some(job) = state.inner.jobs.get(job_id) {
@@ -3976,8 +4572,8 @@ mod tests {
     }
 
     async fn wait_for_persisted_status(data_dir: &StdPath, job_id: &str, expected: &str) -> bool {
-        const MAX_POLLS: usize = 80;
         const POLL_INTERVAL_MS: u64 = 25;
+        const MAX_POLLS: usize = (WAIT_BUDGET.as_millis() / POLL_INTERVAL_MS as u128) as usize;
 
         for _ in 0..MAX_POLLS {
             if persisted_job_status(data_dir, job_id).as_deref() == Some(expected) {
@@ -4027,6 +4623,252 @@ mod tests {
         assert_eq!(json["status"], "ok");
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn health_reports_gpu_capacity_and_job_counts() {
+        // Given: one job holding the GPU, one queued behind it and one queued
+        // job that was cancelled while its executor is still stopping.
+        let state = test_state();
+        let mut app = app_router(state.clone());
+        let gate = state
+            .inner
+            .gpu_semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .unwrap();
+        let mut running = build_test_job("health-running".into(), JobStatus::Running, None);
+        running.request_cancel(CancelReason::User);
+        insert_test_job(&state, running);
+        insert_test_job(
+            &state,
+            build_test_job("health-queued".into(), JobStatus::Queued, None),
+        );
+        insert_test_job(
+            &state,
+            build_test_job("health-done".into(), JobStatus::Completed, None),
+        );
+
+        let req = Request::builder()
+            .uri("/api/health")
+            .body(Body::empty())
+            .unwrap();
+        let resp = send_request(&mut app, req).await;
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        // Then: `status` is unchanged and the capacity fields are additive.
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["gpu_slots"], 1);
+        assert_eq!(json["running"], 1);
+        assert_eq!(json["queued"], 1);
+        assert_eq!(json["cancelling"], 1);
+        drop(gate);
+    }
+
+    #[tokio::test]
+    async fn health_reports_the_protocol_version() {
+        let mut app = test_router();
+        let req = Request::builder()
+            .uri("/api/health")
+            .body(Body::empty())
+            .unwrap();
+        let resp = send_request(&mut app, req).await;
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+
+        // A Controller reads it with the shared wire type.
+        let health: videnoa_protocol::HealthResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(health.status, videnoa_protocol::HealthStatus::Ok);
+        assert_eq!(health.protocol(), videnoa_protocol::PROTOCOL_VERSION);
+        assert_eq!(health.gpu_slots, Some(GPU_SLOTS));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn job_submissions_beyond_the_queue_bound_are_refused_with_503() {
+        // Given: the GPU is busy and the queue is full.
+        let state = test_state();
+        let mut app = app_router(state.clone());
+        let _gate = state
+            .inner
+            .gpu_semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .unwrap();
+        for _ in 0..MAX_ACTIVE_JOBS {
+            create_job_id(&mut app, delay_workflow_json(0)).await;
+        }
+
+        // When/then: one more job, a batch and a rerun are all refused with
+        // 503, which the Controller treats as transient.
+        let (status, json) = post_json(
+            &mut app,
+            "/api/jobs",
+            serde_json::json!({ "workflow": delay_workflow_json(0) }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{json}");
+        assert!(
+            json["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("queue is full"),
+            "{json}"
+        );
+        assert_eq!(json["code"], "queue_full", "{json}");
+        let (status, _) = post_json(
+            &mut app,
+            "/api/batch",
+            serde_json::json!({ "file_paths": ["/media/a.mkv"], "workflow": delay_workflow_json(0) }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        let failed = build_test_job("queue-full-rerun".into(), JobStatus::Failed, None);
+        insert_test_job(&state, failed);
+        let (status, _) = post_json(
+            &mut app,
+            "/api/jobs/queue-full-rerun/rerun",
+            serde_json::Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            state
+                .inner
+                .jobs
+                .iter()
+                .filter(|job| !job.status.is_terminal())
+                .count(),
+            MAX_ACTIVE_JOBS
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn scalar_only_jobs_do_not_wait_for_the_gpu() {
+        // Given: the GPU is busy.
+        let state = all_nodes_state();
+        let mut app = app_router(state.clone());
+        let _gate = state
+            .inner
+            .gpu_semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .unwrap();
+
+        // When: a workflow without any frame-processing node is submitted.
+        let (status, json) = post_json(
+            &mut app,
+            "/api/jobs",
+            serde_json::json!({
+                "workflow": workflow_input_output_json(),
+                "params": {"greeting": "hello"}
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{json}");
+        let job_id = json["id"].as_str().unwrap().to_owned();
+
+        // Then: it runs to completion without the GPU permit.
+        assert_eq!(
+            wait_for_job_terminal_status(&state, &job_id).await,
+            JobStatus::Completed
+        );
+    }
+
+    #[test]
+    fn only_graphs_made_of_known_scalar_nodes_skip_the_gpu() {
+        let graph = |types: &[&str]| -> PipelineGraph {
+            let nodes: Vec<_> = types
+                .iter()
+                .enumerate()
+                .map(|(index, node_type)| {
+                    serde_json::json!({"id": format!("n{index}"), "node_type": node_type, "params": {}})
+                })
+                .collect();
+            serde_json::from_value(serde_json::json!({"nodes": nodes, "connections": []})).unwrap()
+        };
+        assert!(!needs_gpu(&graph(&[
+            "WorkflowInput",
+            "Downloader",
+            "HttpRequest",
+            "PathJoiner",
+            "Print",
+            "WorkflowOutput"
+        ])));
+        // Frame pipelines, nested workflows and node types this list does not
+        // know (new nodes, test nodes) keep the GPU permit.
+        assert!(needs_gpu(&graph(&[
+            "WorkflowInput",
+            "VideoInput",
+            "VideoOutput"
+        ])));
+        assert!(needs_gpu(&graph(&["Workflow"])));
+        assert!(needs_gpu(&graph(&["test_delay"])));
+    }
+
+    #[tokio::test]
+    async fn preview_processing_gives_up_quickly_while_the_gpu_is_busy() {
+        // Given: a preview session with one extracted frame, and a job holding
+        // the GPU.
+        let state = all_nodes_state();
+        let cache = state.preview_cache().unwrap();
+        let session = cache.create().unwrap();
+        std::fs::write(session.path().join("frame_0001.png"), b"never decoded").unwrap();
+        cache.insert("busy-gpu".into(), session);
+        let _busy = state
+            .inner
+            .gpu_semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .unwrap();
+        let workflow = serde_json::json!({
+            "nodes": [
+                {"id": "in", "node_type": "VideoInput", "params": {}},
+                {"id": "out", "node_type": "VideoOutput", "params": {}}
+            ],
+            "connections": [frames_edge("in", "out")]
+        });
+
+        // When: a frame is processed.
+        let started = Instant::now();
+        let response = tokio::time::timeout(
+            Duration::from_secs(30),
+            process_frame(
+                State(state.clone()),
+                Json(ProcessFrameRequest {
+                    preview_id: "busy-gpu".into(),
+                    frame_index: 0,
+                    workflow,
+                }),
+            ),
+        )
+        .await
+        .expect("preview must not wait for the GPU indefinitely")
+        .err()
+        .expect("preview must not run while the GPU is busy")
+        .into_response();
+
+        // Then: it is refused promptly with a retryable status and a reason.
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(
+            json["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("GPU is busy"),
+            "{json}"
+        );
+    }
+
     #[tokio::test]
     async fn test_get_config_endpoint() {
         let mut app = test_router();
@@ -4065,6 +4907,7 @@ mod tests {
             server: crate::config::ServerConfig {
                 port: 4321,
                 host: "127.0.0.1".to_string(),
+                allowed_hosts: vec!["nas.local".to_string()],
             },
             locale: "zh-CN".to_string(),
             performance: crate::config::PerformanceConfig {
@@ -4859,6 +5702,147 @@ mod tests {
         let _ = std::fs::remove_dir_all(&presets_dir);
     }
 
+    /// A newer Controller may add a request field; this worker must not
+    /// reject the whole request for it (v0.1.10 answered 422).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_requests_ignore_fields_a_newer_controller_adds() {
+        let state = test_state();
+        let mut app = app_router(state.clone());
+        let workflows_dir = unique_temp_dir("videnoa-additive-workflows");
+        let presets_dir = unique_temp_dir("videnoa-additive-presets");
+        std::fs::create_dir_all(&workflows_dir).expect("create workflows dir");
+        std::fs::create_dir_all(&presets_dir).expect("create presets dir");
+        set_workflow_lookup_dirs(&state, workflows_dir.clone(), presets_dir.clone()).await;
+        write_json_file(
+            &workflows_dir.join("valid.json"),
+            &serde_json::json!({"workflow": valid_workflow_json()}),
+        );
+        let request = serde_json::json!({
+            "workflow_name": "valid",
+            "params": {},
+            "added_by_a_newer_controller": {"priority": 1},
+        });
+
+        let (status, body) = post_json(&mut app, "/api/run/validate", request.clone()).await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+        let (status, body) = post_json(&mut app, "/api/run", request).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        assert_eq!(state.inner.jobs.len(), 1);
+
+        let _ = std::fs::remove_dir_all(&workflows_dir);
+        let _ = std::fs::remove_dir_all(&presets_dir);
+    }
+
+    /// A Controller decides by the code, not the HTTP status, whether a
+    /// rejected run can succeed if retried.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_rejections_carry_a_machine_readable_code() {
+        let state = test_state();
+        let mut app = app_router(state.clone());
+        let workflows_dir = unique_temp_dir("videnoa-coded-workflows");
+        let presets_dir = unique_temp_dir("videnoa-coded-presets");
+        std::fs::create_dir_all(&workflows_dir).expect("create workflows dir");
+        std::fs::create_dir_all(&presets_dir).expect("create presets dir");
+        set_workflow_lookup_dirs(&state, workflows_dir.clone(), presets_dir.clone()).await;
+        write_json_file(
+            &workflows_dir.join("valid.json"),
+            &serde_json::json!({"workflow": valid_workflow_json()}),
+        );
+        write_json_file(
+            &workflows_dir.join("broken.json"),
+            &serde_json::json!({"workflow": {"invalid": true}}),
+        );
+        // A directory where the workflow file should be cannot be read.
+        std::fs::create_dir_all(workflows_dir.join("unreadable.json")).expect("create dir");
+
+        for (uri, name, status, code) in [
+            (
+                "/api/run",
+                "valid.json",
+                StatusCode::BAD_REQUEST,
+                "workflow_name_invalid",
+            ),
+            (
+                "/api/run/validate",
+                "missing",
+                StatusCode::NOT_FOUND,
+                "workflow_not_found",
+            ),
+            (
+                "/api/run",
+                "missing",
+                StatusCode::NOT_FOUND,
+                "workflow_not_found",
+            ),
+            (
+                "/api/run",
+                "broken",
+                StatusCode::BAD_REQUEST,
+                "workflow_invalid",
+            ),
+            (
+                "/api/run/validate",
+                "broken",
+                StatusCode::BAD_REQUEST,
+                "workflow_invalid",
+            ),
+            (
+                "/api/run",
+                "unreadable",
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "workflow_unreadable",
+            ),
+        ] {
+            let (actual, body) =
+                post_json(&mut app, uri, serde_json::json!({"workflow_name": name})).await;
+            assert_eq!(actual, status, "{uri} {name}: {body}");
+            assert_eq!(body["code"], code, "{uri} {name}: {body}");
+        }
+
+        state.begin_shutdown();
+        let (status, body) = post_json(
+            &mut app,
+            "/api/run",
+            serde_json::json!({"workflow_name": "valid"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        assert_eq!(body["code"], "shutting_down", "{body}");
+        assert!(state.inner.jobs.is_empty());
+
+        let _ = std::fs::remove_dir_all(&workflows_dir);
+        let _ = std::fs::remove_dir_all(&presets_dir);
+    }
+
+    /// A worker whose job store did not open refuses idempotent runs with a
+    /// code that says retrying will not help.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn idempotent_runs_without_a_job_store_say_so() {
+        let data_dir = test_data_dir();
+        std::fs::create_dir_all(data_dir.join("jobs.db")).expect("block the job store");
+        let state = test_state_with_data_dir(data_dir.clone());
+        assert!(state.ensure_jobs_ready().is_err());
+        let mut app = app_router(state);
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/run")
+            .header("content-type", "application/json")
+            .header("Idempotency-Key", "store-down")
+            .body(Body::from(r#"{"workflow_name":"valid"}"#))
+            .unwrap();
+        let resp = send_request(&mut app, req).await;
+        let status = resp.status();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{json}");
+        assert_eq!(json["code"], "job_store_unavailable", "{json}");
+
+        let _ = std::fs::remove_dir_all(&data_dir);
+    }
+
     #[tokio::test]
     async fn test_run_workflow_name_rejects_json_suffix() {
         let mut app = test_router();
@@ -5238,45 +6222,34 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn failed_history_deletion_preserves_live_job_and_channel() {
+    async fn failed_history_deletion_keeps_the_finished_job_visible() {
         let state = test_state();
         let mut job = build_test_job("delete-failure".into(), JobStatus::Queued, None);
         job.workflow =
             serde_json::from_value(serde_json::json!({"nodes":[],"connections":[]})).unwrap();
         let cancel = job.cancel_token.clone();
         insert_test_job(&state, job);
-        let gate = state.inner.gpu_semaphore.acquire().await.unwrap();
-        let execution = tokio::spawn(run_job(state.clone(), "delete-failure".into()));
-        let (sender, _) = broadcast::channel(8);
-        state
-            .inner
-            .progress_senders
-            .insert("delete-failure".into(), sender);
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            run_job(state.clone(), "delete-failure".into()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            state.inner.jobs.get("delete-failure").unwrap().status,
+            JobStatus::Completed
+        );
         let persistence = state.inner.jobs_persistence.as_ref().unwrap();
         let conn = Connection::open(persistence.db_path()).unwrap();
-        // Deliberate database fault injection: deletion must have no runtime side effects.
+        // Deliberate database fault injection: a failed deletion keeps the job.
         conn.execute_batch("CREATE TRIGGER reject_delete BEFORE DELETE ON jobs BEGIN SELECT RAISE(ABORT, 'injected failure'); END;").unwrap();
         assert!(
             delete_job_history(State(state.clone()), Path("delete-failure".into()))
                 .await
                 .is_err()
         );
-        assert!(!cancel.is_cancelled());
-        assert_eq!(
-            state.inner.jobs.get("delete-failure").unwrap().status,
-            JobStatus::Queued
-        );
-        assert!(state.inner.progress_senders.contains_key("delete-failure"));
+        assert!(state.inner.jobs.contains_key("delete-failure"));
         conn.execute_batch("DROP TRIGGER reject_delete;").unwrap();
-        drop(gate);
-        tokio::time::timeout(Duration::from_secs(5), execution)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            state.inner.jobs.get("delete-failure").unwrap().status,
-            JobStatus::Completed
-        );
         assert_eq!(
             delete_job_history(State(state.clone()), Path("delete-failure".into()))
                 .await
@@ -5373,35 +6346,237 @@ mod tests {
         );
     }
 
+    async fn get_job_json(app: &mut Router, job_id: &str) -> (StatusCode, serde_json::Value) {
+        let req = Request::builder()
+            .uri(format!("/api/jobs/{job_id}"))
+            .body(Body::empty())
+            .unwrap();
+        let resp = send_request(app, req).await;
+        let status = resp.status();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&body).unwrap_or_default())
+    }
+
+    async fn delete_job(app: &mut Router, job_id: &str) -> StatusCode {
+        let req = Request::builder()
+            .method("DELETE")
+            .uri(format!("/api/jobs/{job_id}"))
+            .body(Body::empty())
+            .unwrap();
+        send_request(app, req).await.status()
+    }
+
+    async fn create_job_id(app: &mut Router, workflow: serde_json::Value) -> String {
+        let (status, json) = post_json(
+            app,
+            "/api/jobs",
+            serde_json::json!({ "workflow": workflow }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{json}");
+        json["id"].as_str().unwrap().to_owned()
+    }
+
     #[tokio::test]
-    async fn test_delete_job_history_cancels_active_job_then_removes_row() {
+    async fn test_delete_job_history_requests_cancel_of_active_job_and_keeps_it() {
         let data_dir = test_data_dir();
         let state = test_state_with_data_dir(data_dir.clone());
         let mut app = app_router(state.clone());
 
+        // A running job with no executor behind it, so it never finishes.
         let active_id = format!("delete-active-{}", Uuid::new_v4());
         let active_job = build_test_job(active_id.clone(), JobStatus::Running, None);
         let cancel_probe = active_job.cancel_token.clone();
         insert_test_job(&state, active_job);
 
-        let req = Request::builder()
-            .method("DELETE")
-            .uri(format!("/api/jobs/{active_id}"))
-            .body(Body::empty())
-            .unwrap();
-        let resp = send_request(&mut app, req).await;
-        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
-
+        assert_eq!(
+            delete_job(&mut app, &active_id).await,
+            StatusCode::NO_CONTENT
+        );
         assert!(cancel_probe.is_cancelled());
-        assert!(state.inner.jobs.get(&active_id).is_none());
-        assert_eq!(persisted_job_status(&data_dir, &active_id), None);
+        assert_eq!(
+            persisted_job_status(&data_dir, &active_id).as_deref(),
+            Some("running")
+        );
 
-        let req = Request::builder()
-            .uri(format!("/api/jobs/{active_id}"))
-            .body(Body::empty())
+        // Repeating the cancel is harmless and keeps the first request.
+        let (_, first) = get_job_json(&mut app, &active_id).await;
+        assert_eq!(
+            delete_job(&mut app, &active_id).await,
+            StatusCode::NO_CONTENT
+        );
+        let (status, job) = get_job_json(&mut app, &active_id).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(job["status"], "running");
+        assert_eq!(job["cancel_requested"], true);
+        assert_eq!(job["cancel_reason"], "user");
+        assert_eq!(job["cancel_requested_at"], first["cancel_requested_at"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelling_a_running_job_keeps_it_visible_until_its_executor_exits() {
+        // Given: a running job whose node ignores cancellation for a while, as
+        // a first TensorRT engine build does.
+        let data_dir = test_data_dir();
+        let state = test_state_with_data_dir(data_dir.clone());
+        let mut app = app_router(state.clone());
+        let gate = Uuid::new_v4().to_string();
+        let job_id = create_job_id(&mut app, gate_workflow_json(&gate)).await;
+        assert!(wait_for_persisted_status(&data_dir, &job_id, "running").await);
+        TestGate::named(&gate).wait_until_held().await;
+
+        // When: it is cancelled.
+        assert_eq!(delete_job(&mut app, &job_id).await, StatusCode::NO_CONTENT);
+
+        // Then: it stays visible as running with the cancel recorded, and it
+        // still holds the GPU permit.
+        let (status, job) = get_job_json(&mut app, &job_id).await;
+        assert_eq!(status, StatusCode::OK, "a cancelled job must not vanish");
+        assert_eq!(job["status"], "running");
+        assert_eq!(job["cancel_requested"], true);
+        assert_eq!(job["cancel_reason"], "user");
+        assert!(job["cancel_requested_at"].is_string(), "{job}");
+        assert_eq!(state.inner.gpu_semaphore.available_permits(), 0);
+
+        // When its executor exits, it becomes `cancelled` with the reason, and
+        // the GPU permit is free by the time that is visible.
+        TestGate::named(&gate).open();
+        assert_eq!(
+            wait_for_job_terminal_status(&state, &job_id).await,
+            JobStatus::Cancelled
+        );
+        assert_eq!(state.inner.gpu_semaphore.available_permits(), 1);
+        let (_, job) = get_job_json(&mut app, &job_id).await;
+        assert_eq!(job["status"], "cancelled");
+        assert_eq!(job["error"], "job cancelled at user request");
+        assert_eq!(job["cancel_reason"], "user");
+        assert!(wait_for_persisted_status(&data_dir, &job_id, "cancelled").await);
+
+        // Deleting the finished job removes its history.
+        assert_eq!(delete_job(&mut app, &job_id).await, StatusCode::NO_CONTENT);
+        assert_eq!(
+            get_job_json(&mut app, &job_id).await.0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(persisted_job_status(&data_dir, &job_id), None);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelling_a_queued_job_marks_it_cancelled_without_running_it() {
+        let data_dir = test_data_dir();
+        let state = test_state_with_data_dir(data_dir.clone());
+        let mut app = app_router(state.clone());
+        let gate = state
+            .inner
+            .gpu_semaphore
+            .clone()
+            .acquire_owned()
+            .await
             .unwrap();
-        let resp = send_request(&mut app, req).await;
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let job_id = create_job_id(&mut app, delay_workflow_json(0)).await;
+
+        assert_eq!(delete_job(&mut app, &job_id).await, StatusCode::NO_CONTENT);
+
+        assert_eq!(
+            wait_for_job_terminal_status(&state, &job_id).await,
+            JobStatus::Cancelled
+        );
+        let (_, job) = get_job_json(&mut app, &job_id).await;
+        assert_eq!(job["started_at"], serde_json::Value::Null);
+        assert_eq!(job["error"], "job cancelled at user request");
+        assert!(wait_for_persisted_status(&data_dir, &job_id, "cancelled").await);
+        drop(gate);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_panicking_job_is_recorded_as_failed() {
+        // Given: a job whose node panics.
+        let data_dir = test_data_dir();
+        let state = test_state_with_data_dir(data_dir.clone());
+        let mut app = app_router(state.clone());
+        let workflow = serde_json::json!({
+            "nodes": [{"id": "boom", "node_type": "test_panic", "params": {}}],
+            "connections": []
+        });
+
+        // When: it runs.
+        let job_id = create_job_id(&mut app, workflow).await;
+
+        // Then: it fails with the panic message instead of staying running,
+        // the failure is persisted, and the GPU permit is free again.
+        assert_eq!(
+            wait_for_job_terminal_status(&state, &job_id).await,
+            JobStatus::Failed
+        );
+        let (_, job) = get_job_json(&mut app, &job_id).await;
+        let error = job["error"].as_str().unwrap_or_default();
+        assert!(error.contains("job panicked"), "{error}");
+        assert!(error.contains("injected node panic"), "{error}");
+        assert!(wait_for_persisted_status(&data_dir, &job_id, "failed").await);
+        assert_eq!(state.inner.gpu_semaphore.available_permits(), 1);
+        assert!(!state.inner.progress_senders.contains_key(&job_id));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn job_model_paths_resolve_against_the_configured_models_dir() {
+        // Given: a models_dir outside the working directory holding a model,
+        // and a node that fails at run time unless its model_path names an
+        // existing file.
+        let models_dir = test_data_dir().join("models");
+        std::fs::create_dir_all(&models_dir).unwrap();
+        std::fs::write(models_dir.join("upscaler.onnx"), b"model").unwrap();
+        let mut node_registry = NodeRegistry::new();
+        node_registry.register("test_model", |params| {
+            let model_path = params
+                .get("model_path")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            Ok(Box::new(ModelPathNode {
+                model_path: PathBuf::from(model_path),
+            }))
+        });
+        let config = AppConfig {
+            paths: crate::config::PathsConfig {
+                models_dir: models_dir.clone(),
+                ..AppConfig::default().paths
+            },
+            ..AppConfig::default()
+        };
+        let state = AppState::new(
+            node_registry,
+            ModelRegistry::with_builtin_models(models_dir.clone()),
+            DashMap::new(),
+            config,
+            test_config_path(),
+            test_data_dir(),
+        );
+        let mut app = app_router(state.clone());
+
+        // When: jobs name the model relative to models_dir, with and without
+        // the "models/" prefix the bundled presets use.
+        for model_path in ["upscaler.onnx", "models/upscaler.onnx"] {
+            let workflow = serde_json::json!({
+                "nodes": [{
+                    "id": "model",
+                    "node_type": "test_model",
+                    "params": {"model_path": model_path}
+                }],
+                "connections": []
+            });
+            let job_id = create_job_id(&mut app, workflow).await;
+
+            // Then: the node sees the file under models_dir, and the stored
+            // workflow keeps the path as submitted.
+            let status = wait_for_job_terminal_status(&state, &job_id).await;
+            let (_, job) = get_job_json(&mut app, &job_id).await;
+            assert_eq!(status, JobStatus::Completed, "{model_path}: {job}");
+            let stored =
+                serde_json::to_value(&state.inner.jobs.get(&job_id).unwrap().workflow).unwrap();
+            assert_eq!(stored["nodes"][0]["params"]["model_path"], model_path);
+        }
+        let _ = std::fs::remove_dir_all(models_dir.parent().unwrap());
     }
 
     #[tokio::test]
@@ -5741,11 +6916,13 @@ mod tests {
             workflow_name: "Restore Candidate".to_string(),
             workflow_source: WORKFLOW_SOURCE_API_JOBS.to_string(),
             rerun_of_job_id: Some("older-job-id".to_string()),
+            cancel_request: None,
         };
 
         initial_state
             .persist_job_snapshot(&stale_running_job)
             .expect("persist running snapshot");
+        drop(initial_state);
 
         let restored_state = test_state_with_data_dir(data_dir.clone());
         let restored_job = restored_state
@@ -5755,6 +6932,10 @@ mod tests {
             .expect("job should be restored from persistence");
 
         assert_eq!(restored_job.status, JobStatus::Cancelled);
+        assert_eq!(
+            restored_job.cancel_request.map(|request| request.reason),
+            Some(CancelReason::Restart)
+        );
         assert!(restored_job.completed_at.is_some());
         assert!(restored_job.error.is_some());
         assert!(restored_job
@@ -5784,6 +6965,463 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("transitioned to 'cancelled' for retry safety"));
+    }
+
+    /// Blocks a scalar workflow after its upstream nodes ran, until released.
+    struct GateNode {
+        reached: Arc<std::sync::atomic::AtomicBool>,
+        release: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl crate::node::Node for GateNode {
+        fn node_type(&self) -> &str {
+            "test_gate"
+        }
+        fn input_ports(&self) -> Vec<crate::node::PortDefinition> {
+            vec![crate::node::PortDefinition {
+                name: "value".to_string(),
+                port_type: PortType::Str,
+                required: true,
+                default_value: None,
+            }]
+        }
+        fn output_ports(&self) -> Vec<crate::node::PortDefinition> {
+            vec![]
+        }
+        fn execute(
+            &mut self,
+            _inputs: &std::collections::HashMap<String, crate::types::PortData>,
+            _ctx: &crate::node::ExecutionContext,
+        ) -> Result<std::collections::HashMap<String, crate::types::PortData>> {
+            use std::sync::atomic::Ordering;
+            self.reached.store(true, Ordering::SeqCst);
+            for _ in 0..1000 {
+                if self.release.load(Ordering::SeqCst) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Ok(std::collections::HashMap::new())
+        }
+    }
+
+    /// Read one unmasked server text frame from a raw WebSocket stream.
+    async fn read_ws_text_frame(stream: &mut tokio::net::TcpStream) -> serde_json::Value {
+        use tokio::io::AsyncReadExt;
+        assert_eq!(stream.read_u8().await.unwrap(), 0x81);
+        let length = match stream.read_u8().await.unwrap() {
+            126 => usize::from(stream.read_u16().await.unwrap()),
+            127 => usize::try_from(stream.read_u64().await.unwrap()).unwrap(),
+            short => usize::from(short),
+        };
+        let mut body = vec![0; length];
+        stream.read_exact(&mut body).await.unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    /// A Print node usually runs before the editor's WebSocket connects, and
+    /// its value was only broadcast live, so it was lost. The socket now
+    /// starts with the latest value of every node that already printed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_job_ws_replays_print_values_to_late_subscribers() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let reached = Arc::new(AtomicBool::new(false));
+        let release = Arc::new(AtomicBool::new(false));
+        let mut node_registry = NodeRegistry::new();
+        register_all_nodes(&mut node_registry);
+        {
+            let (reached, release) = (Arc::clone(&reached), Arc::clone(&release));
+            node_registry.register("test_gate", move |_params| {
+                Ok(Box::new(GateNode {
+                    reached: Arc::clone(&reached),
+                    release: Arc::clone(&release),
+                }))
+            });
+        }
+        let state = AppState::new(
+            node_registry,
+            ModelRegistry::with_builtin_models(test_models_dir()),
+            DashMap::new(),
+            AppConfig::default(),
+            test_config_path(),
+            test_data_dir(),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut app = app_router(state.clone());
+        let server = tokio::spawn({
+            let router = app.clone();
+            async move { axum::serve(listener, router).await.unwrap() }
+        });
+
+        let workflow = serde_json::json!({
+            "nodes": [
+                {"id": "text", "node_type": "Constant", "params": {"type": "Str", "value": "hello late subscriber"}},
+                {"id": "print", "node_type": "Print", "params": {"value_type": "Str"}},
+                {"id": "gate", "node_type": "test_gate", "params": {}}
+            ],
+            "connections": [
+                {"from_node": "text", "from_port": "value", "to_node": "print", "to_port": "value", "port_type": "Str"},
+                {"from_node": "print", "from_port": "value", "to_node": "gate", "to_port": "value", "port_type": "Str"}
+            ]
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/jobs")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({ "workflow": workflow })).unwrap(),
+            ))
+            .unwrap();
+        let resp = send_request(&mut app, req).await;
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let job_id = serde_json::from_slice::<serde_json::Value>(&body).unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !reached.load(Ordering::SeqCst) {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the gate node should run after Print");
+
+        let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+        stream.write_all(format!("GET /api/jobs/{job_id}/ws HTTP/1.1\r\nHost: {address}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n").as_bytes()).await.unwrap();
+        let mut headers = Vec::new();
+        while !headers.ends_with(b"\r\n\r\n") {
+            headers.push(stream.read_u8().await.unwrap());
+        }
+        assert!(headers.starts_with(b"HTTP/1.1 101"));
+
+        let replayed = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            read_ws_text_frame(&mut stream),
+        )
+        .await
+        .expect("the Print value should be replayed on connect");
+        assert_eq!(replayed["type"], "node_debug_value");
+        assert_eq!(replayed["node_id"], "print");
+        assert!(replayed["value_preview"]
+            .as_str()
+            .unwrap()
+            .contains("hello late subscriber"));
+
+        release.store(true, Ordering::SeqCst);
+        assert_eq!(
+            wait_for_job_terminal_status(&state, &job_id).await,
+            JobStatus::Completed
+        );
+        drop(stream);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn delete_removes_a_persisted_job_that_could_not_be_loaded() {
+        // Given: a row that a newer build wrote and this one cannot read.
+        let data_dir = test_data_dir();
+        let state = test_state_with_data_dir(data_dir.clone());
+        let mut app = app_router(state.clone());
+        let conn = Connection::open(data_dir.join("jobs.db")).unwrap();
+        conn.execute_batch(
+            "INSERT INTO jobs (id, status, workflow_json, created_at, workflow_name,
+                               workflow_source, updated_at)
+             VALUES ('unreadable', 'paused', '{}', '2026-10-01T00:00:00+00:00', 'x',
+                     'api_jobs', '2026-10-01T00:00:00+00:00');",
+        )
+        .unwrap();
+
+        // Then: it is not listed, but DELETE removes it.
+        assert_eq!(
+            get_job_json(&mut app, "unreadable").await.0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            delete_job(&mut app, "unreadable").await,
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(persisted_job_status(&data_dir, "unreadable"), None);
+        assert_eq!(
+            delete_job(&mut app, "unreadable").await,
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    #[tokio::test]
+    async fn rerun_validates_the_stored_workflow_like_a_new_submission() {
+        // Given: a failed job whose stored workflow no longer validates, for
+        // example because a node type was removed in an upgrade.
+        let state = test_state();
+        let mut app = app_router(state.clone());
+        let mut source = build_test_job("stale-workflow".into(), JobStatus::Failed, None);
+        source.workflow = serde_json::from_value(serde_json::json!({
+            "nodes": [{"id": "gone", "node_type": "RemovedNode", "params": {}}],
+            "connections": []
+        }))
+        .unwrap();
+        insert_test_job(&state, source);
+
+        // When/then: rerun is rejected up front and creates no job.
+        let (status, json) = post_json(
+            &mut app,
+            "/api/jobs/stale-workflow/rerun",
+            serde_json::Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+        assert!(
+            json["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("workflow validation failed"),
+            "{json}"
+        );
+        assert_eq!(state.inner.jobs.len(), 1);
+    }
+
+    #[test]
+    fn a_second_instance_leaves_a_live_instance_s_data_dir_alone() {
+        // Given: a live instance with a running job in its store.
+        let data_dir = test_data_dir();
+        let live = test_state_with_data_dir(data_dir.clone());
+        let job_id = format!("live-{}", Uuid::new_v4());
+        let running = build_test_job(job_id.clone(), JobStatus::Running, None);
+        live.persist_job_snapshot(&running).unwrap();
+
+        // When: a second instance starts on the same data directory.
+        let second = test_state_with_data_dir(data_dir.clone());
+
+        // Then: it refuses to start and has not reconciled the live job.
+        for error in [
+            second.ensure_auth_ready().unwrap_err().to_string(),
+            second.ensure_jobs_ready().unwrap_err().to_string(),
+        ] {
+            assert!(error.contains("another Videnoa instance"), "{error}");
+        }
+        assert_eq!(
+            persisted_job_status(&data_dir, &job_id).as_deref(),
+            Some("running")
+        );
+
+        // Once the live instance is gone, the next one takes over.
+        drop(second);
+        drop(live);
+        let next = test_state_with_data_dir(data_dir.clone());
+        next.ensure_jobs_ready().unwrap();
+        assert_eq!(
+            next.inner.jobs.get(&job_id).unwrap().status,
+            JobStatus::Cancelled
+        );
+    }
+
+    #[test]
+    fn a_restart_removes_staged_outputs_of_jobs_that_were_running() {
+        // Given: a job that was running when the worker stopped, writing
+        // "Episode 01.mkv" (wired in from a workflow input), with its staged
+        // file left beside the output, and a finished job's staged file.
+        let data_dir = test_data_dir();
+        let media = data_dir.join("media");
+        std::fs::create_dir_all(&media).unwrap();
+        let staged = media.join(".Episode 01.a1B2c3.videnoa-video.mkv");
+        let kept = [
+            media.join("Episode 01.mkv"),
+            media.join(".Episode 02.a1B2c3.videnoa-video.mkv"),
+            media.join(".Episode 01.a1B2c3.videnoa-video.mkv.part"),
+        ];
+        for file in kept.iter().chain([&staged]) {
+            std::fs::write(file, b"partial").unwrap();
+        }
+        let workflow = |output: Option<&StdPath>| -> PipelineGraph {
+            let mut out_params = serde_json::json!({});
+            if let Some(output) = output {
+                out_params["output_path"] = output.to_string_lossy().into();
+            }
+            serde_json::from_value(serde_json::json!({
+                "nodes": [
+                    {"id": "in", "node_type": "WorkflowInput", "params": {}},
+                    {"id": "out", "node_type": "VideoOutput", "params": out_params}
+                ],
+                "connections": [{
+                    "from_node": "in", "from_port": "output",
+                    "to_node": "out", "to_port": "output_path",
+                    "port_type": "Path"
+                }]
+            }))
+            .unwrap()
+        };
+        let state = test_state_with_data_dir(data_dir.clone());
+        let mut running = build_test_job(
+            format!("running-{}", Uuid::new_v4()),
+            JobStatus::Running,
+            Some(HashMap::from([(
+                "output".to_string(),
+                serde_json::json!(media.join("Episode 01.mkv")),
+            )])),
+        );
+        running.workflow = workflow(None);
+        let mut finished = build_test_job(
+            format!("finished-{}", Uuid::new_v4()),
+            JobStatus::Failed,
+            None,
+        );
+        finished.workflow = workflow(Some(&media.join("Episode 02.mkv")));
+        state.persist_job_snapshot(&running).unwrap();
+        state.persist_job_snapshot(&finished).unwrap();
+        drop(state);
+
+        // When: the worker starts again.
+        let restarted = test_state_with_data_dir(data_dir.clone());
+        restarted.ensure_jobs_ready().unwrap();
+
+        // Then: only the interrupted job's staged file is gone.
+        assert!(!staged.exists());
+        for file in &kept {
+            assert!(file.exists(), "{} must be kept", file.display());
+        }
+        drop(restarted);
+        std::fs::remove_dir_all(&data_dir).ok();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shutdown_stops_active_jobs_and_refuses_new_work() {
+        // Given: a running job and a queued one behind it.
+        let data_dir = test_data_dir();
+        let state = test_state_with_data_dir(data_dir.clone());
+        let mut app = app_router(state.clone());
+        let gate = Uuid::new_v4().to_string();
+        let running = create_job_id(&mut app, gate_workflow_json(&gate)).await;
+        let queued = create_job_id(&mut app, delay_workflow_json(0)).await;
+        assert!(wait_for_persisted_status(&data_dir, &running, "running").await);
+        TestGate::named(&gate).wait_until_held().await;
+
+        // When: the worker begins to shut down, and the running executor
+        // exits afterwards.
+        state.begin_shutdown();
+        TestGate::named(&gate).open();
+
+        // Then: new jobs are refused, and both jobs end as cancelled by the
+        // shutdown once their executors exit.
+        let (status, json) = post_json(
+            &mut app,
+            "/api/jobs",
+            serde_json::json!({ "workflow": delay_workflow_json(0) }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{json}");
+        assert!(state
+            .wait_for_jobs_to_stop(Duration::from_secs(10))
+            .await
+            .is_empty());
+        for id in [&running, &queued] {
+            let (_, job) = get_job_json(&mut app, id).await;
+            assert_eq!(job["status"], "cancelled", "{job}");
+            assert_eq!(job["cancel_reason"], "shutdown", "{job}");
+            assert_eq!(job["error"], "job interrupted by worker shutdown", "{job}");
+            assert!(wait_for_persisted_status(&data_dir, id, "cancelled").await);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_job_that_outlives_the_shutdown_grace_keeps_its_cancel_reason() {
+        // Given: a running job whose node ignores cancellation.
+        let data_dir = test_data_dir();
+        let state = test_state_with_data_dir(data_dir.clone());
+        let mut app = app_router(state.clone());
+        let gate = Uuid::new_v4().to_string();
+        let job_id = create_job_id(&mut app, gate_workflow_json(&gate)).await;
+        assert!(wait_for_persisted_status(&data_dir, &job_id, "running").await);
+        TestGate::named(&gate).wait_until_held().await;
+
+        // When: the shutdown grace ends first.
+        state.begin_shutdown();
+        let left = state
+            .wait_for_jobs_to_stop(Duration::from_millis(100))
+            .await;
+
+        // Then: the job is reported as still running, and its row records the
+        // shutdown so the next start restores it with that reason.
+        assert_eq!(left, vec![job_id.clone()]);
+        let conn = Connection::open(data_dir.join("jobs.db")).unwrap();
+        let (status, reason): (String, Option<String>) = conn
+            .query_row(
+                "SELECT status, cancel_reason FROM jobs WHERE id = ?1",
+                [&job_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "running");
+        assert_eq!(reason.as_deref(), Some("shutdown"));
+        TestGate::named(&gate).open();
+    }
+
+    #[test]
+    fn shutdown_cancels_every_job_before_it_writes_to_disk() {
+        // Given: two active jobs and a job store whose writes are stalled,
+        // as on a busy disk.
+        let state = test_state();
+        let jobs: Vec<Job> = [JobStatus::Running, JobStatus::Queued]
+            .into_iter()
+            .map(|status| build_test_job(format!("stall-{}", Uuid::new_v4()), status, None))
+            .collect();
+        for job in &jobs {
+            insert_test_job(&state, job.clone());
+        }
+        let tokens: Vec<CancellationToken> =
+            jobs.iter().map(|job| job.cancel_token.clone()).collect();
+        let store = state.job_store().unwrap().clone();
+        let stall = store.lock_connection();
+
+        // When: the shutdown begins.
+        let shutting_down = state.clone();
+        let shutdown = std::thread::spawn(move || shutting_down.begin_shutdown());
+
+        // Then: every job is cancelled at once, before any write completes,
+        // so none can start or finish normally while the disk is slow.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !tokens.iter().all(CancellationToken::is_cancelled) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let all_cancelled = tokens.iter().all(CancellationToken::is_cancelled);
+        drop(stall);
+        shutdown.join().unwrap();
+        assert!(
+            all_cancelled,
+            "a stalled write delayed the shutdown's cancellation"
+        );
+
+        // And the requests reach the store once it accepts writes again,
+        // without changing the jobs' status there.
+        let conn = Connection::open(state.inner.data_dir.join("jobs.db")).unwrap();
+        for job in &jobs {
+            let (status, reason): (String, Option<String>) = conn
+                .query_row(
+                    "SELECT status, cancel_reason FROM jobs WHERE id = ?1",
+                    [&job.id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(serde_json::json!(status), serde_json::json!(job.status));
+            assert_eq!(reason.as_deref(), Some("shutdown"));
+        }
+    }
+
+    #[test]
+    fn the_worker_refuses_to_start_without_its_job_store() {
+        // Given: a data directory whose jobs.db cannot be opened.
+        let data_dir = test_data_dir();
+        std::fs::create_dir_all(data_dir.join("jobs.db")).unwrap();
+
+        // Then: startup reports it instead of running with in-memory jobs.
+        let state = test_state_with_data_dir(data_dir);
+        let error = state.ensure_jobs_ready().unwrap_err().to_string();
+        assert!(error.contains("job store"), "{error}");
     }
 
     #[tokio::test]
@@ -5947,33 +7585,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_presets() {
-        let presets = DashMap::new();
-        presets.insert(
-            "test-preset".to_string(),
-            Preset {
-                name: "Test Preset".to_string(),
-                description: "A test preset".to_string(),
-                workflow: serde_json::json!({"nodes": [], "connections": []}),
-            },
+        let presets_dir = unique_temp_dir("videnoa-list-presets");
+        std::fs::create_dir_all(&presets_dir).unwrap();
+        write_json_file(
+            &presets_dir.join("test-preset.json"),
+            &serde_json::json!({
+                "name": "Test Preset",
+                "description": "A test preset",
+                "workflow": {"nodes": [], "connections": []}
+            }),
         );
 
-        let mut node_registry = NodeRegistry::new();
-        node_registry.register("test_source", |_params| {
-            Ok(Box::new(TestNode {
-                node_type: "test_source".to_string(),
-                inputs: vec![],
-                outputs: vec![],
-            }))
-        });
-        let model_registry = ModelRegistry::with_builtin_models(test_models_dir());
-        let state = AppState::new(
-            node_registry,
-            model_registry,
-            presets,
-            AppConfig::default(),
-            test_config_path(),
-            test_data_dir(),
-        );
+        let state = test_state();
+        state.inner.config.write().await.paths.presets_dir = presets_dir.clone();
         let mut app = app_router(state);
 
         let req = Request::builder()
@@ -5992,6 +7616,8 @@ mod tests {
         assert_eq!(json[0]["id"], "test-preset");
         assert_eq!(json[0]["name"], "Test Preset");
         assert!(json[0]["workflow"].is_object());
+
+        let _ = std::fs::remove_dir_all(&presets_dir);
     }
 
     #[tokio::test]
@@ -6225,15 +7851,69 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
+    async fn list_preset_ids(app: &mut Router) -> Vec<String> {
+        let req = Request::builder()
+            .uri("/api/presets")
+            .body(Body::empty())
+            .unwrap();
+        let resp = send_request(app, req).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+        let mut ids: Vec<String> = json
+            .iter()
+            .map(|preset| preset["id"].as_str().unwrap().to_string())
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    /// `/api/run` resolves presets from the configured directory on every
+    /// request, so the list must come from the same place: a startup snapshot
+    /// keeps listing the old directory after `presets_dir` changes.
     #[tokio::test]
-    async fn test_create_preset() {
+    async fn test_list_presets_follows_the_configured_presets_dir() {
+        let state = test_state();
+        let mut app = app_router(state.clone());
+        let first = unique_temp_dir("videnoa-presets-first");
+        let second = unique_temp_dir("videnoa-presets-second");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        let preset = |name: &str| {
+            serde_json::json!({
+                "name": name,
+                "description": "",
+                "workflow": {"nodes": [], "connections": []}
+            })
+        };
+        write_json_file(&first.join("alpha.json"), &preset("Alpha"));
+        write_json_file(&second.join("beta.json"), &preset("Beta"));
+
+        state.inner.config.write().await.paths.presets_dir = first.clone();
+        assert_eq!(list_preset_ids(&mut app).await, vec!["alpha"]);
+
+        write_json_file(&first.join("gamma.json"), &preset("Gamma"));
+        assert_eq!(list_preset_ids(&mut app).await, vec!["alpha", "gamma"]);
+
+        state.inner.config.write().await.paths.presets_dir = second.clone();
+        assert_eq!(list_preset_ids(&mut app).await, vec!["beta"]);
+
+        let _ = std::fs::remove_dir_all(&first);
+        let _ = std::fs::remove_dir_all(&second);
+    }
+
+    /// Presets created through the API had UUID ids, lived only in memory and
+    /// could never be run by name; nothing called the endpoint, so it is gone.
+    #[tokio::test]
+    async fn test_presets_cannot_be_created_through_the_api() {
         let mut app = test_router();
         let body = serde_json::json!({
             "name": "My Custom Preset",
             "description": "Custom workflow",
             "workflow": {"nodes": [], "connections": []}
         });
-
         let req = Request::builder()
             .method("POST")
             .uri("/api/presets")
@@ -6242,56 +7922,7 @@ mod tests {
             .unwrap();
 
         let resp = send_request(&mut app, req).await;
-        assert_eq!(resp.status(), StatusCode::CREATED);
-
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert!(json["id"].is_string());
-        assert_eq!(json["name"], "My Custom Preset");
-    }
-
-    #[tokio::test]
-    async fn test_create_preset_rejects_when_map_is_full() {
-        let state = test_state();
-        for index in 0..MAX_PRESETS {
-            state.inner.presets.insert(
-                format!("prefilled-{index}"),
-                Preset {
-                    name: format!("Prefilled {index}"),
-                    description: String::new(),
-                    workflow: serde_json::json!({"nodes": [], "connections": []}),
-                },
-            );
-        }
-        let mut app = app_router(state.clone());
-
-        let body = serde_json::json!({
-            "name": "One Too Many",
-            "description": "",
-            "workflow": {"nodes": [], "connections": []}
-        });
-        let req = Request::builder()
-            .method("POST")
-            .uri("/api/presets")
-            .header("content-type", "application/json")
-            .body(Body::from(serde_json::to_vec(&body).unwrap()))
-            .unwrap();
-
-        let resp = send_request(&mut app, req).await;
-        assert_eq!(resp.status(), StatusCode::CONFLICT);
-
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["code"], "preset_limit_reached");
-        assert!(json["error"]
-            .as_str()
-            .unwrap()
-            .contains(&format!("{MAX_PRESETS} presets")));
-        assert_eq!(state.inner.presets.len(), MAX_PRESETS);
+        assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
     }
 
     fn fs_test_state(models_dir: PathBuf) -> AppState {
@@ -6951,6 +8582,154 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    async fn post_workflow(
+        app: &mut Router,
+        body: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/workflows")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let resp = send_request(app, req).await;
+        let status = resp.status();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&body).unwrap())
+    }
+
+    fn saved_description(path: &StdPath) -> String {
+        let doc: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        doc["description"].as_str().unwrap().to_string()
+    }
+
+    /// "Save as" with a name that already exists must not replace that file
+    /// silently; the editor asks first and then resends with `overwrite`.
+    #[tokio::test]
+    async fn test_save_workflow_is_create_only_unless_overwrite_is_set() {
+        let dir = unique_temp_dir("videnoa-wf-create-only");
+        let mut app = app_router(workflow_test_state(dir.clone()));
+        let save = |description: &str, overwrite: Option<bool>| {
+            let mut body = serde_json::json!({
+                "name": "Dup",
+                "description": description,
+                "workflow": {"nodes": [], "connections": []}
+            });
+            if let Some(overwrite) = overwrite {
+                body["overwrite"] = serde_json::json!(overwrite);
+            }
+            body
+        };
+
+        let (status, _) = post_workflow(&mut app, save("first", None)).await;
+        assert_eq!(status, StatusCode::CREATED);
+
+        let (status, json) = post_workflow(&mut app, save("second", None)).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(json["code"], "workflow_exists");
+        let (status, json) = post_workflow(&mut app, save("second", Some(false))).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(json["code"], "workflow_exists");
+        assert_eq!(saved_description(&dir.join("Dup.json")), "first");
+
+        let (status, _) = post_workflow(&mut app, save("third", Some(true))).await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(saved_description(&dir.join("Dup.json")), "third");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `/api/run` looks a name up in `workflows_dir` before `presets_dir`, so a
+    /// saved workflow named like a preset would silently run instead of it.
+    #[tokio::test]
+    async fn test_save_workflow_rejects_a_preset_run_name() {
+        let dir = unique_temp_dir("videnoa-wf-preset-name");
+        let presets_dir = unique_temp_dir("videnoa-wf-preset-name-presets");
+        std::fs::create_dir_all(&presets_dir).unwrap();
+        write_json_file(
+            &presets_dir.join("interpolation-2x.json"),
+            &serde_json::json!({
+                "name": "Interpolation 2x",
+                "description": "",
+                "workflow": {"nodes": [], "connections": []}
+            }),
+        );
+        let state = workflow_test_state(dir.clone());
+        state.inner.config.write().await.paths.presets_dir = presets_dir.clone();
+        let mut app = app_router(state);
+
+        for body in [
+            serde_json::json!({"name": "interpolation-2x"}),
+            serde_json::json!({"name": "interpolation-2x.json", "overwrite": true}),
+            serde_json::json!({"name": "Mine", "filename": "interpolation-2x.json", "overwrite": true}),
+        ] {
+            let mut body = body;
+            body["description"] = serde_json::json!("");
+            body["workflow"] = serde_json::json!({"nodes": [], "connections": []});
+            let (status, json) = post_workflow(&mut app, body.clone()).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{body}");
+            assert_eq!(json["code"], "workflow_name_is_preset", "{body}");
+            assert!(json["error"].as_str().unwrap().contains("interpolation-2x"));
+        }
+        assert!(!dir.join("interpolation-2x.json").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&presets_dir);
+    }
+
+    /// Save targets the file the workflow was loaded from. A file copied on
+    /// disk keeps the original's JSON `name`; saving the copy by name would
+    /// overwrite the original.
+    #[tokio::test]
+    async fn test_save_workflow_writes_the_given_filename() {
+        let dir = unique_temp_dir("videnoa-wf-by-filename");
+        std::fs::create_dir_all(&dir).unwrap();
+        let doc = serde_json::json!({
+            "name": "Original",
+            "description": "untouched",
+            "workflow": {"nodes": [], "connections": []}
+        });
+        write_json_file(&dir.join("Original.json"), &doc);
+        write_json_file(&dir.join("copy.json"), &doc);
+        let mut app = app_router(workflow_test_state(dir.clone()));
+
+        let (status, json) = post_workflow(
+            &mut app,
+            serde_json::json!({
+                "name": "Original",
+                "filename": "copy.json",
+                "overwrite": true,
+                "description": "edited copy",
+                "workflow": {"nodes": [], "connections": []}
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(json["filename"], "copy.json");
+        assert_eq!(json["name"], "Original");
+        assert_eq!(saved_description(&dir.join("copy.json")), "edited copy");
+        assert_eq!(saved_description(&dir.join("Original.json")), "untouched");
+
+        for filename in ["../escape.json", "nested/x.json", "no-extension", ""] {
+            let (status, _) = post_workflow(
+                &mut app,
+                serde_json::json!({
+                    "name": "Original",
+                    "filename": filename,
+                    "overwrite": true,
+                    "description": "",
+                    "workflow": {"nodes": [], "connections": []}
+                }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "filename {filename:?}");
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_create_job_video_pipeline_with_params() {
         let mut node_registry = NodeRegistry::new();
@@ -7045,6 +8824,78 @@ mod tests {
         );
     }
 
+    /// The Settings form and the desktop language switch both PUT the whole
+    /// document; without a version check the later write silently reverts
+    /// the earlier one.
+    #[tokio::test]
+    async fn test_update_config_rejects_a_stale_if_match() {
+        let state = test_state();
+        let mut app = app_router(state.clone());
+
+        let req = Request::builder()
+            .uri("/api/config")
+            .body(Body::empty())
+            .unwrap();
+        let resp = send_request(&mut app, req).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let etag = resp
+            .headers()
+            .get(axum::http::header::ETAG)
+            .expect("GET /api/config should carry an ETag")
+            .to_str()
+            .unwrap()
+            .to_string();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let config: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        let put = |config: &serde_json::Value, if_match: Option<&str>| {
+            let mut req = Request::builder()
+                .method("PUT")
+                .uri("/api/config")
+                .header("content-type", "application/json");
+            if let Some(if_match) = if_match {
+                req = req.header(axum::http::header::IF_MATCH, if_match);
+            }
+            req.body(Body::from(serde_json::to_vec(config).unwrap()))
+                .unwrap()
+        };
+
+        let mut language_switch = config.clone();
+        language_switch["locale"] = serde_json::json!("zh-CN");
+        let resp = send_request(&mut app, put(&language_switch, Some(&etag))).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let next_etag = resp
+            .headers()
+            .get(axum::http::header::ETAG)
+            .expect("PUT /api/config should carry the new ETag")
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert_ne!(next_etag, etag);
+
+        let mut settings_form = config.clone();
+        settings_form["paths"]["models_dir"] = serde_json::json!("models_custom");
+        let resp = send_request(&mut app, put(&settings_form, Some(&etag))).await;
+        assert_eq!(resp.status(), StatusCode::PRECONDITION_FAILED);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["code"], "config_changed");
+        assert_eq!(state.inner.config.read().await.locale, "zh-CN");
+        assert_eq!(
+            state.inner.config.read().await.paths.models_dir,
+            PathBuf::from("models")
+        );
+
+        // Callers that do not send If-Match keep the old last-write-wins
+        // behaviour.
+        let resp = send_request(&mut app, put(&settings_form, None)).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
     #[tokio::test]
     async fn test_update_config_roundtrip() {
         let mut app = test_router();
@@ -7086,18 +8937,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_relative_workflows_resolution_uses_current_dir() {
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let workflows_rel = PathBuf::from(format!(
-            "target/videnoa-wf-cwd-{}-{timestamp}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&workflows_rel);
-
+    async fn a_relative_workflows_dir_resolves_against_the_data_dir() {
+        let workflows_rel = PathBuf::from(format!("my-workflows-{}", Uuid::new_v4()));
         let state = workflow_test_state(workflows_rel.clone());
+        let data_dir = state.inner.data_dir.clone();
         let mut app = app_router(state);
 
         let body = serde_json::json!({
@@ -7115,13 +8958,18 @@ mod tests {
         let resp = send_request(&mut app, req).await;
         assert_eq!(resp.status(), StatusCode::CREATED);
 
-        let expected_file = workflows_rel.join("Resolved Workflow.json");
+        let expected_file = data_dir.join(&workflows_rel).join("Resolved Workflow.json");
         assert!(
             expected_file.exists(),
             "Workflow file should be at {}",
             expected_file.display()
         );
+        assert!(
+            !workflows_rel.exists(),
+            "a relative workflows_dir must not follow the process working directory"
+        );
 
+        let _ = std::fs::remove_dir_all(data_dir.join(&workflows_rel));
         let _ = std::fs::remove_dir_all(&workflows_rel);
     }
 
@@ -7722,6 +9570,7 @@ mod tests {
         let mut config = AppConfig::default();
         config.paths.presets_dir = presets_dir.clone();
         let state = app_state_with_config(config, data_dir.join("config.toml"), data_dir);
+        let presets = load_builtin_presets(&presets_dir);
 
         let preset_files = std::fs::read_dir(&presets_dir)
             .expect("read presets dir")
@@ -7733,13 +9582,9 @@ mod tests {
             "no presets found in {}",
             presets_dir.display()
         );
-        assert_eq!(
-            state.inner.presets.len(),
-            preset_files,
-            "every preset should load"
-        );
+        assert_eq!(presets.len(), preset_files, "every preset should load");
 
-        for preset in state.inner.presets.iter() {
+        for preset in presets.iter() {
             if let Err(error) = parse_and_validate_workflow(&state, preset.workflow.clone()) {
                 panic!("preset '{}' fails run validation: {error:?}", preset.key());
             }

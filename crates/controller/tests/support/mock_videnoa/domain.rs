@@ -1,131 +1,38 @@
-use std::collections::BTreeMap;
-
+use chrono::{DateTime, Utc};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum JobStatus {
-    Queued,
-    Running,
-    Completed,
-    Failed,
-    Cancelled,
+// The mock speaks the real Worker's wire types, so a drift between what the
+// Worker writes and what the Controller reads fails to compile here.
+pub use videnoa_protocol::{
+    CancelReason, CreateJobResponse, ErrorCode, ErrorResponse, FileStatResponse, HealthResponse,
+    HealthStatus, JobProgress, JobResponse, JobStatus, PresetResponse, RunWorkflowRequest,
+    UploadResponse, WorkflowEntry, WorkflowInterface, WorkflowPort, PROTOCOL_VERSION,
+};
+
+pub const fn is_active(status: JobStatus) -> bool {
+    matches!(status, JobStatus::Queued | JobStatus::Running)
 }
 
-impl JobStatus {
-    pub const fn is_active(self) -> bool {
-        matches!(self, Self::Queued | Self::Running)
+pub const fn job_progress(
+    current_frame: u64,
+    total_frames: Option<u64>,
+    fps: f32,
+    eta_seconds: Option<f64>,
+) -> JobProgress {
+    JobProgress {
+        current_frame,
+        total_frames,
+        fps,
+        eta_seconds,
     }
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct JobProgress {
-    pub current_frame: u64,
-    pub total_frames: Option<u64>,
-    pub fps: f32,
-    pub eta_seconds: Option<f64>,
-}
-
-impl JobProgress {
-    pub const fn new(
-        current_frame: u64,
-        total_frames: Option<u64>,
-        fps: f32,
-        eta_seconds: Option<f64>,
-    ) -> Self {
-        Self {
-            current_frame,
-            total_frames,
-            fps,
-            eta_seconds,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct RunRequest {
-    #[serde(default)]
-    pub workflow_name: Option<String>,
-    #[serde(default)]
-    pub params: Option<BTreeMap<String, Value>>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct CreateJobResponse {
-    pub id: String,
-    pub status: JobStatus,
-    pub created_at: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct JobResponse {
-    pub id: String,
-    pub status: JobStatus,
-    pub created_at: String,
-    pub started_at: Option<String>,
-    pub completed_at: Option<String>,
-    pub progress: Option<JobProgress>,
-    pub error: Option<String>,
-    pub workflow_name: String,
-    pub workflow_source: String,
-    pub params: Option<BTreeMap<String, Value>>,
-    pub rerun_of_job_id: Option<String>,
-    pub duration_ms: Option<i64>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct UploadResponse {
-    pub path: String,
-    pub size: u64,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct FileStatResponse {
-    pub path: String,
-    pub size: u64,
-    pub is_file: bool,
-    pub is_dir: bool,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct WorkflowPort {
-    pub name: String,
-    pub port_type: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub default_value: Option<Value>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct WorkflowInterface {
-    pub inputs: Vec<WorkflowPort>,
-    pub outputs: Vec<WorkflowPort>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct WorkflowEntry {
-    pub filename: String,
-    pub name: String,
-    pub description: String,
-    pub workflow: Value,
-    pub has_interface: bool,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct PresetResponse {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub workflow: PresetWorkflow,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct PresetWorkflow {
-    pub nodes: Vec<Value>,
-    pub connections: Vec<Value>,
-    pub interface: Option<WorkflowInterface>,
+/// A fixed RFC 3339 timestamp; the mock's clock does not move.
+pub fn mock_time(rfc3339: &str) -> DateTime<Utc> {
+    DateTime::parse_from_rfc3339(rfc3339)
+        .expect("mock timestamps are valid RFC 3339")
+        .with_timezone(&Utc)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -139,7 +46,7 @@ impl JobRecord {
         CreateJobResponse {
             id: self.response.id.clone(),
             status: self.response.status,
-            created_at: self.response.created_at.clone(),
+            created_at: self.response.created_at,
         }
     }
 }

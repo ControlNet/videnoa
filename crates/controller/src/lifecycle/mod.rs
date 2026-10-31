@@ -10,6 +10,7 @@ mod destination;
 mod engine;
 #[path = "failure.rs"]
 mod faults;
+mod operator_actions;
 #[path = "error.rs"]
 mod policy_error;
 mod service_retry;

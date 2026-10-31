@@ -182,6 +182,15 @@ async fn deleted_scalar_job_does_not_execute_downstream_http_request() {
                 .await
                 .is_err()
         );
+        // The cancelled job stays visible until it is deleted again.
+        assert_eq!(
+            terminal(&app, created["id"].as_str().unwrap()).await["status"],
+            "cancelled"
+        );
+        assert_eq!(
+            request(&app, "DELETE", &uri, Value::Null).await.0,
+            StatusCode::NO_CONTENT
+        );
         assert_eq!(
             request(&app, "GET", &uri, Value::Null).await.0,
             StatusCode::NOT_FOUND

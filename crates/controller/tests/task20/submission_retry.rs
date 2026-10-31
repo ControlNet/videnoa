@@ -153,7 +153,9 @@ async fn active_submission_is_exclusive_and_receipt_conflict_can_recover() -> Te
         fixture.store.task(task.id).await?.expect("task").status,
         TaskStatus::Cancelled
     );
-    assert_eq!(worker.counters().await.get(Route::Run), 2);
+    // A protocol-2 worker is asked about the submission; nothing is resubmitted.
+    assert_eq!(worker.counters().await.get(Route::Run), 1);
+    assert_eq!(worker.counters().await.get(Route::JobLookup), 1);
     assert_eq!(worker.counters().await.get(Route::JobCancel), 1);
     Ok(())
 }

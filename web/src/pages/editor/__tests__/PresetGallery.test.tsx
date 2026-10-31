@@ -16,7 +16,7 @@ vi.hoisted(() => {
 	});
 });
 
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { WorkflowEntry } from "@/api/client";
 import { listPresets, listWorkflows } from "@/api/client";
 import { i18n, initializeI18n } from "@/i18n";
@@ -147,7 +147,9 @@ describe("PresetGallery", () => {
 			expect(screen.getByText("My Custom Flow")).toBeInTheDocument();
 		});
 
-		const deleteBtn = screen.getByRole("button", { name: "" });
+		const deleteBtn = screen.getByRole("button", {
+			name: "Delete workflow My Custom Flow",
+		});
 		expect(deleteBtn).toBeInTheDocument();
 	});
 
@@ -174,5 +176,47 @@ describe("PresetGallery", () => {
 			expect(screen.getByText("No presets available")).toBeInTheDocument();
 		});
 		expect(screen.getByText("No saved workflows yet")).toBeInTheDocument();
+	});
+
+	// A failed list used to look exactly like an empty one.
+	it("shows a load error with a retry instead of empty lists", async () => {
+		useUIStore.setState({ activeModal: "presets" });
+		vi.mocked(listPresets).mockRejectedValueOnce(new Error("HTTP 500"));
+		vi.mocked(listWorkflows).mockResolvedValue([WORKFLOW_FIXTURE]);
+
+		render(<PresetGallery />);
+
+		await waitFor(() => {
+			expect(screen.getByRole("alert")).toHaveTextContent(
+				"Could not load the built-in presets",
+			);
+		});
+		expect(screen.queryByText("No presets available")).not.toBeInTheDocument();
+		// The other list still loads.
+		expect(screen.getByText("My Custom Flow")).toBeInTheDocument();
+
+		vi.mocked(listPresets).mockResolvedValueOnce([PRESET_FIXTURE]);
+		fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+		await waitFor(() => {
+			expect(screen.getByText("Anime 2x Upscale")).toBeInTheDocument();
+		});
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+	});
+
+	it("shows a load error for saved workflows", async () => {
+		useUIStore.setState({ activeModal: "presets" });
+		vi.mocked(listPresets).mockResolvedValue([PRESET_FIXTURE]);
+		vi.mocked(listWorkflows).mockRejectedValueOnce(new Error("HTTP 401"));
+
+		render(<PresetGallery />);
+
+		await waitFor(() => {
+			expect(screen.getByRole("alert")).toHaveTextContent(
+				"Could not load saved workflows",
+			);
+		});
+		expect(screen.queryByText("No saved workflows yet")).not.toBeInTheDocument();
+		expect(screen.getByText("Anime 2x Upscale")).toBeInTheDocument();
 	});
 });

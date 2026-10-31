@@ -11,7 +11,7 @@ use super::{
     MAX_JSON_BYTES,
 };
 use crate::mock_videnoa::domain::{
-    PresetResponse, PresetWorkflow, WorkflowEntry, WorkflowInterface, WorkflowPort,
+    HealthResponse, HealthStatus, PresetResponse, WorkflowEntry, WorkflowInterface, WorkflowPort,
 };
 use crate::mock_videnoa::journal::{JournalOutcome, Route};
 use crate::mock_videnoa::state::SharedState;
@@ -23,7 +23,15 @@ pub(crate) async fn health(State(state): State<Arc<SharedState>>, request: Reque
             &mut BTreeMap::new(),
         )
         .await;
-    simple(state, request, Route::Health, json!({"status": "ok"})).await
+    let health = HealthResponse {
+        status: HealthStatus::Ok,
+        gpu_slots: None,
+        running: None,
+        queued: None,
+        cancelling: None,
+        protocol: *state.protocol.lock().await,
+    };
+    simple(state, request, Route::Health, health).await
 }
 
 pub(crate) async fn workflows(State(state): State<Arc<SharedState>>, request: Request) -> Response {
@@ -50,9 +58,13 @@ pub(crate) async fn workflow_interface(
         "wrong-path-type.json" => Some(wrong_path_interface()),
         _ => None,
     };
-    let response = match interface {
-        Some(interface) => json_response(StatusCode::OK, &interface),
-        None => error_response(StatusCode::NOT_FOUND, "not_found"),
+    let response = match (state.take_response_fault(Route::Interface).await, interface) {
+        (Some(fault), _) => match StatusCode::from_u16(fault.status) {
+            Ok(status) => raw_json_response(status, fault.body),
+            Err(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "invalid_fault_status"),
+        },
+        (None, Some(interface)) => json_response(StatusCode::OK, &interface),
+        (None, None) => error_response(StatusCode::NOT_FOUND, "not_found"),
     };
     record(
         &state,
@@ -128,19 +140,19 @@ pub(crate) fn preset_entries() -> Vec<PresetResponse> {
             id: "eligible-preset".to_owned(),
             name: "Eligible Bundled Preset".to_owned(),
             description: "Test-only bundled preset".to_owned(),
-            workflow: preset_workflow(&eligible_interface()),
+            workflow: workflow_document(&eligible_interface()),
         },
         PresetResponse {
             id: "00000000-0000-4000-8000-000000000042".to_owned(),
             name: "Eligible API Preset".to_owned(),
             description: "Test-only API-created preset".to_owned(),
-            workflow: preset_workflow(&eligible_interface()),
+            workflow: workflow_document(&eligible_interface()),
         },
         PresetResponse {
             id: "eligible-workflow.json".to_owned(),
             name: "Duplicate Incompatible Preset".to_owned(),
             description: "Test-only duplicate precedence preset".to_owned(),
-            workflow: preset_workflow(&missing_path_interface()),
+            workflow: workflow_document(&missing_path_interface()),
         },
     ]
 }
@@ -157,14 +169,6 @@ fn workflow_entry(filename: &str, name: &str, interface: &WorkflowInterface) -> 
 
 fn workflow_document(interface: &WorkflowInterface) -> Value {
     json!({"nodes": [], "connections": [], "interface": interface})
-}
-
-fn preset_workflow(interface: &WorkflowInterface) -> PresetWorkflow {
-    PresetWorkflow {
-        nodes: Vec::new(),
-        connections: Vec::new(),
-        interface: Some(interface.clone()),
-    }
 }
 
 fn port(name: &str, port_type: &str) -> WorkflowPort {

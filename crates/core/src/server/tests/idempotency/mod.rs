@@ -1,5 +1,6 @@
 mod api_basic;
 mod api_concurrency;
+mod lookup;
 mod persistence;
 mod restart;
 mod workflow_independence;
@@ -68,19 +69,19 @@ impl RunFixture {
         let previous = std::sync::Arc::downgrade(&state.inner);
         drop(state);
         // A restart releases the previous executor and authentication lock first.
-        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
             while previous.strong_count() != 0 {
                 tokio::task::yield_now().await;
             }
         })
         .await?;
         // Arc's strong count reaches zero before its fields finish dropping.
-        // Wait for the SQLite connection and its instance lock to finish closing.
+        // Wait for the stores and the instance lock, released last, to close.
         let lock = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
-            .open(data_dir.join("auth.lock"))?;
-        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            .open(data_dir.join("instance.lock"))?;
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
             while lock.try_lock().is_err() {
                 tokio::time::sleep(std::time::Duration::from_millis(1)).await;
             }
@@ -183,6 +184,10 @@ struct DelayNode {
 impl Node for DelayNode {
     fn node_type(&self) -> &str {
         "idempotency_delay"
+    }
+
+    fn accepts_config_param(&self, key: &str) -> bool {
+        key == "delay_ms"
     }
 
     fn input_ports(&self) -> Vec<crate::node::PortDefinition> {

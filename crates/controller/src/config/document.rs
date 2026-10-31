@@ -200,6 +200,12 @@ impl From<&ControllerConfig> for RawControllerConfig {
                 relay_urls: config.iroh.relay_urls.clone(),
                 use_public_relays: config.iroh.use_public_relays,
             },
+            history: raw::RawHistoryConfig {
+                retention_days: config
+                    .history
+                    .retention_days
+                    .map(|days| u64::from(days.get())),
+            },
         }
     }
 }

@@ -27,6 +27,7 @@ export function PathAutocomplete({
 	const [open, setOpen] = useState(false);
 	const [suggestions, setSuggestions] = useState<FsEntry[]>([]);
 	const [loading, setLoading] = useState(false);
+	const [failed, setFailed] = useState(false);
 	const debounceRef = useRef<ReturnType<typeof setTimeout>>(null);
 	const fetchIdRef = useRef(0);
 
@@ -47,13 +48,17 @@ export function PathAutocomplete({
 						? entries.filter((e) => e.name.toLowerCase().startsWith(namePrefix))
 						: entries;
 					setSuggestions(filtered);
+					setFailed(false);
 					setLoading(false);
 					setOpen(true);
 				})
 				.catch(() => {
 					if (id !== fetchIdRef.current) return;
+					// Say so: an empty list would read as "nothing in this folder".
 					setSuggestions([]);
+					setFailed(true);
 					setLoading(false);
+					setOpen(true);
 				});
 		}, 300);
 	}, []);
@@ -123,7 +128,12 @@ export function PathAutocomplete({
 							<span className="sr-only">{t("pathAutocomplete.loading")}</span>
 						</div>
 					)}
-					{!loading && suggestions.length === 0 && (
+					{!loading && failed && (
+						<div role="alert" className="px-2 py-2 text-xs text-destructive">
+							{t("pathAutocomplete.error")}
+						</div>
+					)}
+					{!loading && !failed && suggestions.length === 0 && (
 						<div className="px-2 py-2 text-xs text-muted-foreground">
 							{t("pathAutocomplete.empty")}
 						</div>

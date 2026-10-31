@@ -3,7 +3,16 @@ use std::time::Duration;
 use reqwest::{Response, StatusCode, Url};
 use serde::de::DeserializeOwned;
 
+use videnoa_protocol::{ErrorCode, ErrorResponse};
+
 use super::{VidenoaClient, VidenoaClientError};
+
+/// What a Worker's JSON error envelope says, when it is one.
+#[derive(Debug, Default)]
+pub(super) struct Rejection {
+    pub(super) reason: Option<String>,
+    pub(super) code: Option<ErrorCode>,
+}
 
 impl VidenoaClient {
     pub(super) async fn ensure_transport(&self) -> Result<(), VidenoaClientError> {
@@ -66,22 +75,36 @@ impl VidenoaClient {
         &self,
         response: Response,
     ) -> Result<T, VidenoaClientError> {
+        if response.status() == StatusCode::FORBIDDEN {
+            return Err(self.forbidden(response).await);
+        }
         ensure_success(response.status())?;
         let body = self.bounded_body(response).await?;
         serde_json::from_slice(&body).map_err(|_| VidenoaClientError::MalformedPayload)
     }
 
     /// The `error` text of a Worker's JSON error envelope, cleaned of control
-    /// characters and cut to [`REJECTION_REASON_CHARS`]. Any other body yields
-    /// `None`, so raw response bytes are never reflected.
-    pub(super) async fn rejection_reason(&self, response: Response) -> Option<String> {
-        #[derive(serde::Deserialize)]
-        struct ErrorEnvelope {
-            error: String,
+    /// characters and cut to [`REJECTION_REASON_CHARS`], with its code. Any
+    /// other body yields neither, so raw response bytes are never reflected.
+    /// A 403. The Worker's reason is kept only when it refused the Host this
+    /// Controller addressed it by, which the user fixes on the Worker; any
+    /// other 403 stays redacted.
+    pub(super) async fn forbidden(&self, response: Response) -> VidenoaClientError {
+        forbidden(self.rejection(response).await)
+    }
+
+    pub(super) async fn rejection(&self, response: Response) -> Rejection {
+        let Ok(body) = self.bounded_body(response).await else {
+            return Rejection::default();
+        };
+        let Ok(envelope) = serde_json::from_slice::<ErrorResponse>(&body) else {
+            return Rejection::default();
+        };
+        Rejection {
+            reason: bounded_reason(&envelope.error),
+            // A code this Controller does not know leaves the status to decide.
+            code: envelope.code.filter(|code| *code != ErrorCode::Unknown),
         }
-        let body = self.bounded_body(response).await.ok()?;
-        let envelope: ErrorEnvelope = serde_json::from_slice(&body).ok()?;
-        bounded_reason(&envelope.error)
     }
 
     async fn bounded_body(&self, mut response: Response) -> Result<Vec<u8>, VidenoaClientError> {
@@ -133,6 +156,16 @@ fn bounded_reason(raw: &str) -> Option<String> {
     })
 }
 
+/// A 403 read from its [`Rejection`]; see [`VidenoaClient::forbidden`].
+pub(super) fn forbidden(Rejection { reason, code }: Rejection) -> VidenoaClientError {
+    let refused_host = code == Some(ErrorCode::HostNotAllowed);
+    VidenoaClientError::ClientStatus {
+        status: StatusCode::FORBIDDEN.as_u16(),
+        reason: reason.filter(|_| refused_host),
+        code: code.filter(|_| refused_host),
+    }
+}
+
 pub(super) fn ensure_success(status: StatusCode) -> Result<(), VidenoaClientError> {
     match status.as_u16() {
         200..=299 => Ok(()),
@@ -142,6 +175,7 @@ pub(super) fn ensure_success(status: StatusCode) -> Result<(), VidenoaClientErro
         code @ 400..=499 => Err(VidenoaClientError::ClientStatus {
             status: code,
             reason: None,
+            code: None,
         }),
         code @ 500..=599 => Err(VidenoaClientError::ServerStatus { status: code }),
         code => Err(VidenoaClientError::UnexpectedStatus { status: code }),

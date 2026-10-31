@@ -59,10 +59,23 @@ export class ApiError extends Error {
   }
 }
 
+/** The server's machine-readable error `code`, when the error carries one. */
+export function apiErrorCode(error: unknown): string | null {
+  if (!(error instanceof ApiError)) return null;
+  const { body } = error;
+  if (typeof body !== 'object' || body === null || !('code' in body)) return null;
+  return typeof body.code === 'string' ? body.code : null;
+}
+
 // ─── Generic request wrapper ─────────────────────────────────────────────────
 
-async function request<T>(url: string, init?: RequestInit): Promise<T> {
+async function request<T>(
+  url: string,
+  init?: RequestInit,
+  onResponse?: (resp: Response) => void,
+): Promise<T> {
   const resp = await authenticatedFetch(url, init);
+  onResponse?.(resp);
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
     let message = `HTTP ${String(resp.status)}`;
@@ -415,12 +428,23 @@ export function listWorkflows(): Promise<WorkflowEntry[]> {
   return request<WorkflowEntry[]>('/api/workflows');
 }
 
+export interface SaveWorkflowOptions {
+  /** File to write, as listed by `listWorkflows`; derived from `name` when absent. */
+  filename?: string;
+  /** Replace an existing file. Without it the server answers 409 `workflow_exists`. */
+  overwrite?: boolean;
+}
+
 export function saveWorkflow(
   name: string,
   description: string,
   workflow: Workflow,
+  options?: SaveWorkflowOptions,
 ): Promise<WorkflowEntry> {
-  return request<WorkflowEntry>('/api/workflows', jsonBody({ name, description, workflow }));
+  return request<WorkflowEntry>(
+    '/api/workflows',
+    jsonBody({ name, description, workflow, ...options }),
+  );
 }
 
 export function getWorkflowInterface(filename: string): Promise<WorkflowInterface> {
@@ -451,14 +475,35 @@ export function submitBatch(
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
-export function getConfig(): Promise<AppConfig> {
-  return request<AppConfig>('/api/config');
+/** The config document and its version (`ETag`), for a conditional update. */
+export interface VersionedConfig {
+  config: AppConfig;
+  etag: string | null;
 }
 
-export function updateConfig(config: AppConfig): Promise<AppConfig> {
-  return request<AppConfig>('/api/config', {
+async function requestVersionedConfig(init?: RequestInit): Promise<VersionedConfig> {
+  let etag: string | null = null;
+  const config = await request<AppConfig>('/api/config', init, (resp) => {
+    etag = resp.headers.get('ETag');
+  });
+  return { config, etag };
+}
+
+export function getConfig(): Promise<VersionedConfig> {
+  return requestVersionedConfig();
+}
+
+/**
+ * Save the whole config document. With the `etag` it was read with, the
+ * server applies it only if nothing changed meanwhile, and otherwise answers
+ * 412 `config_changed`.
+ */
+export function updateConfig(config: AppConfig, etag: string | null): Promise<VersionedConfig> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (etag) headers['If-Match'] = etag;
+  return requestVersionedConfig({
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify(config),
   });
 }
@@ -532,21 +577,17 @@ export interface FsEntry {
   path: string;
 }
 
-export async function listDirectory(
+export function listDirectory(
   base: string = 'models',
   prefix: string = '',
 ): Promise<FsEntry[]> {
   const params = new URLSearchParams({ base });
   if (prefix) params.set('prefix', prefix);
-  const res = await authenticatedFetch(`/api/fs/list?${params.toString()}`);
-  if (!res.ok) return [];
-  return res.json();
+  return request<FsEntry[]>(`/api/fs/list?${params.toString()}`);
 }
 
-export async function browseDirectory(path: string = ''): Promise<FsEntry[]> {
+export function browseDirectory(path: string = ''): Promise<FsEntry[]> {
   const params = new URLSearchParams();
   if (path) params.set('path', path);
-  const res = await authenticatedFetch(`/api/fs/browse?${params.toString()}`);
-  if (!res.ok) return [];
-  return res.json();
+  return request<FsEntry[]>(`/api/fs/browse?${params.toString()}`);
 }

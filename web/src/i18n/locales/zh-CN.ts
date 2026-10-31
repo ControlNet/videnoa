@@ -1,6 +1,12 @@
-import type { NamespaceResources } from "@/i18n/locales/types";
+import type { enResources } from "@/i18n/locales/en";
+import type { I18nNamespace } from "@/i18n/locales/types";
 
-export const zhCNResources: NamespaceResources = {
+/** Exactly the English keys: a missing or extra key is a compile error. */
+type MatchingResources = {
+	[N in I18nNamespace]: Record<keyof (typeof enResources)[N], string>;
+};
+
+export const zhCNResources: MatchingResources = {
 	common: {
         "auth.loginTitle": "登录以继续",
         "auth.password": "密码",
@@ -115,16 +121,22 @@ export const zhCNResources: NamespaceResources = {
 		"pathAutocomplete.placeholder": "path/to/file",
 		"pathAutocomplete.loading": "正在加载路径建议",
 		"pathAutocomplete.empty": "未找到条目",
+		"pathAutocomplete.error": "无法列出此文件夹",
 		"workflowPathPicker.triggerAriaLabel": "选择工作流路径",
 		"workflowPathPicker.loadingPlaceholder": "加载中...",
 		"workflowPathPicker.selectPlaceholder": "选择工作流",
 		"workflowPathPicker.empty": "没有可用接口的工作流",
+		"workflowPathPicker.error": "无法加载工作流列表",
+		"workflowPathPicker.retry": "重试",
 		"dialog.close": "关闭",
 		loading: "加载中…",
 		notAvailable: "—",
 	},
 	jobs: {
 		"jobs.page.errors.refresh": "任务列表刷新失败。已提交成功的任务仍会执行，列表将自动重试刷新。",
+		"jobs.page.errors.cancelFailed": "取消任务失败",
+		"jobs.page.errors.retryFailed": "重试任务失败",
+		"jobs.page.errors.deleteFailed": "删除任务记录失败",
 		"jobs.page.title": "任务",
 		"jobs.page.summary.total_one": "共 {{count}} 个任务",
 		"jobs.page.summary.total_other": "共 {{count}} 个任务",
@@ -166,6 +178,7 @@ export const zhCNResources: NamespaceResources = {
 		"jobs.page.history.details.duration": "时长：",
 		"jobs.page.history.details.params": "参数 JSON：",
 		"jobs.page.history.details.error": "错误：",
+		"jobs.page.history.details.printOutput": "打印输出",
 
 		"jobs.dialog.title": "运行工作流",
 		"jobs.dialog.description": "选择一个工作流并配置其输入参数。",
@@ -242,6 +255,7 @@ export const zhCNResources: NamespaceResources = {
     "iroh.copiedShort": "已复制",
     "iroh.title": "远程访问",
     "iroh.copy": "复制 Endpoint ID",
+    "iroh.endpointId": "Endpoint ID",
     "iroh.copied": "已复制",
     "iroh.error": "无法获取 iroh 状态或启动失败。",
     "iroh.running": "Iroh 正在运行",
@@ -299,6 +313,7 @@ export const zhCNResources: NamespaceResources = {
 		"batch.workflow.nodes_other": "{{count}} 个节点",
 		"errors.loadConfig": "加载配置失败",
 		"errors.saveConfig": "保存配置失败",
+		"errors.configChanged": "设置已在别处被修改，已重新加载，请重新应用你的修改。",
 		"footer.saveSuccess": "设置已保存",
 		"footer.unsavedChanges": "有未保存的更改",
 		"page.description": "配置 Videnoa",
@@ -321,6 +336,9 @@ export const zhCNResources: NamespaceResources = {
 		"sections.performance.fields.profilingEnabledHint": "保存后立即生效。",
 		"sections.performance.title": "诊断",
 		"sections.server.description": "只读 · 需重启生效",
+		"sections.server.desktopDescription": "不适用",
+		"sections.server.desktopHint":
+			"桌面版不使用这些设置：它在每次启动时监听 127.0.0.1 上随机选择的端口。server.host 和 server.port 仅在 Videnoa 作为独立服务器运行时生效。",
 		"sections.server.fields.host": "host",
 		"sections.server.fields.port": "port",
 		"sections.server.title": "服务器",
@@ -370,6 +388,31 @@ export const zhCNResources: NamespaceResources = {
 		"toolbar.toast.workflowSaved": "工作流已保存",
 		"toolbar.toast.saveFailed": "保存工作流失败",
 		"toolbar.toast.workflowDownloaded": "工作流已下载",
+		"toolbar.toast.presetName": "「{{name}}」是预设的名称，请换一个名称保存工作流。",
+		"toolbar.replaceDialog.title": "替换工作流？",
+		"toolbar.replaceDialog.description": "已存在名为「{{name}}」的工作流，替换后其内容将被覆盖。",
+		"toolbar.replaceDialog.cancel": "取消",
+		"toolbar.replaceDialog.confirm": "替换",
+		"nodeDefinitions.loadFailed": "无法加载节点定义：{{error}}",
+		"nodeDefinitions.retry": "重试",
+		"node.remove": "删除节点",
+		"node.removeParam": "删除参数 {{name}}",
+		"node.unsupportedType": "当前 worker 没有这种类型的节点。",
+		"node.definitionsUnavailable": "节点定义尚未加载。",
+		"node.unsupportedParams": "不支持的参数",
+		"node.unsupportedParamsHint": "运行时节点会忽略这些参数。",
+		"node.selectModel": "选择模型",
+		"node.addPort": "添加端口",
+		"node.runtimePreview": "运行时预览",
+		"node.previewTruncated": "已截断为 {{max}} 个字符",
+		"canvas.empty.title": "从侧边栏拖入节点以构建管线",
+		"canvas.empty.hint": "或加载一个预设开始",
+		"canvas.empty.loadPreset": "加载预设",
+		"node.interfaceLoadFailed": "无法加载 {{path}} 的接口",
+		"unsaved.title": "放弃未保存的修改？",
+		"unsaved.description": "画布上有尚未保存的修改，继续将会丢失。",
+		"unsaved.cancel": "继续编辑",
+		"unsaved.discard": "放弃修改",
 		"runDialog.title": "运行工作流",
 		"runDialog.description": "运行前请先配置输入参数。",
 		"runDialog.parameters.title": "参数",
@@ -387,6 +430,14 @@ export const zhCNResources: NamespaceResources = {
 		"gallery.toast.workflowLoaded": "工作流已加载",
 		"gallery.toast.workflowDeleted": "工作流已删除",
 		"gallery.toast.deleteFailed": "删除工作流失败",
+		"gallery.delete.ariaLabel": "删除工作流 {{name}}",
+		"gallery.delete.title": "删除工作流？",
+		"gallery.delete.description": "“{{name}}”将从服务器上永久删除，此操作无法撤销。",
+		"gallery.delete.cancel": "取消",
+		"gallery.delete.confirm": "删除",
+		"gallery.error.presets": "无法加载内置预设",
+		"gallery.error.workflows": "无法加载已保存的工作流",
+		"gallery.error.retry": "重试",
 	},
 	preview: {
 		"spinner.loadingAriaLabel": "加载中",

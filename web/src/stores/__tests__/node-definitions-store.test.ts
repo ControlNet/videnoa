@@ -103,6 +103,23 @@ describe('fetch', () => {
     expect(state.loading).toBe(false);
   });
 
+  // The worker behind this UI can be upgraded while the editor stays open,
+  // and a failed first load should be recoverable.
+  it('refetches when forced and keeps the loaded definitions if that fails', async () => {
+    useNodeDefinitions.setState({ descriptors: MOCK_DESCRIPTORS.slice(0, 1) });
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(MOCK_DESCRIPTORS));
+
+    await useNodeDefinitions.getState().fetch({ force: true });
+    expect(useNodeDefinitions.getState().descriptors).toHaveLength(2);
+
+    vi.mocked(fetch).mockResolvedValueOnce(new Response('', { status: 500 }));
+    await useNodeDefinitions.getState().fetch({ force: true });
+
+    const state = useNodeDefinitions.getState();
+    expect(state.descriptors).toHaveLength(2);
+    expect(state.error).toContain('500');
+  });
+
   it('sets loading true while fetching', async () => {
     let resolvePromise: (value: Response) => void;
     const pending = new Promise<Response>((resolve) => {

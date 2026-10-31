@@ -11,6 +11,72 @@ use std::time::{Duration, Instant};
 /// Bytes of a child's most recent stderr lines kept for error messages.
 pub(crate) const STDERR_TAIL_BYTES: usize = 4096;
 
+/// Applied to every child Videnoa starts (see `runtime::command_for`).
+///
+/// - Unix: the child gets its own process group, so a terminal's Ctrl-C
+///   (sent to the whole foreground group) reaches only Videnoa. Videnoa then
+///   cancels the job and stops its children in order, instead of FFmpeg
+///   being killed mid-write next to the user's output.
+/// - Windows: before the first child starts, this process joins a job
+///   object that kills its members when Videnoa exits, however it exits;
+///   children inherit it, so FFmpeg never outlives Videnoa.
+pub(crate) fn configure_child(command: &mut Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        static JOINED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+        JOINED.get_or_init(|| {
+            if let Err(error) = kill_children_with_this_process() {
+                tracing::warn!(%error, "Child processes are not tied to Videnoa's lifetime and may outlive it");
+            }
+        });
+        let _ = command;
+    }
+}
+
+/// Puts this process in a job object that kills every member when its last
+/// handle closes, which happens when this process exits. Processes started
+/// afterwards inherit the job.
+#[cfg(windows)]
+fn kill_children_with_this_process() -> std::io::Result<()> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+    // SAFETY: plain Win32 calls with valid arguments; the job handle is
+    // checked before use and closed on every failure path.
+    unsafe {
+        let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        if job.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let configured = SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            std::ptr::from_ref(&limits).cast(),
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        ) != 0;
+        if !configured || AssignProcessToJobObject(job, GetCurrentProcess()) == 0 {
+            let error = std::io::Error::last_os_error();
+            CloseHandle(job);
+            return Err(error);
+        }
+        // The handle stays open on purpose: it closes when the process exits,
+        // and that is what ends the job's other members.
+    }
+    Ok(())
+}
+
 /// Drains a child's stderr on a background thread so the child never blocks
 /// on a full pipe, forwards each line to `log`, and keeps the last
 /// [`STDERR_TAIL_BYTES`] of lines so a failure can quote FFmpeg's own message.
@@ -188,6 +254,22 @@ pub(crate) fn output_with_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn children_run_in_their_own_process_group() {
+        let mut command = Command::new("sleep");
+        command.arg("5");
+        configure_child(&mut command);
+        let mut child = command.spawn().unwrap();
+        let pid = child.id() as libc::pid_t;
+        // SAFETY: getpgid only reads process attributes.
+        let (child_group, own_group) = unsafe { (libc::getpgid(pid), libc::getpgid(0)) };
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert_eq!(child_group, pid);
+        assert_ne!(child_group, own_group);
+    }
     use std::sync::{Arc, Mutex};
 
     #[cfg(unix)]

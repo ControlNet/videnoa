@@ -2,6 +2,7 @@ use sqlx::Row;
 
 use super::codec::{encode_json, sqlite_u64, timestamp};
 use super::models::{empty_progress, Reservation, ReservationOutcome};
+use super::status_sql::{COMPUTE, STAGE_IN};
 use super::{PersistenceError, Store};
 
 impl Store {
@@ -14,7 +15,7 @@ impl Store {
         let _admission = self.submission_admission().read_owned().await;
         let policy = self.config_manager().scheduler();
         let mut transaction = self.database.pool().begin().await?;
-        let attempt_no = sqlx::query(
+        let sql = format!(
             "UPDATE tasks SET status = 'reserved', worker_id = ?, requested_worker_id = NULL,
                 version = version + 1, attempt_count = attempt_count + 1, updated_at_ms = ?,
                 reserved_at_ms = ?
@@ -31,29 +32,32 @@ impl Store {
                      AND (
                          SELECT COUNT(*) FROM tasks pending
                          WHERE pending.worker_id = worker.id
-                           AND pending.status IN ('reserved', 'uploading', 'staged')
+                           AND pending.status IN {STAGE_IN}
                      ) < MAX(worker.compute_slots - (
                              SELECT COUNT(*) FROM tasks active
                              WHERE active.worker_id = worker.id
-                               AND active.status IN ('submitting', 'processing')
+                               AND active.status IN {COMPUTE}
                          ), 0) + ?
                )
              RETURNING attempt_count",
-        )
-        .bind(reservation.worker_id.to_string())
-        .bind(timestamp(reservation.reserved_at))
-        .bind(timestamp(reservation.reserved_at))
-        .bind(reservation.task_id.to_string())
-        .bind(sqlite_u64(
-            "expected_task_version",
-            reservation.expected_task_version,
-        )?)
-        .bind(reservation.worker_id.to_string())
-        .bind(reservation.worker_id.to_string())
-        .bind(policy.paused)
-        .bind(i64::from(policy.prefetch_per_worker))
-        .fetch_optional(&mut *transaction)
-        .await?;
+            STAGE_IN = *STAGE_IN,
+            COMPUTE = *COMPUTE,
+        );
+        let attempt_no = sqlx::query(&sql)
+            .bind(reservation.worker_id.to_string())
+            .bind(timestamp(reservation.reserved_at))
+            .bind(timestamp(reservation.reserved_at))
+            .bind(reservation.task_id.to_string())
+            .bind(sqlite_u64(
+                "expected_task_version",
+                reservation.expected_task_version,
+            )?)
+            .bind(reservation.worker_id.to_string())
+            .bind(reservation.worker_id.to_string())
+            .bind(policy.paused)
+            .bind(i64::from(policy.prefetch_per_worker))
+            .fetch_optional(&mut *transaction)
+            .await?;
         let Some(attempt_no) = attempt_no else {
             transaction.rollback().await?;
             return Ok(ReservationOutcome::Conflict);

@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest"
 
-import { cancelTaskResponseSchema, retryTaskResponseSchema, taskCreateRequestSchema, taskDetailSchema } from "./taskSchemas"
+import {
+  cancelTaskResponseSchema,
+  retryTaskResponseSchema,
+  taskCreateRequestSchema,
+  taskDetailSchema,
+  taskListSchema,
+  taskSchema,
+  taskStatusCountsSchema,
+} from "./taskSchemas"
 
 const progress = {
   percent: 37.5,
@@ -56,7 +64,39 @@ describe("Task 17 API schemas", () => {
     expect(parsed).toEqual(request)
   })
 
-  it("parses persisted attempts and rejects invented detail fields", () => {
+  it("keeps the task rows it can read when a newer Controller sends one it cannot", () => {
+    // Given: a page with one task in a status this UI does not know yet.
+    const page = { items: [task, { ...task, id: "00000000-0000-4000-8000-000000000009", status: "paused" }], total: 2, limit: 100, offset: 0 }
+
+    // When: the page crosses the boundary.
+    const parsed = taskListSchema.parse(page)
+
+    // Then: only the unreadable row is left out.
+    expect(parsed.items.map((item) => item.id)).toEqual([task.id])
+    expect(parsed.total).toBe(2)
+  })
+
+  it("keeps the status counts it can read", () => {
+    const counts = taskStatusCountsSchema.parse({ items: [{ status: "queued", count: 2 }, { status: "paused", count: 1 }], total: 3 })
+
+    expect(counts.items).toEqual([{ status: "queued", count: 2 }])
+  })
+
+  it("ignores response fields a newer Controller adds", () => {
+    // Given: a task carrying a field this UI does not know.
+    const parsed = taskListSchema.parse({ items: [{ ...task, added_later: true }], total: 1, limit: 100, offset: 0 })
+
+    // Then: the task is read and the unknown field is dropped.
+    expect(parsed.items[0]).toEqual(taskSchema.parse(task))
+  })
+
+  it("still refuses unknown fields in a request it sends", () => {
+    const request = { input_path: "/a.mkv", output_path: "/a.mp4", workflow: "w", priority: 0, source: "manual", source_reference: null, extra: 1 }
+
+    expect(taskCreateRequestSchema.safeParse(request).success).toBe(false)
+  })
+
+  it("parses persisted attempts and drops fields it does not know", () => {
     // Given: the authoritative task detail DTO returned by Rust.
     const detail = {
       task,
@@ -86,11 +126,12 @@ describe("Task 17 API schemas", () => {
 
     // When: detail is parsed with one unknown server field added.
     const parsed = taskDetailSchema.parse(detail)
-    const unknown = taskDetailSchema.safeParse({ ...detail, logs: ["invented"] })
+    const unknown = taskDetailSchema.parse({ ...detail, logs: ["invented"] })
 
-    // Then: persisted evidence is accepted and invented logs are rejected.
+    // Then: persisted evidence is accepted and the unknown field is dropped.
     expect(parsed.attempts[0]?.remote_input_path).toBe("task/input/../opaque.mkv")
-    expect(unknown.success).toBe(false)
+    expect(unknown).toEqual(parsed)
+    expect("logs" in unknown).toBe(false)
   })
 
   it("rejects a non-UUID submission key", () => {

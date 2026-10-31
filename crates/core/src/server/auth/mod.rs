@@ -3,6 +3,7 @@ use std::collections::{HashMap, VecDeque};
 use std::fs::{File, OpenOptions};
 use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
@@ -32,6 +33,7 @@ struct Inner {
     database: Mutex<Database>,
     policy: RwLock<AuthConfig>,
     tasks: Arc<Semaphore>,
+    password_set: Arc<AtomicBool>,
     _lock: File,
 }
 struct Database {
@@ -39,6 +41,9 @@ struct Database {
     failures: HashMap<AuthPeer, VecDeque<i64>>,
     // Ephemeral bearer verifier, guarded by the credential transaction mutex. Never serialized.
     cached_password_digest: Option<[u8; 32]>,
+    // Lock-free copy of "a credential is stored" for the Host check. It is set after a credential
+    // commits and cleared before one is removed, so a stale read only makes the check stricter.
+    password_set: Arc<AtomicBool>,
     #[cfg(test)]
     slow_verifications: usize,
 }
@@ -259,8 +264,9 @@ impl AuthService {
     pub fn open(dir: &Path, policy: AuthConfig) -> anyhow::Result<Self> {
         policy.validate()?;
         let (lock, connection) = open_database(dir)?;
-        if let Some(hash) = stored_hash(&connection)? {
-            let parsed = PasswordHash::new(&hash)
+        let stored = stored_hash(&connection)?;
+        if let Some(hash) = &stored {
+            let parsed = PasswordHash::new(hash)
                 .map_err(|_| anyhow::anyhow!("Invalid stored authentication credential"))?;
             anyhow::ensure!(
                 parsed.algorithm.as_str() == "argon2id"
@@ -269,16 +275,19 @@ impl AuthService {
                 "Invalid stored authentication credential"
             );
         }
+        let password_set = Arc::new(AtomicBool::new(stored.is_some()));
         Ok(Self(Arc::new(Inner {
             database: Mutex::new(Database {
                 connection,
                 failures: HashMap::new(),
                 cached_password_digest: None,
+                password_set: password_set.clone(),
                 #[cfg(test)]
                 slow_verifications: 0,
             }),
             policy: RwLock::new(policy),
             tasks: Arc::new(Semaphore::new(2)),
+            password_set,
             _lock: lock,
         })))
     }
@@ -576,6 +585,7 @@ impl Database {
                 match result {
                     Ok(reply) => {
                         self.connection.execute_batch("COMMIT")?;
+                        self.password_set.store(true, Ordering::SeqCst);
                         self.cached_password_digest =
                             Some(Sha256::digest(password.as_bytes()).into());
                         self.failures.clear();
@@ -593,10 +603,17 @@ impl Database {
                 } else if !context.same_origin() {
                     return Err(AuthError::Forbidden);
                 }
-                let transaction = self.connection.transaction()?;
-                transaction.execute("DELETE FROM credential", [])?;
-                transaction.execute("DELETE FROM sessions", [])?;
-                transaction.commit()?;
+                self.password_set.store(false, Ordering::SeqCst);
+                let result = (|| {
+                    let transaction = self.connection.transaction()?;
+                    transaction.execute("DELETE FROM credential", [])?;
+                    transaction.execute("DELETE FROM sessions", [])?;
+                    transaction.commit()
+                })();
+                if let Err(error) = result {
+                    self.password_set.store(hash.is_some(), Ordering::SeqCst);
+                    return Err(error.into());
+                }
                 self.cached_password_digest = None;
                 self.failures.clear();
                 Ok(Reply {
@@ -655,6 +672,121 @@ pub(super) async fn protect(
         },
         Err(error) => error.into_response(),
     }
+}
+
+#[cfg(unix)]
+fn machine_hostname() -> Option<String> {
+    let mut buffer = [0u8; 256];
+    // SAFETY: the pointer and length describe a writable buffer owned by this frame.
+    if unsafe { libc::gethostname(buffer.as_mut_ptr().cast(), buffer.len()) } != 0 {
+        return None;
+    }
+    // A truncated name has no NUL terminator and is rejected here.
+    let name = std::ffi::CStr::from_bytes_until_nul(&buffer).ok()?;
+    name.to_str().ok().map(str::to_owned)
+}
+#[cfg(windows)]
+fn machine_hostname() -> Option<String> {
+    std::env::var("COMPUTERNAME").ok()
+}
+#[cfg(not(any(unix, windows)))]
+fn machine_hostname() -> Option<String> {
+    None
+}
+/// The full host name, its first label, and `<first label>.local` (mDNS), lowercased.
+fn machine_names(hostname: Option<String>) -> Vec<String> {
+    let full = hostname
+        .unwrap_or_default()
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    let short = full.split('.').next().unwrap_or_default().to_owned();
+    if short.is_empty() {
+        return Vec::new();
+    }
+    let mut names = Vec::new();
+    for name in [full, short.clone(), format!("{short}.local")] {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
+}
+fn local_machine_names() -> &'static [String] {
+    static NAMES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    NAMES.get_or_init(|| machine_names(machine_hostname()))
+}
+/// Whether an open-access request may name `authority` in its Host header.
+///
+/// A DNS-rebinding page reaches this server under the attacker's own domain, so that domain
+/// appears in Host (and in a matching Origin). IP literals and loopback names cannot be
+/// rebound; other names must be this machine's own or listed in `server.allowed_hosts`.
+fn host_allowed(authority: &str, machine_names: &[String], allowed_hosts: &[String]) -> bool {
+    if !authority
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_' | ':' | '[' | ']'))
+    {
+        return false;
+    }
+    let Ok(url) = url::Url::parse(&format!("http://{authority}/")) else {
+        return false;
+    };
+    match url.host() {
+        Some(url::Host::Ipv4(_) | url::Host::Ipv6(_)) => true,
+        Some(url::Host::Domain(domain)) => {
+            let name = domain.trim_end_matches('.');
+            name == "localhost"
+                || name.ends_with(".localhost")
+                || machine_names.iter().any(|known| known == name)
+                || allowed_hosts
+                    .iter()
+                    .any(|known| known.trim_end_matches('.').eq_ignore_ascii_case(name))
+        }
+        None => false,
+    }
+}
+/// Rejects requests addressed to an untrusted Host while no password is set.
+///
+/// Covers every API route, including the public WebSocket, health and authentication routes,
+/// so a rebinding page can neither use the open API nor claim the first password. With a
+/// password set, cookies (SameSite, Origin and CSRF checks) and Bearer credentials already
+/// stop rebinding, and behaviour is unchanged. The iroh tunnel requires a password.
+pub(super) async fn check_host(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    // Browsers always send Host, so a request without one is not a rebinding attempt.
+    let authority = match request.headers().get(header::HOST) {
+        Some(value) => String::from_utf8_lossy(value.as_bytes()).into_owned(),
+        None => match request.uri().authority() {
+            Some(authority) => authority.to_string(),
+            None => return next.run(request).await,
+        },
+    };
+    let trusted = host_allowed(
+        &authority,
+        local_machine_names(),
+        &state.inner.config.read().await.server.allowed_hosts,
+    );
+    if trusted {
+        return next.run(request).await;
+    }
+    match service(&state) {
+        Ok(auth) if auth.0.password_set.load(Ordering::SeqCst) => return next.run(request).await,
+        Ok(_) => {}
+        Err(error) => return error.into_response(),
+    }
+    let message = format!(
+        "Host \"{authority}\" is not allowed while no password is set. Add its host name to \
+         server.allowed_hosts in config.toml and restart, or set a password."
+    );
+    // The code tells a Controller the credentials are not at fault.
+    (
+        StatusCode::FORBIDDEN,
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(json!({"error": message, "code": "host_not_allowed"})),
+    )
+        .into_response()
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

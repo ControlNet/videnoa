@@ -18,7 +18,7 @@ use videnoa_controller::remote::{PayloadLimits, RemoteTimeouts};
 use videnoa_controller::scheduler::{
     Scheduler, TransferConfig, TransferExecutor, TransferResources,
 };
-use videnoa_controller::tasks::TaskService;
+use videnoa_controller::tasks::{HistoryRetention, TaskService, HISTORY_SWEEP_INTERVAL};
 use videnoa_controller::workers::WorkerHealthService;
 use videnoa_controller::{controller_app_router, FrontendAssets, StartupError};
 
@@ -96,7 +96,8 @@ async fn run_controller(cli: Cli) -> anyhow::Result<()> {
         shutdown.clone(),
         &events,
     );
-    let runtime = run_background_services(orchestration, worker_health, auth.clone(), &shutdown);
+    let history = HistoryRetention::new(store.clone(), paths.clone(), config.history);
+    let runtime = run_background_services(orchestration, worker_health, &auth, history, &shutdown);
     let tasks = TaskService::with_events(store.clone(), paths.clone(), events.clone());
     warn_runtime_config(&config);
     let assets = frontend_assets()?;
@@ -114,7 +115,7 @@ async fn run_controller(cli: Cli) -> anyhow::Result<()> {
     .with_configuration_listener(listener);
     let router = controller_app_router(
         &assets,
-        auth,
+        auth.clone(),
         tasks,
         operations.with_shutdown(http_shutdown.child_token()),
     )
@@ -275,17 +276,24 @@ fn recovery_runtime(
 async fn run_background_services(
     orchestration: Orchestrator,
     worker_health: WorkerHealthService,
-    auth: AuthService,
+    auth: &AuthService,
+    history: HistoryRetention,
     shutdown: &ShutdownCoordinator,
 ) -> Result<(), RuntimeError> {
     let cancellation = shutdown.cancellation_token();
     let orchestration = async { orchestration.run().await.map_err(RuntimeError::from) };
     let worker_health = async { worker_health.run().await.map_err(RuntimeError::from) };
     let sessions = async {
-        auth.run_session_maintenance(SESSION_PURGE_INTERVAL, cancellation)
+        auth.clone()
+            .run_session_maintenance(SESSION_PURGE_INTERVAL, cancellation)
             .await;
         Ok(())
     };
-    tokio::try_join!(orchestration, worker_health, sessions)?;
+    let history_shutdown = shutdown.cancellation_token();
+    let history = async {
+        history.run(HISTORY_SWEEP_INTERVAL, history_shutdown).await;
+        Ok(())
+    };
+    tokio::try_join!(orchestration, worker_health, sessions, history)?;
     Ok(())
 }
