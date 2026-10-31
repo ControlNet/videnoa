@@ -61,6 +61,8 @@ for route in \
   '/api/tasks/{id}' \
   '/api/tasks/{id}/cancel' \
   '/api/tasks/{id}/retry' \
+  '/api/tasks/{id}/abandon' \
+  '/api/tasks/{id}/discard' \
   '/api/status-counts' \
   '/api/workers' \
   '/api/settings' \

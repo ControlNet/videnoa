@@ -7946,7 +7946,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "videnoa-app"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "anyhow",
  "clap",
@@ -7959,7 +7959,7 @@ dependencies = [
 
 [[package]]
 name = "videnoa-controller"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "anyhow",
  "argon2",
@@ -8003,7 +8003,7 @@ dependencies = [
 
 [[package]]
 name = "videnoa-core"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "anyhow",
  "argon2",
@@ -8053,7 +8053,7 @@ dependencies = [
 
 [[package]]
 name = "videnoa-desktop"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "sys-locale",
  "tauri",
@@ -8067,7 +8067,7 @@ dependencies = [
 
 [[package]]
 name = "videnoa-protocol"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "chrono",
  "serde",
@@ -8076,7 +8076,7 @@ dependencies = [
 
 [[package]]
 name = "videnoa-transport"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "anyhow",
  "http",
