@@ -77,7 +77,9 @@ Fixes for findings E (server half), P, N, M, R and Q of
   available, so `VIDENOA_DATA_DIR`, else `./data`). a7ecbf7 moved it to
   `<local app data>/com.videnoa.app` with a one-time move of
   `<exe_dir>/data`; the maintainer rejected changing the data directory, so
-  that part was reverted. Do not move it again without asking. The attempt
+  that part was reverted. Do not move it again without asking. The other
+  anchors above (workflows_dir under the data dir, asset base, model_path
+  lookup) were reviewed with the maintainer on 2026-10-31 and kept. The attempt
   also had a flaw worth knowing: Tauri's WebView already writes its cache
   into the same `com.videnoa.app` folder, so a "target does not exist yet"
   check skips the migration for anyone who ran the desktop app before.
