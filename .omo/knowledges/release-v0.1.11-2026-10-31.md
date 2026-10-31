@@ -27,3 +27,29 @@ The commands from `release-v0.1.9-2026-10-03.md`, plus
   "`cancel`, `retry`, `abandon` and `discard`", so the check could not find
   `/api/tasks/{id}/retry`. Fixed on the release branch by writing each full
   route; the check now also requires the abandon and discard routes.
+
+## Compatibility checked for the upgrade notes
+
+Drafted by a subagent against the code on `dev` and the v0.1.10 tag; the
+curated body is `release-v0.1.11-body.md`.
+
+- **Upgrade the Controller first.** A v0.1.10 Controller treats any 403 from
+  a Worker as a wrong password and stops health checks until the
+  registration is edited (v0.1.10 `workers/health/probe.rs`,
+  `workers/health.rs`), so a passwordless v0.1.11 Worker reached by a DNS
+  name it does not allow can get stuck offline behind an old Controller.
+- v0.1.11 Controller with v0.1.9/v0.1.10 Workers: protocol-1 tests in
+  `crates/controller/tests/task20/worker_protocol.rs` (mock Worker).
+- v0.1.11 Workers need Controller v0.1.9 or later: v0.1.8's remote DTOs use
+  `deny_unknown_fields`.
+- Downgrading a Worker to v0.1.10: it opens the new `jobs.db` (it never reads
+  `user_version`) and ignores `schema_version` in saved workflows. But once
+  v0.1.11 has saved settings, `config.toml` says `workflows_dir =
+  "workflows"`, which v0.1.10 resolves against the working directory; restore
+  the backed-up `config.toml`. The reverse trap also exists: v0.1.10 saving
+  the config drops `version`, so v0.1.11 then reads it as version 1 and pins
+  `workflows` to `<cwd>/workflows`.
+- Controller migrations 0015/0016: sqlx `Migrator` refuses a database with
+  migrations it does not know, so a v0.1.10 Controller cannot open it.
+- No Compose example in the repo relies on a passwordless Worker reached by
+  service name, so the Host check note in Upgrade is enough.
