@@ -628,7 +628,8 @@ task; all normal path and request validation still applies.
 `source`, `failure_stage`, `search`, `sort`, and `direction`. `GET
 /api/tasks/{id}` returns the task plus a paginated attempts array.
 
-`POST /api/tasks/{id}/cancel`, `retry`, `abandon` and `discard` require the
+`POST /api/tasks/{id}/cancel`, `POST /api/tasks/{id}/retry`,
+`POST /api/tasks/{id}/abandon` and `POST /api/tasks/{id}/discard` require the
 current `version`. Every task lists the actions it accepts now in
 `allowed_actions` (`cancel`, `abandon`, `retry`, `retry_on_another_worker`,
 `discard`); the Web UI offers exactly those, and clients should ignore values
