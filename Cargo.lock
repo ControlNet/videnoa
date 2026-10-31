@@ -8055,7 +8055,6 @@ dependencies = [
 name = "videnoa-desktop"
 version = "0.1.10"
 dependencies = [
- "dirs",
  "sys-locale",
  "tauri",
  "tauri-build",

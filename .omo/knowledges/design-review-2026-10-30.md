@@ -277,6 +277,9 @@ not advertised.** Confirmed by reading.
   - `model_path` in presets is relative to the working directory, so
     `paths.models_dir` affects only the listing.
   - The desktop app uses `data_dir(None)`, with no app-data anchor.
+    Not changed: moving the desktop data dir to the platform app-data folder
+    was tried in a7ecbf7 and reverted at the maintainer's request (see
+    worker-lifecycle-fixes-2026-10-30.md).
 - **S. A deterministic worker 500 before acceptance is retried forever**
   while the task stays in Submitting. Examples: no job persistence, an
   unreadable workflow file. The controller never reads the worker's error
@@ -429,7 +432,6 @@ TensorRT cache:
   - Host allowlist in open access.
   - Unknown params are rejected.
   - TensorRT engines are rebuilt once after the upgrade.
-  - The desktop data dir has moved.
   - Batch idempotency keys expire after 7 days.
   - The worker needs Controller v0.1.9 or later.
   - Protocol 2.

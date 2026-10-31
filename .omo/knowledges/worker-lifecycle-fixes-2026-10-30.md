@@ -73,9 +73,14 @@ Fixes for findings E (server half), P, N, M, R and Q of
 - A relative workflow `model_path` is resolved against `models_dir` (also
   without a leading `models/`) for jobs, previews and `videnoa run`; the
   stored workflow is unchanged.
-- Desktop: data dir is `<local app data>/com.videnoa.app` unless
-  `VIDENOA_DATA_DIR` is set; an old `<exe_dir>/data` is renamed there once
-  (kept in place if the rename fails). `crates/desktop/src/data_dir.rs`.
+- Desktop data dir: unchanged, still `data_dir(None)` (`--data-dir` is not
+  available, so `VIDENOA_DATA_DIR`, else `./data`). a7ecbf7 moved it to
+  `<local app data>/com.videnoa.app` with a one-time move of
+  `<exe_dir>/data`; the maintainer rejected changing the data directory, so
+  that part was reverted. Do not move it again without asking. The attempt
+  also had a flaw worth knowing: Tauri's WebView already writes its cache
+  into the same `com.videnoa.app` folder, so a "target does not exist yet"
+  check skips the migration for anyone who ran the desktop app before.
 - The desktop ignores `server.host`/`server.port` (it binds 127.0.0.1 on a
   random port); the Settings page marks them not applicable there since
   `wave2-leftovers-2026-10-30.md`.
@@ -85,8 +90,7 @@ Fixes for findings E (server half), P, N, M, R and Q of
   `a_version_1_config_keeps_pointing_at_its_workflows`,
   `legacy_workflows_are_copied_into_a_custom_data_dir_once`,
   `asset_paths_resolve_against_the_first_dir_with_presets`,
-  `workflow_model_paths_resolve_against_models_dir`; desktop
-  `data_dir::tests` (4 tests).
+  `workflow_model_paths_resolve_against_models_dir`.
 
 ## Q. Shutdown and ownership
 
@@ -117,9 +121,8 @@ Fixes for findings E (server half), P, N, M, R and Q of
   staged files are removed later. Outputs of nested `Workflow` nodes and
   paths computed by other nodes are not swept. Ctrl-C in a terminal no
   longer reaches FFmpeg directly. `docker run --entrypoint` bypasses tini.
-- Side effects: every data dir now contains `instance.lock`; desktop dev
-  runs use `~/.local/share/com.videnoa.app` unless `VIDENOA_DATA_DIR` is
-  set; closing the desktop window can take up to 6 s while jobs stop.
+- Side effects: every data dir now contains `instance.lock`; closing the
+  desktop window can take up to 6 s while jobs stop.
 - Manual check: start `target/debug/videnoa` on a temp data dir, start a
   second one on the same dir (exits 1 with the lock message), send SIGTERM
   to the first (exits 0, logs "Shutdown requested" then "Server stopped").

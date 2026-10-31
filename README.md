@@ -148,11 +148,6 @@ Relative paths have fixed anchors, independent of where Videnoa is started from:
 - A relative `model_path` in a workflow is looked up in `models_dir`, also
   without a leading `models/`.
 
-The desktop app keeps its data directory in the platform's local app-data
-folder (`%LOCALAPPDATA%\com.videnoa.app` on Windows,
-`~/.local/share/com.videnoa.app` on Linux) unless `VIDENOA_DATA_DIR` is set,
-and moves a `data` folder found beside its executable there once.
-
 `config.toml` records a `version`. Keys this release does not know (written by
 a newer one) are kept when settings are saved.
 
