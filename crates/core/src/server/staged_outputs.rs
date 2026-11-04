@@ -7,8 +7,12 @@
 //! executor is still running, never gets there, and an orphaned FFmpeg may
 //! still finalize such a file after the worker is gone. On the next start the
 //! worker removes, beside each output of a job that was running, exactly the
-//! files with that naming scheme for that output:
-//! `.<output stem>.<6 letters or digits>.videnoa-<direct|video|mux>[.<ext>]`.
+//! files with that naming scheme for that output and that job:
+//! `.<output stem>.<job id>.<6 letters or digits>.videnoa-<direct|video|mux>[.<ext>]`.
+//! The job id keeps another job's files with the same output name, including
+//! another worker's, out of reach. An encode kept after a failed mux is
+//! renamed to the `kept` role and is never removed. Files staged by releases
+//! that did not name the job are left alone.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -23,10 +27,17 @@ const RANDOM_LEN: usize = 6;
 
 /// Removes staged files of the given jobs' outputs; returns how many.
 pub(super) fn sweep_interrupted_jobs<'a>(jobs: impl IntoIterator<Item = &'a Job>) -> usize {
-    let outputs: BTreeSet<PathBuf> = jobs.into_iter().flat_map(output_paths).collect();
+    let outputs: BTreeSet<(PathBuf, &str)> = jobs
+        .into_iter()
+        .flat_map(|job| {
+            output_paths(job)
+                .into_iter()
+                .map(move |path| (path, job.id.as_str()))
+        })
+        .collect();
     let mut removed = 0;
-    for output in outputs {
-        removed += sweep_beside(&output);
+    for (output, owner) in outputs {
+        removed += sweep_beside(&output, owner);
     }
     removed
 }
@@ -75,7 +86,7 @@ fn output_paths(job: &Job) -> Vec<PathBuf> {
     paths
 }
 
-fn sweep_beside(output: &Path) -> usize {
+fn sweep_beside(output: &Path, owner: &str) -> usize {
     let (Some(dir), Some(stem)) = (output.parent(), output.file_stem()) else {
         return 0;
     };
@@ -93,7 +104,7 @@ fn sweep_beside(output: &Path) -> usize {
         let Some(name) = name.to_str() else {
             continue;
         };
-        if !is_staged_file_of(name, stem) || !entry.file_type().is_ok_and(|t| t.is_file()) {
+        if !is_staged_file_of(name, stem, owner) || !entry.file_type().is_ok_and(|t| t.is_file()) {
             continue;
         }
         match std::fs::remove_file(entry.path()) {
@@ -111,11 +122,13 @@ fn sweep_beside(output: &Path) -> usize {
     removed
 }
 
-/// Whether `name` is `.<stem>.<random>.videnoa-<role>[.<ext>]`.
-fn is_staged_file_of(name: &str, stem: &str) -> bool {
+/// Whether `name` is `.<stem>.<owner>.<random>.videnoa-<role>[.<ext>]`.
+fn is_staged_file_of(name: &str, stem: &str, owner: &str) -> bool {
     let Some(rest) = name
         .strip_prefix('.')
         .and_then(|rest| rest.strip_prefix(stem))
+        .and_then(|rest| rest.strip_prefix('.'))
+        .and_then(|rest| rest.strip_prefix(owner))
         .and_then(|rest| rest.strip_prefix('.'))
     else {
         return false;
@@ -142,27 +155,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_this_outputs_staged_names_match() {
+    fn only_this_jobs_staged_names_for_this_output_match() {
         for name in [
-            ".Episode 01.a1B2c3.videnoa-video.mkv",
-            ".Episode 01.Zz9900.videnoa-mux.mkv",
-            ".Episode 01.abcdef.videnoa-direct.mp4",
-            ".Episode 01.abcdef.videnoa-direct",
+            ".Episode 01.job-1.a1B2c3.videnoa-video.mkv",
+            ".Episode 01.job-1.Zz9900.videnoa-mux.mkv",
+            ".Episode 01.job-1.abcdef.videnoa-direct.mp4",
+            ".Episode 01.job-1.abcdef.videnoa-direct",
         ] {
-            assert!(is_staged_file_of(name, "Episode 01"), "{name}");
+            assert!(is_staged_file_of(name, "Episode 01", "job-1"), "{name}");
         }
         for name in [
             "Episode 01.mkv",
-            ".Episode 02.a1B2c3.videnoa-video.mkv",
-            ".Episode 01.a1B2c.videnoa-video.mkv",
-            ".Episode 01.a1B2c3d.videnoa-video.mkv",
-            ".Episode 01.a1-2c3.videnoa-video.mkv",
-            ".Episode 01.a1B2c3.videnoa-audio.mkv",
-            ".Episode 01.a1B2c3.videnoa-video.mkv.part",
-            ".Episode 01.a1B2c3.videnoa-video.",
-            "Episode 01.a1B2c3.videnoa-video.mkv",
+            ".Episode 02.job-1.a1B2c3.videnoa-video.mkv",
+            ".Episode 01.job-2.a1B2c3.videnoa-video.mkv",
+            ".Episode 01.a1B2c3.videnoa-video.mkv",
+            ".Episode 01.job-1.a1B2c3.videnoa-kept.mkv",
+            ".Episode 01.job-1.a1B2c.videnoa-video.mkv",
+            ".Episode 01.job-1.a1B2c3d.videnoa-video.mkv",
+            ".Episode 01.job-1.a1-2c3.videnoa-video.mkv",
+            ".Episode 01.job-1.a1B2c3.videnoa-audio.mkv",
+            ".Episode 01.job-1.a1B2c3.videnoa-video.mkv.part",
+            ".Episode 01.job-1.a1B2c3.videnoa-video.",
+            "Episode 01.job-1.a1B2c3.videnoa-video.mkv",
         ] {
-            assert!(!is_staged_file_of(name, "Episode 01"), "{name}");
+            assert!(!is_staged_file_of(name, "Episode 01", "job-1"), "{name}");
         }
     }
 }

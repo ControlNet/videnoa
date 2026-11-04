@@ -186,6 +186,9 @@ pub struct VideoCompileContext {
     pending_fi_emit_tensor: RefCell<Option<Arc<AtomicBool>>>,
     /// Trailing Resize/Rescale nodes, applied by the encoder after `output_width/height`.
     output_scales: RefCell<Vec<OutputScale>>,
+    /// The job whose staged output files encoders create; see
+    /// [`EncoderConfig::staging_owner`].
+    staging_owner: Option<String>,
     /// Bit depth of the frames reaching the encoder (8 or 16).
     pipe_bit_depth: Cell<u8>,
     trt_cache_dir: PathBuf,
@@ -327,6 +330,7 @@ impl VideoCompileContext {
             nvenc_preset,
             x265_preset,
             output_scales,
+            staging_owner: self.staging_owner.clone(),
         })
     }
 
@@ -346,12 +350,19 @@ impl VideoCompileContext {
             previous_superres_tile_size: Cell::new(0),
             pending_fi_emit_tensor: RefCell::new(None),
             output_scales: RefCell::new(Vec::new()),
+            staging_owner: None,
             pipe_bit_depth: Cell::new(8),
             trt_cache_dir,
             frame_pool: FramePool::shared(),
             cancellation: RefCell::new(None),
             trt_runtime: OnceCell::new(),
         }
+    }
+
+    /// Names the job whose output files this context's encoders stage.
+    pub fn with_staging_owner(mut self, owner: impl Into<String>) -> Self {
+        self.staging_owner = Some(owner.into());
+        self
     }
 
     /// The context nodes initialised by this compile context execute under.

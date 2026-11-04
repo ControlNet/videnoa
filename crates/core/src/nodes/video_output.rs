@@ -103,6 +103,9 @@ pub struct EncoderConfig {
     pub x265_preset: Option<String>,
     /// Resamples applied in order to the piped frames before encoding.
     pub output_scales: Vec<OutputScale>,
+    /// The job whose staged files these are. It is part of their names, so a
+    /// restart removes only the files of the jobs it interrupted.
+    pub staging_owner: Option<String>,
 }
 
 impl EncoderConfig {
@@ -155,7 +158,10 @@ impl EncoderConfig {
             Some(parent) if !parent.as_os_str().is_empty() => parent,
             _ => Path::new("."),
         };
-        let prefix = format!(".{stem}.");
+        let prefix = match &self.staging_owner {
+            Some(owner) => format!(".{stem}.{owner}."),
+            None => format!(".{stem}."),
+        };
         let suffix = if extension.is_empty() {
             format!(".videnoa-{role}")
         } else {
@@ -646,11 +652,23 @@ fn mux_with_mkvmerge(
     Ok(())
 }
 
-/// Keeps the encoded video after a failed mux and says where it is.
+/// Keeps the encoded video after a failed mux and says where it is. It is
+/// renamed from the staged "video" role to "kept", which the restart sweep
+/// (`server/staged_outputs.rs`) never removes.
 fn keep_encoded_video(video_only: TempPath) -> String {
-    match video_only.keep() {
-        Ok(path) => format!("is kept at {}", path.display()),
-        Err(error) => format!("could not be kept ({error})"),
+    let path = match video_only.keep() {
+        Ok(path) => path,
+        Err(error) => return format!("could not be kept ({error})"),
+    };
+    let kept = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| path.with_file_name(name.replacen(".videnoa-video", ".videnoa-kept", 1)));
+    match kept {
+        Some(kept) if std::fs::rename(&path, &kept).is_ok() => {
+            format!("is kept at {}", kept.display())
+        }
+        _ => format!("is kept at {}", path.display()),
     }
 }
 
@@ -1291,6 +1309,12 @@ mod tests {
     use crate::types::Frame;
     use std::path::PathBuf;
 
+    /// Where `keep_encoded_video` moves a staged video-only file.
+    fn kept_path(video_only: &Path) -> PathBuf {
+        let name = video_only.file_name().unwrap().to_string_lossy();
+        video_only.with_file_name(name.replacen(".videnoa-video", ".videnoa-kept", 1))
+    }
+
     fn default_config() -> EncoderConfig {
         EncoderConfig {
             source_path: test_source_path(),
@@ -1306,6 +1330,7 @@ mod tests {
             nvenc_preset: None,
             x265_preset: None,
             output_scales: Vec::new(),
+            staging_owner: None,
         }
     }
 
@@ -2036,6 +2061,34 @@ mod tests {
     }
 
     #[test]
+    fn staged_names_carry_the_owning_job_and_a_kept_encode_leaves_the_staged_roles() {
+        // Given: an encoder writing for job "job-7".
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = default_config();
+        config.output_path = dir.path().join("Episode 01.mkv");
+        config.staging_owner = Some("job-7".to_string());
+
+        // When: it reserves its video-only file and then keeps it after a
+        // failed mux.
+        let video_only = config.reserve_temp_beside_output("video", "mkv").unwrap();
+        let name = video_only
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let message = keep_encoded_video(video_only);
+
+        // Then: the staged name names the job, and the kept encode is renamed
+        // to the "kept" role, which the restart sweep never removes.
+        assert!(name.starts_with(".Episode 01.job-7."), "{name}");
+        let kept_name = name.replace(".videnoa-video.", ".videnoa-kept.");
+        let kept = dir.path().join(&kept_name);
+        assert!(kept.is_file(), "{} must exist", kept.display());
+        assert!(!dir.path().join(&name).exists(), "{name} must be renamed");
+        assert_eq!(message, format!("is kept at {}", kept.display()));
+    }
+
+    #[test]
     fn mkvmerge_args_put_the_encoded_video_first_and_drop_the_source_video() {
         let config = default_config();
         let video_only = std::env::temp_dir().join(".output.x.videnoa-video.mkv");
@@ -2262,18 +2315,13 @@ printf merged > "$out"; printf '{report}\n'; exit {status}"#,
             std::fs::read(&config.output_path).unwrap(),
             b"earlier output"
         );
-        let video_only_name = video_only.file_name().unwrap().to_string_lossy();
-        assert_eq!(temp_files_in(dir.path()), [video_only_name.as_ref()]);
+        let kept = kept_path(&video_only);
+        let kept_name = kept.file_name().unwrap().to_string_lossy();
+        assert_eq!(temp_files_in(dir.path()), [kept_name.as_ref()]);
         assert!(message.contains("Error: disk full"), "{message}");
         assert!(message.contains("exit status: 2"), "{message}");
-        assert!(
-            message.contains(&*video_only.to_string_lossy()),
-            "{message}"
-        );
-        assert_eq!(
-            std::fs::read(&video_only).unwrap().len(),
-            config.frame_size()
-        );
+        assert!(message.contains(&*kept.to_string_lossy()), "{message}");
+        assert_eq!(std::fs::read(&kept).unwrap().len(), config.frame_size());
     }
 
     #[cfg(unix)]
@@ -2306,15 +2354,10 @@ printf merged > "$out"; printf '{report}\n'; exit {status}"#,
         drop(encoder);
 
         // Then: the encoded video survives and the error says where it is.
+        let kept = kept_path(&video_only_path);
         assert!(message.contains("failed to run mkvmerge"), "{message}");
-        assert!(
-            message.contains(&*video_only_path.to_string_lossy()),
-            "{message}"
-        );
-        assert_eq!(
-            std::fs::read(&video_only_path).unwrap().len(),
-            config.frame_size()
-        );
+        assert!(message.contains(&*kept.to_string_lossy()), "{message}");
+        assert_eq!(std::fs::read(&kept).unwrap().len(), config.frame_size());
     }
 
     #[test]
@@ -2719,6 +2762,7 @@ printf merged > "$out"; printf '{report}\n'; exit {status}"#,
             nvenc_preset: None,
             x265_preset: None,
             output_scales: Vec::new(),
+            staging_owner: None,
         };
 
         let mut encoder = VideoEncoder::new(&config).unwrap();
@@ -2798,6 +2842,7 @@ printf merged > "$out"; printf '{report}\n'; exit {status}"#,
                 nvenc_preset: None,
                 x265_preset: None,
                 output_scales: Vec::new(),
+                staging_owner: None,
             };
             let mut encoder = VideoEncoder::new(&config).unwrap();
             let rgb = quadrant_frame(width as usize, height as usize);
@@ -2892,6 +2937,7 @@ printf merged > "$out"; printf '{report}\n'; exit {status}"#,
             nvenc_preset: None,
             x265_preset: Some("ultrafast".to_string()),
             output_scales: Vec::new(),
+            staging_owner: None,
         };
         let mut encoder = VideoEncoder::new(&config).unwrap();
         std::thread::sleep(Duration::from_secs(3));

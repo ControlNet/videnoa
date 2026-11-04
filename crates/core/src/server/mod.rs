@@ -3346,7 +3346,9 @@ async fn run_job(state: AppState, job_id: String) {
                     workflow.inject_workflow_input_params(params);
                 }
                 let workflow = resolve_workflow_model_paths(&workflow, &paths)?;
-                let compile_ctx = VideoCompileContext::new(trt_cache_dir);
+                // Staged output names carry the job, for the restart sweep.
+                let compile_ctx = VideoCompileContext::new(trt_cache_dir)
+                    .with_staging_owner(job_id_for_closure.clone());
                 let fps_baseline = Mutex::new(None::<ProgressFpsBaseline>);
                 let ws_tx_for_progress = ws_tx.clone();
                 let ws_tx_for_debug = ws_tx.clone();
@@ -7225,15 +7227,30 @@ mod tests {
     fn a_restart_removes_staged_outputs_of_jobs_that_were_running() {
         // Given: a job that was running when the worker stopped, writing
         // "Episode 01.mkv" (wired in from a workflow input), with its staged
-        // file left beside the output, and a finished job's staged file.
+        // file left beside the output. Beside it: a finished job's staged
+        // file, another job's (or another worker's) staged file for the same
+        // name, an encode kept after a failed mux, and a staged file from a
+        // release that did not name the owning job.
         let data_dir = test_data_dir();
         let media = data_dir.join("media");
         std::fs::create_dir_all(&media).unwrap();
-        let staged = media.join(".Episode 01.a1B2c3.videnoa-video.mkv");
+        let running_id = format!("running-{}", Uuid::new_v4());
+        let finished_id = format!("finished-{}", Uuid::new_v4());
+        let staged = media.join(format!(".Episode 01.{running_id}.a1B2c3.videnoa-video.mkv"));
         let kept = [
             media.join("Episode 01.mkv"),
-            media.join(".Episode 02.a1B2c3.videnoa-video.mkv"),
-            media.join(".Episode 01.a1B2c3.videnoa-video.mkv.part"),
+            media.join(format!(
+                ".Episode 02.{finished_id}.a1B2c3.videnoa-video.mkv"
+            )),
+            media.join(format!(
+                ".Episode 01.{running_id}.a1B2c3.videnoa-video.mkv.part"
+            )),
+            media.join(format!(
+                ".Episode 01.{}.a1B2c3.videnoa-video.mkv",
+                Uuid::new_v4()
+            )),
+            media.join(format!(".Episode 01.{running_id}.Zz9900.videnoa-kept.mkv")),
+            media.join(".Episode 01.a1B2c3.videnoa-video.mkv"),
         ];
         for file in kept.iter().chain([&staged]) {
             std::fs::write(file, b"partial").unwrap();
@@ -7258,7 +7275,7 @@ mod tests {
         };
         let state = test_state_with_data_dir(data_dir.clone());
         let mut running = build_test_job(
-            format!("running-{}", Uuid::new_v4()),
+            running_id.clone(),
             JobStatus::Running,
             Some(HashMap::from([(
                 "output".to_string(),
@@ -7266,11 +7283,7 @@ mod tests {
             )])),
         );
         running.workflow = workflow(None);
-        let mut finished = build_test_job(
-            format!("finished-{}", Uuid::new_v4()),
-            JobStatus::Failed,
-            None,
-        );
+        let mut finished = build_test_job(finished_id.clone(), JobStatus::Failed, None);
         finished.workflow = workflow(Some(&media.join("Episode 02.mkv")));
         state.persist_job_snapshot(&running).unwrap();
         state.persist_job_snapshot(&finished).unwrap();
