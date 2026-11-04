@@ -48,7 +48,8 @@ impl Store {
     /// Deletes a worker whose tasks are all terminal, using optimistic concurrency.
     ///
     /// The finished tasks and attempts that ran on it are detached in the same
-    /// transaction, and the attempts keep the worker's name. Tasks a retry
+    /// transaction, as new versions so actions that read them earlier conflict,
+    /// and the attempts keep the worker's name. Tasks a retry
     /// queued for this worker lose that pin (`ON DELETE SET NULL`).
     ///
     /// # Errors
@@ -72,7 +73,8 @@ impl Store {
         // Write first, so the guard and the detach serialize with lifecycle writes.
         sqlx::query(&format!(
             "UPDATE task_attempts
-             SET worker_name = (SELECT name FROM workers WHERE id = ?), worker_id = NULL
+             SET worker_name = (SELECT name FROM workers WHERE id = ?), worker_id = NULL,
+                 version = version + 1
              WHERE worker_id = ? AND {deletable}"
         ))
         .bind(&id)
@@ -84,7 +86,8 @@ impl Store {
         .execute(&mut *transaction)
         .await?;
         sqlx::query(&format!(
-            "UPDATE tasks SET worker_id = NULL WHERE worker_id = ? AND {deletable}"
+            "UPDATE tasks SET worker_id = NULL, version = version + 1
+             WHERE worker_id = ? AND {deletable}"
         ))
         .bind(&id)
         .bind(&id)

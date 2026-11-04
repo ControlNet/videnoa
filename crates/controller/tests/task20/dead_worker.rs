@@ -47,6 +47,7 @@ async fn abandoned_cancellation_on_a_dead_worker_frees_it_for_deletion() -> Test
     let failure = abandoned
         .task
         .failure
+        .clone()
         .ok_or_else(|| std::io::Error::other("abandoned task has no failure"))?;
     assert_eq!(failure.failure_code, FailureCode::WorkerUnavailable);
     assert!(!failure.retryable);
@@ -59,17 +60,30 @@ async fn abandoned_cancellation_on_a_dead_worker_frees_it_for_deletion() -> Test
     assert_eq!(capacity.used_slots, 0);
     assert_eq!(capacity.assigned_tasks, 0);
     assert!(!fixture.temp_root.join(task.id.to_string()).exists());
+    let abandoned_attempt = fixture
+        .store
+        .current_attempt(task.id)
+        .await?
+        .ok_or_else(|| std::io::Error::other("abandoned task has no attempt"))?;
     assert_eq!(
         fixture.delete_worker_status(registered.id).await?,
         reqwest::StatusCode::OK
     );
 
-    // And: history still names the deleted Worker.
+    // And: history still names the deleted Worker, and detaching it is a new
+    // version, so an action that read the task before the delete conflicts.
     let history = fixture.task(&task).await?;
     assert_eq!(history.task.worker_id, None);
+    assert!(history.task.version > abandoned.task.version);
     let [attempt] = history.attempts.as_slice() else {
         return Err(std::io::Error::other("abandoned task lost its attempt").into());
     };
+    let detached_attempt = fixture
+        .store
+        .current_attempt(task.id)
+        .await?
+        .ok_or_else(|| std::io::Error::other("detached task has no attempt"))?;
+    assert!(detached_attempt.version > abandoned_attempt.version);
     assert_eq!(attempt.worker_id, None);
     assert_eq!(
         attempt.worker_name.as_ref().map(WorkerName::as_str),

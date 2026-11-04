@@ -46,7 +46,7 @@ impl Store {
                 failure_message = NULL, failure_retryable = NULL, retry_count = 0,
                 next_retry_at_ms = NULL, version = version + 1, updated_at_ms = ?,
                 submission_owner = CASE WHEN ? = 'staged' THEN NULL ELSE submission_owner END
-             WHERE id = ? AND status = 'failed' AND version = ?",
+             WHERE id = ? AND status = 'failed' AND version = ? AND worker_id IS NOT NULL",
         )
         .bind(status)
         .bind(occurred_at)
