@@ -312,12 +312,28 @@ impl Node for WorkflowNode {
         let outputs =
             SequentialExecutor::execute_with_params(&graph, &registry, inner_params, &inner_ctx)?;
 
-        // Collect results from the inner WorkflowOutput node
+        // Collect results from the inner WorkflowOutput nodes only: other
+        // nodes may have output ports with the same names.
         let mut results = HashMap::new();
-        for node_outputs in outputs.values() {
+        let output_nodes = graph
+            .nodes()
+            .filter(|node| node.node_type == "WorkflowOutput");
+        for output_node in output_nodes {
+            let Some(node_outputs) = outputs.get(&output_node.id) else {
+                continue;
+            };
             for (port_name, port_data) in node_outputs {
-                if self.interface_outputs.iter().any(|p| p.name == *port_name) {
-                    results.insert(port_name.clone(), clone_port_data(port_data));
+                if !self.interface_outputs.iter().any(|p| p.name == *port_name) {
+                    continue;
+                }
+                if results
+                    .insert(port_name.clone(), clone_port_data(port_data))
+                    .is_some()
+                {
+                    bail!(
+                        "Workflow node: '{}' has more than one WorkflowOutput for '{port_name}'",
+                        self.workflow_path
+                    );
                 }
             }
         }
@@ -700,6 +716,55 @@ mod tests {
         match outputs.get("x") {
             Some(PortData::Int(v)) => assert_eq!(*v, 42),
             other => panic!("expected Int(42), got {:?}", other.map(|_| "something")),
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn nested_results_come_from_the_inner_workflow_output_only() {
+        // Given: an inner node whose output port shares the declared output's name.
+        let inner_workflow = serde_json::json!({
+            "nodes": [
+                {"id": "raw", "node_type": "StringTemplate", "params": {
+                    "num_input": 1, "template": "raw", "strict": true, "str0": "unused"
+                }},
+                {"id": "processed", "node_type": "StringTemplate", "params": {
+                    "num_input": 1, "template": "processed-{str0}", "strict": true
+                }},
+                {"id": "wf_out", "node_type": "WorkflowOutput", "params": {
+                    "ports": [{"name": "value", "port_type": "Str"}]
+                }}
+            ],
+            "connections": [
+                {"from_node": "raw", "from_port": "value", "to_node": "processed", "to_port": "str0", "port_type": "Str"},
+                {"from_node": "processed", "from_port": "value", "to_node": "wf_out", "to_port": "value", "port_type": "Str"}
+            ]
+        });
+        let dir = std::env::temp_dir().join(format!(
+            "videnoa-wf-output-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let wf_path = dir.join("inner.json");
+        std::fs::write(&wf_path, inner_workflow.to_string()).unwrap();
+
+        // When / Then: every run returns the WorkflowOutput's value. Inner
+        // outputs are kept in a HashMap, so one run could pass by luck.
+        for _ in 0..50 {
+            let mut node = WorkflowNode {
+                workflow_path: wf_path.to_string_lossy().to_string(),
+                interface_inputs: vec![],
+                interface_outputs: vec![make_port("value", PortType::Str, None)],
+            };
+            let outputs = node.execute(&HashMap::new(), &ExecutionContext::default());
+            match outputs.unwrap().get("value") {
+                Some(PortData::Str(value)) => assert_eq!(value, "processed-raw"),
+                _ => panic!("expected the nested workflow's Str output"),
+            }
         }
 
         let _ = std::fs::remove_dir_all(&dir);
