@@ -62,3 +62,30 @@ Retry/discard per-task exclusion; `/api/run` idempotency receipt before
 loading the workflow; unknown remote job statuses stay non-terminal; cancel
 waits for the worker to stop before deleting the workspace; staged direct
 outputs and the source-equals-output check.
+
+## Fixes (2026-11-04)
+
+Each fix started with a test that failed on the old code.
+
+| Finding | Commit | Red test |
+|---|---|---|
+| 1 | 52244e7 | `a_restart_removes_staged_outputs_of_jobs_that_were_running` (extended), `staged_names_carry_the_owning_job_and_a_kept_encode_leaves_the_staged_roles`, `only_this_jobs_staged_names_for_this_output_match` |
+| 2 | 7bd48d7 | `abandoned_cancellation_on_a_dead_worker_frees_it_for_deletion` (task and attempt versions grow on delete) |
+| 3 | 15904f0 | `nested_results_come_from_the_inner_workflow_output_only` (50 runs; failed with "raw" on the old code) |
+
+- Finding 1, naming: `.<stem>.<job id>.<6 alnum>.videnoa-<direct|video|mux>[.<ext>]`.
+  The owner is set by `VideoCompileContext::with_staging_owner(job_id)` in
+  `run_job`; CLI runs and previews stage without an owner, and the sweep
+  never matches those. A kept encode becomes `….videnoa-kept.<ext>` (if the
+  rename fails, the original path is reported). Nested workflows cannot run
+  video, so the per-job compile context covers every VideoOutput of a job.
+- Finding 1, upgrade: files staged by v0.1.11 (no job id) are no longer swept
+  after the upgrade. Accepted: a leftover hidden temp file is far less harmful
+  than deleting a kept encode. Mention it in the next release notes.
+- Finding 2: `delete_worker` bumps `version` on detached tasks and attempts
+  (not `updated_at_ms`, so retention timing is unchanged), and
+  `retry_lifecycle_stage` requires `task_attempts.worker_id IS NOT NULL`.
+  `requeue_failed_task` is untouched (it clears `worker_id` on purpose).
+- Finding 3: results come only from inner `WorkflowOutput` nodes; two of
+  them supplying the same declared port is an error. A declared output no
+  inner WorkflowOutput supplies is still just absent (unchanged).
