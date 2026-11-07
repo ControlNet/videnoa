@@ -79,3 +79,22 @@ come up are ModernSpanimation V2 (SPAN) and Real-CUGAN (slow).
 - https://github.com/styler00dollar/VSGAN-tensorrt-docker (RIFE TensorRT warning)
 - https://github.com/Austat/ComfyUI-RIFE-ONNX
 - https://www.svp-team.com/forum/viewtopic.php?id=6598
+
+## Follow-up: 2x and recursive 2x+2x (same flat line-art pan)
+
+Pan offsets measured as above, on the CUDA EP. Ideal steps are 12 px (2x) and 6 px (4x).
+
+| Mode | Measured positions in one source interval (ideal) | Worst error | Interp PSNR |
+|---|---|---|---|
+| Direct 3x | 798.4, 809.6 (800, 808) | 1.6 px | ~27 dB |
+| Direct 4x | 796.4, 804.4, 811.6 (798, 804, 810) | 1.6 px | 25-31 dB |
+| Direct 2x | 804.4 (804); 780.2, 828.2 elsewhere | 0.4 px | ~31 dB |
+| 2x then 2x (two chained FrameInterpolation nodes, multiplier 2) | 797.6, 804.4, 810.6 (798, 804, 810) | 0.6 px | 31-33 dB |
+
+- Two chained `FrameInterpolation` nodes (multiplier 2 each) already work in one workflow
+  with no code change: output is 96 fps and 285 frames from 72 source frames, the same as
+  two separate runs.
+- Recursive 4x costs 3 RIFE runs per source frame, the same as direct 4x and one more than
+  3x. SR then runs on 4/3 as many frames as with 3x.
+- Display fit still matters: 47.95 fps suits 144 Hz (3:1). 95.9 fps suits none of
+  60 Hz, 120 Hz or 144 Hz evenly. 71.93 fps suits 144 Hz (2:1).
