@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path as StdPath, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -99,6 +99,9 @@ struct AppStateInner {
     performance_series: Mutex<VecDeque<RuntimePerformanceSeriesSample>>,
     /// Set by [`AppState::begin_shutdown`]; new jobs and previews are refused.
     shutting_down: std::sync::atomic::AtomicBool,
+    /// Jobs whose terminal state is in memory but failed to reach the job
+    /// store. Retried in the background and once more at shutdown.
+    unpersisted_terminal: std::sync::Mutex<HashSet<String>>,
     /// Held for the life of the state. Declared last so it is released only
     /// after every store above has closed: once `instance.lock` is free, a
     /// new instance can open the data directory.
@@ -107,6 +110,9 @@ struct AppStateInner {
 }
 
 const INSTANCE_LOCK_FILE: &str = "instance.lock";
+
+/// Backoff between retries of a terminal write that failed.
+const TERMINAL_WRITE_RETRY_DELAYS_MS: [u64; 6] = [250, 1_000, 4_000, 15_000, 60_000, 300_000];
 
 /// Locks `<data_dir>/instance.lock` for this process; fails when another
 /// instance holds it.
@@ -302,6 +308,7 @@ impl AppState {
                 preview_cache,
                 performance_series: Mutex::new(VecDeque::new()),
                 shutting_down: std::sync::atomic::AtomicBool::new(false),
+                unpersisted_terminal: std::sync::Mutex::new(HashSet::new()),
                 instance_lock,
             }),
         }
@@ -389,10 +396,77 @@ impl AppState {
                 .map(|job| job.id.clone())
                 .collect();
             if active.is_empty() || Instant::now() >= deadline {
+                self.write_unpersisted_terminal_states();
                 return active;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+    }
+
+    /// Writes the terminal states that failed to persist; returns how many
+    /// are still unwritten.
+    fn write_unpersisted_terminal_states(&self) -> usize {
+        let pending: Vec<String> = match self.inner.unpersisted_terminal.lock() {
+            Ok(set) => set.iter().cloned().collect(),
+            Err(poisoned) => poisoned.into_inner().iter().cloned().collect(),
+        };
+        for job_id in pending {
+            let snapshot = self.inner.jobs.get(&job_id).map(|job| job.clone());
+            let written = match snapshot {
+                // A job deleted since then has no row left to fix.
+                None => true,
+                Some(job) => match self.persist_job_transition(&job) {
+                    Ok(()) => {
+                        info!(%job_id, status = ?job.status, "Persisted terminal transition on retry");
+                        true
+                    }
+                    Err(err) => {
+                        warn!(%job_id, error = ?err, "Terminal transition still not persisted");
+                        false
+                    }
+                },
+            };
+            if written {
+                let mut set = self
+                    .inner
+                    .unpersisted_terminal
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                set.remove(&job_id);
+            }
+        }
+        self.inner
+            .unpersisted_terminal
+            .lock()
+            .map_or_else(|poisoned| poisoned.into_inner().len(), |set| set.len())
+    }
+
+    /// Records that `job_id`'s terminal state did not reach the job store and
+    /// retries it with backoff. Without this, the next start would find the
+    /// job `running` and mark it cancelled.
+    fn retry_terminal_write(&self, job_id: &str) {
+        let first = self
+            .inner
+            .unpersisted_terminal
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(job_id.to_owned());
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        if !first {
+            return;
+        }
+        let state = self.clone();
+        runtime.spawn(async move {
+            for delay_ms in TERMINAL_WRITE_RETRY_DELAYS_MS {
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                if state.write_unpersisted_terminal_states() == 0 {
+                    return;
+                }
+            }
+            error!("Gave up retrying terminal transitions; they are written again at shutdown");
+        });
     }
 
     fn ensure_not_shutting_down(&self) -> Result<(), AppError> {
@@ -3497,8 +3571,9 @@ fn finish_job(state: &AppState, job_id: &str, result: Result<()>) {
                 job_id = %job_id,
                 status = ?snapshot.status,
                 error = ?err,
-                "Failed to persist terminal transition"
+                "Failed to persist terminal transition; retrying"
             );
+            state.retry_terminal_write(job_id);
         }
         info!(job_id = %job_id, status = ?snapshot.status, "Job finished");
     }
@@ -6810,6 +6885,102 @@ mod tests {
             source_after.rerun_of_job_id.as_deref(),
             Some("older-ancestor-id")
         );
+    }
+
+    /// A terminal write that fails is retried, so a completed job is not left
+    /// `running` in the store and turned into `cancelled` by the next start.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_a_failed_terminal_write_is_retried() {
+        let data_dir = test_data_dir();
+        let state = test_state_with_data_dir(data_dir.clone());
+        let conn = Connection::open(data_dir.join("jobs.db")).expect("open jobs db");
+        // Deliberate database fault injection: the terminal write fails.
+        conn.execute_batch(
+            "CREATE TRIGGER reject_terminal BEFORE UPDATE ON jobs \
+             WHEN NEW.status = 'completed' \
+             BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
+        )
+        .unwrap();
+        let mut app = app_router(state.clone());
+        let body = serde_json::json!({"workflow": delay_workflow_json(10)});
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/jobs")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let resp = send_request(&mut app, req).await;
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let resp_body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let job_id = serde_json::from_slice::<serde_json::Value>(&resp_body).unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        assert_eq!(
+            wait_for_job_terminal_status(&state, &job_id).await,
+            JobStatus::Completed
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let stored: String = conn
+            .query_row("SELECT status FROM jobs WHERE id = ?1", [&job_id], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(stored, "running", "the injected fault should have hit");
+
+        conn.execute_batch("DROP TRIGGER reject_terminal;").unwrap();
+        assert!(
+            wait_for_persisted_status(&data_dir, &job_id, "completed").await,
+            "the terminal write should be retried"
+        );
+    }
+
+    /// A terminal write still failing at shutdown is tried once more then.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_shutdown_writes_a_terminal_state_that_failed_to_persist() {
+        let data_dir = test_data_dir();
+        let state = test_state_with_data_dir(data_dir.clone());
+        let conn = Connection::open(data_dir.join("jobs.db")).expect("open jobs db");
+        conn.execute_batch(
+            "CREATE TRIGGER reject_terminal BEFORE UPDATE ON jobs \
+             WHEN NEW.status = 'completed' \
+             BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
+        )
+        .unwrap();
+        let mut app = app_router(state.clone());
+        let body = serde_json::json!({"workflow": delay_workflow_json(10)});
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/jobs")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let resp = send_request(&mut app, req).await;
+        let resp_body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let job_id = serde_json::from_slice::<serde_json::Value>(&resp_body).unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        wait_for_job_terminal_status(&state, &job_id).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        conn.execute_batch("DROP TRIGGER reject_terminal;").unwrap();
+        state.begin_shutdown();
+        assert!(state
+            .wait_for_jobs_to_stop(Duration::from_millis(100))
+            .await
+            .is_empty());
+        let stored: String = conn
+            .query_row("SELECT status FROM jobs WHERE id = ?1", [&job_id], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(stored, "completed");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
