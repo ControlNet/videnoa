@@ -483,7 +483,15 @@ fn redact_sensitive_assignments(input: &str) -> String {
     while index < bytes.len() {
         let separator = bytes[index];
         if separator == b'=' || separator == b':' {
-            let mut key_start = index;
+            // Step back over `"key" :` so quoted JSON keys are found too.
+            let mut key_end = index;
+            while key_end > 0 && bytes[key_end - 1].is_ascii_whitespace() {
+                key_end -= 1;
+            }
+            if key_end > 0 && matches!(bytes[key_end - 1], b'"' | b'\'') {
+                key_end -= 1;
+            }
+            let mut key_start = key_end;
             while key_start > 0 {
                 let previous = bytes[key_start - 1];
                 if previous.is_ascii_alphanumeric() || previous == b'_' || previous == b'-' {
@@ -493,8 +501,8 @@ fn redact_sensitive_assignments(input: &str) -> String {
                 }
             }
 
-            if key_start < index {
-                let key = input[key_start..index].to_ascii_lowercase();
+            if key_start < key_end {
+                let key = input[key_start..key_end].to_ascii_lowercase();
                 if is_sensitive_key(key.as_str()) {
                     let mut value_start = index + 1;
                     while value_start < bytes.len() && bytes[value_start].is_ascii_whitespace() {
@@ -831,6 +839,21 @@ mod tests {
         assert!(redacted.contains(&format!("token={REDACTION_PLACEHOLDER}")));
         assert!(redacted.contains(&format!("api_key={REDACTION_PLACEHOLDER}")));
         assert!(redacted.contains(&format!("Authorization: Bearer {REDACTION_PLACEHOLDER}")));
+    }
+
+    #[test]
+    fn redact_sensitive_text_masks_quoted_json_keys() {
+        let source = r#"{"user": "alice", "password": "hunter2", "nested": {"api_key" : "k-1"}, 'token':'t-2'}"#;
+        let redacted = redact_sensitive_text(source);
+
+        assert!(!redacted.contains("hunter2"), "{redacted}");
+        assert!(!redacted.contains("k-1"), "{redacted}");
+        assert!(!redacted.contains("t-2"), "{redacted}");
+        assert!(redacted.contains("alice"), "{redacted}");
+        assert!(
+            redacted.contains(&format!(r#""password": "{REDACTION_PLACEHOLDER}""#)),
+            "{redacted}"
+        );
     }
 
     #[test]

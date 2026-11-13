@@ -138,7 +138,7 @@ impl Node for HttpRequestNode {
     fn execute(
         &mut self,
         inputs: &HashMap<String, PortData>,
-        _ctx: &ExecutionContext,
+        ctx: &ExecutionContext,
     ) -> Result<HashMap<String, PortData>> {
         let method = parse_method(inputs)?;
         let raw_url = parse_required_str(inputs, "url")?;
@@ -194,15 +194,19 @@ impl Node for HttpRequestNode {
             .context("failed to build HTTP client for HttpRequest")?;
 
         let max_attempts = (max_retries as usize).saturating_add(1);
+        // The body is user data that may hold secrets, so errors only say how
+        // long it was.
         let request_context = sanitized_context(format!(
-            "method={} url={} headers_json={} body={}",
+            "method={} url={} headers_json={} body=<{} bytes>",
             method.as_str(),
             redacted_url,
             headers_json_context,
-            body
+            body.len()
         ));
+        let resend_safe = is_idempotent(&method);
 
         for attempt in 1..=max_attempts {
+            ctx.check_cancelled()?;
             match execute_once(
                 &client,
                 method.clone(),
@@ -211,12 +215,13 @@ impl Node for HttpRequestNode {
                 body.clone(),
                 max_response_bytes,
                 &request_context,
+                resend_safe,
             ) {
                 Ok(outputs) => return Ok(outputs),
                 Err(attempt_error) => {
                     if attempt_error.retryable && attempt < max_attempts {
                         let delay_ms = (retry_backoff_ms as u64).saturating_mul(attempt as u64);
-                        std::thread::sleep(Duration::from_millis(delay_ms));
+                        sleep_unless_cancelled(Duration::from_millis(delay_ms), ctx)?;
                         continue;
                     }
 
@@ -250,6 +255,7 @@ fn execute_once(
     body: String,
     max_response_bytes: usize,
     request_context: &str,
+    resend_safe: bool,
 ) -> std::result::Result<HashMap<String, PortData>, RequestAttemptError> {
     let mut request = client.request(method, url.as_str());
     if !headers.is_empty() {
@@ -266,7 +272,7 @@ fn execute_once(
             request_context,
             sanitized_context(err.to_string())
         );
-        if is_retryable_reqwest_error(&err) {
+        if is_retryable_reqwest_error(&err, resend_safe) {
             RequestAttemptError::retryable(wrapped)
         } else {
             RequestAttemptError::fatal(wrapped)
@@ -404,8 +410,34 @@ fn read_response_body_limited(
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-fn is_retryable_reqwest_error(err: &reqwest::Error) -> bool {
-    err.is_timeout() || err.is_connect() || err.is_request() || err.is_body()
+/// A request that may have reached the server is sent again only when the
+/// method is idempotent; a failed connect never sent anything.
+fn is_retryable_reqwest_error(err: &reqwest::Error, resend_safe: bool) -> bool {
+    if err.is_connect() {
+        return true;
+    }
+    resend_safe && (err.is_timeout() || err.is_request() || err.is_body())
+}
+
+fn is_idempotent(method: &Method) -> bool {
+    matches!(
+        *method,
+        Method::GET | Method::HEAD | Method::OPTIONS | Method::TRACE | Method::PUT | Method::DELETE
+    )
+}
+
+/// Waits out a retry backoff, returning early with the cancellation error.
+fn sleep_unless_cancelled(delay: Duration, ctx: &ExecutionContext) -> Result<()> {
+    const SLICE: Duration = Duration::from_millis(50);
+    let end = std::time::Instant::now() + delay;
+    loop {
+        ctx.check_cancelled()?;
+        let now = std::time::Instant::now();
+        if now >= end {
+            return Ok(());
+        }
+        std::thread::sleep(SLICE.min(end - now));
+    }
 }
 
 fn redacted_url_for_display(url: &Url) -> String {
@@ -757,5 +789,126 @@ mod tests {
             !msg.contains("size-secret") && msg.contains("<redacted>"),
             "error should redact URL secrets: {msg}"
         );
+    }
+
+    /// Accepts connections until `stop` is set, reads each request and closes
+    /// it without answering. The handle returns how many connections arrived.
+    fn spawn_silent_server(
+        on_accept: Option<std::sync::mpsc::Sender<()>>,
+    ) -> (
+        String,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+        thread::JoinHandle<usize>,
+    ) {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let addr = listener.local_addr().expect("local addr");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking listener");
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let stop_server = stop.clone();
+        let handle = thread::spawn(move || {
+            let mut count = 0;
+            while !stop_server.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        count += 1;
+                        if let Some(on_accept) = &on_accept {
+                            let _ = on_accept.send(());
+                        }
+                        let _ = stream.set_nonblocking(false);
+                        consume_request_headers(&mut stream);
+                    }
+                    Err(_) => thread::sleep(Duration::from_millis(5)),
+                }
+            }
+            count
+        });
+        (format!("http://{addr}"), stop, handle)
+    }
+
+    fn stop_server(
+        stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        server: thread::JoinHandle<usize>,
+    ) -> usize {
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        server.join().unwrap()
+    }
+
+    #[test]
+    fn test_http_request_error_omits_the_request_body() {
+        let inputs = HashMap::from([
+            ("method".to_string(), PortData::Str("POST".to_string())),
+            (
+                "url".to_string(),
+                PortData::Str("http://127.0.0.1:1/hook".to_string()),
+            ),
+            (
+                "body".to_string(),
+                PortData::Str(r#"{"password": "json-secret", "note": "body-text"}"#.to_string()),
+            ),
+            ("timeout_ms".to_string(), PortData::Int(500)),
+            ("max_retries".to_string(), PortData::Int(0)),
+        ]);
+
+        let msg = format!("{:#}", run_node_with_inputs(inputs).err().unwrap());
+        assert!(!msg.contains("json-secret"), "{msg}");
+        assert!(!msg.contains("body-text"), "{msg}");
+    }
+
+    /// A POST may have reached the server when the response is lost, so it is
+    /// not sent again; a GET still is.
+    #[test]
+    fn test_http_request_does_not_resend_a_post_that_may_have_arrived() {
+        for (method, expected) in [("POST", 1), ("GET", 3)] {
+            let (base_url, stop, server) = spawn_silent_server(None);
+            let inputs = HashMap::from([
+                ("method".to_string(), PortData::Str(method.to_string())),
+                ("url".to_string(), PortData::Str(format!("{base_url}/hook"))),
+                ("body".to_string(), PortData::Str("x".to_string())),
+                ("timeout_ms".to_string(), PortData::Int(5_000)),
+                ("max_retries".to_string(), PortData::Int(2)),
+                ("retry_backoff_ms".to_string(), PortData::Int(0)),
+            ]);
+            assert!(run_node_with_inputs(inputs).is_err());
+            assert_eq!(stop_server(stop, server), expected, "{method}");
+        }
+    }
+
+    #[test]
+    fn test_http_request_stops_retrying_once_cancelled() {
+        let (accepted_tx, accepted) = std::sync::mpsc::channel();
+        let (base_url, stop, server) = spawn_silent_server(Some(accepted_tx));
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let ctx = ExecutionContext {
+            cancellation: Some(rx),
+            ..ExecutionContext::default()
+        };
+        let inputs = HashMap::from([
+            ("url".to_string(), PortData::Str(format!("{base_url}/poll"))),
+            ("timeout_ms".to_string(), PortData::Int(5_000)),
+            ("max_retries".to_string(), PortData::Int(5)),
+            ("retry_backoff_ms".to_string(), PortData::Int(10_000)),
+        ]);
+        // Cancel once the first attempt has arrived, during its backoff.
+        let canceller = thread::spawn(move || {
+            accepted.recv().unwrap();
+            thread::sleep(Duration::from_millis(300));
+            tx.send(true).unwrap();
+        });
+
+        let started = std::time::Instant::now();
+        let error = HttpRequestNode::new().execute(&inputs, &ctx).err().unwrap();
+        canceller.join().unwrap();
+        assert!(crate::node::is_cancellation(&error), "{error:#}");
+        // Without the cancellation check the backoff alone takes 10 s.
+        assert!(
+            started.elapsed() < Duration::from_secs(8),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(stop_server(stop, server), 1);
     }
 }
