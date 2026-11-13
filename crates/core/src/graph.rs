@@ -134,6 +134,30 @@ impl PipelineGraph {
 
         let definitions = self.collect_port_definitions(registry)?;
 
+        // The executor keeps one value per input port, so a second connection
+        // would silently replace the first in whatever order they were saved.
+        // VideoFrames fan-in is reported by `validate_video_workflow`.
+        let mut fan_in: HashMap<(NodeIndex, &str), usize> = HashMap::new();
+        for edge in self
+            .graph
+            .edge_references()
+            .filter(|edge| edge.weight().port_type != PortType::VideoFrames)
+        {
+            *fan_in
+                .entry((edge.target(), edge.weight().target_port.as_str()))
+                .or_default() += 1;
+        }
+        let mut crowded: Vec<_> = fan_in.into_iter().filter(|(_, count)| *count > 1).collect();
+        crowded.sort_by_key(|((idx, port), _)| (self.node(*idx).id.clone(), port.to_string()));
+        if let Some(((idx, port), count)) = crowded.first() {
+            bail!(
+                "input port '{}:{}' has {} connections; an input takes at most one",
+                self.node(*idx).id,
+                port,
+                count
+            );
+        }
+
         for edge in self.graph.edge_references() {
             let source_idx = edge.source();
             let target_idx = edge.target();
@@ -582,6 +606,30 @@ mod tests {
             required: true,
             default_value: None,
         }
+    }
+
+    #[test]
+    fn two_connections_into_one_input_port_are_rejected() {
+        let registry = build_default_registry();
+        let graph: PipelineGraph = serde_json::from_value(serde_json::json!({
+            "nodes": [
+                {"id": "a", "node_type": "Constant", "params": {"type": "Str", "value": "first"}},
+                {"id": "b", "node_type": "Constant", "params": {"type": "Str", "value": "second"}},
+                {"id": "out", "node_type": "WorkflowOutput",
+                 "params": {"ports": [{"name": "value", "port_type": "Str"}]}}
+            ],
+            "connections": [
+                {"from_node": "a", "from_port": "value", "to_node": "out", "to_port": "value", "port_type": "Str"},
+                {"from_node": "b", "from_port": "value", "to_node": "out", "to_port": "value", "port_type": "Str"}
+            ]
+        }))
+        .unwrap();
+
+        let error = graph.validate(&registry).unwrap_err().to_string();
+        assert!(
+            error.contains("input port 'out:value' has 2 connections"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

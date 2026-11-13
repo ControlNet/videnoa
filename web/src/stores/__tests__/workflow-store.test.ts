@@ -479,6 +479,32 @@ describe('loadWorkflow', () => {
   });
 });
 
+describe('addEdge', () => {
+  it('replaces the connection already on the target input', () => {
+    const { addNode, addEdge, undo } = useWorkflowStore.getState();
+    addNode(makeNode('a', 'Constant'));
+    addNode(makeNode('b', 'Constant'));
+    addNode(makeNode('out', 'Print'));
+    addEdge(makeEdge('e1', 'a', 'out', 'value', 'value'));
+    addEdge(makeEdge('e2', 'b', 'out', 'value', 'value'));
+
+    expect(useWorkflowStore.getState().edges.map((e) => e.id)).toEqual(['e2']);
+
+    undo();
+    expect(useWorkflowStore.getState().edges.map((e) => e.id)).toEqual(['e1']);
+  });
+
+  it('keeps connections into other inputs of the same node', () => {
+    const { addNode, addEdge } = useWorkflowStore.getState();
+    addNode(makeNode('a', 'Constant'));
+    addNode(makeNode('t', 'StringTemplate'));
+    addEdge(makeEdge('e1', 'a', 't', 'value', 'str0'));
+    addEdge(makeEdge('e2', 'a', 't', 'value', 'str1'));
+
+    expect(useWorkflowStore.getState().edges.map((e) => e.id)).toEqual(['e1', 'e2']);
+  });
+});
+
 describe('clear', () => {
   it('empties all nodes and edges', () => {
     const { addNode, addEdge, clear } = useWorkflowStore.getState();

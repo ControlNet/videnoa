@@ -524,7 +524,13 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
     set({
       past: [...state.past, snapshot(state)].slice(-MAX_HISTORY),
       future: [],
-      edges: [...state.edges, edge],
+      // An input takes one connection; a new one replaces the old.
+      edges: [
+        ...state.edges.filter(
+          (e) => !(e.target === edge.target && e.targetHandle === edge.targetHandle),
+        ),
+        edge,
+      ],
     });
   },
 
