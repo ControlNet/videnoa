@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExter
 
 import { type ApiClient, ApiClientError } from "../api/client"
 import { type TaskDetail, taskDetailSchema } from "../api/taskSchemas"
+import { deltasSince } from "../events/deltas"
 import { appTaskUpdateStore } from "../events/taskUpdates"
 import { appInvalidationStore } from "../events/store"
 
@@ -199,10 +200,12 @@ export function useTaskDetail(apiClient: ApiClient, taskId: string): TaskDetailD
   }, [invalidation.generation, reload])
 
   useEffect(() => {
-    if (update.generation <= appliedGeneration.current) return
+    const applied = appliedGeneration.current
+    if (update.generation <= applied) return
     appliedGeneration.current = update.generation
-    if (update.task?.id === taskId) queueMicrotask(reload)
-  }, [reload, taskId, update.generation, update.task])
+    const { values, complete } = deltasSince(update.recent, applied)
+    if (!complete || values.some((task) => task.id === taskId)) queueMicrotask(reload)
+  }, [reload, taskId, update.generation, update.recent])
 
   return { detail, error, loading, loadingMore, loadMore, reload }
 }

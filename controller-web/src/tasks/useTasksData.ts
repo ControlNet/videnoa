@@ -8,6 +8,7 @@ import {
   taskStatusCountsSchema,
 } from "../api/taskSchemas"
 import { appInvalidationStore } from "../events/store"
+import { deltasSince } from "../events/deltas"
 import { appTaskUpdateStore } from "../events/taskUpdates"
 import { canMergeTaskUpdate, matchesTaskQuery } from "./model"
 import { type TaskQuery, taskPagePath } from "./query"
@@ -127,38 +128,39 @@ export function useTasksData(apiClient: ApiClient, query: TaskQuery): TasksData 
   const page = loadedPage?.path === pagePath ? loadedPage.page : null
 
   useEffect(() => {
-    if (update.generation <= appliedUpdateGeneration.current) return
+    const applied = appliedUpdateGeneration.current
+    if (update.generation <= applied) return
     appliedUpdateGeneration.current = update.generation
-    const incoming = update.task
-    if (incoming === null) return
-    if (page === null || loading) {
-      if (matchesTaskQuery(incoming, query)) {
-        queueMicrotask(() => setRetryGeneration((generation) => generation + 1))
-      }
+    const { values, complete } = deltasSince(update.recent, applied)
+    const refetch = () => queueMicrotask(() => setRetryGeneration((generation) => generation + 1))
+    if (!complete) {
+      refetch()
       return
     }
-    const current = page.items.find((task) => task.id === incoming.id)
-    queueMicrotask(() => {
+    if (page === null || loading) {
+      if (values.some((incoming) => matchesTaskQuery(incoming, query))) refetch()
+      return
+    }
+    let items = page.items
+    for (const incoming of values) {
+      const current = items.find((task) => task.id === incoming.id)
       if (current === undefined) {
         if (matchesTaskQuery(incoming, query)) {
-          setRetryGeneration((generation) => generation + 1)
+          refetch()
+          return
         }
-        return
+        continue
       }
-      if (incoming.version <= current.version) return
+      if (incoming.version <= current.version) continue
       if (!canMergeTaskUpdate(current, incoming, query)) {
-        setRetryGeneration((generation) => generation + 1)
+        refetch()
         return
       }
-      setLoadedPage({
-        path: pagePath,
-        page: {
-          ...page,
-          items: page.items.map((task) => task.id === incoming.id ? incoming : task),
-        },
-      })
-    })
-  }, [loading, page, pagePath, query, update.generation, update.task])
+      items = items.map((task) => task.id === incoming.id ? incoming : task)
+    }
+    if (items === page.items) return
+    queueMicrotask(() => setLoadedPage({ path: pagePath, page: { ...page, items } }))
+  }, [loading, page, pagePath, query, update.generation, update.recent])
 
   return {
     page,

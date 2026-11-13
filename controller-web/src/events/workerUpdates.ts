@@ -1,8 +1,11 @@
 import type { Worker } from "../api/workerSchemas"
+import { appendDelta, type Delta } from "./deltas"
 
 export type WorkerUpdateSnapshot = {
   readonly generation: number
+  /** The latest worker; `recent` holds the ones before it too. */
   readonly worker: Worker | null
+  readonly recent: readonly Delta<Worker>[]
 }
 
 export type WorkerUpdateStore = {
@@ -18,12 +21,13 @@ export type WorkerUpdateStore = {
  * queries, so it travels on its own channel exactly as task deltas do.
  */
 export function createWorkerUpdateStore(): WorkerUpdateStore {
-  let snapshot: WorkerUpdateSnapshot = { generation: 0, worker: null }
+  let snapshot: WorkerUpdateSnapshot = { generation: 0, worker: null, recent: [] }
   const subscribers = new Set<() => void>()
 
   return {
     publish: (worker) => {
-      snapshot = { generation: snapshot.generation + 1, worker }
+      const generation = snapshot.generation + 1
+      snapshot = { generation, worker, recent: appendDelta(snapshot.recent, { generation, value: worker }) }
       for (const subscriber of subscribers) subscriber()
     },
     snapshot: () => snapshot,

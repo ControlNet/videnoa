@@ -132,3 +132,30 @@ it("finishes a slow counts read before refreshing events received in flight", as
   expect(reads).toBe(2);
   unmount();
 });
+
+it("applies every task update that arrives in one batch", async () => {
+  // Given: a page with two tasks at version 1.
+  const otherTask = { ...initialTask, id: "550e8400-e29b-41d4-a716-446655440077", input_path: "/media/other.mkv" }
+  let pageReads = 0
+  const fetcher: typeof fetch = async (input, init) => {
+    const url = new URL(new Request(input, init).url)
+    if (url.pathname === "/api/status-counts") return Response.json(emptyCounts)
+    pageReads += 1
+    return Response.json({ items: [initialTask, otherTask], total: 2, limit: 50, offset: 0 })
+  }
+  const apiClient = createApiClient({ fetcher, onUnauthorized: () => undefined })
+  const { result } = renderHook(() => useTasksData(apiClient, parseTaskQuery(new URLSearchParams())))
+  await waitFor(() => expect(result.current.page?.items).toHaveLength(2))
+  const readsBefore = pageReads
+
+  // When: both tasks change before the hook re-renders.
+  act(() => {
+    appTaskUpdateStore.publish({ ...initialTask, version: 2, progress: { ...initialTask.progress, percent: 40 } })
+    appTaskUpdateStore.publish({ ...otherTask, version: 2, progress: { ...otherTask.progress, percent: 50 } })
+  })
+
+  // Then: both rows show their new version, without a refetch.
+  await waitFor(() => expect(result.current.page?.items.map((task) => task.version)).toEqual([2, 2]))
+  expect(result.current.page?.items.map((task) => task.progress?.percent)).toEqual([40, 50])
+  expect(pageReads).toBe(readsBefore)
+})

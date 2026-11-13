@@ -3,6 +3,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react"
 import type { ApiClient } from "../api/client"
 import { workerListSchema } from "../api/workerSchemas"
 import { appInvalidationStore } from "../events/store"
+import { deltasSince } from "../events/deltas"
 import { appWorkerUpdateStore } from "../events/workerUpdates"
 
 const noWorkerNames: ReadonlyMap<string, string> = new Map()
@@ -23,9 +24,11 @@ export function useWorkerNames(apiClient: ApiClient): ReadonlyMap<string, string
   const update = useSyncExternalStore(appWorkerUpdateStore.subscribe, appWorkerUpdateStore.snapshot)
   const appliedUpdateGeneration = useRef(appWorkerUpdateStore.snapshot().generation)
   const [names, setNames] = useState<ReadonlyMap<string, string>>(noWorkerNames)
+  const [reloadGeneration, setReloadGeneration] = useState(0)
 
   useEffect(() => {
     void invalidation.generation
+    void reloadGeneration
     const controller = new AbortController()
     void apiClient.request("api/workers", { schema: workerListSchema, signal: controller.signal }).then(
       (workers) => {
@@ -38,7 +41,7 @@ export function useWorkerNames(apiClient: ApiClient): ReadonlyMap<string, string
       },
     )
     return () => controller.abort()
-  }, [apiClient, invalidation.generation])
+  }, [apiClient, invalidation.generation, reloadGeneration])
 
   /*
    * A worker delta names exactly one worker, which is the whole content of this
@@ -46,19 +49,25 @@ export function useWorkerNames(apiClient: ApiClient): ReadonlyMap<string, string
    * map instance: renaming nothing must not re-render the task table.
    */
   useEffect(() => {
-    if (update.generation <= appliedUpdateGeneration.current) return
+    const applied = appliedUpdateGeneration.current
+    if (update.generation <= applied) return
     appliedUpdateGeneration.current = update.generation
-    const incoming = update.worker
-    if (incoming === null) return
+    const { values, complete } = deltasSince(update.recent, applied)
+    if (!complete) {
+      queueMicrotask(() => setReloadGeneration((generation) => generation + 1))
+      return
+    }
+    if (values.length === 0) return
     queueMicrotask(() => {
       setNames((current) => {
-        if (current.get(incoming.id) === incoming.name) return current
+        const changed = values.filter((incoming) => current.get(incoming.id) !== incoming.name)
+        if (changed.length === 0) return current
         const next = new Map(current)
-        next.set(incoming.id, incoming.name)
+        for (const incoming of changed) next.set(incoming.id, incoming.name)
         return next
       })
     })
-  }, [update.generation, update.worker])
+  }, [update.generation, update.recent])
 
   return names
 }

@@ -12,6 +12,7 @@ import {
 } from "../api/workerSchemas"
 import { appInvalidationStore } from "../events/store"
 import { appTaskUpdateStore } from "../events/taskUpdates"
+import { deltasSince } from "../events/deltas"
 import { appWorkerUpdateStore } from "../events/workerUpdates"
 
 export type WorkersData = {
@@ -75,31 +76,33 @@ export function useWorkersData(apiClient: ApiClient): WorkersData {
    * takes one bounded refetch rather than a guessed position.
    */
   useEffect(() => {
-    if (update.generation <= appliedUpdateGeneration.current) return
+    const applied = appliedUpdateGeneration.current
+    if (update.generation <= applied) return
     appliedUpdateGeneration.current = update.generation
-    const incoming = update.worker
-    if (incoming === null) return
-    if (workers === null || loading) {
-      queueMicrotask(() => setRetryGeneration((generation) => generation + 1))
+    const { values, complete } = deltasSince(update.recent, applied)
+    if (values.length === 0 && complete) return
+    const refetch = () => queueMicrotask(() => setRetryGeneration((generation) => generation + 1))
+    if (!complete || workers === null || loading) {
+      refetch()
       return
     }
-    const current = workers.items.find((worker) => worker.id === incoming.id)
+    if (values.some((incoming) => !workers.items.some((worker) => worker.id === incoming.id))) {
+      refetch()
+      return
+    }
     queueMicrotask(() => {
-      if (current === undefined) {
-        setRetryGeneration((generation) => generation + 1)
-        return
-      }
       setWorkers((previous) => {
         if (previous === null) return previous
-        const latest = previous.items.find((worker) => worker.id === incoming.id)
-        if (latest === undefined || incoming.version <= latest.version) return previous
-        return {
-          ...previous,
-          items: previous.items.map((worker) => (worker.id === incoming.id ? incoming : worker)),
+        let items = previous.items
+        for (const incoming of values) {
+          const latest = items.find((worker) => worker.id === incoming.id)
+          if (latest === undefined || incoming.version <= latest.version) continue
+          items = items.map((worker) => (worker.id === incoming.id ? incoming : worker))
         }
+        return items === previous.items ? previous : { ...previous, items }
       })
     })
-  }, [loading, update.generation, update.worker, workers])
+  }, [loading, update.generation, update.recent, workers])
 
   /*
    * Slot usage is not on the worker row. `WorkerCapacity` is derived from the
