@@ -102,6 +102,9 @@ struct AppStateInner {
     /// Jobs whose terminal state is in memory but failed to reach the job
     /// store. Retried in the background and once more at shutdown.
     unpersisted_terminal: std::sync::Mutex<HashSet<String>>,
+    /// Held from the queue capacity check until the new jobs are in `jobs`,
+    /// so concurrent submissions cannot all take the last free slot.
+    admission: std::sync::Mutex<()>,
     /// Held for the life of the state. Declared last so it is released only
     /// after every store above has closed: once `instance.lock` is free, a
     /// new instance can open the data directory.
@@ -309,6 +312,7 @@ impl AppState {
                 performance_series: Mutex::new(VecDeque::new()),
                 shutting_down: std::sync::atomic::AtomicBool::new(false),
                 unpersisted_terminal: std::sync::Mutex::new(HashSet::new()),
+                admission: std::sync::Mutex::new(()),
                 instance_lock,
             }),
         }
@@ -484,7 +488,14 @@ impl AppState {
     }
 
     /// Refuses `additional` new jobs when they would exceed [`MAX_ACTIVE_JOBS`].
-    fn ensure_queue_capacity(&self, additional: usize) -> Result<(), AppError> {
+    /// Keep the returned guard until the jobs are spawned: the next check
+    /// waits for it, so it counts them.
+    fn admit_jobs(&self, additional: usize) -> Result<std::sync::MutexGuard<'_, ()>, AppError> {
+        let guard = self
+            .inner
+            .admission
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         self.ensure_not_shutting_down()?;
         let (running, queued, _) = self.active_job_counts();
         if running + queued + additional > MAX_ACTIVE_JOBS {
@@ -493,7 +504,7 @@ impl AppState {
             ))
             .with_code(ErrorCode::QueueFull));
         }
-        Ok(())
+        Ok(guard)
     }
 
     fn preview_cache(&self) -> Result<&Arc<preview_cache::PreviewCache>, AppError> {
@@ -1848,7 +1859,7 @@ fn create_and_spawn_job(
     state: &AppState,
     submission: JobSubmission,
 ) -> Result<CreateJobResponse, AppError> {
-    state.ensure_queue_capacity(1)?;
+    let _admission = state.admit_jobs(1)?;
     let (job, response) = prepare_job(submission);
     state
         .persist_job_snapshot(&job)
@@ -1864,7 +1875,7 @@ fn create_idempotent_job(
     fingerprint: &RequestFingerprint,
 ) -> Result<(StatusCode, Json<CreateJobResponse>), AppError> {
     let persistence = jobs_persistence(state)?;
-    state.ensure_queue_capacity(1)?;
+    let _admission = state.admit_jobs(1)?;
     let (job, response) = prepare_job(submission);
     match persistence
         .claim_idempotent_job(key.as_str(), fingerprint.as_str(), &job)
@@ -2083,7 +2094,7 @@ async fn create_batch(
         prepared.push((file_path, job, response));
     }
 
-    state.ensure_queue_capacity(prepared.len())?;
+    let admission = state.admit_jobs(prepared.len())?;
     // Persist all jobs before spawning any; on a storage failure remove the
     // ones already stored so the batch leaves nothing behind.
     for (index, (_, job, _)) in prepared.iter().enumerate() {
@@ -2111,6 +2122,7 @@ async fn create_batch(
         info!(job_id = %response.id, file_path = %file_path, "Batch job created");
         job_ids.push(response.id);
     }
+    drop(admission);
 
     let total = job_ids.len();
     Ok((StatusCode::CREATED, Json(BatchResponse { job_ids, total })))
@@ -4835,6 +4847,58 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            state
+                .inner
+                .jobs
+                .iter()
+                .filter(|job| !job.status.is_terminal())
+                .count(),
+            MAX_ACTIVE_JOBS
+        );
+    }
+
+    /// The capacity check and the insert are one step, so submissions that
+    /// arrive together cannot all pass the check for the last free slot.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_submissions_do_not_overfill_the_queue() {
+        let state = test_state();
+        let mut app = app_router(state.clone());
+        let _gate = state
+            .inner
+            .gpu_semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .unwrap();
+        for _ in 0..MAX_ACTIVE_JOBS - 1 {
+            create_job_id(&mut app, delay_workflow_json(0)).await;
+        }
+
+        let submissions: Vec<_> = (0..16)
+            .map(|_| {
+                let app = app.clone();
+                tokio::spawn(async move {
+                    let request = Request::builder()
+                        .method("POST")
+                        .uri("/api/jobs")
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            serde_json::json!({ "workflow": delay_workflow_json(0) }).to_string(),
+                        ))
+                        .unwrap();
+                    app.oneshot(request).await.unwrap().status()
+                })
+            })
+            .collect();
+        let mut created = 0;
+        for submission in submissions {
+            if submission.await.unwrap() == StatusCode::CREATED {
+                created += 1;
+            }
+        }
+
+        assert_eq!(created, 1);
         assert_eq!(
             state
                 .inner
