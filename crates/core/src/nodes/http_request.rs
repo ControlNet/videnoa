@@ -203,7 +203,6 @@ impl Node for HttpRequestNode {
             headers_json_context,
             body.len()
         ));
-        let resend_safe = is_idempotent(&method);
 
         for attempt in 1..=max_attempts {
             ctx.check_cancelled()?;
@@ -215,7 +214,6 @@ impl Node for HttpRequestNode {
                 body.clone(),
                 max_response_bytes,
                 &request_context,
-                resend_safe,
             ) {
                 Ok(outputs) => return Ok(outputs),
                 Err(attempt_error) => {
@@ -255,8 +253,8 @@ fn execute_once(
     body: String,
     max_response_bytes: usize,
     request_context: &str,
-    resend_safe: bool,
 ) -> std::result::Result<HashMap<String, PortData>, RequestAttemptError> {
+    let resend_safe = is_idempotent(&method);
     let mut request = client.request(method, url.as_str());
     if !headers.is_empty() {
         request = request.headers(headers);
