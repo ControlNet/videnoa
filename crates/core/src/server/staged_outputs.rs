@@ -10,7 +10,8 @@
 //! files with that naming scheme for that output and that job:
 //! `.<output stem>.<job id>.<6 letters or digits>.videnoa-<direct|video|mux>[.<ext>]`.
 //! The job id keeps another job's files with the same output name, including
-//! another worker's, out of reach. An encode kept after a failed mux is
+//! another worker's, out of reach. A relative output path is taken from the
+//! working directory, as the job opened it. An encode kept after a failed mux is
 //! renamed to the `kept` role and is never removed. Files staged by releases
 //! that did not name the job are left alone.
 
@@ -42,13 +43,26 @@ pub(super) fn sweep_interrupted_jobs<'a>(jobs: impl IntoIterator<Item = &'a Job>
     removed
 }
 
-/// The `output_path` of each `VideoOutput` node: its own param, or the job
-/// param of the `WorkflowInput` port wired into it. Paths computed by other
-/// nodes are not known here and are not swept.
+/// The `output_path` of each `VideoOutput` node: its own param, or the value
+/// of the `WorkflowInput` port wired into it (the job param, the node param,
+/// then the port's default). Paths computed by other nodes are not known here
+/// and are not swept.
 fn output_paths(job: &Job) -> Vec<PathBuf> {
     let Ok(workflow) = serde_json::to_value(&job.workflow) else {
         return Vec::new();
     };
+    // Jobs open a relative output path against the working directory.
+    let Ok(cwd) = std::env::current_dir() else {
+        return Vec::new();
+    };
+    output_paths_in(&workflow, job.params.as_ref(), &cwd)
+}
+
+fn output_paths_in(
+    workflow: &serde_json::Value,
+    params: Option<&HashMap<String, serde_json::Value>>,
+    cwd: &Path,
+) -> Vec<PathBuf> {
     let empty = Vec::new();
     let nodes = workflow["nodes"].as_array().unwrap_or(&empty);
     let node_types: HashMap<&str, &str> = nodes
@@ -73,17 +87,29 @@ fn output_paths(job: &Job) -> Vec<PathBuf> {
             continue;
         }
         let port = connection["from_port"].as_str().unwrap_or_default();
-        let from_params = job.params.as_ref().and_then(|params| params.get(port));
-        let from_node = nodes
-            .iter()
-            .find(|node| node["id"] == source)
-            .and_then(|node| node["params"].get(port));
-        if let Some(path) = from_params.or(from_node).and_then(|value| value.as_str()) {
+        let from_params = params.and_then(|params| params.get(port));
+        let input_node = nodes.iter().find(|node| node["id"] == source);
+        let from_node = input_node.and_then(|node| node["params"].get(port));
+        let from_default = input_node.and_then(|node| {
+            node["params"]["ports"]
+                .as_array()?
+                .iter()
+                .find(|declared| declared["name"] == port)?
+                .get("default_value")
+        });
+        if let Some(path) = from_params
+            .or(from_node)
+            .or(from_default)
+            .and_then(|value| value.as_str())
+        {
             paths.push(PathBuf::from(path));
         }
     }
-    paths.retain(|path| path.is_absolute());
     paths
+        .into_iter()
+        .filter(|path| !path.as_os_str().is_empty())
+        .map(|path| cwd.join(path))
+        .collect()
 }
 
 fn sweep_beside(output: &Path, owner: &str) -> usize {
@@ -153,6 +179,40 @@ fn is_staged_file_of(name: &str, stem: &str, owner: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn output_paths_cover_relative_paths_and_input_defaults() {
+        let workflow = serde_json::json!({
+            "nodes": [
+                {"id": "literal", "node_type": "VideoOutput", "params": {"output_path": "out/a.mkv"}},
+                {"id": "absolute", "node_type": "VideoOutput", "params": {"output_path": "/media/b.mkv"}},
+                {"id": "wired", "node_type": "VideoOutput", "params": {}},
+                {"id": "input", "node_type": "WorkflowInput", "params": {"ports": [
+                    {"name": "target", "port_type": "Path", "default_value": "c.mkv"}
+                ]}}
+            ],
+            "connections": [
+                {"from_node": "input", "from_port": "target", "to_node": "wired",
+                 "to_port": "output_path", "port_type": "Path"}
+            ]
+        });
+        let cwd = Path::new("/srv/worker");
+
+        let paths = output_paths_in(&workflow, None, cwd);
+        assert_eq!(
+            paths,
+            vec![
+                PathBuf::from("/srv/worker/out/a.mkv"),
+                PathBuf::from("/media/b.mkv"),
+                PathBuf::from("/srv/worker/c.mkv"),
+            ]
+        );
+
+        let params = HashMap::from([("target".to_string(), serde_json::json!("/media/d.mkv"))]);
+        let paths = output_paths_in(&workflow, Some(&params), cwd);
+        assert_eq!(paths[2], PathBuf::from("/media/d.mkv"));
+    }
 
     #[test]
     fn only_this_jobs_staged_names_for_this_output_match() {
