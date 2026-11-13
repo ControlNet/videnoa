@@ -130,6 +130,19 @@ impl PipelineGraph {
     }
 
     pub fn validate(&self, registry: &NodeRegistry) -> Result<()> {
+        self.validate_own_nodes(registry)?;
+
+        for node in self.nodes().filter(|node| node.node_type == "Workflow") {
+            validate_nested_workflow(&node.params, registry)
+                .with_context(|| format!("node '{}' of type 'Workflow'", node.id))?;
+        }
+
+        Ok(())
+    }
+
+    /// Everything [`validate`](Self::validate) checks except the workflows
+    /// that `Workflow` nodes run, which the nested check walks itself.
+    pub(crate) fn validate_own_nodes(&self, registry: &NodeRegistry) -> Result<()> {
         self.execution_order()?;
 
         let definitions = self.collect_port_definitions(registry)?;
@@ -239,11 +252,6 @@ impl PipelineGraph {
                 continue;
             }
             self.check_required_inputs(*idx, input_ports)?;
-        }
-
-        for node in self.nodes().filter(|node| node.node_type == "Workflow") {
-            validate_nested_workflow(&node.params)
-                .with_context(|| format!("node '{}' of type 'Workflow'", node.id))?;
         }
 
         Ok(())

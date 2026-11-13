@@ -12,6 +12,7 @@ use anyhow::{bail, Context, Result};
 use crate::executor::{port_data_from_json, SequentialExecutor};
 use crate::graph::PipelineGraph;
 use crate::node::{ExecutionContext, Node, PortDefinition};
+use crate::registry::NodeRegistry;
 use crate::types::{PortData, PortType};
 
 // ─── WorkflowInputNode ──────────────────────────────────────────────────────
@@ -358,18 +359,26 @@ fn load_nested_workflow(workflow_path: &str) -> Result<PipelineGraph> {
 }
 
 /// Check, before a job is queued, that a `Workflow` node with these params can
-/// run its target: the target must load, must not nest itself, and neither it
-/// nor a workflow it nests may have a VideoFrames chain. Nested workflows run
-/// on the scalar executor, which cannot stream frames.
-pub(crate) fn validate_nested_workflow(params: &HashMap<String, serde_json::Value>) -> Result<()> {
+/// run its target: the target must load, must not nest itself, must pass the
+/// same graph checks as a job, and neither it nor a workflow it nests may have
+/// a VideoFrames chain. Nested workflows run on the scalar executor, which
+/// cannot stream frames.
+pub(crate) fn validate_nested_workflow(
+    params: &HashMap<String, serde_json::Value>,
+    registry: &NodeRegistry,
+) -> Result<()> {
     let workflow_path = params
         .get("workflow_path")
         .and_then(|v| v.as_str())
         .unwrap_or_default();
-    check_nested_workflow(workflow_path, &mut Vec::new())
+    check_nested_workflow(workflow_path, registry, &mut Vec::new())
 }
 
-fn check_nested_workflow(workflow_path: &str, chain: &mut Vec<PathBuf>) -> Result<()> {
+fn check_nested_workflow(
+    workflow_path: &str,
+    registry: &NodeRegistry,
+    chain: &mut Vec<PathBuf>,
+) -> Result<()> {
     if workflow_path.is_empty() {
         bail!("Workflow node: workflow_path is empty");
     }
@@ -388,6 +397,10 @@ fn check_nested_workflow(workflow_path: &str, chain: &mut Vec<PathBuf>) -> Resul
              run workflows without a video pipeline"
         );
     }
+    // Not `validate`: that would restart the nesting chain for each level.
+    graph
+        .validate_own_nodes(registry)
+        .with_context(|| format!("Workflow node: invalid graph in '{workflow_path}'"))?;
 
     chain.push(path);
     for node in graph.nodes().filter(|node| node.node_type == "Workflow") {
@@ -396,7 +409,7 @@ fn check_nested_workflow(workflow_path: &str, chain: &mut Vec<PathBuf>) -> Resul
             .get("workflow_path")
             .and_then(|v| v.as_str())
             .unwrap_or_default();
-        check_nested_workflow(nested_path, chain)
+        check_nested_workflow(nested_path, registry, chain)
             .with_context(|| format!("in node '{}' of '{workflow_path}'", node.id))?;
     }
     chain.pop();
@@ -1173,6 +1186,46 @@ mod tests {
     }
 
     #[test]
+    fn validate_nested_workflow_validates_the_inner_graph() {
+        let dir = tempfile::tempdir().unwrap();
+        let inner = dir.path().join("inner.json");
+        std::fs::write(
+            &inner,
+            serde_json::json!({
+                "nodes": [{"id": "bad", "node_type": "MissingNodeType", "params": {}}],
+                "connections": []
+            })
+            .to_string(),
+        )
+        .unwrap();
+        // A valid wrapper around it: the error must come from two levels down.
+        let middle = dir.path().join("middle.json");
+        std::fs::write(
+            &middle,
+            serde_json::json!({
+                "nodes": [{"id": "deeper", "node_type": "Workflow", "params": {"workflow_path": inner}}],
+                "connections": []
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let registry = crate::registry::build_default_registry();
+
+        for target in [&inner, &middle] {
+            let outer: crate::graph::PipelineGraph = serde_json::from_value(serde_json::json!({
+                "nodes": [{"id": "nested", "node_type": "Workflow", "params": {"workflow_path": target}}],
+                "connections": []
+            }))
+            .unwrap();
+            let error = outer.validate(&registry).unwrap_err();
+            assert!(
+                format!("{error:#}").contains("MissingNodeType"),
+                "{error:#}"
+            );
+        }
+    }
+
+    #[test]
     fn validate_nested_workflow_rejects_targets_that_cannot_run() {
         let dir = tempfile::tempdir().unwrap();
         let self_path = dir.path().join("self.json");
@@ -1185,11 +1238,13 @@ mod tests {
             HashMap::from([("workflow_path".to_string(), serde_json::json!(path))])
         };
 
-        let missing = validate_nested_workflow(&params(&dir.path().join("missing.json")))
-            .expect_err("an unreadable target must be rejected");
-        let circular = validate_nested_workflow(&params(&self_path))
+        let registry = crate::registry::build_default_registry();
+        let missing =
+            validate_nested_workflow(&params(&dir.path().join("missing.json")), &registry)
+                .expect_err("an unreadable target must be rejected");
+        let circular = validate_nested_workflow(&params(&self_path), &registry)
             .expect_err("a target that nests itself must be rejected");
-        let empty = validate_nested_workflow(&HashMap::new())
+        let empty = validate_nested_workflow(&HashMap::new(), &registry)
             .expect_err("a Workflow node without a target must be rejected");
 
         assert!(
