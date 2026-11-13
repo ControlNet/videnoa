@@ -2383,6 +2383,29 @@ fn write_new_workflow_file(path: &StdPath, bytes: &[u8]) -> std::io::Result<()> 
     file.write_all(bytes)
 }
 
+/// Replaces a saved workflow by writing a hidden file beside it and renaming
+/// it over the old one, so a failed or interrupted write keeps the old file.
+fn replace_workflow_file(path: &StdPath, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let parent = path.parent().unwrap_or_else(|| StdPath::new("."));
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let prefix = format!(".{file_name}.");
+    let mut builder = tempfile::Builder::new();
+    // No `.json` suffix, so the workflow list never shows the staging file.
+    builder.prefix(&prefix).suffix(".videnoa-save");
+    #[cfg(unix)]
+    builder.permissions(std::os::unix::fs::PermissionsExt::from_mode(0o666));
+    let mut staged = builder.tempfile_in(parent)?;
+    staged.write_all(bytes)?;
+    staged.as_file().sync_all()?;
+    staged.persist(path).map_err(|error| error.error)?;
+    Ok(())
+}
+
 async fn save_workflow(
     State(state): State<AppState>,
     Json(payload): Json<SaveWorkflowRequest>,
@@ -2448,7 +2471,7 @@ async fn save_workflow(
     let bytes = serde_json::to_vec_pretty(&doc)
         .map_err(|e| AppError::Internal(format!("failed to serialize workflow: {e}")))?;
     if payload.overwrite {
-        std::fs::write(&path, bytes)
+        replace_workflow_file(&path, &bytes)
             .map_err(|e| AppError::Internal(format!("failed to write workflow file: {e}")))?;
     } else {
         write_new_workflow_file(&path, &bytes).map_err(|e| {
@@ -8650,6 +8673,42 @@ mod tests {
         let (status, _) = post_workflow(&mut app, save("third", Some(true))).await;
         assert_eq!(status, StatusCode::CREATED);
         assert_eq!(saved_description(&dir.join("Dup.json")), "third");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Overwriting must not truncate the old file in place: a failed write
+    /// would otherwise destroy the only copy. A hard link to the old file
+    /// still reads the old content only if the new one was renamed over it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_save_workflow_overwrite_replaces_the_file_instead_of_truncating_it() {
+        let dir = unique_temp_dir("videnoa-wf-overwrite-atomic");
+        let mut app = app_router(workflow_test_state(dir.clone()));
+        let body = |description: &str| {
+            serde_json::json!({
+                "name": "Atomic",
+                "description": description,
+                "workflow": {"nodes": [], "connections": []},
+                "overwrite": true
+            })
+        };
+
+        let (status, _) = post_workflow(&mut app, body("old")).await;
+        assert_eq!(status, StatusCode::CREATED);
+        let link = dir.join("old-copy.link");
+        std::fs::hard_link(dir.join("Atomic.json"), &link).unwrap();
+
+        let (status, _) = post_workflow(&mut app, body("new")).await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(saved_description(&dir.join("Atomic.json")), "new");
+        assert_eq!(saved_description(&link), "old");
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".videnoa-save"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
