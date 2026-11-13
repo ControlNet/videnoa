@@ -109,7 +109,7 @@ pub fn register_all_nodes(registry: &mut NodeRegistry) {
     registry.register("PathJoiner", |_params| Ok(Box::new(PathJoinerNode::new())));
     registry.register("Print", |_params| Ok(Box::new(PrintNode::new())));
     registry.register("StringTemplate", |params| {
-        Ok(Box::new(StringTemplateNode::from_params(&params)))
+        Ok(Box::new(StringTemplateNode::from_params(&params)?))
     });
     registry.register("StringReplace", |_params| {
         Ok(Box::new(StringReplaceNode::new()))

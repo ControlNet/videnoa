@@ -11,6 +11,9 @@ export type PortType =
   | 'Path'
   | 'WorkflowPath';
 
+/** The worker's `StringTemplateNode::MAX_NUM_INPUT`. */
+export const MAX_STRING_TEMPLATE_INPUTS = 64;
+
 export const PORT_COLORS: Record<PortType, string> = {
   VideoFrames: '#8B5CF6',
   Metadata: '#3B82F6',

@@ -14,22 +14,30 @@ impl StringTemplateNode {
         Self { num_input: 0 }
     }
 
-    pub fn from_params(params: &HashMap<String, serde_json::Value>) -> Self {
-        let num_input = params
-            .get("num_input")
-            .and_then(serde_json::Value::as_i64)
-            .map(|v| v.max(0) as usize)
-            .unwrap_or(0);
+    /// Every input becomes a port when the node is created, so a huge count
+    /// would exhaust memory before any limit on jobs applies.
+    pub const MAX_NUM_INPUT: usize = 64;
 
-        Self { num_input }
+    pub fn from_params(params: &HashMap<String, serde_json::Value>) -> Result<Self> {
+        let num_input = match params.get("num_input").and_then(serde_json::Value::as_i64) {
+            Some(value) => Self::parse_num_input(value.max(0))?,
+            None => 0,
+        };
+
+        Ok(Self { num_input })
     }
 
     fn parse_num_input(value: i64) -> Result<usize> {
         if value < 0 {
             bail!("StringTemplate: num_input must be >= 0, got {value}");
         }
-
-        Ok(value as usize)
+        match usize::try_from(value) {
+            Ok(count) if count <= Self::MAX_NUM_INPUT => Ok(count),
+            _ => bail!(
+                "StringTemplate: num_input must be at most {}, got {value}",
+                Self::MAX_NUM_INPUT
+            ),
+        }
     }
 }
 
@@ -217,7 +225,7 @@ mod tests {
         let mut params = HashMap::new();
         params.insert("num_input".to_string(), serde_json::json!(3));
 
-        let node = StringTemplateNode::from_params(&params);
+        let node = StringTemplateNode::from_params(&params).unwrap();
         let ports = node.input_ports();
 
         assert_eq!(ports[0].name, "num_input");
@@ -229,6 +237,23 @@ mod tests {
 
         let dynamic: Vec<&str> = ports[3..].iter().map(|p| p.name.as_str()).collect();
         assert_eq!(dynamic, vec!["str0", "str1", "str2"]);
+    }
+
+    #[test]
+    fn test_num_input_above_the_limit_is_rejected() {
+        let params = HashMap::from([(
+            "num_input".to_string(),
+            serde_json::json!(StringTemplateNode::MAX_NUM_INPUT as i64 + 1),
+        )]);
+        let error = StringTemplateNode::from_params(&params).err().unwrap();
+        assert!(error.to_string().contains("at most 64"), "{error}");
+
+        let params = HashMap::from([("num_input".to_string(), serde_json::json!(i64::MAX))]);
+        assert!(StringTemplateNode::from_params(&params).is_err());
+
+        let mut node = StringTemplateNode::new();
+        let inputs = HashMap::from([("num_input".to_string(), PortData::Int(1_000_000))]);
+        assert!(node.execute(&inputs, &ExecutionContext::default()).is_err());
     }
 
     #[test]

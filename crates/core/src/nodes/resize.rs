@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 
 use crate::node::{ExecutionContext, FrameProcessor, Node, PortDefinition};
 use crate::types::{Frame, PortData, PortType};
@@ -98,7 +98,8 @@ impl Node for ResizeNode {
                 if *w <= 0 {
                     bail!("width must be positive, got {w}");
                 }
-                self.out_width = *w as u32;
+                self.out_width =
+                    u32::try_from(*w).with_context(|| format!("width is too large: {w}"))?;
             }
             Some(_) => bail!("width must be an Int"),
             None => bail!("width is required"),
@@ -109,7 +110,8 @@ impl Node for ResizeNode {
                 if *h <= 0 {
                     bail!("height must be positive, got {h}");
                 }
-                self.out_height = *h as u32;
+                self.out_height =
+                    u32::try_from(*h).with_context(|| format!("height is too large: {h}"))?;
             }
             Some(_) => bail!("height must be an Int"),
             None => bail!("height is required"),
@@ -406,6 +408,19 @@ mod tests {
         let result = node.execute(&inputs, &ctx);
         let err = result.err().expect("should fail");
         assert!(err.to_string().contains("height is required"));
+    }
+
+    #[test]
+    fn test_resize_execute_rejects_a_width_beyond_u32() {
+        let mut node = ResizeNode::new();
+        let mut inputs = HashMap::new();
+        inputs.insert("width".to_string(), PortData::Int(4_294_967_297));
+        inputs.insert("height".to_string(), PortData::Int(16));
+        let err = node
+            .execute(&inputs, &ExecutionContext::default())
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("width is too large"), "{err}");
     }
 
     #[test]

@@ -10,6 +10,7 @@ import type {
   WorkflowInterface,
   WorkflowPort,
 } from '../types';
+import { MAX_STRING_TEMPLATE_INPUTS } from '../types';
 import { useJobStore } from './job-store';
 import { useNodeDefinitions } from './node-definitions-store';
 
@@ -198,7 +199,8 @@ function parseStringTemplateDynamicInputs(
   const raw = params.num_input;
   const parsed = typeof raw === 'number' ? raw : Number(raw ?? 0);
   if (!Number.isFinite(parsed)) return [];
-  const count = Math.max(0, Math.floor(parsed));
+  // The worker refuses more than MAX_STRING_TEMPLATE_INPUTS inputs.
+  const count = Math.min(MAX_STRING_TEMPLATE_INPUTS, Math.max(0, Math.floor(parsed)));
   return Array.from({ length: count }, (_, index) => ({
     name: `str${String(index)}`,
     port_type: 'Str',
