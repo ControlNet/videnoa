@@ -95,8 +95,16 @@ async fn lagged_sse_subscriber_is_told_to_refetch_without_history_replay() -> Te
             .await?;
         assert_eq!(created.status(), StatusCode::CREATED);
     }
-    let lagged = stream.next().await.ok_or("missing lag refetch")??;
-    assert!(String::from_utf8_lossy(&lagged).contains("event: refetch"));
+    // Creating the workers can outlast the 30 s auth recheck, and a keep-alive
+    // comment may be sent while that recheck runs.
+    let lagged = loop {
+        let chunk = stream.next().await.ok_or("missing lag refetch")??;
+        let text = String::from_utf8_lossy(&chunk).into_owned();
+        if !text.trim_start().starts_with(':') {
+            break text;
+        }
+    };
+    assert!(lagged.contains("event: refetch"), "{lagged}");
     Ok(())
 }
 
@@ -127,6 +135,69 @@ async fn direct_scheduler_update_publishes_live_delta() -> TestResult {
 
     let event = stream.next().await.ok_or("missing scheduler delta")??;
     assert!(String::from_utf8_lossy(&event).contains("event: scheduler_updated"));
+    Ok(())
+}
+
+/// A stream whose session was revoked ends at the next auth recheck, even
+/// while events keep arriving: they must not starve the recheck.
+#[tokio::test]
+async fn revoked_session_stream_ends_at_the_recheck_despite_queued_events() -> TestResult {
+    use axum::http::header;
+    use videnoa_controller::auth::{AuthService, SESSION_COOKIE};
+    use videnoa_controller::config::ControllerConfig;
+    use videnoa_controller::domain::SecretString;
+
+    let fixture = Fixture::new().await?;
+    let config = ControllerConfig::for_workspace(&fixture.workspace)?;
+    let auth = AuthService::new(config.auth, fixture.store.clone())?;
+    let session = auth
+        .login(
+            "127.0.0.1".parse()?,
+            &SecretString::new(super::support::PASSWORD),
+            chrono::Utc::now(),
+        )
+        .await?;
+    let mut request = Fixture::request("GET", "/api/events", None)?;
+    request.headers_mut().remove(header::AUTHORIZATION);
+    request.headers_mut().insert(
+        header::COOKIE,
+        format!("{SESSION_COOKIE}={}", session.token).parse()?,
+    );
+    let response = fixture.router.clone().oneshot(request).await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut stream = response.into_body().into_data_stream();
+    let _initial = stream.next().await.ok_or("missing initial refetch")??;
+
+    fixture
+        .store
+        .revoke_session(session.response.session.id, chrono::Utc::now())
+        .await?;
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(31)).await;
+    for _ in 0..3 {
+        let settings = fixture.store.config_manager().settings()?;
+        let mut scheduler = settings.scheduler;
+        scheduler.paused = !scheduler.paused;
+        fixture
+            .scheduler
+            .update_settings(SettingsUpdate {
+                expected_version: settings.version,
+                scheduler,
+                timeouts: settings.timeouts,
+                retry: settings.retry,
+                updated_at: chrono::Utc::now(),
+            })
+            .await?;
+    }
+
+    // Keep-alive comments may come before the end of the body.
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        assert!(
+            !String::from_utf8_lossy(&chunk).contains("scheduler_updated"),
+            "a revoked session received an event after its recheck was due"
+        );
+    }
     Ok(())
 }
 

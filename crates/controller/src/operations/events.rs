@@ -122,6 +122,13 @@ pub(super) async fn stream(
                             None => pending::<()>().await,
                         }
                     } => return None,
+                    // Before events: a stream that always has one ready
+                    // would otherwise never reach a recheck that is due.
+                    _ = auth_recheck.tick() => {
+                        if authenticate_passive(&state.auth, address, &headers, chrono::Utc::now()).await.is_err() {
+                            return None;
+                        }
+                    }
                     received = receiver.recv() => {
                         let event = match received {
                             Ok(LiveEvent::Delta(event)) => delta_event(&event),
@@ -134,11 +141,6 @@ pub(super) async fn stream(
                             Err(broadcast::error::RecvError::Closed) => return None,
                         };
                         return Some((Ok(event), (receiver, state, address, headers, auth_recheck, shutdown)));
-                    }
-                    _ = auth_recheck.tick() => {
-                        if authenticate_passive(&state.auth, address, &headers, chrono::Utc::now()).await.is_err() {
-                            return None;
-                        }
                     }
                 }
             }
