@@ -112,6 +112,35 @@ describe("BatchPanel", () => {
 		expect(screen.queryByText(/values \(one per line\)/)).not.toBeInTheDocument();
 	});
 
+	it("follows workflow input changes and keeps the values already typed", () => {
+		setWorkflowInputs([{ name: "video_path", port_type: "Path" }]);
+		useUIStore.setState({ activeModal: "batch" });
+		// A new element each time, so React renders the panel again.
+		const panel = () => (
+			<MemoryRouter>
+				<BatchPanel />
+			</MemoryRouter>
+		);
+		const view = render(panel());
+		fireEvent.change(screen.getByLabelText("video_path values (one per line)"), {
+			target: { value: "/videos/a.mkv" },
+		});
+
+		setWorkflowInputs([
+			{ name: "video_path", port_type: "Path" },
+			{ name: "label", port_type: "Str" },
+		]);
+		view.rerender(panel());
+		expect(screen.getByLabelText("video_path values (one per line)")).toHaveValue(
+			"/videos/a.mkv",
+		);
+		expect(screen.getByLabelText("label values (one per line)")).toHaveValue("");
+
+		setWorkflowInputs([]);
+		view.rerender(panel());
+		expect(screen.getByLabelText("Repeat count")).toBeInTheDocument();
+	});
+
 	it("blocks submit on line mismatch and makes zero API calls", async () => {
 		renderBatchPanel([
 			{ name: "alpha", port_type: "Str" },

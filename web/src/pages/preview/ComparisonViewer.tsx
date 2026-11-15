@@ -407,6 +407,8 @@ export function ComparisonViewer() {
 
 	const viewerRef = useRef<HTMLDivElement>(null);
 	const isPanning = useRef(false);
+	/** Mirrors `isPanning` for the cursor, which render cannot read from a ref. */
+	const [panning, setPanning] = useState(false);
 	const lastMouse = useRef({ x: 0, y: 0 });
 	const requestGeneration = useRef(0);
 	const sessionRef = useRef<string | null>(null);
@@ -486,6 +488,7 @@ export function ComparisonViewer() {
 			// Only pan with middle-click or when zoomed with left-click on the viewer area
 			if (e.button === 0 || e.button === 1) {
 				isPanning.current = true;
+				setPanning(true);
 				lastMouse.current = { x: e.clientX, y: e.clientY };
 			}
 		},
@@ -506,6 +509,7 @@ export function ComparisonViewer() {
 
 	const handleMouseUp = useCallback(() => {
 		isPanning.current = false;
+		setPanning(false);
 	}, []);
 
 	// ── Reset zoom ─────────────────────────────────────────────────────────────
@@ -706,7 +710,7 @@ export function ComparisonViewer() {
 								style={{
 									cursor:
 										zoom > 1
-											? isPanning.current
+											? panning
 												? "grabbing"
 												: "grab"
 											: "default",

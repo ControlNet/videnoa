@@ -97,3 +97,17 @@ it("releases a late extraction result after unmount", async () => {
 	await act(async () => pending.resolve({ preview_id: "late-preview", frames: [] }));
 	expect(deletePreview).toHaveBeenCalledWith("late-preview");
 });
+
+it("shows the grabbing cursor while a zoomed frame is dragged", async () => {
+	await openFrames();
+	const viewer = screen.getByAltText("Before").closest<HTMLElement>("[style*=cursor]");
+	if (!viewer) throw new Error("viewer container not found");
+	fireEvent.wheel(viewer, { deltaY: -100 });
+	expect(viewer.style.cursor).toBe("grab");
+
+	fireEvent.mouseDown(viewer, { button: 0 });
+	expect(viewer.style.cursor).toBe("grabbing");
+
+	fireEvent.mouseUp(viewer);
+	expect(viewer.style.cursor).toBe("grab");
+});

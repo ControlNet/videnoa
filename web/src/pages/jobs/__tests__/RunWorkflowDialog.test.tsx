@@ -222,4 +222,20 @@ describe("RunWorkflowDialog", () => {
 		});
 		expect(screen.getByText("Loading workflows…")).toBeInTheDocument();
 	});
+
+	it("clears the selection and shows the spinner again after reopening", async () => {
+		vi.mocked(listWorkflows).mockResolvedValue([makeEntry(), multiParamEntry]);
+		const props = { onOpenChange: vi.fn(), onSubmitted: vi.fn() };
+		const view = render(<RunWorkflowDialog open={true} {...props} />);
+
+		fireEvent.click(await screen.findByText("Multi-Param"));
+		await screen.findByRole("button", { name: /Run/i });
+
+		view.rerender(<RunWorkflowDialog open={false} {...props} />);
+		vi.mocked(listWorkflows).mockReturnValue(new Promise(() => {}));
+		view.rerender(<RunWorkflowDialog open={true} {...props} />);
+
+		expect(screen.getByText("Loading workflows…")).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: /Run/i })).not.toBeInTheDocument();
+	});
 });

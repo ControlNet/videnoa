@@ -63,7 +63,7 @@ export function PresetGallery() {
 
 	const [presets, setPresets] = useState<Preset[]>([]);
 	const [workflows, setWorkflows] = useState<WorkflowEntry[]>([]);
-	const [loading, setLoading] = useState(false);
+	const [loading, setLoading] = useState(open);
 	/** Which list failed to load; a failure must not read as an empty list. */
 	const [loadErrors, setLoadErrors] = useState({
 		presets: false,
@@ -85,14 +85,22 @@ export function PresetGallery() {
 		}
 	}, []);
 
-	useEffect(() => {
-		if (!open) {
+	// Opening starts a load; closing drops a pending confirmation. Adjusted
+	// during render, so a reopened gallery never shows the old prompt.
+	const [wasOpen, setWasOpen] = useState(open);
+	if (open !== wasOpen) {
+		setWasOpen(open);
+		if (open) {
+			setLoading(true);
+		} else {
 			setPendingDelete(null);
 			setPendingLoad(null);
-			return;
 		}
+	}
+
+	useEffect(() => {
+		if (!open) return;
 		let cancelled = false;
-		setLoading(true);
 		void (async () => {
 			const [p, w] = await Promise.allSettled([
 				listPresets(),
@@ -113,6 +121,7 @@ export function PresetGallery() {
 	}, [open, reloadKey]);
 
 	const retry = useCallback(() => {
+		setLoading(true);
 		setReloadKey((k) => k + 1);
 	}, []);
 

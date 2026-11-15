@@ -68,11 +68,13 @@ scene-identifier, `core:tray` set-icon-with-as-template).
 (React 19.3, Radix, tailwind 4.3, vite 7.3.8, Playwright 1.65, ...). Two
 follow-ups:
 
-- `eslint-plugin-react-hooks` 7.1 adds `set-state-in-effect` and `refs` errors
-  for five places in `web/` (PresetGallery, RunWorkflowDialog,
-  ComparisonViewer, BatchPanel). `web/package-lock.json` keeps 7.0.1;
-  controller-web already passes 7.1. A later `npm update` in `web/` brings 7.1
-  back, so fix those components first.
+- `eslint-plugin-react-hooks` 7.1 adds `set-state-in-effect` and `refs` errors.
+  `web/` first kept 7.0.1, then fixed the five places and moved to 7.1.1:
+  PresetGallery, RunWorkflowDialog and BatchPanel now adjust state during
+  render when `open` or the workflow inputs change (React's "storing
+  information from previous renders" pattern: keep the previous value in
+  state and compare). ComparisonViewer read `isPanning.current` for the
+  cursor, which stayed "grab" while dragging; a `panning` state now drives it.
 - Radix `react-dismissable-layer` 1.2 (via react-dialog 1.3) dismisses on the
   click that follows a primary-button outside `pointerdown`, not on the
   `pointerdown`. A jsdom test that fires only `pointerDown` no longer closes

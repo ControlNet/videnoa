@@ -48,13 +48,25 @@ export function RunWorkflowDialog({
 	const [paramValues, setParamValues] = useState<Record<string, ParamValue>>(
 		{},
 	);
-	const [loading, setLoading] = useState(false);
+	const [loading, setLoading] = useState(open);
 	const [submitting, setSubmitting] = useState(false);
+
+	// Opening starts a fresh load; closing drops the selection. Adjusted
+	// during render, so the reopened dialog never shows the old state.
+	const [wasOpen, setWasOpen] = useState(open);
+	if (open !== wasOpen) {
+		setWasOpen(open);
+		if (open) {
+			setLoading(true);
+		} else {
+			setSelectedWorkflow(null);
+			setParamValues({});
+		}
+	}
 
 	// Fetch workflows when dialog opens
 	useEffect(() => {
 		if (!open) return;
-		setLoading(true);
 		Promise.all([listPresets(), listWorkflows()])
 			.then(([presets, saved]) => {
 				const fromPresets = presets
@@ -79,14 +91,6 @@ export function RunWorkflowDialog({
 				setLoading(false);
 			});
 	}, [open, t]);
-
-	// Reset state when dialog closes
-	useEffect(() => {
-		if (!open) {
-			setSelectedWorkflow(null);
-			setParamValues({});
-		}
-	}, [open]);
 
 	const handleSelect = useCallback((entry: WorkflowEntry) => {
 		setSelectedWorkflow(entry);

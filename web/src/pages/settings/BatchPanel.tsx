@@ -1,5 +1,5 @@
 import { CheckCircle2, Loader2, Send, Workflow } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 import { submitJob, submitJobWithParams } from "@/api/client";
@@ -302,13 +302,17 @@ export function BatchPanel() {
 	const [result, setResult] = useState<BatchResponse | null>(null);
 	const repeatPlanMetadataRef = useRef<RepeatSubmissionPlanMetadata | null>(null);
 
-	useEffect(() => {
+	// Follow the editor's workflow inputs, keeping text typed for ports that
+	// still exist. Adjusted during render instead of in an effect.
+	const [draftInputs, setDraftInputs] = useState(workflowInputs);
+	if (draftInputs !== workflowInputs) {
+		setDraftInputs(workflowInputs);
 		setBatchDraft((prev) => ({
 			...prev,
 			mode: detectedMode,
 			workflowInputs: buildWorkflowInputTextMap(workflowInputs, prev.workflowInputs),
 		}));
-	}, [detectedMode, workflowInputs]);
+	}
 
 	const rowValidation = useMemo(
 		() => validateWorkflowRows(workflowInputs, batchDraft.workflowInputs),
