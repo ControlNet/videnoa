@@ -80,11 +80,19 @@ follow-ups:
   `pointerdown`. A jsdom test that fires only `pointerDown` no longer closes
   the dialog; fire `pointerDown`, `pointerUp` and `click`.
 
-Still behind and pinned or major: `ort` rc.12 (rc.15 out; needs GPU testing),
-`iroh` 1.1 (1.4), `cap-std` 3.4.2, `glob`, `rust-embed`, `reqwest` 0.12.27,
-`sqlx` 0.9 / `rusqlite` 0.42 (move together: one `libsqlite3-sys`), `rustix`
-1.x, `toml` 1.x, RustCrypto majors; frontend majors vite 8, eslint 10,
-TypeScript 7, react-router 8, lucide-react 1.x.
+Exact pins bumped (third pass, still exact): `cap-std`/`cap-fs-ext` 3.4.6,
+`glob` 0.3.4, `rust-embed` 8.14.0, controller `reqwest` 0.12.28, `iroh` 1.4.1
+(`iroh-proxy-utils` 0.3.0 accepts `iroh ^1`; 1.4 drops the hickory DNS
+crates). Most of these pins date from the Rust 1.83 support period. A release
+`cargo check` covers the `rust-embed` derive, which debug builds skip.
+
+Still behind, each needs code changes: `ort` rc.15 (keeps `api-23`, so the
+bundled ONNX Runtime 1.23.2 stays; needs GPU testing), `sqlx` 0.9, `rusqlite`
+(at most 0.39 next to sqlx: libsqlite3-sys < 0.38), `rustix` 1.x, `toml` 1.x,
+`cap-std` 4, `reqwest` 0.13, RustCrypto majors (`argon2` 0.6: check stored
+hashes still verify); frontend majors vite 8, eslint 10, TypeScript 7,
+react-router 8, lucide-react 1.x. RUSTSEC-2026-0459 stays ignored until sqlx
+accepts libsqlite3-sys 0.39.
 
 Dev-only npm audit: typescript-eslint 8.72.2 still bundles minimatch < 11.1
 (GHSA-g3hv-75wg-m249, moderate). Runtime `npm audit --omit=dev` is clean.
