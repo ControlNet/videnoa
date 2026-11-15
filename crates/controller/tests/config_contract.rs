@@ -155,7 +155,7 @@ fn iroh_relays_are_optional_validated_and_preserved() -> TestResult {
 
     // When / Then: no section keeps the public N0 network and adds nothing on write.
     let public = ControllerConfig::from_toml(complete_config())?;
-    assert!(public.iroh.relay_urls.is_empty());
+    assert_eq!(public.iroh.relay_urls, Vec::<String>::new());
     assert!(!public.to_toml()?.contains("[iroh]"));
 
     // Relays load and survive the projection the settings API writes back.

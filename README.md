@@ -191,7 +191,7 @@ The server speaks HTTP/1.1 only; cleartext HTTP/2 (h2c) is not accepted.
 
 ### Requirements
 
-- Rust 1.98.0 (pinned in `rust-toolchain.toml`)
+- Rust 1.100.0 (pinned in `rust-toolchain.toml`)
 - Node.js 24 (the version CI and the Docker build use)
 - FFmpeg, ffprobe, mkvmerge and mkvpropedit from the release media tools bundle
   (FFmpeg 8.1), installed into `bin/` by `scripts/setup_dev_media_tools.sh`
@@ -203,11 +203,11 @@ The server speaks HTTP/1.1 only; cleartext HTTP/2 (h2c) is not accepted.
 Rustup automatically selects the pinned toolchain in this checkout. To install it explicitly:
 
 ```bash
-rustup toolchain install 1.98.0 --profile minimal --component clippy --component rustfmt
+rustup toolchain install 1.100.0 --profile minimal --component clippy --component rustfmt
 rustc --version
 ```
 
-The version output should start with `rustc 1.98.0`.
+The version output should start with `rustc 1.100.0`.
 
 ### 1) Prepare runtime libraries, media tools and models
 

@@ -116,7 +116,7 @@ async fn discarding_a_failed_task_releases_its_worker_folder_and_ends_retry() ->
     let discarded = fixture.task(&task).await?;
     assert_eq!(discarded.task.status, TaskStatus::Failed);
     assert!(discarded.task.discarded_at.is_some());
-    assert!(discarded.task.allowed_actions.is_empty());
+    assert_eq!(discarded.task.allowed_actions, []);
     assert!(!fixture.temp_root.join(task.id.to_string()).exists());
     assert_eq!(
         fixture.retry_status(&task).await?,

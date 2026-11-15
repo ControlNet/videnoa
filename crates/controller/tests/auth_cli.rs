@@ -14,7 +14,7 @@ fn legacy_hash_password_subcommand_is_not_exposed() -> TestResult {
 
     // Then: Clap rejects the legacy command and emits no credential material.
     assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, []);
     Ok(())
 }
 
@@ -29,6 +29,6 @@ fn docker_listener_overrides_are_typed_and_accepted() -> TestResult {
 
     // Then: the typed host and nonzero port overrides are accepted.
     assert!(output.status.success());
-    assert!(output.stderr.is_empty());
+    assert_eq!(output.stderr, []);
     Ok(())
 }

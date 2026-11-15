@@ -260,7 +260,7 @@ mod tests {
         let client =
             VidenoaClient::new_with_password(url.clone(), timeouts, limits, Some(&password))?;
         assert!(client.health().await?.is_healthy());
-        assert!(client.workflows().await?.is_empty());
+        assert_eq!(client.workflows().await?, []);
         let path = FileApiPath::parse("test.bin")?;
         let payload = vec![42u8; 256 * 1024];
         let receipt = client

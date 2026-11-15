@@ -56,7 +56,7 @@ async fn attempt_page_count_and_items_share_one_sqlite_snapshot() -> TestResult 
 
     // Then: total and items describe the same pre-insert snapshot.
     assert_eq!(page.total, 100);
-    assert!(page.items.is_empty());
+    assert_eq!(page.items, []);
     Ok(())
 }
 

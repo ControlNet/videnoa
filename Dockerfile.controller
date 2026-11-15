@@ -7,7 +7,7 @@ RUN --mount=type=cache,target=/root/.npm npm ci --no-fund
 COPY controller-web/ ./
 RUN npm run build
 
-FROM rust:1.98.0-bookworm AS controller-builder
+FROM rust:1.100.0-bookworm AS controller-builder
 RUN apt-get update \
     && apt-get install -y --no-install-recommends cmake pkg-config \
     && rm -rf /var/lib/apt/lists/*

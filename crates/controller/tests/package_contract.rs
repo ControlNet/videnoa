@@ -104,7 +104,7 @@ fn workspace_products_share_the_rust_baseline() -> TestResult {
     {
         assert_eq!(
             package.rust_version.as_deref(),
-            Some("1.98.0"),
+            Some("1.100.0"),
             "{} must inherit the workspace Rust baseline",
             package.name
         );

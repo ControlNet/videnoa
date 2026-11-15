@@ -37,7 +37,7 @@ COPY web/ ./
 COPY presets/ /build/presets/
 RUN npm run build
 
-FROM rust:1.98.0-bookworm AS builder
+FROM rust:1.100.0-bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         pkg-config \

@@ -155,7 +155,7 @@ fn external_configuration_symlink_is_rejected_without_reading_target() -> TestRe
 
     // Then: bootstrap rejects the redirect without replacing the external document.
     assert!(result.is_err());
-    assert!(!fs::read_to_string(external_config)?.is_empty());
+    assert_ne!(fs::read_to_string(external_config)?, "");
     Ok(())
 }
 

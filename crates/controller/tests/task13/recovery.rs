@@ -67,7 +67,7 @@ async fn startup_publishes_locally_while_remote_cleanup_is_offline() -> TestResu
         report.command_kind(prepared.task_id),
         Some(RecoveryCommandKind::Verify)
     );
-    assert!(advanced.is_empty());
+    assert_eq!(advanced, []);
     let task = fixture.task(prepared.task_id).await?;
     assert_eq!(task.status, TaskStatus::RemoteCleanup);
     assert_eq!(task.retry.retry_count, 1);

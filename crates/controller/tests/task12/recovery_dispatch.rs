@@ -41,7 +41,7 @@ async fn recovery_dispatch_defers_persisted_pause_without_losing_reservation() -
         .await?;
 
     // Then: startup succeeds, issues no PUT, and retains the reservation for resume.
-    assert!(advanced.is_empty());
+    assert_eq!(advanced, []);
     assert_eq!(
         fixture.task(prepared.task_id).await?.status,
         videnoa_controller::domain::TaskStatus::Reserved

@@ -103,7 +103,7 @@ async fn persisted_pause_blocks_only_new_reservation_upload_and_submission() -> 
 
     // Then: ambiguous/staged ownership remains while only forward-safe stages continue.
     assert!(restarted.reserve_next(fixture.now).await?.is_none());
-    assert!(restarted.upload_candidates(10).await?.is_empty());
+    assert_eq!(restarted.upload_candidates(10).await?, []);
     assert!(!restarted.allows(DurableAction::Upload).await?);
     assert!(!restarted.allows(DurableAction::Submit).await?);
     for action in [

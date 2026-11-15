@@ -55,9 +55,7 @@ pub enum VidenoaClientError {
 }
 
 fn reason_suffix(reason: Option<&str>) -> String {
-    reason
-        .map(|reason| format!(": {reason}"))
-        .unwrap_or_default()
+    reason.map_or_else(String::new, |reason| format!(": {reason}"))
 }
 
 impl VidenoaClientError {

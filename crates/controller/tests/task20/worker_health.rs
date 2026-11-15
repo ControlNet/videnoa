@@ -104,7 +104,7 @@ async fn probe_records_workflows_the_worker_would_reject() -> TestResult {
             "workflow validation failed: unknown node type 'Blur'"
         )]
     );
-    assert!(!durable.capabilities.workflows.is_empty());
+    assert_ne!(durable.capabilities.workflows, []);
     Ok(())
 }
 
