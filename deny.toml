@@ -13,4 +13,5 @@ ignore = [
     { id = "RUSTSEC-2025-0080", reason = "unic-common: unmaintained; transitive via tauri-utils -> urlpattern (desktop app), no vulnerability" },
     { id = "RUSTSEC-2025-0100", reason = "unic-ucd-ident: unmaintained; transitive via tauri-utils -> urlpattern (desktop app), no vulnerability" },
     { id = "RUSTSEC-2025-0098", reason = "unic-ucd-version: unmaintained; transitive via tauri-utils -> urlpattern (desktop app), no vulnerability" },
+    { id = "RUSTSEC-2026-0459", reason = "bundled SQLite < 3.54 leaks page-cache memory only when it opens a database and -wal that a less trusted party wrote; Videnoa opens only its own jobs.db and controller database in its data directory. The fix needs libsqlite3-sys >= 0.39, but sqlx (0.8.6 and 0.9.0) requires < 0.38 and Cargo allows one libsqlite3-sys; drop this once sqlx accepts 0.39" },
 ]
