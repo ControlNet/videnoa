@@ -290,6 +290,9 @@ impl Node for WorkflowNode {
             );
         }
 
+        // A nested workflow is a live reference by design: the file is read
+        // here, when the node runs, not when the outer job was submitted. A
+        // queued job or a rerun therefore uses the file's current content.
         let graph = load_nested_workflow(&self.workflow_path)?;
 
         // Build inner registry (same as outer — reuse the standard set)

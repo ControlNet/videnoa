@@ -4,8 +4,13 @@ Source: the Codex review in `deep-review-consolidated-2026-11-13.md`. Claude
 re-read the code for the 13 new findings before fixing them. Fixed here:
 1-9, 11, 12, 13. Not fixed:
 
-- **10** (nested workflows are read live by path). This is a product decision:
-  live reference or a snapshot. It is left to the owner.
+- **10** (nested workflows are read live by path). The owner decided on
+  2026-11-15 to keep the live reference: a queued job or a rerun runs the
+  nested file as it is when the node executes, not as it was at submission.
+  This is intended, not a defect; `WorkflowNode::execute` in
+  `crates/core/src/nodes/workflow_io.rs` says so. Submission still validates
+  the nested graph (fix 3), so a nested file edited after submission is only
+  checked when it runs.
 - **14-16** are older open items.
 - **17 and 18** the owner deferred earlier.
 
