@@ -150,7 +150,11 @@ describe("PresetGallery delete confirmation", () => {
 			await new Promise((resolve) => setTimeout(resolve, 0));
 		});
 
+		// Radix defers a primary-button outside press until its click, as a
+		// browser sends it, so fire the whole sequence.
 		fireEvent.pointerDown(document.body);
+		fireEvent.pointerUp(document.body);
+		fireEvent.click(document.body);
 
 		await waitFor(() => {
 			expect(screen.queryByRole("dialog", { name: "Delete workflow?" })).not.toBeInTheDocument();

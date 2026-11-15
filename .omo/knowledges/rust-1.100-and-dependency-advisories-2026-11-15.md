@@ -55,6 +55,38 @@ superseded.
   frontend is `#[cfg(not(debug_assertions))]`. It is a manifest warning, so
   `-D warnings` in clippy does not turn it into an error. Keep the dependency.
 
+## Compatible updates (second pass, same day)
+
+`cargo update` moved 248 lockfile entries within the declared ranges (tauri
+2.10.2 -> 2.12.5, wry 0.54 -> 0.57, ...). The desktop build regenerates
+`crates/desktop/gen/schemas/*.json` from tauri; commit them with the lockfile.
+Tauri 2.12 adds a few read-only commands to its default permission sets
+(`core:app` supports-multiple-windows, `core:window` activity-name and
+scene-identifier, `core:tray` set-icon-with-as-template).
+
+`npm update` in `web/` and `controller-web/` stays within package.json ranges
+(React 19.3, Radix, tailwind 4.3, vite 7.3.8, Playwright 1.65, ...). Two
+follow-ups:
+
+- `eslint-plugin-react-hooks` 7.1 adds `set-state-in-effect` and `refs` errors
+  for five places in `web/` (PresetGallery, RunWorkflowDialog,
+  ComparisonViewer, BatchPanel). `web/package-lock.json` keeps 7.0.1;
+  controller-web already passes 7.1. A later `npm update` in `web/` brings 7.1
+  back, so fix those components first.
+- Radix `react-dismissable-layer` 1.2 (via react-dialog 1.3) dismisses on the
+  click that follows a primary-button outside `pointerdown`, not on the
+  `pointerdown`. A jsdom test that fires only `pointerDown` no longer closes
+  the dialog; fire `pointerDown`, `pointerUp` and `click`.
+
+Still behind and pinned or major: `ort` rc.12 (rc.15 out; needs GPU testing),
+`iroh` 1.1 (1.4), `cap-std` 3.4.2, `glob`, `rust-embed`, `reqwest` 0.12.27,
+`sqlx` 0.9 / `rusqlite` 0.42 (move together: one `libsqlite3-sys`), `rustix`
+1.x, `toml` 1.x, RustCrypto majors; frontend majors vite 8, eslint 10,
+TypeScript 7, react-router 8, lucide-react 1.x.
+
+Dev-only npm audit: typescript-eslint 8.72.2 still bundles minimatch < 11.1
+(GHSA-g3hv-75wg-m249, moderate). Runtime `npm audit --omit=dev` is clean.
+
 ## Verification
 
 ```bash
