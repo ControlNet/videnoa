@@ -79,12 +79,13 @@ export function validateUnitWorkflow(workflow) {
 	}
 	requireText(jobs["web-build-check"], "web-build-check", ["actions/upload-artifact@", "worker-web-windows", "if-no-files-found"]);
 	requireText(jobs["package-win64-smoke"], "package-win64-smoke", ["actions/download-artifact@", "worker-web-windows", "-FrontendDist"]);
-	// The whole workspace is held to fmt, strict Clippy and advisory checks.
+	// The whole workspace is held to fmt, strict Clippy, advisory and license
+	// checks.
 	requireText(requireJob(jobs, "workspace-quality"), "workspace-quality", [
 		"cargo fmt --all -- --check",
 		"cargo clippy --locked --workspace --all-targets -- -D warnings",
 		"EmbarkStudios/cargo-deny-action@",
-		"check advisories",
+		"check advisories licenses",
 	]);
 	requireText(requireJob(jobs, "workflow-contracts"), "workflow-contracts", [
 		"npm ci --no-fund",

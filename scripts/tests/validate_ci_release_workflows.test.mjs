@@ -246,6 +246,13 @@ for (const [label, command] of [["lint", "npm run lint"], ["tests", "npm test"]]
 	workflow.jobs["workspace-quality"].steps = workflow.jobs["workspace-quality"].steps.filter((step) => !step.uses?.startsWith("EmbarkStudios/cargo-deny-action@"));
 	expectContractFailure("advisory check omitted", () => validateUnitWorkflow(workflow), /workspace-quality.*cargo-deny-action/);
 }
+{
+	const workflow = structuredClone(loadWorkflow(unitPath));
+	const deny = workflow.jobs["workspace-quality"].steps.find((step) => step.uses?.startsWith("EmbarkStudios/cargo-deny-action@"));
+	assert.ok(deny, "workspace-quality: missing cargo-deny step");
+	deny.with.command = "check advisories";
+	expectContractFailure("license check omitted", () => validateUnitWorkflow(workflow), /workspace-quality.*check advisories licenses/);
+}
 for (const name of ["dockerhub-publish", "controller-dockerhub-publish"]) {
 	const workflow = structuredClone(loadWorkflow(releasePath));
 	workflow.jobs[name].needs = ["version-gate", "quality-gate"];

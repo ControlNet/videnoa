@@ -1,5 +1,5 @@
-# cargo-deny configuration used by `cargo deny check advisories` (locally and
-# in the CI quality gate). Only the advisories check is configured here.
+# cargo-deny configuration used by `cargo deny check advisories licenses`
+# (locally and in the CI quality gate).
 
 [advisories]
 version = 2
@@ -15,3 +15,25 @@ ignore = [
     { id = "RUSTSEC-2025-0098", reason = "unic-ucd-version: unmaintained; transitive via tauri-utils -> urlpattern (desktop app), no vulnerability" },
     { id = "RUSTSEC-2026-0459", reason = "bundled SQLite < 3.54 leaks page-cache memory only when it opens a database and -wal that a less trusted party wrote; Videnoa opens only its own jobs.db and controller database in its data directory. The fix needs libsqlite3-sys >= 0.39, but sqlx (0.8.6 and 0.9.0) requires < 0.38 and Cargo allows one libsqlite3-sys; drop this once sqlx accepts 0.39" },
 ]
+
+[licenses]
+version = 2
+# The workspace crates are AGPL-3.0-only; the other licenses are those the
+# dependency graph needs, all compatible with it. Keep the list minimal.
+allow = [
+    "AGPL-3.0-only",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.9

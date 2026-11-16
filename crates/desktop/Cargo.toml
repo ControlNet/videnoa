@@ -2,6 +2,7 @@
 name = "videnoa-desktop"
 version.workspace = true
 rust-version.workspace = true
+license.workspace = true
 edition = "2021"
 
 [[bin]]

@@ -159,10 +159,10 @@ jobs:
           VIDENOA_WEB_PREBUILT: '1'
           VIDENOA_CONTROLLER_WEB_PREBUILT: '1'
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
-      - name: Check dependency advisories
+      - name: Check dependency advisories and licenses
         uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
-          command: check advisories
+          command: check advisories licenses
           arguments: --locked
 
   controller-rust:
