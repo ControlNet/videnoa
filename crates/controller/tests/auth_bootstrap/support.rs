@@ -1,5 +1,4 @@
 use std::error::Error;
-use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -51,8 +50,8 @@ impl Fixture {
 #[cfg(debug_assertions)]
 fn test_frontend_assets(directory: &Path) -> TestResult<FrontendAssets> {
     let assets = directory.join("assets");
-    fs::create_dir(&assets)?;
-    fs::write(assets.join("index.html"), "<main>controller</main>")?;
+    std::fs::create_dir(&assets)?;
+    std::fs::write(assets.join("index.html"), "<main>controller</main>")?;
     Ok(FrontendAssets::from_dist(assets)?)
 }
 

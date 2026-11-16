@@ -1,4 +1,3 @@
-use std::fs;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::num::NonZeroU16;
 use std::path::Path;
@@ -229,8 +228,8 @@ impl Drop for ControllerRuntime {
 #[cfg(debug_assertions)]
 fn assets(root: &Path) -> TestResult<FrontendAssets> {
     let directory = root.join("assets");
-    fs::create_dir_all(&directory)?;
-    fs::write(directory.join("index.html"), "<main>controller</main>")?;
+    std::fs::create_dir_all(&directory)?;
+    std::fs::write(directory.join("index.html"), "<main>controller</main>")?;
     Ok(FrontendAssets::from_dist(directory)?)
 }
 

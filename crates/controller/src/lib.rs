@@ -25,6 +25,10 @@ pub use auth::{
 
 #[cfg(not(debug_assertions))]
 use rust_embed::RustEmbed;
+// Debug builds serve `controller-web/dist` from disk, so nothing references
+// rust-embed there; this keeps Cargo's `unused_dependencies` lint quiet.
+#[cfg(debug_assertions)]
+use rust_embed as _;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StartupError {

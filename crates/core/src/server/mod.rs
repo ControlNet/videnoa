@@ -927,6 +927,11 @@ pub struct SaveWorkflowRequest {
 
 // ─── Embedded frontend assets (release builds only) ──────────────────────────
 
+// Debug builds serve `web/dist` from disk, so nothing references rust-embed
+// there; this keeps Cargo's `unused_dependencies` lint from flagging it.
+#[cfg(debug_assertions)]
+use rust_embed as _;
+
 #[cfg(not(debug_assertions))]
 #[derive(rust_embed::RustEmbed)]
 #[folder = "../../web/dist"]
