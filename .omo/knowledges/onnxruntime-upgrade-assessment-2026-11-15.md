@@ -1,6 +1,8 @@
 # ONNX Runtime and `ort` upgrade assessment (2026-11-15)
 
-Not done yet; the owner postponed it while the GPU machine is busy.
+Status (2026-11-16): `ort` moved to rc.15 on `dev` (ONNX Runtime 1.23.2 and
+TensorRT 10.9 unchanged). ONNX Runtime 1.32 and TensorRT 10.16 were measured
+and not adopted; see `ort-1.32-trt-10.16-benchmark-2026-11-16.md`.
 
 ## Where we are
 

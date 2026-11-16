@@ -123,6 +123,11 @@ Runtime built against 10.9; the data cannot separate the two. The ORT 1.32
 configurations (built against TensorRT 10.14) did not crash in 14-19 runs
 each, but had only one cold build each.
 
+The `ort` rc.15 crate alone (config D) was merged to `dev`: also checked on
+the RIFE-only presets (x265 35.5-37.5 fps vs A 35.6-36.9, NVENC 55-76 vs
+59-72, same RSS and GPU memory). Existing TensorRT caches stay valid because
+the cache key has no crate version.
+
 Analysis at the time of the benchmark:
 
 Do not move to ONNX Runtime 1.32 for now: RIFE throughput drops ~30% when
