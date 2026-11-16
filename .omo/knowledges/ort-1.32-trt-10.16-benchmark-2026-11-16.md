@@ -115,6 +115,16 @@ the 1.32 configs is well outside that range.
 
 ## Conclusion
 
+Decision (2026-11-16): the owner keeps ONNX Runtime 1.23.2 + TensorRT 10.9 for
+now because of the unexplained crash. In the crashed configuration (AT16) the
+only new component was TensorRT 10.16 (ONNX Runtime 1.23.2 and `ort` rc.12
+were unchanged), so the suspect is TensorRT 10.16 or its pairing with an ONNX
+Runtime built against 10.9; the data cannot separate the two. The ORT 1.32
+configurations (built against TensorRT 10.14) did not crash in 14-19 runs
+each, but had only one cold build each.
+
+Analysis at the time of the benchmark:
+
 Do not move to ONNX Runtime 1.32 for now: RIFE throughput drops ~30% when
 inference-bound and the FI -> SR preset is 4-8% slower; its extra GPU-memory
 saving (~190 MiB) does not compensate. The useful upgrade is TensorRT
