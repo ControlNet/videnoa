@@ -97,6 +97,24 @@ accepts libsqlite3-sys 0.39.
 Dev-only npm audit: typescript-eslint 8.72.2 still bundles minimatch < 11.1
 (GHSA-g3hv-75wg-m249, moderate). Runtime `npm audit --omit=dev` is clean.
 
+## Cargo `unused_dependencies` and licenses (2026-11-16)
+
+- Cargo 1.100 warns `unused dependency` per manifest (`cargo::unused_dependencies`,
+  not a rustc lint, so `clippy -D warnings` does not fail on it). It judges
+  the current profile only: `rust-embed` in `videnoa-core` and
+  `videnoa-controller` is used only under `#[cfg(not(debug_assertions))]`
+  (embedded frontend), so debug builds flagged it. Fixed with
+  `#[cfg(debug_assertions)] use rust_embed as _;` next to the release-only
+  code. Check both `cargo check --workspace --all-targets` and the same with
+  `--release`: release builds also showed `use std::fs` that only debug-only
+  test helpers needed.
+- The workspace is `AGPL-3.0-only` (owner's choice; `[workspace.package]
+  license`, inherited with `license.workspace = true`). `deny.toml` has a
+  `[licenses]` allow-list of exactly what the graph needs; MPL-2.0 (desktop
+  CSS crates) and Unlicense (wasm-only crates under iroh) are the least common
+  entries. CI runs `cargo deny check advisories licenses`, enforced by the
+  workflow contract in `scripts/workflow_contracts/unittest.mjs`.
+
 ## Verification
 
 ```bash
@@ -107,7 +125,7 @@ rustc --version   # 1.100.0
 cargo fmt --all -- --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo clippy --locked -p videnoa-controller --all-targets --all-features -- -D warnings
-cargo deny check advisories
+cargo deny check advisories licenses
 cargo test --locked -p videnoa-core -p videnoa-app -p videnoa-protocol -p videnoa-transport
 cargo test --locked -p videnoa-controller --all-features
 ```
