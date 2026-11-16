@@ -6,7 +6,7 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use ndarray::Array4;
 use ort::{
-    ep::{CUDAExecutionProvider, ExecutionProvider},
+    ep::{ExecutionProvider, CUDA},
     session::{builder::GraphOptimizationLevel, Session},
     value::Tensor,
 };
@@ -18,17 +18,16 @@ const INPUT_H: usize = 720;
 const INPUT_W: usize = 1280;
 
 fn main() -> Result<()> {
+    let env = ort::init().build()?;
     println!("=== videnoa CUDA EP validation spike ===\n");
-
-    let cuda = CUDAExecutionProvider::default();
-    println!("CUDA EP available: {:?}", cuda.is_available());
+    println!("CUDA EP available: {:?}", CUDA::is_available());
 
     println!("Loading model: {MODEL_PATH}");
     let t_load = Instant::now();
-    let mut session = Session::builder()?
+    let mut session = Session::builder(&env)?
         .with_optimization_level(GraphOptimizationLevel::Level3)
         .map_err(|error| -> ort::Error { error.into() })?
-        .with_execution_providers([CUDAExecutionProvider::default().build().error_on_failure()])
+        .with_execution_providers([CUDA::default().build().error_on_failure()])
         .map_err(|error| -> ort::Error { error.into() })?
         .commit_from_file(MODEL_PATH)
         .context("Failed to load ONNX model")?;

@@ -7,7 +7,7 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use ndarray::Array4;
 use ort::{
-    ep::CUDAExecutionProvider,
+    ep::CUDA,
     session::{builder::GraphOptimizationLevel, Session},
     value::Tensor,
 };
@@ -20,14 +20,15 @@ const INPUT_W: usize = 1280;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let env = ort::init().build()?;
     println!("=== videnoa async CUDA EP spike ===\n");
 
     println!("Loading model: {MODEL_PATH}");
     let session = Arc::new(Mutex::new(
-        Session::builder()?
+        Session::builder(&env)?
             .with_optimization_level(GraphOptimizationLevel::Level3)
             .map_err(|error| -> ort::Error { error.into() })?
-            .with_execution_providers([CUDAExecutionProvider::default().build().error_on_failure()])
+            .with_execution_providers([CUDA::default().build().error_on_failure()])
             .map_err(|error| -> ort::Error { error.into() })?
             .commit_from_file(MODEL_PATH)
             .context("Failed to load ONNX model")?,

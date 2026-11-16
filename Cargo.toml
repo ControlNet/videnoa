@@ -9,7 +9,7 @@ rust-version = "1.100.0"
 [workspace.dependencies]
 videnoa-transport = { path = "crates/transport" }
 videnoa-protocol = { path = "crates/protocol" }
-ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "cuda", "tensorrt", "ndarray", "load-dynamic", "half", "api-23"] }
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "cuda", "tensorrt", "ndarray", "load-dynamic", "half", "api-23"] }
 half = "2"
 ndarray = "0.17"
 tokio = { version = "1", features = ["full"] }

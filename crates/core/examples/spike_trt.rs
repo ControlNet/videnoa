@@ -16,7 +16,8 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use ndarray::Array4;
 use ort::{
-    ep::{CUDAExecutionProvider, ExecutionProvider, TensorRTExecutionProvider},
+    environment::Environment,
+    ep::{ExecutionProvider, TensorRT, CUDA},
     session::{builder::GraphOptimizationLevel, Session},
     value::Tensor,
 };
@@ -31,6 +32,7 @@ const INPUT_W: usize = 240;
 const NUM_BENCHMARK_RUNS: usize = 5;
 
 fn main() -> Result<()> {
+    let env = ort::init().build()?;
     videnoa_core::runtime::setup_runtime_libs();
 
     println!("=== videnoa TensorRT EP validation spike ===\n");
@@ -41,20 +43,18 @@ fn main() -> Result<()> {
     }
 
     // --- Step 0: Check EP availability ---
-    let cuda = CUDAExecutionProvider::default();
-    let trt = TensorRTExecutionProvider::default();
-    println!("CUDA EP available: {:?}", cuda.is_available());
-    println!("TRT  EP available: {:?}", trt.is_available());
+    println!("CUDA EP available: {:?}", CUDA::is_available());
+    println!("TRT  EP available: {:?}", TensorRT::is_available());
 
     println!("\n--- CUDA EP Baseline ---");
-    let cuda_times = run_benchmark_with_cuda()?;
+    let cuda_times = run_benchmark_with_cuda(&env)?;
     println!(
         "CUDA EP: load={:.2?}, warmup={:.2?}, avg_infer={:.2?} (over {} runs)",
         cuda_times.load, cuda_times.warmup, cuda_times.avg_inference, NUM_BENCHMARK_RUNS
     );
 
     // Probe TRT EP: is_available() checks compile-time support, but runtime needs libnvinfer
-    let trt_runtime_ok = probe_trt_runtime();
+    let trt_runtime_ok = probe_trt_runtime(&env);
     println!(
         "\nTRT runtime probe: {}",
         if trt_runtime_ok {
@@ -68,14 +68,14 @@ fn main() -> Result<()> {
         std::fs::create_dir_all(TRT_CACHE_DIR)?;
 
         println!("\n--- TensorRT EP: First run (engine compilation) ---");
-        let trt_first = run_trt_inference(true)?;
+        let trt_first = run_trt_inference(&env, true)?;
         println!(
             "TRT first run: load={:.2?}, warmup={:.2?}, infer={:.2?}",
             trt_first.load, trt_first.warmup, trt_first.avg_inference
         );
 
         println!("\n--- TensorRT EP: Second run (cache hit) ---");
-        let trt_cached = run_trt_inference(false)?;
+        let trt_cached = run_trt_inference(&env, false)?;
         println!(
             "TRT cached run: load={:.2?}, warmup={:.2?}, infer={:.2?}",
             trt_cached.load, trt_cached.warmup, trt_cached.avg_inference
@@ -127,23 +127,23 @@ fn main() -> Result<()> {
         println!("  2. Ensure libnvinfer.so is in LD_LIBRARY_PATH");
         println!("  3. Re-run this spike");
         println!("\nTRT EP config (ready to use once libnvinfer is available):");
-        println!("  TensorRTExecutionProvider::default()");
+        println!("  TensorRT::default()");
         println!("    .with_engine_cache(true)");
         println!("    .with_engine_cache_path(\"{TRT_CACHE_DIR}\")");
         println!("    .with_fp16(true)");
         println!("    .with_device_id(0)");
 
         println!("\n--- TRT→CUDA fallback (graceful degradation) ---");
-        let mut session = Session::builder()?
+        let mut session = Session::builder(&env)?
             .with_optimization_level(GraphOptimizationLevel::Level3)
             .map_err(|error| -> ort::Error { error.into() })?
             .with_execution_providers([
-                TensorRTExecutionProvider::default()
+                TensorRT::default()
                     .with_engine_cache(true)
                     .with_engine_cache_path(TRT_CACHE_DIR)
                     .with_fp16(true)
                     .build(),
-                CUDAExecutionProvider::default().build(),
+                CUDA::default().build(),
             ])
             .map_err(|error| -> ort::Error { error.into() })?
             .commit_from_file(MODEL_PATH)
@@ -166,12 +166,10 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn probe_trt_runtime() -> bool {
-    match Session::builder()
+fn probe_trt_runtime(env: &Environment) -> bool {
+    match Session::builder(env)
         .and_then(|b| {
-            b.with_execution_providers([TensorRTExecutionProvider::default()
-                .build()
-                .error_on_failure()])
+            b.with_execution_providers([TensorRT::default().build().error_on_failure()])
                 .map_err(|error| -> ort::Error { error.into() })
         })
         .and_then(|mut b| b.commit_from_file(MODEL_PATH))
@@ -190,12 +188,12 @@ struct BenchmarkResult {
     avg_inference: std::time::Duration,
 }
 
-fn run_benchmark_with_cuda() -> Result<BenchmarkResult> {
+fn run_benchmark_with_cuda(env: &Environment) -> Result<BenchmarkResult> {
     let t_load = Instant::now();
-    let mut session = Session::builder()?
+    let mut session = Session::builder(env)?
         .with_optimization_level(GraphOptimizationLevel::Level3)
         .map_err(|error| -> ort::Error { error.into() })?
-        .with_execution_providers([CUDAExecutionProvider::default().build().error_on_failure()])
+        .with_execution_providers([CUDA::default().build().error_on_failure()])
         .map_err(|error| -> ort::Error { error.into() })?
         .commit_from_file(MODEL_PATH)
         .context("Failed to load model with CUDA EP")?;
@@ -225,7 +223,7 @@ fn run_benchmark_with_cuda() -> Result<BenchmarkResult> {
     })
 }
 
-fn run_trt_inference(is_first_run: bool) -> Result<BenchmarkResult> {
+fn run_trt_inference(env: &Environment, is_first_run: bool) -> Result<BenchmarkResult> {
     std::fs::create_dir_all(TRT_CACHE_DIR)?;
 
     if is_first_run {
@@ -237,10 +235,10 @@ fn run_trt_inference(is_first_run: bool) -> Result<BenchmarkResult> {
     }
 
     let t_load = Instant::now();
-    let mut session = Session::builder()?
+    let mut session = Session::builder(env)?
         .with_optimization_level(GraphOptimizationLevel::Level3)
         .map_err(|error| -> ort::Error { error.into() })?
-        .with_execution_providers([TensorRTExecutionProvider::default()
+        .with_execution_providers([TensorRT::default()
             .with_engine_cache(true)
             .with_engine_cache_path(TRT_CACHE_DIR)
             .with_fp16(true)

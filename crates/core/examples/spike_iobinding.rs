@@ -6,7 +6,7 @@ use std::time::Instant;
 use anyhow::{ensure, Context, Result};
 use ndarray::Array4;
 use ort::{
-    ep::CUDAExecutionProvider,
+    ep::CUDA,
     memory::{AllocationDevice, Allocator, AllocatorType, MemoryInfo, MemoryType},
     session::{builder::GraphOptimizationLevel, Session},
     value::Tensor,
@@ -22,12 +22,13 @@ const OUTPUT_W: usize = INPUT_W * 4;
 const NUM_RUNS: usize = 10;
 
 fn main() -> Result<()> {
+    let env = ort::init().build()?;
     println!("=== videnoa IoBinding validation spike ===\n");
 
-    let mut session = Session::builder()?
+    let mut session = Session::builder(&env)?
         .with_optimization_level(GraphOptimizationLevel::Level3)
         .map_err(|error| -> ort::Error { error.into() })?
-        .with_execution_providers([CUDAExecutionProvider::default().build().error_on_failure()])
+        .with_execution_providers([CUDA::default().build().error_on_failure()])
         .map_err(|error| -> ort::Error { error.into() })?
         .commit_from_file(MODEL_PATH)
         .context("Failed to load ONNX model")?;

@@ -7,14 +7,14 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, RecvTimeoutError};
-use std::sync::{Arc, Once, OnceLock};
+use std::sync::{Mutex, Once, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Context, Result};
 use ort::{
     environment::Environment,
-    ep::{CUDAExecutionProvider, ExecutionProvider, TensorRTExecutionProvider},
+    ep::{ExecutionProvider, TensorRT, CUDA},
     memory::{AllocationDevice, Allocator, AllocatorType, MemoryInfo, MemoryType},
     session::{
         builder::{GraphOptimizationLevel, SessionBuilder},
@@ -89,7 +89,7 @@ pub fn device_id_port() -> PortDefinition {
     }
 }
 
-fn output_memory_contract(cuda_pinned: bool) -> (AllocationDevice, MemoryType) {
+fn output_memory_contract(cuda_pinned: bool) -> (AllocationDevice<'static>, MemoryType) {
     if cuda_pinned {
         (AllocationDevice::CUDA_PINNED, MemoryType::CPUOutput)
     } else {
@@ -97,12 +97,12 @@ fn output_memory_contract(cuda_pinned: bool) -> (AllocationDevice, MemoryType) {
     }
 }
 
-fn output_memory_info(cuda_pinned: bool) -> ort::Result<MemoryInfo> {
+fn output_memory_info(cuda_pinned: bool) -> ort::Result<MemoryInfo<'static>> {
     let (device, memory_type) = output_memory_contract(cuda_pinned);
     MemoryInfo::new(device, 0, AllocatorType::Device, memory_type)
 }
 
-pub(crate) fn inference_output_memory_info(session: &Session) -> ort::Result<MemoryInfo> {
+pub(crate) fn inference_output_memory_info(session: &Session) -> ort::Result<MemoryInfo<'static>> {
     let pinned = output_memory_info(true)?;
     match Allocator::new(session, pinned.clone()) {
         Ok(_) => Ok(pinned),
@@ -126,9 +126,9 @@ pub(crate) fn pinned_input_allocator(session: &Session) -> Option<Allocator> {
 
 pub(crate) fn ensure_inference_output_memory(
     value: &DynValue,
-    expected: &MemoryInfo,
+    expected: &MemoryInfo<'_>,
 ) -> Result<()> {
-    let tensor = value.downcast_ref::<DynTensorValueType>()?;
+    let tensor = value.view().downcast::<DynTensorValueType>()?;
     let memory = tensor.memory_info();
     anyhow::ensure!(
         memory.allocation_device() == expected.allocation_device()
@@ -194,6 +194,32 @@ fn cache_stats(root: &Path) -> CacheStats {
     stats
 }
 
+/// The process's ONNX Runtime environment, created on first use. `ort`
+/// allows one environment per process, and every session needs it.
+///
+/// It is never released. Releasing it at exit (from the executable's
+/// `.fini_array`) runs after the C++ static destructors that `libonnxruntime`
+/// and the CUDA provider registered with `__cxa_atexit`, so `ReleaseEnv` then
+/// works on destroyed state and corrupts the heap: the process intermittently
+/// aborted with "corrupted double-linked list" in libcuda's destructor after a
+/// successful CUDA job. A static is never dropped, and the OS reclaims the
+/// environment on exit.
+pub(crate) fn ort_environment() -> Result<&'static Environment> {
+    static ENVIRONMENT: OnceLock<Environment> = OnceLock::new();
+    static INIT: Mutex<()> = Mutex::new(());
+    if let Some(environment) = ENVIRONMENT.get() {
+        return Ok(environment);
+    }
+    let _init = INIT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(environment) = ENVIRONMENT.get() {
+        return Ok(environment);
+    }
+    let environment = ort::init().build()?;
+    Ok(ENVIRONMENT.get_or_init(|| environment))
+}
+
 /// Build an `ort::Session` with the requested backend and fallback chain.
 ///
 /// For `InferenceBackend::Tensorrt`:
@@ -204,26 +230,8 @@ fn cache_stats(root: &Path) -> CacheStats {
 ///   - Registers CUDA EP only.
 ///
 /// In both cases, if CUDA EP is also unavailable, ORT falls back to CPU.
-/// Keep the ONNX Runtime environment alive until the process exits.
-///
-/// `ort` releases its global environment from the executable's `.fini_array`.
-/// glibc runs that only after the C++ static destructors that `libonnxruntime`
-/// and the CUDA provider registered with `__cxa_atexit`, so `ReleaseEnv` then
-/// works on destroyed state and corrupts the heap. The process intermittently
-/// aborts with "corrupted double-linked list" in libcuda's destructor after a
-/// successful CUDA job. A reference held by a static is never dropped, so the
-/// environment is never released and the OS reclaims it on exit.
-fn retain_ort_environment() -> Result<()> {
-    static RETAINED: OnceLock<Arc<Environment>> = OnceLock::new();
-    if RETAINED.get().is_none() {
-        let _ = RETAINED.set(ort::environment::current()?);
-    }
-    Ok(())
-}
-
 pub fn build_session(config: &SessionConfig<'_>) -> Result<Session> {
-    retain_ort_environment()?;
-    let builder = Session::builder()?
+    let builder = Session::builder(ort_environment()?)?
         .with_optimization_level(GraphOptimizationLevel::Level3)
         .map_err(|error| -> ort::Error { error.into() })?;
 
@@ -235,8 +243,7 @@ pub fn build_session(config: &SessionConfig<'_>) -> Result<Session> {
             None => commit_tensorrt_session(builder, config, Path::new("trt_cache"))?,
         },
         InferenceBackend::Cuda => {
-            let cuda = CUDAExecutionProvider::default();
-            if !cuda.is_available().unwrap_or(false) {
+            if !CUDA::is_available().unwrap_or(false) {
                 warn!("CUDA EP is not available — inference will fall back to CPU");
             }
 
@@ -247,7 +254,7 @@ pub fn build_session(config: &SessionConfig<'_>) -> Result<Session> {
             );
 
             builder
-                .with_execution_providers([CUDAExecutionProvider::default()
+                .with_execution_providers([CUDA::default()
                     .with_device_id(config.device_id)
                     .build()
                     .error_on_failure()])
@@ -321,15 +328,13 @@ fn commit_tensorrt_session(
     // The fallback CUDA EP ensures inference still works.
     let session_result = builder
         .with_execution_providers([
-            TensorRTExecutionProvider::default()
+            TensorRT::default()
                 .with_engine_cache(true)
                 .with_engine_cache_path(&cache_path)
                 .with_fp16(true)
                 .with_device_id(config.device_id)
                 .build(),
-            CUDAExecutionProvider::default()
-                .with_device_id(config.device_id)
-                .build(),
+            CUDA::default().with_device_id(config.device_id).build(),
         ])
         .map_err(|error| -> ort::Error { error.into() })?
         .commit_from_file(config.model_path)
@@ -626,6 +631,7 @@ fn set_aside_trt_cache_entry(entry: &Path) -> Result<()> {
 mod tests {
     use super::*;
     use ort::memory::AllocationDevice;
+    use std::sync::Arc;
 
     #[test]
     fn output_memory_info_when_cuda_pinned_uses_cpu_output_memory() {
@@ -655,7 +661,8 @@ mod tests {
     #[ignore]
     fn inference_output_memory_info_when_session_is_cpu_only_uses_cpu() {
         // Given: a real ONNX Runtime session with environment execution providers disabled.
-        let mut builder = Session::builder().expect("create session builder");
+        let mut builder = Session::builder(ort_environment().expect("create environment"))
+            .expect("create session builder");
         builder = builder
             .with_no_environment_execution_providers()
             .expect("disable environment execution providers");
