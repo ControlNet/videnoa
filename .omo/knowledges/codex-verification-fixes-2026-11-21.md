@@ -1,14 +1,18 @@
 # Codex fix-verification follow-ups (2026-11-21)
 
-Follow-up fixes for the five remaining gaps and one batching regression found
-when re-verifying `deep-review-fixes-2026-11-13.md` (`3a58d9d` vs `7d8134c`).
-Items 10 and 14-18 remain unchanged per the earlier scope and product decisions
-recorded in `deep-review-fixes-2026-11-13.md`.
+Follow-up fixes across two verification rounds for `deep-review-fixes-2026-11-13.md`:
+- **Round 1**: five remaining gaps and one batching regression found when
+  re-verifying `3a58d9d` vs `7d8134c` (items 10 and 14-18 remain unchanged per
+  the earlier scope and product decisions recorded in
+  `deep-review-fixes-2026-11-13.md`).
+- **Round 2**: six concurrency, filesystem-safety, UTF-8, and UI lifecycle
+  follow-ups uncovered during deep audit of the Round 1 changes and surrounding
+  server/UI paths.
 
-Each fix includes regression tests covering the exact reproduction path and
-related edge cases.
+Each fix includes deterministic regression tests covering the exact reproduction
+path and related edge cases.
 
-## Summary
+## Round 1 summary
 
 | Finding | Original # | Commit | Root cause | Fix & regression tests |
 |---|---|---|---|---|
@@ -18,23 +22,60 @@ related edge cases.
 | E (P2) | #6 | `f401212` | Startup staged-output cleanup inferred `output_path` statically from `VideoOutput` literals and direct `WorkflowInput` bindings, missing paths computed at runtime by upstream nodes (`PathJoiner`, `StringTemplate`, etc.). | Added SQLite schema v3 table `job_staged_files` and `StagedOutputHook` on `ExecutionContext` (propagated through `SequentialExecutor`, `WorkflowNode`, and `VideoCompileContext`). `VideoOutputNode::execute` and `EncoderConfig::reserve_temp_beside_output` record resolved target and `.videnoa-<direct\|video\|mux>` paths before/as staged files are created (preserving `.videnoa-kept`). Terminal DB transitions clear `job_staged_files` atomically; crash recovery sweeps recorded obligations alongside the static scan and deletes rows only once removal succeeds. Tests: `staged_file_records_persist_across_running_reconciliation_until_cleared`, `staged_output_hook_records_target_and_temp_file_paths`, `startup_removes_staged_outputs_for_dynamically_computed_output_path`. |
 | C (P2) | #3 | `8f976f8` | `check_nested_workflow` validated inner graphs with `validate_own_nodes` in isolation without checking caller `interface_inputs` / `interface_outputs` against inner `WorkflowInput` / `WorkflowOutput` declarations, allowing port name, `PortType`, and required-input mismatches into the queue. | `check_nested_workflow` now passes caller params at every nesting depth and runs `validate_nested_interface`, checking port existence, `PortType::is_compatible`, single `WorkflowOutput` producer, connected/default/injected value sources for inner outputs and required inner inputs, and malformed/duplicate port definitions. `WorkflowNode::from_params` also inspects immediate inner `WorkflowInput` fallbacks (`default_value` or injected param) so unconnected outer `interface_inputs` backed by inner defaults remain optional unless explicitly marked `"required": true`. Tests in `crates/core/src/nodes/workflow_io.rs` and `crates/core/tests/workflow_validation.rs`: `nested_interface_output_missing_from_inner_workflow_is_rejected`, `nested_interface_port_type_and_target_input_mismatches_are_rejected`, `nested_required_workflow_input_must_be_satisfied_at_submission`, `multi_level_nested_interface_mismatch_is_caught_at_outer_validate`, `unconnected_interface_input_with_inner_default_or_injected_param_runs`. |
 
-## Behaviour and persistence notes
+## Round 2 summary
 
+| Finding | Severity | Commit | Root cause | Fix & regression tests |
+|---|---|---|---|---|
+| 1. Cancel/delete race against terminal commit window | P1 | `76cb2a2` | Holding in-memory `job.status` at `Running` until `jobs.db` committed opened a window between `persist_job_transition` committing `Completed` to SQLite and `finish_job` re-acquiring the `jobs` shard to publish it: a concurrent `DELETE /api/jobs/{id}` (or `begin_shutdown`) saw `Running` with no `unpersisted_terminal` entry and issued a full-row `update_job` that overwrote SQLite `status = 'completed'` back to `'running'`. In addition, `Persistence::delete_job` deleted only from `jobs`, leaving orphaned `job_staged_files` rows and pending sidecars. | `UnpersistedTerminalState` now tracks `committing` from the initial `finish_job` snapshot under the `jobs` shard until `publish_terminal_transition` updates `jobs` (or `retry_terminal_write` atomically hands off to `pending`). `delete_job_history` and `begin_shutdown` inspect `committing` and `pending` under strict lock order, release all DashMap/`Mutex` guards before SQLite I/O, and call conditional `record_cancel_request` (`WHERE id = ?1 AND status IN ('queued', 'running') AND cancel_requested_at IS NULL`) rather than full-row `update_job`; non-terminal `update_job` also guards `status IN ('queued', 'running')` and preserves cancel columns via `COALESCE`. `delete_job` deletes matching `job_staged_files` rows in the same immediate transaction and removes any pending sidecar; terminal/unloaded deletes serialize under async `job_delete_lock`. Tests: `delete_during_terminal_commit_to_publish_window_preserves_completed_state`, `shutdown_during_terminal_commit_to_publish_window_preserves_completed_state`, `record_cancel_request_and_non_terminal_update_never_clobber_terminal_or_prior_cancel`, `delete_job_cleans_up_staged_file_records_and_sidecar_for_target_job_only`. |
+| 2. Shutdown missing in-flight admitted submissions | P2 | `76cb2a2` | Submission handlers released the synchronous admission lock before completing SQLite persistence, publishing into `jobs`, and spawning executors, allowing `begin_shutdown` + `wait_for_jobs_to_stop` to see `active.is_empty()` while an admitted request was mid-persistence and later spawned after shutdown started. | Replaced `admission: std::sync::Mutex<()>` with `AdmissionState { shutting_down, in_flight }`, RAII `AdmissionGuard`, and `admission_notify` across `POST /api/jobs`, unkeyed and keyed `POST /api/run`, `POST /api/jobs/{id}/rerun`, and `POST /api/batch`. `commit_admitted_jobs` atomically re-checks `shutting_down` when publishing to `jobs`; if shutdown started while SQLite writes were in flight, it rolls back unpublished DB rows and idempotency claims while holding `in_flight > 0` and returns `503 shutting_down` without spawning an executor. `wait_for_jobs_to_stop` drains `in_flight > 0` before checking `active.is_empty()`, and `run_job` uses `biased;` cancellation checks before/after permit acquisition. Tests: `shutdown_rejects_in_flight_submissions_after_db_lock_releases`, `wait_for_jobs_to_stop_drains_in_flight_single_idempotent_and_batch_submissions`, `shutdown_rolls_back_in_flight_idempotent_claim_without_leaving_key_receipt`. |
+| 3. Atomic workflow save widening `0600` permissions | P2 | `76cb2a2` | `replace_workflow_file` configured `NamedTempFile` with mode `0o666`, exposing `.videnoa-save` staging files before `sync_all()` and widening existing `0600`/`0640` workflow files to `0666 & !umask` (for example `0644` under `umask 022`) on atomic `persist(path)` rename. | Keep `.videnoa-save` staging files at `0600` during write and `sync_all()`. Before `staged.persist(path)`, Unix preserves existing target permissions (`meta.permissions().mode() & 0o777`), or parses `Umask:` from `/proc/self/status` on Linux (`0o666 & !umask`, fallback `0o600`, zero calls to thread-unsafe `libc::umask`) when creating a new file; `write_new_workflow_file` also calls `sync_all()`. Tests: `test_parse_proc_status_umask_handles_valid_and_missing_lines`, `test_save_workflow_overwrite_preserves_existing_file_permissions`, `test_replace_workflow_file_preserves_0600_under_umask_022_subprocess`, `workflow_overwrite_preserves_private_file_permissions_across_atomic_replace`. |
+| 4. `RunWorkflowDialog` stale workflow-list race on reopen | P2 | `8f5241a` | The `useEffect` fetching `Promise.all([listPresets(), listWorkflows()])` on dialog open had no cleanup cancellation and retained previous `workflows` across reopen/error cycles, allowing a slow response from a closed open-cycle to overwrite fresher workflow graphs, clear `loading` early, or show stale error toasts. | Added effect cleanup cancellation (`let cancelled = false; return () => { cancelled = true; };`) guarding `.then`, `.catch`, and `.finally`, and reset `workflows` to `[]` on reopen and load failure so stale graphs cannot render or submit. Tests in `web/src/pages/jobs/__tests__/RunWorkflowDialog.test.tsx`: 4 deferred-promise race tests covering late stale resolution after fresh reopen load (verifying `submitJob` receives the fresh graph), cancelled rejection while reopen pending, cancelled resolution while reopen pending, and clearing prior workflows on reopen failure. |
+| 5. UTF-8 mid-codepoint split panic in staged-output sweep | P2 | `e0d7e91` | `is_staged_filename_for_owner` in `crates/core/src/server/staged_outputs.rs` called unchecked `before_marker.split_at(random_start)` (`len - 6`), panicking during startup crash recovery when a hidden `.videnoa-*` filename had a multi-byte UTF-8 character straddling byte offset `len - 6`. | Replaced `before_marker.split_at(random_start)` with `before_marker.split_at_checked(random_start)` returning `false` on non-char-boundary offsets (leaving zero unchecked byte-index string splits in `staged_outputs.rs`). Test in `staged_outputs::tests`: `multibyte_utf8_names_never_panic_and_valid_unicode_stems_still_sweep` (2-byte, 3-byte CJK, and 4-byte emoji hidden `.videnoa-*` names plus valid Unicode stems). |
+| 6. Premature staged-output obligation cleanup on offline volumes | P2 | `e0d7e91` | Startup staged-output sweep treated `ErrorKind::NotFound` on missing parent directories or direct staged paths as completed cleanup, clearing `job_staged_files` rows when an external drive or network mount was offline and stranding staged files once remounted. | Added `parent_dir_or_cwd` and `parent_dir_is_accessible` (`std::fs::read_dir(dir)`). `sweep_beside_checked` returns `false` when `dir` is `NotFound` or becomes inaccessible mid-scan, and `sweep_direct_staged_file` verifies `parent_dir_is_accessible(path)` whenever `symlink_metadata` or `remove_file` returns `NotFound`, retaining `job_staged_files` records until the parent directory is online and readable. Test in `staged_outputs::tests`: `missing_parent_directory_retains_recorded_obligations_until_volume_is_online`. |
+
+## Concurrency and persistence invariants
+
+- **Acyclic server lock order (`crates/core/src/server/mod.rs`)**:
+  - `job_delete_lock` (async `tokio::sync::Mutex`) -> `jobs` DashMap shard ->
+    `unpersisted_terminal` (`std::sync::Mutex`).
+  - `admission` (`std::sync::Mutex<AdmissionState>`) -> `jobs` DashMap shard.
+  - Zero DashMap shard guards or `std::sync::Mutex` guards are held across
+    `.await`, SQLite queries/transactions, or filesystem `sync_all()` / directory
+    scans.
+- **Unbroken terminal commit bridge**: `UnpersistedTerminalState.committing`
+  holds the terminal transition from the moment `finish_job` snapshots the active
+  job under the `jobs` shard until either `publish_terminal_transition` commits
+  the terminal state to memory or `retry_terminal_write` atomically moves it to
+  `pending`. Neither `DELETE /api/jobs/{id}` nor `begin_shutdown` can treat a
+  committing terminal job as active, and SQLite cancel/progress writes guard
+  `WHERE status IN ('queued', 'running')` so persisted terminal rows are
+  monotonic.
+- **Shutdown admission drain**: every job submission endpoint increments
+  `AdmissionState.in_flight` via RAII `AdmissionGuard` before releasing the mutex
+  for SQLite persistence and re-checks `shutting_down` when publishing into
+  `jobs`. Submissions racing with `begin_shutdown` roll back unpublished SQLite
+  and idempotency records before dropping `AdmissionGuard`, and
+  `wait_for_jobs_to_stop` drains `in_flight == 0` before checking `active`.
 - **Job terminal visibility**: `/api/jobs` and `/api/jobs/{id}` keep a finished
   job in `running` until its terminal transition commits to `jobs.db`. Under
   transient or prolonged SQLite lock/disk errors, `<data_dir>/pending_terminal/`
   preserves the outcome across process crashes without reverting a finished job
   to `cancelled`.
-- **SQLite schema v3 (`jobs.db`)**: adds `job_staged_files(job_id, path)` for
-  runtime staged-output tracking. Existing v2 databases migrate in place on
-  startup.
+- **SQLite schema v3 (`jobs.db`) & offline-safe staged sweep**: `job_staged_files`
+  tracks runtime staged outputs, clears atomically on terminal transition or
+  `delete_job`, and retains cleanup obligations across restarts whenever a target
+  parent directory is offline (`NotFound`/unreadable) until the volume returns.
+- **Private workflow file modes**: atomic workflow saves keep `.videnoa-save`
+  files at `0600` through `sync_all()`, preserve existing target file modes on
+  overwrite, and derive new-file permissions from `/proc/self/status` `Umask:`
+  without mutating process-wide `umask`.
 - **Nested workflow interface validation**: workflows whose `Workflow` nodes
   declare `interface_inputs` or `interface_outputs` incompatible with the target
-  workflow's `WorkflowInput` / `WorkflowOutput` nodes are now rejected at
-  validation / `POST /api/jobs` time across arbitrary nesting depths.
+  workflow's `WorkflowInput` / `WorkflowOutput` nodes are rejected at validation
+  / `POST /api/jobs` time across arbitrary nesting depths.
 - **HttpRequest redirect retries**: non-idempotent methods (`POST`, `PATCH`,
-  etc.) still follow `301`/`302`/`303`/`307`/`308` redirects up to 10 hops, but
-  never replay the origin request once at least one redirect hop was received.
+  etc.) follow `301`/`302`/`303`/`307`/`308` redirects up to 10 hops, but never
+  replay the origin request once at least one redirect hop was received.
 - **Advisory gate (`3aff512`)**: RustSec published `RUSTSEC-2026-0543` marking
   `chrono` (`0.4.45`) unmaintained across all versions with no vulnerability and
   no patched `chrono` release (`cargo update -p chrono --dry-run` locks 0
