@@ -186,4 +186,45 @@ describe("worker name resolution", () => {
     expect(result.current.get(secondWorker.id)).toBe("render-west")
     unmount()
   })
+
+  it("preserves a newer SSE rename and newly registered worker when an older GET finishes later", async () => {
+    // Given: an in-flight GET /api/workers request that captured version 4 ("render-east").
+    let resolveList!: (response: Response) => void
+    const requests: Request[] = []
+    const fetcher: typeof fetch = async (input, init) => {
+      requests.push(new Request(input, init))
+      return new Promise((resolve) => {
+        resolveList = resolve
+      })
+    }
+    const apiClient = createApiClient({ fetcher, onUnauthorized: () => undefined })
+    const { result, unmount } = renderHook(() => useWorkerNames(apiClient))
+    await waitFor(() => expect(requests).toHaveLength(1))
+
+    // When: an SSE rename (version 5) and a newly registered worker arrive before GET resolves.
+    const addedWorker: Worker = {
+      ...worker,
+      id: "550e8400-e29b-41d4-a716-4466554400aa",
+      version: 1,
+      name: "render-new",
+    }
+    act(() => {
+      appWorkerUpdateStore.publish({ ...worker, version: 5, name: "render-north" })
+      appWorkerUpdateStore.publish(addedWorker)
+    })
+    await waitFor(() => expect(result.current.get(worker.id)).toBe("render-north"))
+    expect(result.current.get(addedWorker.id)).toBe("render-new")
+    const afterSse = result.current
+
+    // And the stale GET response (version 4) arrives afterwards.
+    await act(async () => {
+      resolveList(Response.json({ items: [worker], total: 1 }))
+    })
+
+    // Then: neither the newer rename nor the newly registered worker is clobbered, and map identity holds.
+    expect(result.current.get(worker.id)).toBe("render-north")
+    expect(result.current.get(addedWorker.id)).toBe("render-new")
+    expect(result.current).toBe(afterSse)
+    unmount()
+  })
 })

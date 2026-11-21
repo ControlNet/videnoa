@@ -159,3 +159,83 @@ it("applies every task update that arrives in one batch", async () => {
   expect(result.current.page?.items.map((task) => task.progress?.percent)).toEqual([40, 50])
   expect(pageReads).toBe(readsBefore)
 })
+
+it("reconciles an off-filter status transition that arrives while a filtered page read is in flight", async () => {
+  // Given: a processing-filtered page read in flight that captured the task before completion.
+  let finishFirstPageRead!: (response: Response) => void
+  let pageReads = 0
+  const fetcher: typeof fetch = async (input, init) => {
+    const url = new URL(new Request(input, init).url)
+    if (url.pathname === "/api/status-counts") {
+      return Response.json(emptyCounts)
+    }
+    pageReads += 1
+    if (pageReads === 1) {
+      return new Promise((resolve) => {
+        finishFirstPageRead = resolve
+      })
+    }
+    return Response.json({ items: [], total: 0, limit: 50, offset: 0 })
+  }
+  const apiClient = createApiClient({ fetcher, onUnauthorized: () => undefined })
+  const query = parseTaskQuery(new URLSearchParams("status=processing"))
+  const { result, unmount } = renderHook(() => useTasksData(apiClient, query))
+  await waitFor(() => expect(pageReads).toBe(1))
+
+  // When: an SSE update marks the task completed while the first GET is still pending,
+  // and the stale first GET subsequently resolves with the old processing row.
+  act(() => {
+    appTaskUpdateStore.publish({
+      ...initialTask,
+      version: 2,
+      status: "completed",
+      completed_at: "2030-01-01T00:02:00Z",
+    })
+  })
+  await act(async () => {
+    finishFirstPageRead(Response.json({ items: [initialTask], total: 1, limit: 50, offset: 0 }))
+  })
+
+  // Then: the hook coalesces a single refresh and never leaves the completed task stuck as processing.
+  await waitFor(() => expect(result.current.loading).toBe(false))
+  expect(pageReads).toBe(2)
+  expect(result.current.page?.items).toEqual([])
+  unmount()
+})
+
+it("merges an in-filter progress update received during an in-flight page read without refetching", async () => {
+  let finishPageRead!: (response: Response) => void
+  let pageReads = 0
+  const fetcher: typeof fetch = async (input, init) => {
+    const url = new URL(new Request(input, init).url)
+    if (url.pathname === "/api/status-counts") {
+      return Response.json(emptyCounts)
+    }
+    pageReads += 1
+    return new Promise((resolve) => {
+      finishPageRead = resolve
+    })
+  }
+  const apiClient = createApiClient({ fetcher, onUnauthorized: () => undefined })
+  const query = parseTaskQuery(new URLSearchParams("status=processing"))
+  const { result, unmount } = renderHook(() => useTasksData(apiClient, query))
+  await waitFor(() => expect(pageReads).toBe(1))
+
+  act(() => {
+    appTaskUpdateStore.publish({
+      ...initialTask,
+      version: 2,
+      progress: { ...initialTask.progress, percent: 75 },
+    })
+  })
+  await act(async () => {
+    finishPageRead(Response.json({ items: [initialTask], total: 1, limit: 50, offset: 0 }))
+  })
+
+  await waitFor(() => expect(result.current.loading).toBe(false))
+  expect(pageReads).toBe(1)
+  expect(result.current.page?.items[0]?.version).toBe(2)
+  expect(result.current.page?.items[0]?.status).toBe("processing")
+  expect(result.current.page?.items[0]?.progress?.percent).toBe(75)
+  unmount()
+})

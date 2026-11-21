@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react"
 
 import { type ApiClient, ApiClientError } from "../api/client"
 import {
+  type Task,
   type TaskList,
   type TaskStatusCounts,
   taskListSchema,
@@ -26,6 +27,35 @@ type LoadedTaskPage = {
   readonly page: TaskList
 }
 
+type DeltaReconciliation =
+  | { readonly kind: "unchanged" }
+  | { readonly kind: "merged"; readonly page: TaskList }
+  | { readonly kind: "refetch" }
+
+function reconcileTaskDeltas(
+  page: TaskList,
+  values: readonly Task[],
+  query: TaskQuery,
+): DeltaReconciliation {
+  let items = page.items
+  for (const incoming of values) {
+    const current = items.find((task) => task.id === incoming.id)
+    if (current === undefined) {
+      if (matchesTaskQuery(incoming, query)) {
+        return { kind: "refetch" }
+      }
+      continue
+    }
+    if (incoming.version <= current.version) continue
+    if (!canMergeTaskUpdate(current, incoming, query)) {
+      return { kind: "refetch" }
+    }
+    items = items.map((task) => (task.id === incoming.id ? incoming : task))
+  }
+  if (items === page.items) return { kind: "unchanged" }
+  return { kind: "merged", page: { ...page, items } }
+}
+
 export function useTasksData(apiClient: ApiClient, query: TaskQuery): TasksData {
   const invalidation = useSyncExternalStore(appInvalidationStore.subscribe, appInvalidationStore.snapshot)
   const update = useSyncExternalStore(appTaskUpdateStore.subscribe, appTaskUpdateStore.snapshot)
@@ -38,11 +68,18 @@ export function useTasksData(apiClient: ApiClient, query: TaskQuery): TasksData 
   const [retryGeneration, setRetryGeneration] = useState(0)
   const [countsRetryGeneration, setCountsRetryGeneration] = useState(0)
   const appliedUpdateGeneration = useRef(appTaskUpdateStore.snapshot().generation)
+  const inFlightPageRequest = useRef(true)
+  const queryRef = useRef(query)
+  useEffect(() => {
+    queryRef.current = query
+  }, [query])
 
   useEffect(() => {
     void invalidation.generation
     void retryGeneration
     const controller = new AbortController()
+    const requestStartGeneration = appTaskUpdateStore.snapshot().generation
+    inFlightPageRequest.current = true
     /*
      * The rendered page is deliberately left in place while this read is in
      * flight.
@@ -65,11 +102,37 @@ export function useTasksData(apiClient: ApiClient, query: TaskQuery): TasksData 
     void apiClient.request(pagePath, { schema: taskListSchema, signal: controller.signal }).then(
       (nextPage) => {
         if (controller.signal.aborted) return
+        const latestUpdate = appTaskUpdateStore.snapshot()
+        if (latestUpdate.generation > requestStartGeneration) {
+          const { values, complete } = deltasSince(latestUpdate.recent, requestStartGeneration)
+          appliedUpdateGeneration.current = latestUpdate.generation
+          if (!complete) {
+            setRetryGeneration((generation) => generation + 1)
+            return
+          }
+          const reconciled = reconcileTaskDeltas(nextPage, values, queryRef.current)
+          if (reconciled.kind === "refetch") {
+            setRetryGeneration((generation) => generation + 1)
+            return
+          }
+          inFlightPageRequest.current = false
+          setLoadedPage({
+            path: pagePath,
+            page: reconciled.kind === "merged" ? reconciled.page : nextPage,
+          })
+          setLoading(false)
+          return
+        }
+        inFlightPageRequest.current = false
+        if (appliedUpdateGeneration.current < requestStartGeneration) {
+          appliedUpdateGeneration.current = requestStartGeneration
+        }
         setLoadedPage({ path: pagePath, page: nextPage })
         setLoading(false)
       },
       (reason: unknown) => {
         if (controller.signal.aborted) return
+        inFlightPageRequest.current = false
         if (reason instanceof ApiClientError) {
           setError(messageFor(reason))
           setLoading(false)
@@ -128,6 +191,11 @@ export function useTasksData(apiClient: ApiClient, query: TaskQuery): TasksData 
   const page = loadedPage?.path === pagePath ? loadedPage.page : null
 
   useEffect(() => {
+    // Defer events that arrive while a page GET is in flight: when that GET
+    // resolves, it replays everything since `requestStartGeneration` against
+    // the returned snapshot and coalesces membership/order changes into one
+    // refetch instead of dropping off-filter exits.
+    if (loading || inFlightPageRequest.current) return
     const applied = appliedUpdateGeneration.current
     if (update.generation <= applied) return
     appliedUpdateGeneration.current = update.generation
@@ -137,29 +205,17 @@ export function useTasksData(apiClient: ApiClient, query: TaskQuery): TasksData 
       refetch()
       return
     }
-    if (page === null || loading) {
+    if (page === null) {
       if (values.some((incoming) => matchesTaskQuery(incoming, query))) refetch()
       return
     }
-    let items = page.items
-    for (const incoming of values) {
-      const current = items.find((task) => task.id === incoming.id)
-      if (current === undefined) {
-        if (matchesTaskQuery(incoming, query)) {
-          refetch()
-          return
-        }
-        continue
-      }
-      if (incoming.version <= current.version) continue
-      if (!canMergeTaskUpdate(current, incoming, query)) {
-        refetch()
-        return
-      }
-      items = items.map((task) => task.id === incoming.id ? incoming : task)
+    const reconciled = reconcileTaskDeltas(page, values, query)
+    if (reconciled.kind === "refetch") {
+      refetch()
+      return
     }
-    if (items === page.items) return
-    queueMicrotask(() => setLoadedPage({ path: pagePath, page: { ...page, items } }))
+    if (reconciled.kind === "unchanged") return
+    queueMicrotask(() => setLoadedPage({ path: pagePath, page: reconciled.page }))
   }, [loading, page, pagePath, query, update.generation, update.recent])
 
   return {
