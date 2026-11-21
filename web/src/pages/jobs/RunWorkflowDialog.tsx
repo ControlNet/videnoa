@@ -58,6 +58,7 @@ export function RunWorkflowDialog({
 		setWasOpen(open);
 		if (open) {
 			setLoading(true);
+			setWorkflows([]);
 		} else {
 			setSelectedWorkflow(null);
 			setParamValues({});
@@ -67,8 +68,10 @@ export function RunWorkflowDialog({
 	// Fetch workflows when dialog opens
 	useEffect(() => {
 		if (!open) return;
+		let cancelled = false;
 		Promise.all([listPresets(), listWorkflows()])
 			.then(([presets, saved]) => {
+				if (cancelled) return;
 				const fromPresets = presets
 					.map(presetToEntry)
 					.filter((e) => e.has_interface);
@@ -84,12 +87,18 @@ export function RunWorkflowDialog({
 				setWorkflows(merged);
 			})
 			.catch((err: unknown) => {
+				if (cancelled) return;
+				setWorkflows([]);
 				console.error("Failed to fetch workflows:", err);
 				toast.error(t("jobs.dialog.errors.loadWorkflows"));
 			})
 			.finally(() => {
+				if (cancelled) return;
 				setLoading(false);
 			});
+		return () => {
+			cancelled = true;
+		};
 	}, [open, t]);
 
 	const handleSelect = useCallback((entry: WorkflowEntry) => {
