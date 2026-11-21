@@ -25,11 +25,29 @@ pub(crate) use idempotency::{IdempotentJobClaim, IdempotentJobLookup};
 /// 2. `cancel_requested_at` and `cancel_reason`.
 /// 3. `job_staged_files` tracking runtime output and staged file paths for
 ///    interrupted-job cleanup.
+/// 4. `dir_dev` and `dir_ino` on `job_staged_files` so startup cleanup can
+///    verify the target volume/directory identity before clearing records.
 ///
 /// A database with a higher version came from a newer build and is refused,
 /// so a downgrade cannot rewrite rows it does not understand.
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 const PENDING_TERMINAL_DIR: &str = "pending_terminal";
+
+/// Identifies the filesystem volume and directory inode where a staged output
+/// was created, allowing startup cleanup to distinguish a genuinely cleaned
+/// directory from an unmounted mountpoint's empty underlying directory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StagedDirIdentity {
+    pub dev: u64,
+    pub ino: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RecordedStagedFile {
+    pub job_id: String,
+    pub path: PathBuf,
+    pub dir_identity: Option<StagedDirIdentity>,
+}
 
 /// Durable fallback record written when a finished job's SQLite terminal
 /// update fails, replayed on startup before interrupted running jobs are
@@ -44,6 +62,7 @@ pub(crate) struct PendingTerminalTransition {
     pub cancel_reason: Option<CancelReason>,
 }
 
+pub(super) const STATUS_ADMITTING: &str = "admitting";
 const STATUS_QUEUED: &str = "queued";
 const STATUS_RUNNING: &str = "running";
 const STATUS_COMPLETED: &str = "completed";
@@ -177,9 +196,72 @@ impl JobsPersistence {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn upsert_job(&self, job: &Job) -> Result<()> {
         let row = Self::row_from_job(job)?;
         self.with_connection(|conn| self.upsert_row(conn, &row))
+    }
+
+    /// Inserts a newly admitted job in the pre-acceptance `admitting` state
+    /// until [`Self::activate_admitted_jobs`] promotes it alongside runtime
+    /// publication.
+    pub(crate) fn insert_admitting_job(&self, job: &Job) -> Result<()> {
+        let row = Self::row_from_job(job)?;
+        let updated_at = Utc::now().to_rfc3339();
+        self.with_connection(|conn| {
+            conn.execute(
+                "INSERT INTO jobs (
+                    id, status, workflow_json, created_at, started_at, completed_at,
+                    progress_json, error, params_json, workflow_name, workflow_source,
+                    rerun_of_job_id, updated_at, cancel_requested_at, cancel_reason
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                params![
+                    row.id,
+                    STATUS_ADMITTING,
+                    row.workflow_json,
+                    row.created_at.to_rfc3339(),
+                    row.started_at.map(|ts| ts.to_rfc3339()),
+                    row.completed_at.map(|ts| ts.to_rfc3339()),
+                    row.progress_json,
+                    row.error,
+                    row.params_json,
+                    row.workflow_name,
+                    row.workflow_source,
+                    row.rerun_of_job_id,
+                    updated_at,
+                    row.cancel_requested_at.map(|ts| ts.to_rfc3339()),
+                    row.cancel_reason.map(cancel_reason_to_str),
+                ],
+            )
+            .with_context(|| format!("failed to insert admitting job {}", row.id))?;
+            Ok(())
+        })
+    }
+
+    /// Atomically promotes `admitting` job rows to `queued` right as they are
+    /// accepted into runtime state.
+    pub(crate) fn activate_admitted_jobs(&self, job_ids: &[String]) -> Result<()> {
+        if job_ids.is_empty() {
+            return Ok(());
+        }
+        self.with_connection(|conn| {
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let now = Utc::now().to_rfc3339();
+            for job_id in job_ids {
+                let updated = tx
+                    .execute(
+                        "UPDATE jobs SET status = ?2, updated_at = ?3
+                         WHERE id = ?1 AND status = ?4",
+                        params![job_id, STATUS_QUEUED, now, STATUS_ADMITTING],
+                    )
+                    .with_context(|| format!("failed to activate admitted job {job_id}"))?;
+                if updated != 1 {
+                    bail!("admitted job {job_id} disappeared before activation");
+                }
+            }
+            tx.commit()?;
+            Ok(())
+        })
     }
 
     /// A late executor snapshot must not resurrect a deleted history row.
@@ -245,11 +327,18 @@ impl JobsPersistence {
         } else {
             path.to_path_buf()
         };
+        let dir_identity = capture_parent_dir_identity(&resolved);
+        let dir_dev = dir_identity.map(|id| id.dev as i64);
+        let dir_ino = dir_identity.map(|id| id.ino as i64);
         let encoded = resolved.to_string_lossy();
         self.with_connection(|conn| {
             conn.execute(
-                "INSERT OR IGNORE INTO job_staged_files (job_id, path) VALUES (?1, ?2)",
-                params![job_id, encoded.as_ref()],
+                "INSERT INTO job_staged_files (job_id, path, dir_dev, dir_ino)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(job_id, path) DO UPDATE SET
+                     dir_dev = COALESCE(excluded.dir_dev, job_staged_files.dir_dev),
+                     dir_ino = COALESCE(excluded.dir_ino, job_staged_files.dir_ino)",
+                params![job_id, encoded.as_ref(), dir_dev, dir_ino],
             )
             .with_context(|| {
                 format!(
@@ -261,20 +350,41 @@ impl JobsPersistence {
         })
     }
 
-    pub(crate) fn list_staged_files(&self) -> Result<Vec<(String, PathBuf)>> {
+    pub(crate) fn list_staged_file_records(&self) -> Result<Vec<RecordedStagedFile>> {
         self.with_connection(|conn| {
             let mut stmt = conn.prepare(
-                "SELECT job_id, path FROM job_staged_files ORDER BY job_id ASC, path ASC",
+                "SELECT job_id, path, dir_dev, dir_ino
+                 FROM job_staged_files
+                 ORDER BY job_id ASC, path ASC",
             )?;
             let rows = stmt
                 .query_map([], |row| {
                     let job_id: String = row.get(0)?;
                     let path: String = row.get(1)?;
-                    Ok((job_id, PathBuf::from(path)))
+                    let dir_dev: Option<i64> = row.get(2)?;
+                    let dir_ino: Option<i64> = row.get(3)?;
+                    let dir_identity = dir_dev.zip(dir_ino).map(|(dev, ino)| StagedDirIdentity {
+                        dev: dev as u64,
+                        ino: ino as u64,
+                    });
+                    Ok(RecordedStagedFile {
+                        job_id,
+                        path: PathBuf::from(path),
+                        dir_identity,
+                    })
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             Ok(rows)
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn list_staged_files(&self) -> Result<Vec<(String, PathBuf)>> {
+        Ok(self
+            .list_staged_file_records()?
+            .into_iter()
+            .map(|record| (record.job_id, record.path))
+            .collect())
     }
 
     pub(crate) fn remove_staged_file_record(&self, job_id: &str, path: &Path) -> Result<()> {
@@ -336,6 +446,14 @@ impl JobsPersistence {
     /// behind.
     pub(crate) fn load_jobs_for_startup_with_interrupted(&self) -> Result<(Vec<Job>, Vec<String>)> {
         self.with_connection(|conn| {
+            // Drop any pre-acceptance `admitting` rows whose creator process crashed
+            // before publishing a receipt or spawning an executor.
+            conn.execute(
+                "DELETE FROM jobs WHERE status = ?1",
+                params![STATUS_ADMITTING],
+            )
+            .context("failed to purge uncommitted admitting jobs at startup")?;
+
             let replayed = self.replay_pending_terminal_sidecars(conn)?;
             if replayed > 0 {
                 info!(
@@ -685,6 +803,32 @@ impl JobsPersistence {
         Ok(deleted_rows)
     }
 
+    /// Removes a persisted row that is not present in runtime `jobs`, refusing
+    /// to touch pre-acceptance `admitting` rows that are currently in flight.
+    pub(crate) fn delete_unloaded_job(&self, job_id: &str) -> Result<usize> {
+        let deleted_rows = self.with_connection(|conn| {
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let deleted_rows = tx
+                .execute(
+                    "DELETE FROM jobs WHERE id = ?1 AND status != ?2",
+                    params![job_id, STATUS_ADMITTING],
+                )
+                .with_context(|| format!("failed to delete unloaded job {job_id}"))?;
+            if deleted_rows > 0 {
+                tx.execute(
+                    "DELETE FROM job_staged_files WHERE job_id = ?1",
+                    params![job_id],
+                )?;
+            }
+            tx.commit()?;
+            Ok(deleted_rows)
+        })?;
+        if deleted_rows > 0 {
+            self.remove_pending_terminal_sidecar(job_id);
+        }
+        Ok(deleted_rows)
+    }
+
     fn initialize_schema(&self) -> Result<()> {
         self.with_connection(|conn| {
             conn.execute_batch("PRAGMA journal_mode = WAL;")
@@ -718,6 +862,14 @@ impl JobsPersistence {
                 Self::migrate_to_v3(&transaction).with_context(|| {
                     format!(
                         "failed to migrate jobs db to schema version 3: {}",
+                        self.db_path.display()
+                    )
+                })?;
+            }
+            if version < 4 {
+                Self::migrate_to_v4(&transaction).with_context(|| {
+                    format!(
+                        "failed to migrate jobs db to schema version 4: {}",
                         self.db_path.display()
                     )
                 })?;
@@ -788,6 +940,24 @@ impl JobsPersistence {
                  ON job_staged_files(job_id);
              PRAGMA user_version = 3;",
         )?;
+        Ok(())
+    }
+
+    fn migrate_to_v4(transaction: &rusqlite::Transaction<'_>) -> Result<()> {
+        let mut statement = transaction.prepare("PRAGMA table_info(job_staged_files)")?;
+        let columns = statement
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(statement);
+        for column in ["dir_dev", "dir_ino"] {
+            if !columns.iter().any(|existing| existing == column) {
+                transaction.execute(
+                    &format!("ALTER TABLE job_staged_files ADD COLUMN {column} INTEGER"),
+                    [],
+                )?;
+            }
+        }
+        transaction.execute_batch("PRAGMA user_version = 4;")?;
         Ok(())
     }
 
@@ -965,4 +1135,30 @@ fn startup_reconciliation_error(
         }
         _ => base,
     }
+}
+
+pub(crate) fn capture_parent_dir_identity(path: &Path) -> Option<StagedDirIdentity> {
+    let dir = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    capture_dir_identity(dir)
+}
+
+#[cfg(unix)]
+pub(crate) fn capture_dir_identity(dir: &Path) -> Option<StagedDirIdentity> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::metadata(dir).ok()?;
+    if !metadata.is_dir() {
+        return None;
+    }
+    Some(StagedDirIdentity {
+        dev: metadata.dev(),
+        ino: metadata.ino(),
+    })
+}
+
+#[cfg(not(unix))]
+pub(crate) fn capture_dir_identity(_dir: &Path) -> Option<StagedDirIdentity> {
+    None
 }

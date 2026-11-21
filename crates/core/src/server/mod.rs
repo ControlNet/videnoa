@@ -82,6 +82,7 @@ struct AppStateInner {
     iroh: iroh::Runtime,
     settings_lock: tokio::sync::Mutex<()>,
     job_delete_lock: tokio::sync::Mutex<()>,
+    idempotency_key_locks: DashMap<String, Arc<tokio::sync::Mutex<()>>>,
     auth: std::result::Result<auth::AuthService, String>,
     jobs: DashMap<String, Job>,
     jobs_persistence: std::result::Result<JobsPersistence, String>,
@@ -117,6 +118,8 @@ struct AppStateInner {
     admission_notify: tokio::sync::Notify,
     #[cfg(test)]
     after_terminal_persist_hook: std::sync::Mutex<Option<AfterTerminalPersistHook>>,
+    #[cfg(test)]
+    after_job_claim_hook: std::sync::Mutex<Option<AfterTerminalPersistHook>>,
     /// Held for the life of the state. Declared last so it is released only
     /// after every store above has closed: once `instance.lock` is free, a
     /// new instance can open the data directory.
@@ -142,16 +145,38 @@ struct AdmissionState {
     /// Slots reserved by submissions that passed `admit_jobs` and have not yet
     /// published their jobs into `jobs` (or rolled back).
     in_flight: usize,
+    /// Job IDs currently being persisted/admitted before runtime publication.
+    creating_ids: HashSet<String>,
 }
 
 struct AdmissionGuard<'a> {
     state: &'a AppState,
     reserved: usize,
+    creating_ids: Vec<String>,
+}
+
+impl AdmissionGuard<'_> {
+    fn register_creating_ids(&mut self, ids: impl IntoIterator<Item = String>) {
+        let collected: Vec<String> = ids.into_iter().collect();
+        if collected.is_empty() {
+            return;
+        }
+        let mut guard = self
+            .state
+            .inner
+            .admission
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for id in &collected {
+            guard.creating_ids.insert(id.clone());
+        }
+        self.creating_ids.extend(collected);
+    }
 }
 
 impl Drop for AdmissionGuard<'_> {
     fn drop(&mut self) {
-        if self.reserved == 0 {
+        if self.reserved == 0 && self.creating_ids.is_empty() {
             return;
         }
         let remaining = {
@@ -161,6 +186,9 @@ impl Drop for AdmissionGuard<'_> {
                 .admission
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+            for id in self.creating_ids.drain(..) {
+                guard.creating_ids.remove(&id);
+            }
             guard.in_flight = guard.in_flight.saturating_sub(self.reserved);
             self.reserved = 0;
             guard.in_flight
@@ -168,6 +196,26 @@ impl Drop for AdmissionGuard<'_> {
         if remaining == 0 {
             self.state.inner.admission_notify.notify_waiters();
         }
+    }
+}
+
+struct IdempotencyKeyGuard<'a> {
+    state: &'a AppState,
+    key: String,
+    mutex: Arc<tokio::sync::Mutex<()>>,
+    _guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+impl Drop for IdempotencyKeyGuard<'_> {
+    fn drop(&mut self) {
+        // Drop the owned lock guard first so strong_count reflects only map + local `mutex` + waiters.
+        self._guard.take();
+        self.state
+            .inner
+            .idempotency_key_locks
+            .remove_if(&self.key, |_, existing| {
+                Arc::ptr_eq(existing, &self.mutex) && Arc::strong_count(existing) == 2
+            });
     }
 }
 
@@ -323,7 +371,7 @@ impl AppState {
                 db_path = %persistence.db_path().display(),
                 "Restored persisted jobs into runtime state"
             );
-            let recorded_staged = persistence.list_staged_files()?;
+            let recorded_staged = persistence.list_staged_file_records()?;
             if !interrupted.is_empty() || !recorded_staged.is_empty() {
                 let sweep = staged_outputs::sweep_interrupted_jobs_with_recorded(
                     restored_jobs
@@ -371,6 +419,7 @@ impl AppState {
                 iroh: iroh::Runtime::default(),
                 settings_lock: tokio::sync::Mutex::new(()),
                 job_delete_lock: tokio::sync::Mutex::new(()),
+                idempotency_key_locks: DashMap::new(),
                 jobs,
                 jobs_persistence,
                 gpu_semaphore: Arc::new(Semaphore::new(GPU_SLOTS)),
@@ -394,11 +443,14 @@ impl AppState {
                 admission_notify: tokio::sync::Notify::new(),
                 #[cfg(test)]
                 after_terminal_persist_hook: std::sync::Mutex::new(None),
+                #[cfg(test)]
+                after_job_claim_hook: std::sync::Mutex::new(None),
                 instance_lock,
             }),
         }
     }
 
+    #[cfg(test)]
     fn persist_job_snapshot(&self, job: &Job) -> Result<()> {
         self.job_store()?.upsert_job(job)
     }
@@ -580,6 +632,52 @@ impl AppState {
         if let Some(hook) = hook {
             hook(job_id);
         }
+    }
+
+    #[cfg(test)]
+    fn run_after_job_claim_hook(&self, job_id: &str) {
+        let hook = self
+            .inner
+            .after_job_claim_hook
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        if let Some(hook) = hook {
+            hook(job_id);
+        }
+    }
+
+    async fn lock_idempotency_key(&self, key: &str) -> IdempotencyKeyGuard<'_> {
+        let mutex = self
+            .inner
+            .idempotency_key_locks
+            .entry(key.to_owned())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .value()
+            .clone();
+        let guard = Arc::clone(&mutex).lock_owned().await;
+        IdempotencyKeyGuard {
+            state: self,
+            key: key.to_owned(),
+            mutex,
+            _guard: Some(guard),
+        }
+    }
+
+    fn is_creating_job(&self, job_id: &str) -> bool {
+        self.inner
+            .admission
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .creating_ids
+            .contains(job_id)
+    }
+
+    /// True once `job_id` has exited pre-acceptance admission and is live in
+    /// `self.inner.jobs` (so `GET /api/jobs/{id}` and idempotent receipts agree).
+    fn is_accepted_idempotent_job(&self, job_id: &str) -> bool {
+        let creating = self.is_creating_job(job_id);
+        !creating && self.inner.jobs.contains_key(job_id)
     }
 
     /// Publishes an already-persisted terminal transition into in-memory state
@@ -809,17 +907,71 @@ impl AppState {
         Ok(AdmissionGuard {
             state: self,
             reserved: additional,
+            creating_ids: Vec::new(),
         })
     }
 
-    /// Publishes persisted `jobs` into runtime state and spawns their executors,
-    /// or rolls back their unpublished database rows and returns 503 when
-    /// shutdown started while database persistence was in flight.
+    fn rollback_unpublished_jobs(&self, unpublished_jobs: &[Job]) {
+        if let Ok(persistence) = &self.inner.jobs_persistence {
+            for job in unpublished_jobs {
+                if let Err(rollback_error) = persistence.delete_job(&job.id) {
+                    error!(
+                        job_id = %job.id,
+                        error = ?rollback_error,
+                        "Failed to roll back in-flight job after abort/shutdown"
+                    );
+                    let shutdown_cancel = CancelRequest {
+                        requested_at: Utc::now(),
+                        reason: CancelReason::Shutdown,
+                    };
+                    let _ = persistence.record_cancel_request(&job.id, &shutdown_cancel);
+                }
+            }
+        }
+    }
+
+    /// Promotes `admitting` database rows to `queued`, publishes `jobs` into
+    /// runtime state, and spawns their executors — or rolls back their
+    /// unpublished database rows and returns 503 when shutdown started while
+    /// database persistence was in flight.
     fn commit_admitted_jobs(
         &self,
         mut admission: AdmissionGuard<'_>,
         jobs: Vec<Job>,
     ) -> Result<(), AppError> {
+        let already_shutting_down = {
+            let guard = self
+                .inner
+                .admission
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.shutting_down
+                || self
+                    .inner
+                    .shutting_down
+                    .load(std::sync::atomic::Ordering::SeqCst)
+        };
+        if already_shutting_down {
+            self.rollback_unpublished_jobs(&jobs);
+            drop(admission);
+            return Err(
+                AppError::ServiceUnavailable("worker is shutting down".to_owned())
+                    .with_code(ErrorCode::ShuttingDown),
+            );
+        }
+
+        let job_ids: Vec<String> = jobs.iter().map(|job| job.id.clone()).collect();
+        if let Err(error) = self
+            .job_store()
+            .and_then(|store| store.activate_admitted_jobs(&job_ids))
+        {
+            self.rollback_unpublished_jobs(&jobs);
+            drop(admission);
+            return Err(AppError::Internal(format!(
+                "failed to activate admitted job: {error:#}"
+            )));
+        }
+
         let outcome = {
             let mut guard = self
                 .inner
@@ -841,7 +993,11 @@ impl AppState {
                     let (sender, _receiver) = broadcast::channel::<JobWsEvent>(64);
                     self.inner.progress_senders.insert(id.clone(), sender);
                     self.inner.jobs.insert(id.clone(), job);
+                    guard.creating_ids.remove(&id);
                     spawn_list.push((id, workflow_source));
+                }
+                for id in admission.creating_ids.drain(..) {
+                    guard.creating_ids.remove(&id);
                 }
                 guard.in_flight = guard.in_flight.saturating_sub(admission.reserved);
                 admission.reserved = 0;
@@ -859,22 +1015,7 @@ impl AppState {
             Err(unpublished_jobs) => {
                 // Keep `admission` alive across rollback so `wait_for_jobs_to_stop`
                 // waits until unpublished rows are cleaned up before returning.
-                if let Ok(persistence) = &self.inner.jobs_persistence {
-                    for job in &unpublished_jobs {
-                        if let Err(rollback_error) = persistence.delete_job(&job.id) {
-                            error!(
-                                job_id = %job.id,
-                                error = ?rollback_error,
-                                "Failed to roll back in-flight job after shutdown"
-                            );
-                            let shutdown_cancel = CancelRequest {
-                                requested_at: Utc::now(),
-                                reason: CancelReason::Shutdown,
-                            };
-                            let _ = persistence.record_cancel_request(&job.id, &shutdown_cancel);
-                        }
-                    }
-                }
+                self.rollback_unpublished_jobs(&unpublished_jobs);
                 drop(admission);
                 return Err(
                     AppError::ServiceUnavailable("worker is shutting down".to_owned())
@@ -2161,9 +2302,11 @@ async fn run_workflow_by_name(
             .map_err(|error| {
                 AppError::Internal(format!("failed to inspect idempotent job: {error:#}"))
             })? {
-            IdempotentJobLookup::Missing => {}
+            IdempotentJobLookup::Missing | IdempotentJobLookup::InFlight => {}
             IdempotentJobLookup::Replayed(existing) => {
-                return Ok((StatusCode::OK, Json(existing)));
+                if state.is_accepted_idempotent_job(&existing.id) {
+                    return Ok((StatusCode::OK, Json(existing)));
+                }
             }
             IdempotentJobLookup::Conflict => return Err(AppError::IdempotencyConflict),
         }
@@ -2177,7 +2320,7 @@ async fn run_workflow_by_name(
         rerun_of_job_id: None,
     };
     match idempotency_key {
-        Some(key) => create_idempotent_job(&state, submission, &key, &fingerprint),
+        Some(key) => create_idempotent_job(&state, submission, &key, &fingerprint).await,
         None => create_and_spawn_job(&state, submission)
             .map(|created| (StatusCode::CREATED, Json(created))),
     }
@@ -2252,23 +2395,27 @@ fn create_and_spawn_job(
     state: &AppState,
     submission: JobSubmission,
 ) -> Result<CreateJobResponse, AppError> {
-    let admission = state.admit_jobs(1)?;
+    let mut admission = state.admit_jobs(1)?;
     let (job, response) = prepare_job(submission);
+    admission.register_creating_ids([job.id.clone()]);
     state
-        .persist_job_snapshot(&job)
+        .job_store()
+        .and_then(|store| store.insert_admitting_job(&job))
         .map_err(|error| AppError::Internal(format!("failed to persist new job: {error:#}")))?;
     state.commit_admitted_jobs(admission, vec![job])?;
     Ok(response)
 }
 
-fn create_idempotent_job(
+async fn create_idempotent_job(
     state: &AppState,
     submission: JobSubmission,
     key: &IdempotencyKey,
     fingerprint: &RequestFingerprint,
 ) -> Result<(StatusCode, Json<CreateJobResponse>), AppError> {
+    let _key_guard = state.lock_idempotency_key(key.as_str()).await;
     let persistence = jobs_persistence(state)?;
-    let admission = match state.admit_jobs(1) {
+
+    let mut admission = match state.admit_jobs(1) {
         Ok(admission) => admission,
         Err(queue_err) => {
             if !state
@@ -2281,9 +2428,11 @@ fn create_idempotent_job(
                     .map_err(|error| {
                         AppError::Internal(format!("failed to inspect idempotent job: {error:#}"))
                     })? {
-                    IdempotentJobLookup::Missing => {}
+                    IdempotentJobLookup::Missing | IdempotentJobLookup::InFlight => {}
                     IdempotentJobLookup::Replayed(existing) => {
-                        return Ok((StatusCode::OK, Json(existing)));
+                        if state.is_accepted_idempotent_job(&existing.id) {
+                            return Ok((StatusCode::OK, Json(existing)));
+                        }
                     }
                     IdempotentJobLookup::Conflict => return Err(AppError::IdempotencyConflict),
                 }
@@ -2291,30 +2440,36 @@ fn create_idempotent_job(
             return Err(queue_err);
         }
     };
+
     let (job, response) = prepare_job(submission);
+    admission.register_creating_ids([job.id.clone()]);
     match persistence
         .claim_idempotent_job(key.as_str(), fingerprint.as_str(), &job)
         .map_err(|error| {
             AppError::Internal(format!("failed to persist idempotent job: {error:#}"))
         })? {
         IdempotentJobClaim::Created => {
+            #[cfg(test)]
+            state.run_after_job_claim_hook(&job.id);
             state.commit_admitted_jobs(admission, vec![job])?;
             Ok((StatusCode::CREATED, Json(response)))
         }
         IdempotentJobClaim::Replayed(existing) => {
             drop(admission);
-            if state
-                .inner
-                .shutting_down
-                .load(std::sync::atomic::Ordering::SeqCst)
-                && !state.inner.jobs.contains_key(&existing.id)
-            {
+            if !state.is_accepted_idempotent_job(&existing.id) {
                 return Err(
                     AppError::ServiceUnavailable("worker is shutting down".to_owned())
                         .with_code(ErrorCode::ShuttingDown),
                 );
             }
             Ok((StatusCode::OK, Json(existing)))
+        }
+        IdempotentJobClaim::InFlight => {
+            drop(admission);
+            Err(
+                AppError::ServiceUnavailable("idempotent job submission is in progress".to_owned())
+                    .with_code(ErrorCode::ShuttingDown),
+            )
         }
         IdempotentJobClaim::Conflict => Err(AppError::IdempotencyConflict),
     }
@@ -2509,11 +2664,15 @@ async fn create_batch(
         prepared.push((file_path, job, response));
     }
 
-    let admission = state.admit_jobs(prepared.len())?;
+    let mut admission = state.admit_jobs(prepared.len())?;
+    admission.register_creating_ids(prepared.iter().map(|(_, job, _)| job.id.clone()));
     // Persist all jobs before spawning any; on a storage failure remove the
     // ones already stored so the batch leaves nothing behind.
     for (index, (_, job, _)) in prepared.iter().enumerate() {
-        if let Err(error) = state.persist_job_snapshot(job) {
+        if let Err(error) = state
+            .job_store()
+            .and_then(|store| store.insert_admitting_job(job))
+        {
             if let Ok(persistence) = &state.inner.jobs_persistence {
                 for (_, stored, _) in &prepared[..index] {
                     if let Err(rollback_error) = persistence.delete_job(&stored.id) {
@@ -2586,6 +2745,7 @@ async fn get_job_by_idempotency_key(
         .map_err(|error| {
             AppError::Internal(format!("failed to look up idempotent job: {error:#}"))
         })?
+        .filter(|existing| state.is_accepted_idempotent_job(&existing.id))
         .map(Json)
         .ok_or_else(|| {
             AppError::NotFound("no job was created with this idempotency key".to_owned())
@@ -2718,10 +2878,13 @@ async fn delete_job_history(
 
     match in_memory_terminal {
         None => {
+            if state.is_creating_job(&id) {
+                return Err(AppError::NotFound(format!("job not found: {id}")));
+            }
             // A row that could not be loaded at startup is not listed, but it
-            // can still be removed. Every active job is in memory, so this
-            // never deletes one.
-            let rows = persistence.delete_job(&id).map_err(|e| {
+            // can still be removed. Pre-acceptance `admitting` rows are guarded
+            // both in memory (`creating_ids`) and in SQL (`status != 'admitting'`).
+            let rows = persistence.delete_unloaded_job(&id).map_err(|e| {
                 AppError::Internal(format!("failed to delete job history row: {e:#}"))
             })?;
             if rows == 0 {
@@ -11149,10 +11312,11 @@ mod tests {
         let stall = StalledStore::acquire(store.clone());
 
         let state_claim = state.clone();
+        let runtime_handle = tokio::runtime::Handle::current();
         let claim_task = tokio::task::spawn_blocking(move || {
             let key = IdempotencyKey::parse("inflight-shutdown-key").unwrap();
             let fp = RequestFingerprint::for_run("saved-count", None).unwrap();
-            create_idempotent_job(
+            runtime_handle.block_on(create_idempotent_job(
                 &state_claim,
                 JobSubmission {
                     workflow: parsed_workflow,
@@ -11163,7 +11327,7 @@ mod tests {
                 },
                 &key,
                 &fp,
-            )
+            ))
         });
 
         tokio::time::timeout(WAIT_BUDGET, async {
@@ -11218,6 +11382,204 @@ mod tests {
         assert_eq!(parse_proc_status_umask("Umask:\t0002\n"), Some(0o002));
         assert_eq!(parse_proc_status_umask("Name:\tvidenoa\n"), None);
         assert_eq!(parse_proc_status_umask("Umask:\tnot-octal\n"), None);
+    }
+
+    #[tokio::test]
+    async fn idempotent_claim_window_hides_uncommitted_receipt_and_rolls_back_cleanly_on_shutdown()
+    {
+        let data_dir = test_data_dir();
+        let workflows_dir = test_data_dir();
+        std::fs::create_dir_all(&workflows_dir).unwrap();
+        let workflow = serde_json::json!({
+            "nodes": [{"id": "count", "node_type": "test_count", "params": {}}],
+            "connections": []
+        });
+        std::fs::write(
+            workflows_dir.join("saved-count.json"),
+            serde_json::to_vec(&workflow).unwrap(),
+        )
+        .unwrap();
+        let parsed_workflow: PipelineGraph = serde_json::from_value(workflow).unwrap();
+        let (state, executions) = counting_test_state(data_dir.clone(), workflows_dir.clone());
+        let mut app = app_router(state.clone());
+
+        let (claimed_tx, claimed_rx) = tokio::sync::oneshot::channel::<String>();
+        let claimed_tx = Arc::new(std::sync::Mutex::new(Some(claimed_tx)));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        let release_hook = Arc::clone(&release);
+        *state.inner.after_job_claim_hook.lock().unwrap() = Some(Arc::new(move |job_id| {
+            if let Some(tx) = claimed_tx.lock().unwrap().take() {
+                let _ = tx.send(job_id.to_owned());
+            }
+            release_hook.wait();
+        }));
+
+        let state_claim = state.clone();
+        let handle = tokio::runtime::Handle::current();
+        let claim_task = tokio::task::spawn_blocking(move || {
+            let key = IdempotencyKey::parse("window-shutdown-key").unwrap();
+            let fp = RequestFingerprint::for_run("saved-count", None).unwrap();
+            handle.block_on(create_idempotent_job(
+                &state_claim,
+                JobSubmission {
+                    workflow: parsed_workflow,
+                    params: None,
+                    workflow_name: "saved-count".to_owned(),
+                    workflow_source: WORKFLOW_SOURCE_API_RUN_WORKFLOWS.to_owned(),
+                    rerun_of_job_id: None,
+                },
+                &key,
+                &fp,
+            ))
+        });
+
+        let claimed_id = tokio::time::timeout(WAIT_BUDGET, claimed_rx)
+            .await
+            .expect("idempotent claim should reach post-SQLite barrier")
+            .unwrap();
+
+        // While the job is between SQLite claim and runtime queue acceptance,
+        // both key lookup and ID lookup must agree that the job is not yet accepted.
+        let key_lookup = app
+            .call(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/jobs/by-idempotency-key/window-shutdown-key")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(key_lookup.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            get_job_json(&mut app, &claimed_id).await.0,
+            StatusCode::NOT_FOUND
+        );
+
+        // Shutting down during this window rolls back the uncommitted claim with 503.
+        state.begin_shutdown();
+        let release_bg = tokio::task::spawn_blocking(move || {
+            release.wait();
+        });
+        release_bg.await.unwrap();
+
+        let claim_resp = claim_task
+            .await
+            .unwrap()
+            .expect_err("uncommitted claim must fail with 503 when shutdown intervenes")
+            .into_response();
+        assert_eq!(claim_resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(executions.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(state
+            .job_store()
+            .unwrap()
+            .idempotent_job("window-shutdown-key")
+            .unwrap()
+            .is_none());
+
+        drop(state);
+        let _ = std::fs::remove_dir_all(&data_dir);
+        let _ = std::fs::remove_dir_all(&workflows_dir);
+    }
+
+    #[tokio::test]
+    async fn delete_during_idempotent_claim_window_returns_404_and_preserves_idempotency_record() {
+        let data_dir = test_data_dir();
+        let workflows_dir = test_data_dir();
+        std::fs::create_dir_all(&workflows_dir).unwrap();
+        let workflow = serde_json::json!({
+            "nodes": [{"id": "count", "node_type": "test_count", "params": {}}],
+            "connections": []
+        });
+        std::fs::write(
+            workflows_dir.join("saved-count.json"),
+            serde_json::to_vec(&workflow).unwrap(),
+        )
+        .unwrap();
+        let parsed_workflow: PipelineGraph = serde_json::from_value(workflow).unwrap();
+        let (state, _executions) = counting_test_state(data_dir.clone(), workflows_dir.clone());
+        let mut app = app_router(state.clone());
+
+        let (claimed_tx, claimed_rx) = tokio::sync::oneshot::channel::<String>();
+        let claimed_tx = Arc::new(std::sync::Mutex::new(Some(claimed_tx)));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        let release_hook = Arc::clone(&release);
+        *state.inner.after_job_claim_hook.lock().unwrap() = Some(Arc::new(move |job_id| {
+            if let Some(tx) = claimed_tx.lock().unwrap().take() {
+                let _ = tx.send(job_id.to_owned());
+            }
+            release_hook.wait();
+        }));
+
+        let state_claim = state.clone();
+        let handle = tokio::runtime::Handle::current();
+        let claim_task = tokio::task::spawn_blocking(move || {
+            let key = IdempotencyKey::parse("window-delete-key").unwrap();
+            let fp = RequestFingerprint::for_run("saved-count", None).unwrap();
+            handle.block_on(create_idempotent_job(
+                &state_claim,
+                JobSubmission {
+                    workflow: parsed_workflow,
+                    params: None,
+                    workflow_name: "saved-count".to_owned(),
+                    workflow_source: WORKFLOW_SOURCE_API_RUN_WORKFLOWS.to_owned(),
+                    rerun_of_job_id: None,
+                },
+                &key,
+                &fp,
+            ))
+        });
+
+        let claimed_id = tokio::time::timeout(WAIT_BUDGET, claimed_rx)
+            .await
+            .expect("idempotent claim should reach post-SQLite barrier")
+            .unwrap();
+
+        // Attempting DELETE /api/jobs/{id} before formal queue acceptance must
+        // return 404 rather than deleting the in-flight persisted row as "unloadable".
+        assert_eq!(
+            delete_job(&mut app, &claimed_id).await,
+            StatusCode::NOT_FOUND
+        );
+
+        let release_bg = tokio::task::spawn_blocking(move || {
+            release.wait();
+        });
+        release_bg.await.unwrap();
+
+        let (status, Json(created)) = claim_task
+            .await
+            .unwrap()
+            .expect("original creation should succeed cleanly");
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(created.id, claimed_id);
+
+        // Durable idempotency receipt and runtime job must both exist and agree.
+        let key_lookup = app
+            .call(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/jobs/by-idempotency-key/window-delete-key")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(key_lookup.status(), StatusCode::OK);
+        assert_eq!(get_job_json(&mut app, &claimed_id).await.0, StatusCode::OK);
+        assert_eq!(
+            state
+                .job_store()
+                .unwrap()
+                .idempotent_job("window-delete-key")
+                .unwrap()
+                .map(|r| r.id),
+            Some(claimed_id)
+        );
+
+        drop(state);
+        let _ = std::fs::remove_dir_all(&data_dir);
+        let _ = std::fs::remove_dir_all(&workflows_dir);
     }
 
     #[cfg(unix)]

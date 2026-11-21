@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 
 use tracing::{debug, info, warn};
 
+use super::persistence::{capture_dir_identity, RecordedStagedFile, StagedDirIdentity};
 use super::Job;
 
 const STAGED_ROLES: &[&str] = &["direct", "video", "mux"];
@@ -34,27 +35,32 @@ pub(super) struct SweepReport {
 /// Removes staged files recorded in `jobs.db` (`recorded`) as well as any
 /// statically discoverable outputs of `jobs` (legacy fallback). Each recorded
 /// `(job_id, path)` is included in [`SweepReport::completed_records`] once its
-/// cleanup obligation is satisfied without I/O errors, so a transient mount or
-/// permission failure retains the obligation for the next startup.
+/// cleanup obligation is satisfied without I/O errors and the target volume
+/// identity matches, so an unmounted volume (including an empty readable
+/// mountpoint directory) or permission failure retains the obligation for the
+/// next startup.
 pub(super) fn sweep_interrupted_jobs_with_recorded<'a>(
     jobs: impl IntoIterator<Item = &'a Job>,
-    recorded: &[(String, PathBuf)],
+    recorded: &[RecordedStagedFile],
 ) -> SweepReport {
     let mut removed_paths = HashSet::new();
     let mut completed_records = Vec::new();
 
-    for (owner, path) in recorded {
+    for record in recorded {
+        let owner = record.job_id.as_str();
+        let path = record.path.as_path();
+        let expected_dir = record.dir_identity;
         let ok = if path
             .file_name()
             .and_then(|name| name.to_str())
             .is_some_and(|name| is_staged_filename_for_owner(name, owner))
         {
-            sweep_direct_staged_file(path, &mut removed_paths)
+            sweep_direct_staged_file(path, expected_dir, &mut removed_paths)
         } else {
-            sweep_beside_checked(path, owner, &mut removed_paths)
+            sweep_beside_checked(path, owner, expected_dir, &mut removed_paths)
         };
         if ok {
-            completed_records.push((owner.clone(), path.clone()));
+            completed_records.push((record.job_id.clone(), record.path.clone()));
         }
     }
 
@@ -67,7 +73,7 @@ pub(super) fn sweep_interrupted_jobs_with_recorded<'a>(
         })
         .collect();
     for (output, owner) in outputs {
-        let _ = sweep_beside_checked(&output, owner, &mut removed_paths);
+        let _ = sweep_beside_checked(&output, owner, None, &mut removed_paths);
     }
 
     SweepReport {
@@ -152,10 +158,10 @@ fn parent_dir_or_cwd(path: &Path) -> &Path {
     }
 }
 
-fn parent_dir_is_accessible(path: &Path) -> bool {
+fn parent_dir_matches_volume(path: &Path, expected: Option<StagedDirIdentity>) -> bool {
     let dir = parent_dir_or_cwd(path);
     match std::fs::read_dir(dir) {
-        Ok(_) => true,
+        Ok(_) => dir_identity_matches(dir, expected),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             debug!(
                 path = %path.display(),
@@ -176,7 +182,36 @@ fn parent_dir_is_accessible(path: &Path) -> bool {
     }
 }
 
-fn sweep_direct_staged_file(path: &Path, removed_paths: &mut HashSet<PathBuf>) -> bool {
+fn dir_identity_matches(dir: &Path, expected: Option<StagedDirIdentity>) -> bool {
+    let Some(expected) = expected else {
+        return true;
+    };
+    let Some(actual) = capture_dir_identity(dir) else {
+        debug!(
+            dir = %dir.display(),
+            "Unable to inspect target directory identity; retaining cleanup obligation"
+        );
+        return false;
+    };
+    if actual != expected {
+        debug!(
+            dir = %dir.display(),
+            expected_dev = expected.dev,
+            expected_ino = expected.ino,
+            actual_dev = actual.dev,
+            actual_ino = actual.ino,
+            "Target directory identity changed (e.g. unmounted volume); retaining cleanup obligation"
+        );
+        return false;
+    }
+    true
+}
+
+fn sweep_direct_staged_file(
+    path: &Path,
+    expected_dir: Option<StagedDirIdentity>,
+    removed_paths: &mut HashSet<PathBuf>,
+) -> bool {
     match std::fs::symlink_metadata(path) {
         Ok(metadata) => {
             if !metadata.file_type().is_file() {
@@ -189,7 +224,7 @@ fn sweep_direct_staged_file(path: &Path, removed_paths: &mut HashSet<PathBuf>) -
                     true
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    parent_dir_is_accessible(path)
+                    parent_dir_matches_volume(path, expected_dir)
                 }
                 Err(error) => {
                     warn!(
@@ -202,7 +237,7 @@ fn sweep_direct_staged_file(path: &Path, removed_paths: &mut HashSet<PathBuf>) -
             }
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            parent_dir_is_accessible(path)
+            parent_dir_matches_volume(path, expected_dir)
         }
         Err(error) => {
             warn!(
@@ -215,7 +250,12 @@ fn sweep_direct_staged_file(path: &Path, removed_paths: &mut HashSet<PathBuf>) -
     }
 }
 
-fn sweep_beside_checked(output: &Path, owner: &str, removed_paths: &mut HashSet<PathBuf>) -> bool {
+fn sweep_beside_checked(
+    output: &Path,
+    owner: &str,
+    expected_dir: Option<StagedDirIdentity>,
+    removed_paths: &mut HashSet<PathBuf>,
+) -> bool {
     let dir = parent_dir_or_cwd(output);
     let stem = output
         .file_stem()
@@ -240,6 +280,9 @@ fn sweep_beside_checked(output: &Path, owner: &str, removed_paths: &mut HashSet<
             return false;
         }
     };
+    if !dir_identity_matches(dir, expected_dir) {
+        return false;
+    }
     let mut clean = true;
     for entry in entries {
         let entry = match entry {
@@ -266,7 +309,7 @@ fn sweep_beside_checked(output: &Path, owner: &str, removed_paths: &mut HashSet<
             Ok(file_type) if file_type.is_file() => {}
             Ok(_) => continue,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                if !parent_dir_is_accessible(&entry_path) {
+                if !parent_dir_matches_volume(&entry_path, expected_dir) {
                     clean = false;
                 }
                 continue;
@@ -287,7 +330,7 @@ fn sweep_beside_checked(output: &Path, owner: &str, removed_paths: &mut HashSet<
                 removed_paths.insert(entry_path);
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                if !parent_dir_is_accessible(&entry_path) {
+                if !parent_dir_matches_volume(&entry_path, expected_dir) {
                     clean = false;
                 }
             }
@@ -301,7 +344,7 @@ fn sweep_beside_checked(output: &Path, owner: &str, removed_paths: &mut HashSet<
             }
         }
     }
-    clean
+    clean && dir_identity_matches(dir, expected_dir)
 }
 
 /// Whether `name` is `.<any stem>.<owner>.<random>.videnoa-<role>[.<ext>]`.
@@ -516,11 +559,39 @@ mod tests {
         }
 
         let recorded = vec![
-            ("job-1".to_string(), hidden_unicode_target.clone()),
-            ("job-1".to_string(), hidden_emoji_target.clone()),
-            ("job-1".to_string(), unicode_output.clone()),
-            ("job-1".to_string(), unicode_staged_direct.clone()),
+            RecordedStagedFile {
+                job_id: "job-1".to_string(),
+                path: hidden_unicode_target.clone(),
+                dir_identity: super::super::persistence::capture_parent_dir_identity(
+                    &hidden_unicode_target,
+                ),
+            },
+            RecordedStagedFile {
+                job_id: "job-1".to_string(),
+                path: hidden_emoji_target.clone(),
+                dir_identity: super::super::persistence::capture_parent_dir_identity(
+                    &hidden_emoji_target,
+                ),
+            },
+            RecordedStagedFile {
+                job_id: "job-1".to_string(),
+                path: unicode_output.clone(),
+                dir_identity: super::super::persistence::capture_parent_dir_identity(
+                    &unicode_output,
+                ),
+            },
+            RecordedStagedFile {
+                job_id: "job-1".to_string(),
+                path: unicode_staged_direct.clone(),
+                dir_identity: super::super::persistence::capture_parent_dir_identity(
+                    &unicode_staged_direct,
+                ),
+            },
         ];
+        let expected_completed: Vec<(String, PathBuf)> = recorded
+            .iter()
+            .map(|r| (r.job_id.clone(), r.path.clone()))
+            .collect();
         let report = sweep_interrupted_jobs_with_recorded(std::iter::empty(), &recorded);
 
         assert!(
@@ -534,7 +605,7 @@ mod tests {
         assert!(!unicode_staged_direct.exists());
         assert!(!unicode_staged_beside.exists());
         assert_eq!(report.removed, 2);
-        assert_eq!(report.completed_records, recorded);
+        assert_eq!(report.completed_records, expected_completed);
     }
 
     #[test]
@@ -547,9 +618,21 @@ mod tests {
         let kept_encode = offline_volume.join(".Episode 01.job-42.K3pt00.videnoa-kept.mkv");
 
         let recorded = vec![
-            ("job-42".to_string(), direct_staged.clone()),
-            ("job-42".to_string(), target_output.clone()),
+            RecordedStagedFile {
+                job_id: "job-42".to_string(),
+                path: direct_staged.clone(),
+                dir_identity: None,
+            },
+            RecordedStagedFile {
+                job_id: "job-42".to_string(),
+                path: target_output.clone(),
+                dir_identity: None,
+            },
         ];
+        let expected_completed: Vec<(String, PathBuf)> = recorded
+            .iter()
+            .map(|r| (r.job_id.clone(), r.path.clone()))
+            .collect();
 
         // While the volume directory does not exist (`NotFound`), neither the
         // direct staged path nor the target output path may be marked completed.
@@ -573,13 +656,81 @@ mod tests {
         assert!(!beside_staged.exists());
         assert!(kept_encode.exists());
         assert_eq!(online_report.removed, 2);
-        assert_eq!(online_report.completed_records, recorded);
+        assert_eq!(online_report.completed_records, expected_completed);
 
         // If a recorded staged file is already absent inside an existing
         // accessible directory, its obligation is still completed cleanly.
         let already_absent_report =
             sweep_interrupted_jobs_with_recorded(std::iter::empty(), &recorded);
         assert_eq!(already_absent_report.removed, 0);
-        assert_eq!(already_absent_report.completed_records, recorded);
+        assert_eq!(already_absent_report.completed_records, expected_completed);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unmounted_readable_mountpoint_retains_recorded_obligations_until_original_volume_returns() {
+        let root = tempfile::TempDir::new().unwrap();
+        let mountpoint = root.path().join("media");
+        let detached_volume = root.path().join("media-detached");
+        std::fs::create_dir_all(&mountpoint).unwrap();
+
+        // Given: staged output placed directly at the mountpoint root, with its
+        // mounted directory identity captured when the job recorded the paths.
+        let target_output = mountpoint.join("output.mkv");
+        let direct_staged = mountpoint.join(".output.job-99.a1B2c3.videnoa-video.mkv");
+        let beside_staged = mountpoint.join(".output.job-99.Zz9900.videnoa-mux.mkv");
+        std::fs::write(&direct_staged, b"video bytes").unwrap();
+        std::fs::write(&beside_staged, b"mux bytes").unwrap();
+        let mounted_identity = capture_dir_identity(&mountpoint).expect("unix dir identity");
+
+        let recorded = vec![
+            RecordedStagedFile {
+                job_id: "job-99".to_string(),
+                path: direct_staged.clone(),
+                dir_identity: Some(mounted_identity),
+            },
+            RecordedStagedFile {
+                job_id: "job-99".to_string(),
+                path: target_output.clone(),
+                dir_identity: Some(mounted_identity),
+            },
+        ];
+
+        // Simulate unmounting: move the mounted volume aside and create an empty,
+        // readable underlying mountpoint directory at the same path.
+        std::fs::rename(&mountpoint, &detached_volume).unwrap();
+        std::fs::create_dir_all(&mountpoint).unwrap();
+        assert_ne!(capture_dir_identity(&mountpoint), Some(mounted_identity));
+
+        // When: startup sweep runs against the readable empty mountpoint.
+        let unmounted_report = sweep_interrupted_jobs_with_recorded(std::iter::empty(), &recorded);
+
+        // Then: nothing was removed and NEITHER database obligation is completed.
+        assert_eq!(unmounted_report.removed, 0);
+        assert!(
+            unmounted_report.completed_records.is_empty(),
+            "readable empty mountpoint must not clear recorded obligations: {:?}",
+            unmounted_report.completed_records
+        );
+        assert!(detached_volume
+            .join(".output.job-99.a1B2c3.videnoa-video.mkv")
+            .exists());
+
+        // When: the original volume is mounted back at `mountpoint` and startup sweeps again.
+        std::fs::remove_dir(&mountpoint).unwrap();
+        std::fs::rename(&detached_volume, &mountpoint).unwrap();
+        assert_eq!(capture_dir_identity(&mountpoint), Some(mounted_identity));
+
+        let remounted_report = sweep_interrupted_jobs_with_recorded(std::iter::empty(), &recorded);
+        assert_eq!(remounted_report.removed, 2);
+        assert!(!direct_staged.exists());
+        assert!(!beside_staged.exists());
+        assert_eq!(
+            remounted_report.completed_records,
+            vec![
+                ("job-99".to_string(), direct_staged),
+                ("job-99".to_string(), target_output),
+            ]
+        );
     }
 }

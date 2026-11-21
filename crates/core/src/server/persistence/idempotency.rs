@@ -3,17 +3,21 @@ use std::collections::HashMap;
 use anyhow::{anyhow, Context, Result};
 use rusqlite::{params, OptionalExtension, TransactionBehavior};
 
-use super::{cancel_reason_to_str, parse_status, parse_timestamp, status_to_str, JobsPersistence};
+use super::{
+    cancel_reason_to_str, parse_status, parse_timestamp, JobsPersistence, STATUS_ADMITTING,
+};
 use crate::server::{idempotency::RequestFingerprint, CreateJobResponse, Job};
 
 pub(crate) enum IdempotentJobClaim {
     Created,
+    InFlight,
     Replayed(CreateJobResponse),
     Conflict,
 }
 
 pub(crate) enum IdempotentJobLookup {
     Missing,
+    InFlight,
     Replayed(CreateJobResponse),
     Conflict,
 }
@@ -40,12 +44,16 @@ impl JobsPersistence {
         .with_context(|| "failed to inspect durable idempotent job submission")
     }
 
-    /// The job a run with `key` created, whatever its request was.
+    /// The job a run with `key` created, whatever its request was, once that
+    /// run has been formally accepted into the queue.
     pub(crate) fn idempotent_job(&self, key: &str) -> Result<Option<CreateJobResponse>> {
         self.with_connection(|connection| {
             let Some(existing) = Self::load_idempotency_mapping(connection, key)? else {
                 return Ok(None);
             };
+            if existing.status == STATUS_ADMITTING {
+                return Ok(None);
+            }
             let status = parse_status(&existing.status)
                 .ok_or_else(|| anyhow!("persisted idempotency job has invalid status"))?;
             Ok(Some(CreateJobResponse {
@@ -83,7 +91,7 @@ impl JobsPersistence {
                          )",
                         params![
                             row.id,
-                            status_to_str(row.status),
+                            STATUS_ADMITTING,
                             row.workflow_json,
                             row.created_at.to_rfc3339(),
                             row.started_at.map(|value| value.to_rfc3339()),
@@ -103,6 +111,7 @@ impl JobsPersistence {
                     )?;
                     IdempotentJobClaim::Created
                 }
+                IdempotentJobLookup::InFlight => IdempotentJobClaim::InFlight,
                 IdempotentJobLookup::Replayed(existing) => IdempotentJobClaim::Replayed(existing),
                 IdempotentJobLookup::Conflict => IdempotentJobClaim::Conflict,
             };
@@ -160,6 +169,9 @@ impl JobsPersistence {
         };
         if !fingerprint_matches {
             return Ok(IdempotentJobLookup::Conflict);
+        }
+        if existing.status == STATUS_ADMITTING {
+            return Ok(IdempotentJobLookup::InFlight);
         }
         let status = parse_status(&existing.status)
             .ok_or_else(|| anyhow!("persisted idempotency job has invalid status"))?;

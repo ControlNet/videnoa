@@ -309,3 +309,75 @@ fn delete_job_cleans_up_staged_file_records_and_sidecar_for_target_job_only() ->
     );
     Ok(())
 }
+
+#[test]
+fn admitting_rows_are_protected_from_unloaded_delete_and_purged_if_uncommitted_at_startup(
+) -> Result<()> {
+    let dir = TempDir::new()?;
+    let persistence = JobsPersistence::new(dir.path())?;
+    persistence.insert_admitting_job(&job("in-flight-job", JobStatus::Queued))?;
+    persistence.insert_admitting_job(&job("promoted-job", JobStatus::Queued))?;
+    persistence.activate_admitted_jobs(&["promoted-job".to_owned()])?;
+
+    // Unloaded delete refuses to touch a pre-acceptance `admitting` row.
+    assert_eq!(persistence.delete_unloaded_job("in-flight-job")?, 0);
+
+    // On restart, an uncommitted `admitting` row is purged cleanly while the
+    // promoted `queued` row reconciles normally to `cancelled`.
+    let restored = persistence.load_jobs_for_startup()?;
+    assert!(restored.iter().all(|j| j.id != "in-flight-job"));
+    let promoted = restored.iter().find(|j| j.id == "promoted-job").unwrap();
+    assert_eq!(promoted.status, JobStatus::Cancelled);
+    Ok(())
+}
+
+#[test]
+fn v3_database_migrates_to_v4_and_captures_directory_identity() -> Result<()> {
+    let dir = TempDir::new()?;
+    let db_path = dir.path().join("jobs.db");
+    {
+        let conn = rusqlite::Connection::open(&db_path)?;
+        conn.execute_batch(
+            "CREATE TABLE jobs (
+                id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                workflow_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                completed_at TEXT,
+                progress_json TEXT,
+                error TEXT,
+                params_json TEXT,
+                workflow_name TEXT NOT NULL,
+                workflow_source TEXT NOT NULL,
+                rerun_of_job_id TEXT,
+                updated_at TEXT NOT NULL,
+                idempotency_key TEXT,
+                request_fingerprint TEXT,
+                cancel_requested_at TEXT,
+                cancel_reason TEXT
+             );
+             CREATE TABLE job_staged_files (
+                job_id TEXT NOT NULL,
+                path TEXT NOT NULL,
+                PRIMARY KEY (job_id, path)
+             );
+             INSERT INTO job_staged_files (job_id, path) VALUES ('legacy-job', '/tmp/legacy.mkv');
+             PRAGMA user_version = 3;",
+        )?;
+    }
+
+    let persistence = JobsPersistence::new(dir.path())?;
+    let media_dir = dir.path().join("mounted-media");
+    std::fs::create_dir_all(&media_dir)?;
+    let tracked = media_dir.join("ep01.mkv");
+    persistence.record_staged_file("fresh-job", &tracked)?;
+
+    let records = persistence.list_staged_file_records()?;
+    let legacy = records.iter().find(|r| r.job_id == "legacy-job").unwrap();
+    assert_eq!(legacy.dir_identity, None);
+    let fresh = records.iter().find(|r| r.job_id == "fresh-job").unwrap();
+    #[cfg(unix)]
+    assert!(fresh.dir_identity.is_some());
+    Ok(())
+}
