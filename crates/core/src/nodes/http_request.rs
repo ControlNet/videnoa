@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 use std::io::Read;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -187,9 +189,17 @@ impl Node for HttpRequestNode {
         let request_timeout = Duration::from_millis(timeout_ms as u64);
         let connect_timeout = Duration::from_millis(timeout_ms.min(CONNECT_TIMEOUT_CAP_MS) as u64);
 
+        let redirect_tracker = Arc::new(RedirectTracker::new());
+        let policy_tracker = Arc::clone(&redirect_tracker);
+        let redirect_policy = reqwest::redirect::Policy::custom(move |attempt| {
+            policy_tracker.mark_redirected();
+            reqwest::redirect::Policy::default().redirect(attempt)
+        });
+
         let client = reqwest::blocking::Client::builder()
             .connect_timeout(connect_timeout)
             .timeout(request_timeout)
+            .redirect(redirect_policy)
             .build()
             .context("failed to build HTTP client for HttpRequest")?;
 
@@ -208,6 +218,7 @@ impl Node for HttpRequestNode {
             ctx.check_cancelled()?;
             match execute_once(
                 &client,
+                &redirect_tracker,
                 method.clone(),
                 &url,
                 headers.clone(),
@@ -245,8 +256,10 @@ impl Node for HttpRequestNode {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute_once(
     client: &reqwest::blocking::Client,
+    redirect_tracker: &RedirectTracker,
     method: Method,
     url: &Url,
     headers: HeaderMap,
@@ -255,6 +268,7 @@ fn execute_once(
     request_context: &str,
 ) -> std::result::Result<HashMap<String, PortData>, RequestAttemptError> {
     let resend_safe = is_idempotent(&method);
+    let attempt_redirected = redirect_tracker.begin_attempt();
     let mut request = client.request(method, url.as_str());
     if !headers.is_empty() {
         request = request.headers(headers);
@@ -265,12 +279,13 @@ fn execute_once(
     }
 
     let mut response = request.send().map_err(|err| {
+        let redirected = attempt_redirected.load(Ordering::SeqCst);
         let wrapped = anyhow!(
             "HttpRequest transport error for {}: {}",
             request_context,
             sanitized_context(err.to_string())
         );
-        if is_retryable_reqwest_error(&err, resend_safe) {
+        if is_retryable_reqwest_error(&err, resend_safe, redirected) {
             RequestAttemptError::retryable(wrapped)
         } else {
             RequestAttemptError::fatal(wrapped)
@@ -408,13 +423,48 @@ fn read_response_body_limited(
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-/// A request that may have reached the server is sent again only when the
-/// method is idempotent; a failed connect never sent anything.
-fn is_retryable_reqwest_error(err: &reqwest::Error, resend_safe: bool) -> bool {
+/// A request that may have reached the origin server is sent again only when
+/// the method is idempotent. Before any redirect hop, a connect failure never
+/// sent anything; once a redirect hop has occurred, the origin request was
+/// already delivered and non-idempotent methods must not replay it.
+fn is_retryable_reqwest_error(err: &reqwest::Error, resend_safe: bool, redirected: bool) -> bool {
+    if redirected && !resend_safe {
+        return false;
+    }
     if err.is_connect() {
         return true;
     }
     resend_safe && (err.is_timeout() || err.is_request() || err.is_body())
+}
+
+struct RedirectTracker {
+    current_attempt: Mutex<Arc<AtomicBool>>,
+}
+
+impl RedirectTracker {
+    fn new() -> Self {
+        Self {
+            current_attempt: Mutex::new(Arc::new(AtomicBool::new(false))),
+        }
+    }
+
+    fn begin_attempt(&self) -> Arc<AtomicBool> {
+        let redirected = Arc::new(AtomicBool::new(false));
+        let mut current = self
+            .current_attempt
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *current = Arc::clone(&redirected);
+        redirected
+    }
+
+    fn mark_redirected(&self) {
+        let current = self
+            .current_attempt
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        current.store(true, Ordering::SeqCst);
+    }
 }
 
 fn is_idempotent(method: &Method) -> bool {
@@ -908,5 +958,269 @@ mod tests {
             started.elapsed()
         );
         assert_eq!(stop_server(stop, server), 1);
+    }
+
+    fn allocate_unreachable_addr() -> std::net::SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        listener.local_addr().expect("local addr")
+    }
+
+    fn read_full_http_request(stream: &mut TcpStream) -> String {
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+        let mut bytes = Vec::new();
+        let mut chunk = [0u8; 1024];
+        let mut header_end = None;
+        let mut content_length = 0usize;
+
+        loop {
+            match stream.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    bytes.extend_from_slice(&chunk[..n]);
+                    if header_end.is_none() {
+                        if let Some(pos) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                            let end = pos + 4;
+                            header_end = Some(end);
+                            let header_text = String::from_utf8_lossy(&bytes[..end]);
+                            for line in header_text.lines() {
+                                if let Some((name, value)) = line.split_once(':') {
+                                    if name.trim().eq_ignore_ascii_case("content-length") {
+                                        content_length = value.trim().parse::<usize>().unwrap_or(0);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if let Some(end) = header_end {
+                        if bytes.len() >= end + content_length {
+                            break;
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    fn spawn_redirect_origin_server(
+        status_line: &'static str,
+        location: String,
+    ) -> (String, Arc<AtomicBool>, thread::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind origin server");
+        let addr = listener.local_addr().expect("origin addr");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking origin listener");
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_server = Arc::clone(&stop);
+
+        let handle = thread::spawn(move || {
+            let mut requests = Vec::new();
+            while !stop_server.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let _ = stream.set_nonblocking(false);
+                        let raw_req = read_full_http_request(&mut stream);
+                        requests.push(raw_req);
+                        let response = format!(
+                            "HTTP/1.1 {status_line}\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        );
+                        let _ = stream.write_all(response.as_bytes());
+                        let _ = stream.flush();
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(err) => panic!("accept failed: {err}"),
+                }
+            }
+            requests
+        });
+
+        (format!("http://{addr}"), stop, handle)
+    }
+
+    fn stop_recording_server(
+        stop: Arc<AtomicBool>,
+        server: thread::JoinHandle<Vec<String>>,
+    ) -> Vec<String> {
+        stop.store(true, Ordering::SeqCst);
+        server.join().expect("join recording server")
+    }
+
+    #[test]
+    fn test_http_request_post_303_redirect_connect_failure_does_not_resend_post() {
+        let unreachable = allocate_unreachable_addr();
+        let (origin_url, stop, origin_server) =
+            spawn_redirect_origin_server("303 See Other", format!("http://{unreachable}/status"));
+
+        let inputs = HashMap::from([
+            ("method".to_string(), PortData::Str("POST".to_string())),
+            (
+                "url".to_string(),
+                PortData::Str(format!("{origin_url}/operation")),
+            ),
+            ("body".to_string(), PortData::Str("payload".to_string())),
+            ("max_retries".to_string(), PortData::Int(2)),
+            ("retry_backoff_ms".to_string(), PortData::Int(0)),
+            ("timeout_ms".to_string(), PortData::Int(2_000)),
+        ]);
+
+        let err = run_node_with_inputs(inputs)
+            .err()
+            .expect("redirect connect failure should return error");
+        let requests = stop_recording_server(stop, origin_server);
+
+        assert_eq!(
+            requests.len(),
+            1,
+            "origin POST must not be replayed after 303 redirect connect failure (err: {err:#})"
+        );
+        assert!(requests[0].starts_with("POST /operation HTTP/1.1\r\n"));
+    }
+
+    #[test]
+    fn test_http_request_post_307_redirect_connect_failure_does_not_resend_post() {
+        let unreachable = allocate_unreachable_addr();
+        let (origin_url, stop, origin_server) = spawn_redirect_origin_server(
+            "307 Temporary Redirect",
+            format!("http://{unreachable}/operation-target"),
+        );
+
+        let inputs = HashMap::from([
+            ("method".to_string(), PortData::Str("POST".to_string())),
+            (
+                "url".to_string(),
+                PortData::Str(format!("{origin_url}/operation")),
+            ),
+            ("body".to_string(), PortData::Str("payload".to_string())),
+            ("max_retries".to_string(), PortData::Int(2)),
+            ("retry_backoff_ms".to_string(), PortData::Int(0)),
+            ("timeout_ms".to_string(), PortData::Int(2_000)),
+        ]);
+
+        let err = run_node_with_inputs(inputs)
+            .err()
+            .expect("redirect connect failure should return error");
+        let requests = stop_recording_server(stop, origin_server);
+
+        assert_eq!(
+            requests.len(),
+            1,
+            "origin POST must not be replayed after 307 redirect connect failure (err: {err:#})"
+        );
+        assert!(requests[0].starts_with("POST /operation HTTP/1.1\r\n"));
+        assert!(requests[0].ends_with("\r\n\r\npayload"));
+    }
+
+    #[test]
+    fn test_http_request_post_303_redirect_to_working_target_succeeds() {
+        let target_listener = TcpListener::bind("127.0.0.1:0").expect("bind target server");
+        let target_addr = target_listener.local_addr().expect("target addr");
+        let target_handle = thread::spawn(move || {
+            let (mut stream, _) = target_listener.accept().expect("accept redirected client");
+            let raw_req = read_full_http_request(&mut stream);
+            let body = r#"{"status":"completed"}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write target response");
+            let _ = stream.flush();
+            raw_req
+        });
+
+        let final_url = format!("http://{target_addr}/jobs/42");
+        let (origin_url, stop, origin_server) =
+            spawn_redirect_origin_server("303 See Other", final_url.clone());
+
+        let inputs = HashMap::from([
+            ("method".to_string(), PortData::Str("POST".to_string())),
+            (
+                "url".to_string(),
+                PortData::Str(format!("{origin_url}/jobs")),
+            ),
+            (
+                "headers_json".to_string(),
+                PortData::Str(r#"{"Authorization":"Bearer secret-token"}"#.to_string()),
+            ),
+            (
+                "body".to_string(),
+                PortData::Str(r#"{"create":true}"#.to_string()),
+            ),
+            ("max_retries".to_string(), PortData::Int(2)),
+            ("retry_backoff_ms".to_string(), PortData::Int(0)),
+        ]);
+
+        let outputs = run_node_with_inputs(inputs).expect("POST -> 303 -> 200 should succeed");
+        let origin_requests = stop_recording_server(stop, origin_server);
+        let target_request = target_handle.join().expect("join target server");
+
+        assert_eq!(origin_requests.len(), 1);
+        assert!(origin_requests[0].starts_with("POST /jobs HTTP/1.1\r\n"));
+        assert!(origin_requests[0]
+            .to_ascii_lowercase()
+            .contains("authorization: bearer secret-token\r\n"));
+
+        assert!(
+            target_request.starts_with("GET /jobs/42 HTTP/1.1\r\n"),
+            "303 redirect should convert POST to GET: {target_request}"
+        );
+        assert!(
+            !target_request
+                .to_ascii_lowercase()
+                .contains("authorization:"),
+            "cross-origin redirect must strip sensitive Authorization header: {target_request}"
+        );
+
+        assert_eq!(expect_int(&outputs, "status_code"), 200);
+        assert!(expect_bool(&outputs, "ok"));
+        assert_eq!(
+            expect_str(&outputs, "response_body"),
+            r#"{"status":"completed"}"#
+        );
+        assert_eq!(expect_str(&outputs, "response_url"), final_url);
+        assert_eq!(expect_str(&outputs, "content_type"), "application/json");
+    }
+
+    #[test]
+    fn test_http_request_get_redirect_connect_failure_retries_as_idempotent() {
+        for status_line in ["302 Found", "303 See Other"] {
+            let unreachable = allocate_unreachable_addr();
+            let (origin_url, stop, origin_server) = spawn_redirect_origin_server(
+                status_line,
+                format!("http://{unreachable}/redirected"),
+            );
+
+            let inputs = HashMap::from([
+                ("method".to_string(), PortData::Str("GET".to_string())),
+                (
+                    "url".to_string(),
+                    PortData::Str(format!("{origin_url}/resource")),
+                ),
+                ("max_retries".to_string(), PortData::Int(2)),
+                ("retry_backoff_ms".to_string(), PortData::Int(0)),
+                ("timeout_ms".to_string(), PortData::Int(2_000)),
+            ]);
+
+            let err = run_node_with_inputs(inputs)
+                .err()
+                .expect("GET redirect connect failure should fail after retries");
+            let requests = stop_recording_server(stop, origin_server);
+
+            assert_eq!(
+                requests.len(),
+                3,
+                "idempotent GET should retry max_attempts times for {status_line}"
+            );
+            assert!(
+                err.to_string().contains("failed after 3 attempts"),
+                "unexpected error for {status_line}: {err:#}"
+            );
+        }
     }
 }
