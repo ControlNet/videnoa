@@ -24,18 +24,19 @@ impl TransferExecutor {
         now: DateTime<Utc>,
         jitter: JitterSample,
     ) -> Result<DownloadOutcome, TransferError> {
+        let started = tokio::time::Instant::now();
         let (mut task, mut attempt) = self.snapshots(task_id).await?;
         Self::require_retry_due(&task, &attempt, now)?;
         let Some(remote_output_path) = attempt.attempt.remote_output_path.clone() else {
-            return self.download_ambiguity(&task, &attempt, now).await;
+            return self.download_ambiguity(&task, &attempt, self.observed_now(now, started)).await;
         };
         let Some(remote_input_path) = attempt.attempt.remote_input_path.as_ref() else {
-            return self.download_ambiguity(&task, &attempt, now).await;
+            return self.download_ambiguity(&task, &attempt, self.observed_now(now, started)).await;
         };
         let output_name = format!("output.{}", task.output_extension.as_str());
         let expected_output_path = sibling_output_path(remote_input_path, &output_name)?;
         if attempt.attempt.remote_job_id.is_none() || remote_output_path != expected_output_path {
-            return self.download_ambiguity(&task, &attempt, now).await;
+            return self.download_ambiguity(&task, &attempt, self.observed_now(now, started)).await;
         }
         let _permit = self
             .resources
@@ -45,7 +46,12 @@ impl TransferExecutor {
         match task.status {
             TaskStatus::RemoteCompleted => {
                 LifecycleService::new(self.resources.store.clone())
-                    .advance(&task, &attempt, AdvanceCommand::StartDownload, now)
+                    .advance(
+                        &task,
+                        &attempt,
+                        AdvanceCommand::StartDownload,
+                        self.observed_now(now, started),
+                    )
                     .await?;
                 (task, attempt) = self.snapshots(task_id).await?;
             }
@@ -64,45 +70,19 @@ impl TransferExecutor {
             | TaskStatus::Cancelled => return Err(TransferError::Conflict),
         }
         let Ok((workspace, recovered)) = self.recover_local_artifact(&task, &attempt).await else {
-            return self.download_retry(&task, &attempt, now, jitter).await;
+            return self
+                .download_retry(&task, &attempt, self.observed_now(now, started), jitter)
+                .await;
         };
         let artifact = if let Some(artifact) = recovered {
             artifact
         } else {
-            let worker_id = attempt
-                .attempt
-                .worker_id
-                .ok_or(TransferError::MissingEvidence)?;
-            let worker = self
-                .resources
-                .store
-                .worker(worker_id)
+            match self
+                .fetch_remote_download(&task, &attempt, &output_name, workspace, now, started, jitter)
                 .await?
-                .ok_or(TransferError::MissingEvidence)?;
-            let client = VidenoaClient::new_with_password(
-                worker.api_url,
-                self.config.runtime_settings.remote_timeouts(),
-                self.config.payload_limits,
-                worker.password.as_ref(),
-            )?;
-            let remote_path = FileApiPath::parse(&format!("{}/{output_name}", task.id))?;
-            let Some(stat) = download_stat(&client, &remote_path, task_id).await else {
-                return self.download_retry(&task, &attempt, now, jitter).await;
-            };
-            let artifact = Box::pin(download_artifact(DownloadArtifact {
-                client: &client,
-                remote_path: &remote_path,
-                workspace,
-                extension: task.output_extension.as_str(),
-                expected_size: stat.size,
-            }))
-            .await;
-            match artifact {
-                Ok(artifact) => artifact,
-                Err(error) => {
-                    log_download_failure(&task, &attempt, error);
-                    return self.download_retry(&task, &attempt, now, jitter).await;
-                }
+            {
+                RemoteFetchOutcome::Verified(artifact) => artifact,
+                RemoteFetchOutcome::Retried(outcome) => return Ok(outcome),
             }
         };
         self.checkpoint(TransferCheckpointPoint::DownloadVerified)
@@ -115,10 +95,63 @@ impl TransferExecutor {
                     size: artifact.size,
                     sha256: artifact.sha256,
                 }),
-                now,
+                self.observed_now(now, started),
             )
             .await?;
         Ok(DownloadOutcome::Verified(Box::new(artifact)))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn fetch_remote_download(
+        &self,
+        task: &crate::persistence::TaskRecord,
+        attempt: &crate::persistence::AttemptRecord,
+        output_name: &str,
+        workspace: crate::paths::TempWorkspace,
+        now: DateTime<Utc>,
+        started: tokio::time::Instant,
+        jitter: JitterSample,
+    ) -> Result<RemoteFetchOutcome, TransferError> {
+        let worker_id = attempt
+            .attempt
+            .worker_id
+            .ok_or(TransferError::MissingEvidence)?;
+        let worker = self
+            .resources
+            .store
+            .worker(worker_id)
+            .await?
+            .ok_or(TransferError::MissingEvidence)?;
+        let client = VidenoaClient::new_with_password(
+            worker.api_url,
+            self.config.runtime_settings.remote_timeouts(),
+            self.config.payload_limits,
+            worker.password.as_ref(),
+        )?;
+        let remote_path = FileApiPath::parse(&format!("{}/{output_name}", task.id))?;
+        let Some(stat) = download_stat(&client, &remote_path, task.id).await else {
+            return self
+                .download_retry(task, attempt, self.observed_now(now, started), jitter)
+                .await
+                .map(RemoteFetchOutcome::Retried);
+        };
+        let artifact = Box::pin(download_artifact(DownloadArtifact {
+            client: &client,
+            remote_path: &remote_path,
+            workspace,
+            extension: task.output_extension.as_str(),
+            expected_size: stat.size,
+        }))
+        .await;
+        match artifact {
+            Ok(artifact) => Ok(RemoteFetchOutcome::Verified(artifact)),
+            Err(error) => {
+                log_download_failure(task, attempt, error);
+                self.download_retry(task, attempt, self.observed_now(now, started), jitter)
+                    .await
+                    .map(RemoteFetchOutcome::Retried)
+            }
+        }
     }
 
     async fn recover_local_artifact(
@@ -199,6 +232,11 @@ impl TransferExecutor {
             },
         )
     }
+}
+
+enum RemoteFetchOutcome {
+    Verified(VerifiedArtifact),
+    Retried(DownloadOutcome),
 }
 
 async fn download_stat(

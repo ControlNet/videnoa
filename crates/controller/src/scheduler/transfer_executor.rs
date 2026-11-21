@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
+use tokio::time::Instant;
 
 use crate::domain::{RetryMetadata, TaskId};
 use crate::lifecycle::{
@@ -16,6 +17,9 @@ use super::checkpoints::noop_observer;
 use super::{
     TransferCheckpointObserver, TransferCheckpointPoint, TransferCoordinator, TransferError,
 };
+
+pub type TransferClock = Arc<dyn Fn() -> DateTime<Utc> + Send + Sync>;
+pub type JitterSource = Arc<dyn Fn() -> JitterSample + Send + Sync>;
 
 #[derive(Clone)]
 pub struct TransferResources {
@@ -35,6 +39,8 @@ pub struct TransferExecutor {
     pub(super) resources: TransferResources,
     pub(super) config: TransferConfig,
     checkpoint_observer: Arc<dyn TransferCheckpointObserver>,
+    clock: Option<TransferClock>,
+    jitter_source: JitterSource,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -82,6 +88,8 @@ impl TransferExecutor {
             resources,
             config,
             checkpoint_observer: noop_observer(),
+            clock: None,
+            jitter_source: Arc::new(JitterSample::random),
         }
     }
 
@@ -92,6 +100,40 @@ impl TransferExecutor {
     ) -> Self {
         self.checkpoint_observer = observer;
         self
+    }
+
+    #[must_use]
+    pub fn with_clock(mut self, clock: TransferClock) -> Self {
+        self.clock = Some(clock);
+        self
+    }
+
+    #[must_use]
+    pub fn with_jitter_source(mut self, jitter_source: JitterSource) -> Self {
+        self.jitter_source = jitter_source;
+        self
+    }
+
+    /// Reads the injected clock when configured, or advances `started_at` by
+    /// the elapsed duration of the transfer stage so post-I/O failure/completion
+    /// timestamps reflect actual transfer time while keeping deterministic test
+    /// timestamps anchored.
+    pub(super) fn observed_now(&self, started_at: DateTime<Utc>, started: Instant) -> DateTime<Utc> {
+        if let Some(clock) = &self.clock {
+            return clock();
+        }
+        chrono::Duration::from_std(started.elapsed())
+            .ok()
+            .and_then(|elapsed| started_at.checked_add_signed(elapsed))
+            .unwrap_or(started_at)
+    }
+
+    pub(super) fn live_now(&self) -> DateTime<Utc> {
+        self.clock.as_ref().map_or_else(Utc::now, |clock| clock())
+    }
+
+    pub(super) fn sample_jitter(&self) -> JitterSample {
+        (self.jitter_source)()
     }
 
     pub(super) async fn checkpoint(&self, point: TransferCheckpointPoint) {

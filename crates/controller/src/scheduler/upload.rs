@@ -21,6 +21,7 @@ impl TransferExecutor {
         now: DateTime<Utc>,
         jitter: JitterSample,
     ) -> Result<UploadOutcome, TransferError> {
+        let started = tokio::time::Instant::now();
         let (mut task, mut attempt) = self.snapshots(task_id).await?;
         Self::require_retry_due(&task, &attempt, now)?;
         let restarting = task.status == TaskStatus::Uploading;
@@ -36,7 +37,12 @@ impl TransferExecutor {
         match task.status {
             TaskStatus::Reserved => {
                 LifecycleService::new(self.resources.store.clone())
-                    .advance(&task, &attempt, AdvanceCommand::StartUpload, now)
+                    .advance(
+                        &task,
+                        &attempt,
+                        AdvanceCommand::StartUpload,
+                        self.observed_now(now, started),
+                    )
                     .await?;
                 (task, attempt) = self.snapshots(task_id).await?;
             }
@@ -71,54 +77,71 @@ impl TransferExecutor {
             task.id,
             task.input_extension.as_str()
         ))?;
-        if restarting {
-            return match client.stat(&api_path).await {
-                Ok(stat) if stat.is_file && stat.size == task.input_size => {
-                    self.finish_upload(&task, &attempt, stat.path, now).await
-                }
-                Ok(_) => {
-                    self.cleanup_and_retry(&client, &api_path, &task, &attempt, now, jitter)
-                        .await
-                }
-                Err(VidenoaClientError::NotFound) => {
-                    self.upload_fresh(UploadContext {
-                        task: &task,
-                        attempt: &attempt,
-                        client: &client,
-                        api_path: &api_path,
-                        now,
-                        jitter,
-                    })
-                    .await
-                }
-                Err(error) => {
-                    tracing::warn!(%task_id, %worker_id, error = %error, "Upload recovery request failed");
-                    self.upload_retry(&task, &attempt, now, jitter).await
-                }
-            };
-        }
-        self.upload_fresh(UploadContext {
+        let context = UploadContext {
             task: &task,
             attempt: &attempt,
             client: &client,
             api_path: &api_path,
             now,
+            started,
             jitter,
-        })
-        .await
+        };
+        if restarting {
+            return self.reconcile_restarting_upload(worker_id, context).await;
+        }
+        self.upload_fresh(context).await
+    }
+
+    async fn reconcile_restarting_upload(
+        &self,
+        worker_id: crate::domain::WorkerId,
+        context: UploadContext<'_>,
+    ) -> Result<UploadOutcome, TransferError> {
+        match context.client.stat(context.api_path).await {
+            Ok(stat) if stat.is_file && stat.size == context.task.input_size => {
+                self.finish_upload(
+                    context.task,
+                    context.attempt,
+                    stat.path,
+                    self.observed_now(context.now, context.started),
+                )
+                .await
+            }
+            Ok(_) => self.cleanup_and_retry(&context).await,
+            Err(VidenoaClientError::NotFound) => self.upload_fresh(context).await,
+            Err(error) => {
+                tracing::warn!(
+                    task_id = %context.task.id,
+                    %worker_id,
+                    error = %error,
+                    "Upload recovery request failed"
+                );
+                self.upload_retry(
+                    context.task,
+                    context.attempt,
+                    self.observed_now(context.now, context.started),
+                    context.jitter,
+                )
+                .await
+            }
+        }
     }
 
     pub(super) async fn cleanup_and_retry(
         &self,
-        client: &VidenoaClient,
-        path: &FileApiPath,
-        task: &crate::persistence::TaskRecord,
-        attempt: &crate::persistence::AttemptRecord,
-        now: DateTime<Utc>,
-        jitter: JitterSample,
+        context: &UploadContext<'_>,
     ) -> Result<UploadOutcome, TransferError> {
-        let cleanup = self.delete_owned_partial(client, path).await;
-        let outcome = self.upload_retry(task, attempt, now, jitter).await?;
+        let cleanup = self
+            .delete_owned_partial(context.client, context.api_path)
+            .await;
+        let outcome = self
+            .upload_retry(
+                context.task,
+                context.attempt,
+                self.observed_now(context.now, context.started),
+                context.jitter,
+            )
+            .await?;
         cleanup?;
         Ok(outcome)
     }

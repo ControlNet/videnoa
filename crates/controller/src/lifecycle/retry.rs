@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use rand_core::{OsRng, RngCore};
+
 use crate::config::RetryConfig;
 use crate::domain::RetrySettingsDto;
 
@@ -14,6 +16,24 @@ pub enum AutomaticRetry {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct JitterSample(u16);
 
+impl JitterSample {
+    pub const MAX_RAW: u16 = 10_000;
+
+    /// Draws an unbiased uniform sample in `0..=10_000` from the OS CSPRNG.
+    #[must_use]
+    pub fn random() -> Self {
+        const SPAN: u32 = JitterSample::MAX_RAW as u32 + 1;
+        const LIMIT: u32 = u32::MAX - (u32::MAX % SPAN);
+        loop {
+            let candidate = OsRng.next_u32();
+            if candidate < LIMIT {
+                let value = u16::try_from(candidate % SPAN).unwrap_or(0);
+                return Self(value);
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("jitter sample must be between 0 and 10000")]
 pub struct JitterRangeError;
@@ -22,7 +42,7 @@ impl TryFrom<u16> for JitterSample {
     type Error = JitterRangeError;
 
     fn try_from(value: u16) -> Result<Self, Self::Error> {
-        if value <= 10_000 {
+        if value <= Self::MAX_RAW {
             Ok(Self(value))
         } else {
             Err(JitterRangeError)
@@ -93,5 +113,26 @@ impl RetryPolicy {
             retry_count: retry_count + 1,
             delay: Duration::from_secs(jittered.min(self.maximum_seconds)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use super::*;
+
+    #[test]
+    fn random_jitter_samples_stay_in_bounds_and_vary_across_draws() {
+        let mut distinct = BTreeSet::new();
+        for _ in 0..64 {
+            let sample = JitterSample::random();
+            assert!(sample.0 <= JitterSample::MAX_RAW);
+            distinct.insert(sample.0);
+        }
+        assert!(
+            distinct.len() > 1,
+            "independent jitter draws should not collapse to a constant"
+        );
     }
 }

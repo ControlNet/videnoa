@@ -15,9 +15,11 @@ impl Store {
         &self,
         query: &TaskListQuery,
     ) -> Result<PageResult<TaskRecord>, PersistenceError> {
-        let total = self.task_count(query).await?;
+        let mut tx = self.database.pool().begin().await?;
+        let total = count_tasks_in(&mut *tx, query).await?;
         let mut builder = page_builder(query, false)?;
-        let rows = builder.build().fetch_all(self.database.pool()).await?;
+        let rows = builder.build().fetch_all(&mut *tx).await?;
+        tx.commit().await?;
         let items = rows.iter().map(map_task).collect::<Result<Vec<_>, _>>()?;
         Ok(PageResult { items, total })
     }
@@ -25,14 +27,7 @@ impl Store {
     /// # Errors
     /// Returns an error when `SQLite` access or count conversion fails.
     pub async fn task_count(&self, query: &TaskListQuery) -> Result<u64, PersistenceError> {
-        let mut builder = QueryBuilder::<Sqlite>::new("SELECT COUNT(*) FROM tasks WHERE 1 = 1");
-        push_filters(&mut builder, query);
-        let count: i64 = builder
-            .build()
-            .fetch_one(self.database.pool())
-            .await?
-            .try_get(0)?;
-        super::codec::rust_u64("task_count", count)
+        count_tasks_in(self.database.pool(), query).await
     }
 
     /// # Errors
@@ -103,6 +98,19 @@ impl Store {
             })
             .collect()
     }
+}
+
+async fn count_tasks_in<'e, E>(
+    executor: E,
+    query: &TaskListQuery,
+) -> Result<u64, PersistenceError>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    let mut builder = QueryBuilder::<Sqlite>::new("SELECT COUNT(*) FROM tasks WHERE 1 = 1");
+    push_filters(&mut builder, query);
+    let count: i64 = builder.build().fetch_one(executor).await?.try_get(0)?;
+    super::codec::rust_u64("task_count", count)
 }
 
 async fn plan(store: &Store, sql: &str) -> Result<Vec<String>, PersistenceError> {

@@ -36,6 +36,6 @@ pub use queue::Scheduler;
 pub use runtime_settings::RuntimeSettings;
 use transfer_executor::RetryResult;
 pub use transfer_executor::{
-    DownloadOutcome, PublicationOutcome, TransferConfig, TransferExecutor, TransferResources,
-    UploadOutcome, VerifiedArtifact,
+    DownloadOutcome, JitterSource, PublicationOutcome, TransferClock, TransferConfig,
+    TransferExecutor, TransferResources, UploadOutcome, VerifiedArtifact,
 };

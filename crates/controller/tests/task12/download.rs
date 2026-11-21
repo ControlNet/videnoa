@@ -200,3 +200,112 @@ async fn download_retry_is_not_admitted_before_durable_deadline() -> TestResult 
     assert_eq!(server.counters().await.get(Route::Download), before);
     Ok(())
 }
+
+#[tokio::test]
+async fn slow_download_failure_schedules_backoff_from_failure_clock_and_samples_per_retry_jitter(
+) -> TestResult {
+    use std::sync::{
+        atomic::{AtomicI64, AtomicUsize, Ordering},
+        Arc,
+    };
+    use std::time::Duration as StdDuration;
+    use videnoa_controller::lifecycle::JitterSample;
+    use videnoa_controller::recovery::{Reconciler, RecoveryConfig, ShutdownCoordinator};
+    use videnoa_controller::remote::{PayloadLimits, RemoteTimeouts};
+
+    let server = MockVidenoa::start().await?;
+    let fixture = Fixture::new(&server, 2, 2).await?;
+    let output = vec![23_u8; 20_000];
+    let first = fixture.remote_completed(&server, &output).await?;
+    let second = fixture.remote_completed(&server, &[]).await?;
+    let reconciler = Reconciler::new(
+        fixture.store.clone(),
+        RecoveryConfig::new(
+            fixture.paths.clone(),
+            RemoteTimeouts::new(
+                StdDuration::from_secs(1),
+                StdDuration::from_secs(3),
+                StdDuration::from_secs(1),
+            )?,
+            PayloadLimits::new(1024 * 1024, 4096)?,
+            StdDuration::from_secs(10),
+            StdDuration::from_secs(60),
+            3,
+        ),
+        ShutdownCoordinator::new(),
+    );
+    let report1 = reconciler
+        .reconcile_task_id(first.task_id, fixture.now)
+        .await?;
+    let report2 = reconciler
+        .reconcile_task_id(second.task_id, fixture.now)
+        .await?;
+    server
+        .set_fault(Fault::TruncateDownload { delivered_bytes: 5 })
+        .await;
+
+    // Simulate a clock that advances by 45 seconds between stage start (step 0)
+    // and failure recording (step >= 1), longer than the 10s initial retry backoff,
+    // plus distinct deterministic jitter samples (0 vs 10_000) per dispatched retry.
+    let base_ts = fixture.now.timestamp();
+    let calls = Arc::new(AtomicI64::new(0));
+    let clock_calls = Arc::clone(&calls);
+    let clock = Arc::new(move || {
+        let step = clock_calls.fetch_add(1, Ordering::SeqCst);
+        let offset = if step == 0 { 0 } else { 45 };
+        chrono::DateTime::from_timestamp(base_ts + offset, 0).expect("valid timestamp")
+    });
+    let samples = [0_u16, 10_000_u16];
+    let sample_idx = Arc::new(AtomicUsize::new(0));
+    let jitter_idx = Arc::clone(&sample_idx);
+    let jitter_source = Arc::new(move || {
+        let idx = jitter_idx.fetch_add(1, Ordering::SeqCst);
+        JitterSample::try_from(samples[idx % samples.len()]).expect("valid jitter")
+    });
+
+    let executor = videnoa_controller::scheduler::TransferExecutor::new(
+        videnoa_controller::scheduler::TransferResources {
+            store: fixture.store.clone(),
+            paths: fixture.paths.clone(),
+            coordinator: fixture.coordinator.clone(),
+        },
+        videnoa_controller::scheduler::TransferConfig {
+            payload_limits: PayloadLimits::new(1024 * 1024, 4096)?,
+            runtime_settings: videnoa_controller::scheduler::RuntimeSettings::new(
+                &videnoa_controller::domain::TimeoutSettingsDto {
+                    health_seconds: 1,
+                    poll_seconds: 3,
+                    transfer_seconds: 1,
+                },
+                &videnoa_controller::domain::RetrySettingsDto {
+                    initial_seconds: 10,
+                    maximum_seconds: 60,
+                    max_attempts: 3,
+                },
+            )?,
+        },
+    )
+    .with_clock(clock)
+    .with_jitter_source(jitter_source);
+
+    executor.dispatch_recovery_live(&report1).await?;
+    executor.dispatch_recovery_live(&report2).await?;
+
+    let first_task = fixture.task(first.task_id).await?;
+    let second_task = fixture.task(second.task_id).await?;
+    let first_due = first_task
+        .retry
+        .next_retry_at
+        .ok_or_else(|| std::io::Error::other("missing first retry deadline"))?;
+    let second_due = second_task
+        .retry
+        .next_retry_at
+        .ok_or_else(|| std::io::Error::other("missing second retry deadline"))?;
+
+    // Both deadlines are anchored at post-transfer failure time (t+45s), yielding
+    // t+50s (lower bound, jitter=0) and t+55s (upper bound, jitter=10_000).
+    assert_eq!(first_due, fixture.now + Duration::seconds(50));
+    assert_eq!(second_due, fixture.now + Duration::seconds(55));
+    assert_eq!(sample_idx.load(Ordering::SeqCst), 2);
+    Ok(())
+}

@@ -5,7 +5,6 @@ use chrono::Utc;
 use tokio::sync::broadcast;
 
 use crate::domain::TaskId;
-use crate::lifecycle::JitterSample;
 use crate::operations::EventHub;
 use crate::persistence::Store;
 use crate::recovery::{Reconciler, RecoveryCommandKind, ShutdownCoordinator, StagePermit};
@@ -169,9 +168,7 @@ async fn advance_task_inner(
             | RecoveryCommandKind::Verify
             | RecoveryCommandKind::Publish
             | RecoveryCommandKind::Cleanup => {
-                let advanced = transfers
-                    .dispatch_recovery(&report, Utc::now(), JitterSample::default())
-                    .await?;
+                let advanced = transfers.dispatch_recovery_live(&report).await?;
                 if !advanced.contains(&task_id) {
                     return Ok(true);
                 }

@@ -161,3 +161,57 @@ async fn large_history_pages_are_bounded_stable_and_indexed() -> TestResult {
     assert!(plan.contains("idx_tasks_status_created") || plan.contains("idx_tasks_queue"));
     Ok(())
 }
+
+#[tokio::test]
+async fn task_page_reads_total_and_items_from_a_consistent_snapshot_under_concurrent_inserts(
+) -> TestResult {
+    let (_dir, store) = store().await?;
+    let filter_query = query(json!({
+        "status": "processing",
+        "sort": "created_at",
+        "direction": "asc",
+        "limit": 50,
+        "offset": 0
+    }))?;
+
+    let writer_pool = store.database().pool().clone();
+    let writer = tokio::spawn(async move {
+        for index in 1_i64..=120 {
+            sqlx::query(
+                "INSERT INTO tasks (
+                    id, status, input_path, output_path, input_extension, output_extension,
+                    workflow, priority, source, input_size, input_mtime_ms, progress_json,
+                    created_at_ms, updated_at_ms
+                 ) VALUES (?, 'processing', ?, ?, 'mkv', 'mp4', 'anime', 1, 'api', 1, 1, '{\"percent\":0}', ?, ?)",
+            )
+            .bind(format!("00000000-0000-4000-8000-{index:012x}"))
+            .bind(format!("/input/{index:04}.mkv"))
+            .bind(format!("/output/{index:04}.mp4"))
+            .bind(index)
+            .bind(index)
+            .execute(&writer_pool)
+            .await?;
+            tokio::task::yield_now().await;
+        }
+        Result::<(), sqlx::Error>::Ok(())
+    });
+
+    for _ in 0..80 {
+        let page = store.task_page(&filter_query).await?;
+        let expected_page_len = usize::try_from(page.total.min(50))?;
+        assert_eq!(
+            page.items.len(),
+            expected_page_len,
+            "total ({}) and page items ({}) must come from the same read transaction",
+            page.total,
+            page.items.len()
+        );
+        tokio::task::yield_now().await;
+    }
+
+    writer.await??;
+    let final_page = store.task_page(&filter_query).await?;
+    assert_eq!(final_page.total, 120);
+    assert_eq!(final_page.items.len(), 50);
+    Ok(())
+}

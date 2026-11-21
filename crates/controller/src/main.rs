@@ -250,7 +250,8 @@ fn recovery_runtime(
             payload_limits,
             runtime_settings: scheduler.runtime_settings().clone(),
         },
-    );
+    )
+    .with_clock(std::sync::Arc::new(chrono::Utc::now));
     let reconciler = Reconciler::new(
         store.clone(),
         RecoveryConfig::new(

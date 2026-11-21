@@ -12,6 +12,7 @@ pub(super) struct UploadContext<'a> {
     pub client: &'a VidenoaClient,
     pub api_path: &'a FileApiPath,
     pub now: DateTime<Utc>,
+    pub started: tokio::time::Instant,
     pub jitter: JitterSample,
 }
 
@@ -25,22 +26,28 @@ impl TransferExecutor {
                 Ok((file, size)) => (tokio::fs::File::from_std(file.into_std()), size),
                 Err(code) => {
                     return self
-                        .upload_input_failure(context.task, context.attempt, code, context.now)
+                        .upload_input_failure(
+                            context.task,
+                            context.attempt,
+                            code,
+                            self.observed_now(context.now, context.started),
+                        )
                         .await;
                 }
             };
         let mut task = context.task.clone();
         if size != task.input_size {
+            let refreshed_at = self.observed_now(context.now, context.started);
             match self
                 .resources
                 .store
-                .refresh_upload_size(&task, size, context.now)
+                .refresh_upload_size(&task, size, refreshed_at)
                 .await?
             {
                 crate::persistence::CasOutcome::Applied { new_version } => {
                     task.input_size = size;
                     task.version = new_version;
-                    task.updated_at = context.now;
+                    task.updated_at = refreshed_at;
                 }
                 crate::persistence::CasOutcome::Conflict => return Err(TransferError::Conflict),
             }
@@ -67,26 +74,23 @@ impl TransferExecutor {
                     context.task,
                     context.attempt,
                     remote_input_path,
-                    context.now,
+                    self.observed_now(context.now, context.started),
                 )
                 .await
             }
             Ok(stat) => {
                 tracing::warn!(task_id = %context.task.id, expected_bytes = context.task.input_size, actual_bytes = stat.size, is_file = stat.is_file, "Uploaded file does not match input");
-                self.cleanup_and_retry(
-                    context.client,
-                    context.api_path,
-                    context.task,
-                    context.attempt,
-                    context.now,
-                    context.jitter,
-                )
-                .await
+                self.cleanup_and_retry(&context).await
             }
             Err(error) => {
                 tracing::warn!(task_id = %context.task.id, error = %error, "Upload verification request failed");
-                self.upload_retry(context.task, context.attempt, context.now, context.jitter)
-                    .await
+                self.upload_retry(
+                    context.task,
+                    context.attempt,
+                    self.observed_now(context.now, context.started),
+                    context.jitter,
+                )
+                .await
             }
         }
     }

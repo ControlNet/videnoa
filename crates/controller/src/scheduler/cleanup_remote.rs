@@ -15,6 +15,7 @@ impl TransferExecutor {
         task: &TaskRecord,
         attempt: &AttemptRecord,
         now: DateTime<Utc>,
+        started: tokio::time::Instant,
         jitter: JitterSample,
     ) -> Result<PublicationOutcome, TransferError> {
         let worker_id = attempt
@@ -42,12 +43,13 @@ impl TransferExecutor {
                     "Task stage operation failed");
             }
         }
+        let observed = self.observed_now(now, started);
         match deleted {
             Ok(()) | Err(VidenoaClientError::NotFound) => {
                 self.checkpoint(TransferCheckpointPoint::RemoteDeleteSucceeded)
                     .await;
                 LifecycleService::new(self.resources.store.clone())
-                    .advance(task, attempt, AdvanceCommand::FinishCleanup, now)
+                    .advance(task, attempt, AdvanceCommand::FinishCleanup, observed)
                     .await?;
                 Ok(PublicationOutcome::Completed)
             }
@@ -64,8 +66,14 @@ impl TransferExecutor {
                 | VidenoaClientError::UnexpectedStatus { .. }
                 | VidenoaClientError::Incompatible,
             ) => {
-                self.cleanup_retry(task, attempt, DownstreamFailure::RemoteCleanup, now, jitter)
-                    .await
+                self.cleanup_retry(
+                    task,
+                    attempt,
+                    DownstreamFailure::RemoteCleanup,
+                    observed,
+                    jitter,
+                )
+                .await
             }
             Err(
                 VidenoaClientError::Conflict
@@ -86,7 +94,7 @@ impl TransferExecutor {
                             FailureCode::CleanupFailed,
                             "remote workspace cleanup was rejected",
                         ),
-                        now,
+                        observed,
                     )
                     .await?;
                 Ok(PublicationOutcome::Failed)

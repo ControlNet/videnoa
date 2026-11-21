@@ -31,6 +31,7 @@ impl TransferExecutor {
         now: DateTime<Utc>,
         jitter: JitterSample,
     ) -> Result<PublicationOutcome, TransferError> {
+        let started = tokio::time::Instant::now();
         // Keep duplicate finalizers from interpreting an in-flight rename as missing input.
         let _permit = self
             .resources
@@ -41,13 +42,20 @@ impl TransferExecutor {
         Self::require_retry_due(&task, &attempt, now)?;
         match task.status {
             TaskStatus::Verifying => {
-                if !self.admit_publication(&task, &attempt, now).await? {
+                if !self
+                    .admit_publication(&task, &attempt, self.observed_now(now, started))
+                    .await?
+                {
                     return Ok(PublicationOutcome::Failed);
                 }
                 (task, attempt) = self.snapshots(task_id).await?;
             }
             TaskStatus::Publishing => {}
-            TaskStatus::RemoteCleanup => return self.cleanup(task_id, now, jitter).await,
+            TaskStatus::RemoteCleanup => {
+                return self
+                    .cleanup(task_id, self.observed_now(now, started), jitter)
+                    .await
+            }
             TaskStatus::Queued
             | TaskStatus::Reserved
             | TaskStatus::Uploading
@@ -60,14 +68,18 @@ impl TransferExecutor {
             | TaskStatus::Failed
             | TaskStatus::Cancelled => return Err(TransferError::Conflict),
         }
-        if !self.reconcile_publication(&task, &attempt, now).await? {
+        if !self
+            .reconcile_publication(&task, &attempt, self.observed_now(now, started))
+            .await?
+        {
             return Ok(PublicationOutcome::Failed);
         }
         let (task, attempt) = self.snapshots(task_id).await?;
+        let published_at = self.observed_now(now, started);
         LifecycleService::new(self.resources.store.clone())
-            .advance(&task, &attempt, AdvanceCommand::FinishPublication, now)
+            .advance(&task, &attempt, AdvanceCommand::FinishPublication, published_at)
             .await?;
-        self.cleanup(task_id, now, jitter).await
+        self.cleanup(task_id, published_at, jitter).await
     }
 
     async fn admit_publication(

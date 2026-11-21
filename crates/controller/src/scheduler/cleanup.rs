@@ -19,6 +19,7 @@ impl TransferExecutor {
         now: DateTime<Utc>,
         jitter: JitterSample,
     ) -> Result<PublicationOutcome, TransferError> {
+        let started = tokio::time::Instant::now();
         let (task, attempt) = self.snapshots(task_id).await?;
         if task.status == TaskStatus::Completed {
             return Ok(PublicationOutcome::Completed);
@@ -40,7 +41,7 @@ impl TransferExecutor {
                     &task,
                     &attempt,
                     DownstreamFailure::LocalCleanup,
-                    now,
+                    self.observed_now(now, started),
                     jitter,
                 )
                 .await;
@@ -49,7 +50,7 @@ impl TransferExecutor {
             .await;
         self.checkpoint(TransferCheckpointPoint::BeforeRemoteDelete)
             .await;
-        self.delete_remote_workspace(&task, &attempt, now, jitter)
+        self.delete_remote_workspace(&task, &attempt, now, started, jitter)
             .await
     }
 
