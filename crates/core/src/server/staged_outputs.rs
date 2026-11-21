@@ -18,7 +18,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use super::Job;
 
@@ -145,6 +145,37 @@ fn output_paths_in(
         .collect()
 }
 
+fn parent_dir_or_cwd(path: &Path) -> &Path {
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    }
+}
+
+fn parent_dir_is_accessible(path: &Path) -> bool {
+    let dir = parent_dir_or_cwd(path);
+    match std::fs::read_dir(dir) {
+        Ok(_) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            debug!(
+                path = %path.display(),
+                dir = %dir.display(),
+                "Parent directory of staged output is not present; retaining cleanup obligation"
+            );
+            false
+        }
+        Err(error) => {
+            warn!(
+                path = %path.display(),
+                dir = %dir.display(),
+                %error,
+                "Failed to verify parent directory of missing staged output"
+            );
+            false
+        }
+    }
+}
+
 fn sweep_direct_staged_file(path: &Path, removed_paths: &mut HashSet<PathBuf>) -> bool {
     match std::fs::symlink_metadata(path) {
         Ok(metadata) => {
@@ -157,7 +188,9 @@ fn sweep_direct_staged_file(path: &Path, removed_paths: &mut HashSet<PathBuf>) -
                     removed_paths.insert(path.to_path_buf());
                     true
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    parent_dir_is_accessible(path)
+                }
                 Err(error) => {
                     warn!(
                         path = %path.display(),
@@ -168,7 +201,9 @@ fn sweep_direct_staged_file(path: &Path, removed_paths: &mut HashSet<PathBuf>) -
                 }
             }
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            parent_dir_is_accessible(path)
+        }
         Err(error) => {
             warn!(
                 path = %path.display(),
@@ -181,17 +216,21 @@ fn sweep_direct_staged_file(path: &Path, removed_paths: &mut HashSet<PathBuf>) -
 }
 
 fn sweep_beside_checked(output: &Path, owner: &str, removed_paths: &mut HashSet<PathBuf>) -> bool {
-    let dir = match output.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() => parent,
-        _ => Path::new("."),
-    };
+    let dir = parent_dir_or_cwd(output);
     let stem = output
         .file_stem()
         .map(|stem| stem.to_string_lossy().into_owned())
         .unwrap_or_default();
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            debug!(
+                dir = %dir.display(),
+                output = %output.display(),
+                "Target directory for staged output sweep is not present; retaining recorded obligation if any"
+            );
+            return false;
+        }
         Err(error) => {
             warn!(
                 dir = %dir.display(),
@@ -222,13 +261,19 @@ fn sweep_beside_checked(output: &Path, owner: &str, removed_paths: &mut HashSet<
         if !is_staged_file_of(name, &stem, owner) {
             continue;
         }
+        let entry_path = entry.path();
         match entry.file_type() {
             Ok(file_type) if file_type.is_file() => {}
             Ok(_) => continue,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if !parent_dir_is_accessible(&entry_path) {
+                    clean = false;
+                }
+                continue;
+            }
             Err(error) => {
                 warn!(
-                    path = %entry.path().display(),
+                    path = %entry_path.display(),
                     %error,
                     "Failed to inspect file type of a staged output"
                 );
@@ -236,13 +281,16 @@ fn sweep_beside_checked(output: &Path, owner: &str, removed_paths: &mut HashSet<
                 continue;
             }
         }
-        let entry_path = entry.path();
         match std::fs::remove_file(&entry_path) {
             Ok(()) => {
                 info!(path = %entry_path.display(), "Removed a staged output left by an interrupted job");
                 removed_paths.insert(entry_path);
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if !parent_dir_is_accessible(&entry_path) {
+                    clean = false;
+                }
+            }
             Err(error) => {
                 warn!(
                     path = %entry_path.display(),
@@ -279,7 +327,9 @@ fn is_staged_filename_for_owner(name: &str, owner: &str) -> bool {
     let Some(random_start) = before_marker.len().checked_sub(RANDOM_LEN) else {
         return false;
     };
-    let (before_random, random) = before_marker.split_at(random_start);
+    let Some((before_random, random)) = before_marker.split_at_checked(random_start) else {
+        return false;
+    };
     if !random.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
         return false;
     }
@@ -404,5 +454,132 @@ mod tests {
         ] {
             assert!(!is_staged_filename_for_owner(name, "job-1"), "{name}");
         }
+    }
+
+    #[test]
+    fn multibyte_utf8_names_never_panic_and_valid_unicode_stems_still_sweep() {
+        // Every case below places `before_marker.len() - RANDOM_LEN` inside a
+        // 2-byte, 3-byte, or 4-byte UTF-8 scalar so an unchecked `split_at`
+        // would panic.
+        for name in [
+            // 2-byte UTF-8 (2-byte scalar): offsets +1 inside 0..2 and +1 inside 1..3
+            ".éabcde.videnoa-video.mkv",
+            ".aéabcde.videnoa-direct.mp4",
+            // 3-byte UTF-8 CJK: offsets +1 and +2 inside 3-byte scalars
+            ".第1话.videnoa-video.mkv",
+            ".中文名ab.videnoa-mux.mkv",
+            ".中文名.videnoa-video",
+            // 4-byte UTF-8 emoji: offsets +1, +2, +3 inside 0..4
+            ".🎬abc.videnoa-video.mkv",
+            ".🎬🎬.videnoa-mux.mkv",
+            ".🎬abcde.videnoa-direct.mp4",
+        ] {
+            assert!(!is_staged_filename_for_owner(name, "job-1"), "{name}");
+        }
+
+        // Multi-byte UTF-8 in the 6-byte random slot of `is_staged_file_of`
+        // (byte index 6 falls inside the second 3-byte CJK scalar at bytes 5..8).
+        assert!(!is_staged_file_of(
+            ".番剧第01话.job-1.ab中文.videnoa-video.mkv",
+            "番剧第01话",
+            "job-1"
+        ));
+
+        // Valid Unicode stems with an owner and 6-char ASCII alphanumeric random suffix.
+        for (stem, name) in [
+            ("番剧第01话", ".番剧第01话.job-1.a1B2c3.videnoa-video.mkv"),
+            (
+                "Épisode 01 🎬",
+                ".Épisode 01 🎬.job-1.Zz9900.videnoa-mux.mkv",
+            ),
+        ] {
+            assert!(is_staged_filename_for_owner(name, "job-1"), "{name}");
+            assert!(is_staged_file_of(name, stem, "job-1"), "{name}");
+        }
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let hidden_unicode_target = dir.path().join(".第1话.videnoa-video.mkv");
+        let hidden_emoji_target = dir.path().join(".🎬🎬.videnoa-mux.mkv");
+        let unicode_output = dir.path().join("番剧第01话.mkv");
+        let unicode_staged_direct = dir
+            .path()
+            .join(".番剧第01话.job-1.a1B2c3.videnoa-video.mkv");
+        let unicode_staged_beside = dir.path().join(".番剧第01话.job-1.Zz9900.videnoa-mux.mkv");
+
+        for path in [
+            &hidden_unicode_target,
+            &hidden_emoji_target,
+            &unicode_staged_direct,
+            &unicode_staged_beside,
+        ] {
+            std::fs::write(path, b"fixture").unwrap();
+        }
+
+        let recorded = vec![
+            ("job-1".to_string(), hidden_unicode_target.clone()),
+            ("job-1".to_string(), hidden_emoji_target.clone()),
+            ("job-1".to_string(), unicode_output.clone()),
+            ("job-1".to_string(), unicode_staged_direct.clone()),
+        ];
+        let report = sweep_interrupted_jobs_with_recorded(std::iter::empty(), &recorded);
+
+        assert!(
+            hidden_unicode_target.exists(),
+            "non-staged hidden Unicode target must not be deleted"
+        );
+        assert!(
+            hidden_emoji_target.exists(),
+            "non-staged hidden emoji target must not be deleted"
+        );
+        assert!(!unicode_staged_direct.exists());
+        assert!(!unicode_staged_beside.exists());
+        assert_eq!(report.removed, 2);
+        assert_eq!(report.completed_records, recorded);
+    }
+
+    #[test]
+    fn missing_parent_directory_retains_recorded_obligations_until_volume_is_online() {
+        let root = tempfile::TempDir::new().unwrap();
+        let offline_volume = root.path().join("mnt-nas").join("anime-season-01");
+        let target_output = offline_volume.join("Episode 01.mkv");
+        let direct_staged = offline_volume.join(".Episode 01.job-42.a1B2c3.videnoa-video.mkv");
+        let beside_staged = offline_volume.join(".Episode 01.job-42.Zz9900.videnoa-mux.mkv");
+        let kept_encode = offline_volume.join(".Episode 01.job-42.K3pt00.videnoa-kept.mkv");
+
+        let recorded = vec![
+            ("job-42".to_string(), direct_staged.clone()),
+            ("job-42".to_string(), target_output.clone()),
+        ];
+
+        // While the volume directory does not exist (`NotFound`), neither the
+        // direct staged path nor the target output path may be marked completed.
+        let offline_report = sweep_interrupted_jobs_with_recorded(std::iter::empty(), &recorded);
+        assert_eq!(offline_report.removed, 0);
+        assert!(
+            offline_report.completed_records.is_empty(),
+            "expected obligations to be retained while parent dir is missing, got {:?}",
+            offline_report.completed_records
+        );
+
+        // Once the volume comes online, both retained obligations sweep the
+        // leftover staged files (preserving `kept`) and enter `completed_records`.
+        std::fs::create_dir_all(&offline_volume).unwrap();
+        for path in [&direct_staged, &beside_staged, &kept_encode] {
+            std::fs::write(path, b"staged bytes").unwrap();
+        }
+
+        let online_report = sweep_interrupted_jobs_with_recorded(std::iter::empty(), &recorded);
+        assert!(!direct_staged.exists());
+        assert!(!beside_staged.exists());
+        assert!(kept_encode.exists());
+        assert_eq!(online_report.removed, 2);
+        assert_eq!(online_report.completed_records, recorded);
+
+        // If a recorded staged file is already absent inside an existing
+        // accessible directory, its obligation is still completed cleanly.
+        let already_absent_report =
+            sweep_interrupted_jobs_with_recorded(std::iter::empty(), &recorded);
+        assert_eq!(already_absent_report.removed, 0);
+        assert_eq!(already_absent_report.completed_records, recorded);
     }
 }
