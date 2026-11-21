@@ -27,7 +27,7 @@ use tempfile::TempPath;
 use tracing::{debug, info, warn};
 
 use crate::frame_pool::FramePool;
-use crate::node::{ExecutionContext, Node, PortDefinition};
+use crate::node::{ExecutionContext, Node, PortDefinition, StagedOutputHook};
 use crate::nodes::resize::ResizeAlgorithm;
 use crate::streaming_executor::FrameSink;
 use crate::subprocess::{
@@ -106,6 +106,9 @@ pub struct EncoderConfig {
     /// The job whose staged files these are. It is part of their names, so a
     /// restart removes only the files of the jobs it interrupted.
     pub staging_owner: Option<String>,
+    /// Optional hook to durably register staged output paths before/as
+    /// temporary staged files are created on disk.
+    pub staged_output_hook: Option<StagedOutputHook>,
 }
 
 impl EncoderConfig {
@@ -149,6 +152,9 @@ impl EncoderConfig {
     /// encodes (and `x.mkv` next to `x.mka`) apart; the file is removed when
     /// the returned path is dropped.
     fn reserve_temp_beside_output(&self, role: &str, extension: &str) -> Result<TempPath> {
+        if let Some(hook) = &self.staged_output_hook {
+            hook.record(&self.output_path)?;
+        }
         let stem = self
             .output_path
             .file_stem()
@@ -176,6 +182,9 @@ impl EncoderConfig {
         let file = builder
             .tempfile_in(dir)
             .with_context(|| format!("failed to create a temporary file in {}", dir.display()))?;
+        if let Some(hook) = &self.staged_output_hook {
+            hook.record(file.path())?;
+        }
         Ok(file.into_temp_path())
     }
 
@@ -1089,7 +1098,7 @@ impl Node for VideoOutputNode {
     fn execute(
         &mut self,
         inputs: &HashMap<String, PortData>,
-        _ctx: &ExecutionContext,
+        ctx: &ExecutionContext,
     ) -> Result<HashMap<String, PortData>> {
         let source_path = match inputs.get("source_path") {
             Some(PortData::Path(p)) => p.clone(),
@@ -1122,6 +1131,8 @@ impl Node for VideoOutputNode {
         if !source_path.exists() {
             bail!("source file does not exist: {}", source_path.display());
         }
+
+        ctx.record_staged_output(&output_path)?;
 
         debug!(
             source = %source_path.display(),
@@ -1331,6 +1342,7 @@ mod tests {
             x265_preset: None,
             output_scales: Vec::new(),
             staging_owner: None,
+            staged_output_hook: None,
         }
     }
 
@@ -2763,6 +2775,7 @@ printf merged > "$out"; printf '{report}\n'; exit {status}"#,
             x265_preset: None,
             output_scales: Vec::new(),
             staging_owner: None,
+            staged_output_hook: None,
         };
 
         let mut encoder = VideoEncoder::new(&config).unwrap();
@@ -2843,6 +2856,7 @@ printf merged > "$out"; printf '{report}\n'; exit {status}"#,
                 x265_preset: None,
                 output_scales: Vec::new(),
                 staging_owner: None,
+                staged_output_hook: None,
             };
             let mut encoder = VideoEncoder::new(&config).unwrap();
             let rgb = quadrant_frame(width as usize, height as usize);
@@ -2938,6 +2952,7 @@ printf merged > "$out"; printf '{report}\n'; exit {status}"#,
             x265_preset: Some("ultrafast".to_string()),
             output_scales: Vec::new(),
             staging_owner: None,
+            staged_output_hook: None,
         };
         let mut encoder = VideoEncoder::new(&config).unwrap();
         std::thread::sleep(Duration::from_secs(3));
@@ -3024,6 +3039,51 @@ printf merged > "$out"; printf '{report}\n'; exit {status}"#,
     fn test_add_mkv_statistics_tags_handles_missing_tool() {
         let tmp = tempfile::NamedTempFile::with_suffix(".mkv").unwrap();
         add_mkv_statistics_tags(tmp.path());
+    }
+
+    #[test]
+    fn staged_output_hook_records_target_and_temp_file_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.mkv");
+        std::fs::write(&source, b"synthetic source").unwrap();
+        let output = dir.path().join("computed").join("Episode 01.mkv");
+        std::fs::create_dir_all(output.parent().unwrap()).unwrap();
+
+        let recorded: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&recorded);
+        let hook = StagedOutputHook::new(move |path| {
+            seen.lock().unwrap().push(path.to_path_buf());
+            Ok(())
+        });
+
+        let mut node = VideoOutputNode::new();
+        let ctx = ExecutionContext {
+            staged_output_hook: Some(hook.clone()),
+            ..ExecutionContext::default()
+        };
+        let inputs = HashMap::from([
+            ("source_path".to_string(), PortData::Path(source.clone())),
+            ("output_path".to_string(), PortData::Path(output.clone())),
+        ]);
+        node.execute(&inputs, &ctx).unwrap();
+        assert_eq!(
+            recorded.lock().unwrap().as_slice(),
+            std::slice::from_ref(&output)
+        );
+
+        recorded.lock().unwrap().clear();
+        let mut config = default_config();
+        config.source_path = source;
+        config.output_path = output.clone();
+        config.staging_owner = Some("job-42".to_string());
+        config.staged_output_hook = Some(hook);
+
+        let staged = config.reserve_temp_beside_output("video", "mkv").unwrap();
+        let paths = recorded.lock().unwrap().clone();
+        assert_eq!(paths.len(), 2);
+        assert_eq!(paths[0], output);
+        assert_eq!(paths[1], staged.to_path_buf());
+        assert!(staged.exists());
     }
 
     fn test_source_path() -> PathBuf {

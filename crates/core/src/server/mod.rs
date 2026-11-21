@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path as StdPath, PathBuf};
 use std::process::Command;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -53,7 +53,9 @@ use crate::nodes::encoder_availability::validate_workflow_encoders;
 use crate::registry::{register_all_nodes, NodeRegistry};
 use crate::streaming_executor::ProgressCallback;
 use idempotency::{IdempotencyKey, RequestFingerprint};
-use persistence::{IdempotentJobClaim, IdempotentJobLookup, JobsPersistence};
+use persistence::{
+    IdempotentJobClaim, IdempotentJobLookup, JobsPersistence, PendingTerminalTransition,
+};
 /// A job's progress, as stored and as reported.
 pub use videnoa_protocol::JobProgress as ProgressUpdate;
 pub use videnoa_protocol::{
@@ -99,9 +101,12 @@ struct AppStateInner {
     performance_series: Mutex<VecDeque<RuntimePerformanceSeriesSample>>,
     /// Set by [`AppState::begin_shutdown`]; new jobs and previews are refused.
     shutting_down: std::sync::atomic::AtomicBool,
-    /// Jobs whose terminal state is in memory but failed to reach the job
-    /// store. Retried in the background and once more at shutdown.
-    unpersisted_terminal: std::sync::Mutex<HashSet<String>>,
+    /// Jobs whose executors have finished, holding their terminal transition
+    /// until `jobs.db` commits it so public state never out-runs durable state.
+    unpersisted_terminal: std::sync::Mutex<UnpersistedTerminalState>,
+    /// Backoff schedule (in ms) for retrying failed terminal writes, capped at
+    /// its final element so retries continue indefinitely until persisted.
+    terminal_retry_delays_ms: std::sync::Mutex<Vec<u64>>,
     /// Held from the queue capacity check until the new jobs are in `jobs`,
     /// so concurrent submissions cannot all take the last free slot.
     admission: std::sync::Mutex<()>,
@@ -112,10 +117,19 @@ struct AppStateInner {
     instance_lock: std::result::Result<std::fs::File, String>,
 }
 
+#[derive(Default)]
+struct UnpersistedTerminalState {
+    pending: HashMap<String, PendingTerminalTransition>,
+    worker_running: bool,
+    reset_backoff: bool,
+    retry_passes: u64,
+}
+
 const INSTANCE_LOCK_FILE: &str = "instance.lock";
 
-/// Backoff between retries of a terminal write that failed.
-const TERMINAL_WRITE_RETRY_DELAYS_MS: [u64; 6] = [250, 1_000, 4_000, 15_000, 60_000, 300_000];
+/// Backoff steps between retries of a terminal write that failed; once the end
+/// of this slice is reached, retries continue indefinitely at the final step.
+const TERMINAL_WRITE_RETRY_DELAYS_MS: [u64; 5] = [250, 1_000, 4_000, 15_000, 30_000];
 
 /// Locks `<data_dir>/instance.lock` for this process; fails when another
 /// instance holds it.
@@ -263,15 +277,29 @@ impl AppState {
                 db_path = %persistence.db_path().display(),
                 "Restored persisted jobs into runtime state"
             );
-            if !interrupted.is_empty() {
-                let removed = staged_outputs::sweep_interrupted_jobs(
+            let recorded_staged = persistence.list_staged_files()?;
+            if !interrupted.is_empty() || !recorded_staged.is_empty() {
+                let sweep = staged_outputs::sweep_interrupted_jobs_with_recorded(
                     restored_jobs
                         .iter()
                         .filter(|job| interrupted.contains(&job.id)),
+                    &recorded_staged,
                 );
+                for (job_id, path) in sweep.completed_records {
+                    if let Err(err) = persistence.remove_staged_file_record(&job_id, &path) {
+                        warn!(
+                            %job_id,
+                            path = %path.display(),
+                            error = ?err,
+                            "Failed to clear staged output record after startup sweep"
+                        );
+                    }
+                }
                 info!(
                     interrupted = interrupted.len(),
-                    removed, "Cleaned up after jobs the previous run left running"
+                    recorded = recorded_staged.len(),
+                    removed = sweep.removed,
+                    "Cleaned up after jobs the previous run left running"
                 );
             }
             for job in restored_jobs {
@@ -311,7 +339,10 @@ impl AppState {
                 preview_cache,
                 performance_series: Mutex::new(VecDeque::new()),
                 shutting_down: std::sync::atomic::AtomicBool::new(false),
-                unpersisted_terminal: std::sync::Mutex::new(HashSet::new()),
+                unpersisted_terminal: std::sync::Mutex::new(UnpersistedTerminalState::default()),
+                terminal_retry_delays_ms: std::sync::Mutex::new(
+                    TERMINAL_WRITE_RETRY_DELAYS_MS.to_vec(),
+                ),
                 admission: std::sync::Mutex::new(()),
                 instance_lock,
             }),
@@ -358,6 +389,7 @@ impl AppState {
         if self.inner.shutting_down.swap(true, Ordering::SeqCst) {
             return;
         }
+        let pending_terminal_ids = self.pending_terminal_ids();
         // Cancel every job first, then write. Writing while iterating held
         // the job map's locks across disk I/O, so on a slow disk a queued job
         // not yet reached could start, or even complete, mid-shutdown.
@@ -366,7 +398,7 @@ impl AppState {
             .jobs
             .iter_mut()
             .filter_map(|mut job| {
-                if job.status.is_terminal() {
+                if job.status.is_terminal() || pending_terminal_ids.contains(&job.id) {
                     return None;
                 }
                 job.request_cancel(CancelReason::Shutdown);
@@ -392,11 +424,12 @@ impl AppState {
     pub async fn wait_for_jobs_to_stop(&self, grace: Duration) -> Vec<String> {
         let deadline = Instant::now() + grace;
         loop {
+            let pending_terminal_ids = self.pending_terminal_ids();
             let active: Vec<String> = self
                 .inner
                 .jobs
                 .iter()
-                .filter(|job| !job.status.is_terminal())
+                .filter(|job| !job.status.is_terminal() && !pending_terminal_ids.contains(&job.id))
                 .map(|job| job.id.clone())
                 .collect();
             if active.is_empty() || Instant::now() >= deadline {
@@ -407,69 +440,216 @@ impl AppState {
         }
     }
 
-    /// Writes the terminal states that failed to persist; returns how many
-    /// are still unwritten.
-    fn write_unpersisted_terminal_states(&self) -> usize {
-        let pending: Vec<String> = match self.inner.unpersisted_terminal.lock() {
-            Ok(set) => set.iter().cloned().collect(),
-            Err(poisoned) => poisoned.into_inner().iter().cloned().collect(),
-        };
-        for job_id in pending {
-            let snapshot = self.inner.jobs.get(&job_id).map(|job| job.clone());
-            let written = match snapshot {
-                // A job deleted since then has no row left to fix.
-                None => true,
-                Some(job) => match self.persist_job_transition(&job) {
-                    Ok(()) => {
-                        info!(%job_id, status = ?job.status, "Persisted terminal transition on retry");
-                        true
-                    }
-                    Err(err) => {
-                        warn!(%job_id, error = ?err, "Terminal transition still not persisted");
-                        false
-                    }
-                },
-            };
-            if written {
-                let mut set = self
-                    .inner
-                    .unpersisted_terminal
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                set.remove(&job_id);
-            }
-        }
+    fn pending_terminal_ids(&self) -> HashSet<String> {
         self.inner
             .unpersisted_terminal
             .lock()
-            .map_or_else(|poisoned| poisoned.into_inner().len(), |set| set.len())
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .pending
+            .keys()
+            .cloned()
+            .collect()
     }
 
-    /// Records that `job_id`'s terminal state did not reach the job store and
-    /// retries it with backoff. Without this, the next start would find the
-    /// job `running` and mark it cancelled.
-    fn retry_terminal_write(&self, job_id: &str) {
-        let first = self
-            .inner
+    fn has_pending_terminal(&self, job_id: &str) -> bool {
+        self.inner
             .unpersisted_terminal
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(job_id.to_owned());
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            return;
+            .pending
+            .contains_key(job_id)
+    }
+
+    fn remove_unpersisted_terminal(&self, job_id: &str) {
+        self.inner
+            .unpersisted_terminal
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .pending
+            .remove(job_id);
+    }
+
+    /// Publishes an already-persisted terminal transition into in-memory state
+    /// and closes the job's live progress channel.
+    fn publish_terminal_transition(&self, transition: &PendingTerminalTransition) {
+        if let Some(mut job) = self.inner.jobs.get_mut(&transition.job_id) {
+            job.status = transition.status;
+            job.completed_at = Some(transition.completed_at);
+            job.error = transition.error.clone();
+            if let (Some(reason), Some(requested_at)) =
+                (transition.cancel_reason, transition.cancel_requested_at)
+            {
+                job.cancel_request = Some(CancelRequest {
+                    requested_at,
+                    reason,
+                });
+            }
+        }
+        self.remove_unpersisted_terminal(&transition.job_id);
+        self.inner.progress_senders.remove(&transition.job_id);
+    }
+
+    /// Writes the terminal states that failed to persist; returns how many
+    /// are still unwritten.
+    fn write_unpersisted_terminal_states(&self) -> usize {
+        let pending: Vec<(String, PendingTerminalTransition)> = {
+            let mut guard = self
+                .inner
+                .unpersisted_terminal
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.retry_passes = guard.retry_passes.saturating_add(1);
+            guard
+                .pending
+                .iter()
+                .map(|(id, transition)| (id.clone(), transition.clone()))
+                .collect()
         };
-        if !first {
+        for (job_id, transition) in pending {
+            let snapshot = self.inner.jobs.get(&job_id).map(|job| {
+                let mut terminal_job = job.clone();
+                apply_pending_terminal(&mut terminal_job, &transition);
+                terminal_job
+            });
+            match snapshot {
+                // A job deleted since then has no row left to fix.
+                None => {
+                    if let Ok(store) = self.job_store() {
+                        store.remove_pending_terminal_sidecar(&job_id);
+                    }
+                    self.remove_unpersisted_terminal(&job_id);
+                }
+                Some(job) => match self.persist_job_transition(&job) {
+                    Ok(()) => {
+                        if let Ok(store) = self.job_store() {
+                            store.remove_pending_terminal_sidecar(&job_id);
+                        }
+                        self.publish_terminal_transition(&transition);
+                        info!(%job_id, status = ?transition.status, "Persisted terminal transition on retry");
+                    }
+                    Err(err) => {
+                        if let Ok(store) = self.job_store() {
+                            if !store.pending_terminal_sidecar_path(&job_id).exists() {
+                                if let Err(sidecar_err) =
+                                    store.write_pending_terminal_sidecar(&transition)
+                                {
+                                    warn!(
+                                        %job_id,
+                                        error = ?sidecar_err,
+                                        "Failed to write pending terminal sidecar during retry"
+                                    );
+                                }
+                            }
+                        }
+                        warn!(%job_id, error = ?err, "Terminal transition still not persisted");
+                    }
+                },
+            }
+        }
+        self.inner.unpersisted_terminal.lock().map_or_else(
+            |poisoned| poisoned.into_inner().pending.len(),
+            |state| state.pending.len(),
+        )
+    }
+
+    /// Records that `transition` did not reach `jobs.db` and spawns (or resets)
+    /// a background retry task with capped backoff that keeps retrying until
+    /// persisted, shut down, or `AppState` is dropped.
+    fn retry_terminal_write(&self, transition: PendingTerminalTransition) {
+        let should_spawn = {
+            let mut guard = self
+                .inner
+                .unpersisted_terminal
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.pending.insert(transition.job_id.clone(), transition);
+            if guard.worker_running {
+                guard.reset_backoff = true;
+                false
+            } else {
+                guard.worker_running = true;
+                guard.reset_backoff = false;
+                true
+            }
+        };
+        if !should_spawn {
             return;
         }
-        let state = self.clone();
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            let mut guard = self
+                .inner
+                .unpersisted_terminal
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.worker_running = false;
+            return;
+        };
+        let weak: Weak<AppStateInner> = Arc::downgrade(&self.inner);
         runtime.spawn(async move {
-            for delay_ms in TERMINAL_WRITE_RETRY_DELAYS_MS {
-                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-                if state.write_unpersisted_terminal_states() == 0 {
+            let mut step: usize = 0;
+            loop {
+                let delay = {
+                    let Some(inner) = weak.upgrade() else {
+                        return;
+                    };
+                    let reset = {
+                        let mut guard = inner
+                            .unpersisted_terminal
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        std::mem::replace(&mut guard.reset_backoff, false)
+                    };
+                    if reset {
+                        step = 0;
+                    }
+                    let delays = inner
+                        .terminal_retry_delays_ms
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let ms = delays
+                        .get(step)
+                        .copied()
+                        .or_else(|| delays.last().copied())
+                        .unwrap_or(1_000);
+                    Duration::from_millis(ms)
+                };
+                step = step.saturating_add(1);
+                tokio::time::sleep(delay).await;
+
+                let Some(inner) = weak.upgrade() else {
+                    return;
+                };
+                if inner
+                    .shutting_down
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    let mut guard = inner
+                        .unpersisted_terminal
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    guard.worker_running = false;
+                    return;
+                }
+                let state = AppState { inner };
+                state.write_unpersisted_terminal_states();
+                let stop = {
+                    let mut guard = state
+                        .inner
+                        .unpersisted_terminal
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    if guard.pending.is_empty() {
+                        guard.worker_running = false;
+                        true
+                    } else {
+                        false
+                    }
+                };
+                drop(state);
+                if stop {
                     return;
                 }
             }
-            error!("Gave up retrying terminal transitions; they are written again at shutdown");
         });
     }
 
@@ -2247,6 +2427,11 @@ async fn delete_job_history(
         }
     };
     if !entry.get().status.is_terminal() {
+        if state.has_pending_terminal(&id) {
+            drop(entry);
+            state.write_unpersisted_terminal_states();
+            return Ok(StatusCode::NO_CONTENT);
+        }
         entry.get_mut().request_cancel(CancelReason::User);
         // Recorded so a restart before the executor exits keeps the reason.
         if let Err(err) = persistence.update_job(entry.get()) {
@@ -2265,6 +2450,7 @@ async fn delete_job_history(
         )));
     }
     entry.remove();
+    state.remove_unpersisted_terminal(&id);
     state.inner.progress_senders.remove(&id);
     info!(job_id = %id, "Job history row deleted");
     Ok(StatusCode::NO_CONTENT)
@@ -3460,9 +3646,21 @@ async fn run_job(state: AppState, job_id: String) {
                     workflow.inject_workflow_input_params(params);
                 }
                 let workflow = resolve_workflow_model_paths(&workflow, &paths)?;
-                // Staged output names carry the job, for the restart sweep.
+                // Staged output names carry the job, and runtime output/staged
+                // paths are recorded in `jobs.db` before or as they are created.
+                let staged_output_hook = {
+                    let inner_for_stage = Arc::clone(&inner);
+                    let job_id_for_stage = job_id_for_closure.clone();
+                    crate::node::StagedOutputHook::new(move |path: &StdPath| {
+                        if let Ok(persistence) = &inner_for_stage.jobs_persistence {
+                            persistence.record_staged_file(&job_id_for_stage, path)?;
+                        }
+                        Ok(())
+                    })
+                };
                 let compile_ctx = VideoCompileContext::new(trt_cache_dir)
-                    .with_staging_owner(job_id_for_closure.clone());
+                    .with_staging_owner(job_id_for_closure.clone())
+                    .with_staged_output_hook(staged_output_hook.clone());
                 let fps_baseline = Mutex::new(None::<ProgressFpsBaseline>);
                 let ws_tx_for_progress = ws_tx.clone();
                 let ws_tx_for_debug = ws_tx.clone();
@@ -3524,13 +3722,18 @@ async fn run_job(state: AppState, job_id: String) {
                 };
 
                 let (cancel_watch_rx, _cancel_bridge) = job_cancellation_watch(cancel_token);
+                let exec_ctx = crate::node::ExecutionContext {
+                    cancellation: Some(cancel_watch_rx),
+                    staged_output_hook: Some(staged_output_hook),
+                    ..Default::default()
+                };
 
-                SequentialExecutor::execute_with_context_and_debug_hook(
+                SequentialExecutor::execute_with_execution_context_and_debug_hook(
                     &workflow,
                     &inner.node_registry,
                     Some(&compile_ctx),
                     Some(progress_cb),
-                    Some(cancel_watch_rx),
+                    exec_ctx,
                     Some(&mut node_debug_cb),
                 )
             }))
@@ -3549,53 +3752,101 @@ async fn run_job(state: AppState, job_id: String) {
     finish_job(&state, &job_id, result.map(drop));
 }
 
+fn apply_pending_terminal(job: &mut Job, transition: &PendingTerminalTransition) {
+    job.status = transition.status;
+    job.completed_at = Some(transition.completed_at);
+    job.error = transition.error.clone();
+    if let (Some(reason), Some(requested_at)) =
+        (transition.cancel_reason, transition.cancel_requested_at)
+    {
+        job.cancel_request = Some(CancelRequest {
+            requested_at,
+            reason,
+        });
+    }
+}
+
 /// Records the terminal state of a job whose executor has exited (or never
 /// started). A job that was asked to stop ends `cancelled` whether the
 /// executor returned an error or ran to the end.
+///
+/// The terminal status is published to `state.inner.jobs` (and live progress
+/// channels closed) only once `jobs.db` commits the update; if `jobs.db`
+/// fails, the active status is held in memory while an atomic sidecar is
+/// written to disk and background retries run until `jobs.db` recovers.
 fn finish_job(state: &AppState, job_id: &str, result: Result<()>) {
-    let mut snapshot = None;
-    if let Some(mut job) = state.inner.jobs.get_mut(job_id) {
-        if job.cancel_token.is_cancelled() {
-            let reason = job
-                .cancel_request
-                .get_or_insert(CancelRequest {
-                    requested_at: Utc::now(),
-                    reason: CancelReason::User,
-                })
-                .reason;
+    let prepared = {
+        let Some(job) = state.inner.jobs.get(job_id) else {
+            return;
+        };
+        let completed_at = Utc::now();
+        let (status, error, cancel_request) = if job.cancel_token.is_cancelled() {
+            let request = job.cancel_request.unwrap_or(CancelRequest {
+                requested_at: completed_at,
+                reason: CancelReason::User,
+            });
             if let Err(err) = &result {
                 info!(job_id = %job_id, error = %format!("{err:#}"), "Cancelled job stopped with an error");
             }
-            job.status = JobStatus::Cancelled;
-            job.error = Some(reason.message().to_owned());
+            (
+                JobStatus::Cancelled,
+                Some(request.reason.message().to_owned()),
+                Some(request),
+            )
         } else {
             match &result {
-                Ok(()) => job.status = JobStatus::Completed,
+                Ok(()) => (JobStatus::Completed, None, job.cancel_request),
                 Err(err) => {
                     error!(job_id = %job_id, error = ?err, "Job execution failed");
-                    job.status = JobStatus::Failed;
-                    job.error = Some(format!("{err:#}"));
+                    (
+                        JobStatus::Failed,
+                        Some(format!("{err:#}")),
+                        job.cancel_request,
+                    )
                 }
             }
-        }
-        job.completed_at = Some(Utc::now());
-        snapshot = Some(job.clone());
-    }
+        };
+        let transition = PendingTerminalTransition {
+            job_id: job_id.to_owned(),
+            status,
+            completed_at,
+            error,
+            cancel_requested_at: cancel_request.map(|req| req.requested_at),
+            cancel_reason: cancel_request.map(|req| req.reason),
+        };
+        let mut snapshot = job.clone();
+        apply_pending_terminal(&mut snapshot, &transition);
+        (transition, snapshot)
+    };
 
-    if let Some(snapshot) = snapshot {
-        if let Err(err) = state.persist_job_transition(&snapshot) {
+    let (transition, snapshot) = prepared;
+    match state.persist_job_transition(&snapshot) {
+        Ok(()) => {
+            if let Ok(store) = state.job_store() {
+                store.remove_pending_terminal_sidecar(job_id);
+            }
+            state.publish_terminal_transition(&transition);
+            info!(job_id = %job_id, status = ?transition.status, "Job finished");
+        }
+        Err(err) => {
             error!(
                 job_id = %job_id,
-                status = ?snapshot.status,
+                status = ?transition.status,
                 error = ?err,
-                "Failed to persist terminal transition; retrying"
+                "Failed to persist terminal transition; holding active status until durable retry succeeds"
             );
-            state.retry_terminal_write(job_id);
+            if let Ok(store) = state.job_store() {
+                if let Err(sidecar_err) = store.write_pending_terminal_sidecar(&transition) {
+                    error!(
+                        job_id = %job_id,
+                        error = ?sidecar_err,
+                        "Failed to write pending terminal sidecar"
+                    );
+                }
+            }
+            state.retry_terminal_write(transition);
         }
-        info!(job_id = %job_id, status = ?snapshot.status, "Job finished");
     }
-
-    state.inner.progress_senders.remove(job_id);
 }
 
 #[derive(Debug)]
@@ -6956,8 +7207,22 @@ mod tests {
         );
     }
 
-    /// A terminal write that fails is retried, so a completed job is not left
-    /// `running` in the store and turned into `cancelled` by the next start.
+    async fn wait_for_pending_terminal(state: &AppState, job_id: &str) {
+        const POLL_INTERVAL_MS: u64 = 10;
+        const MAX_POLLS: usize = (WAIT_BUDGET.as_millis() / POLL_INTERVAL_MS as u128) as usize;
+
+        for _ in 0..MAX_POLLS {
+            if state.has_pending_terminal(job_id) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(POLL_INTERVAL_MS)).await;
+        }
+        panic!("job {job_id} did not enter pending terminal state within timeout");
+    }
+
+    /// A terminal write that fails holds the public status at `running` until
+    /// `jobs.db` commits on retry, so `/api/jobs` never advertises `completed`
+    /// while durable state is still `running`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_a_failed_terminal_write_is_retried() {
         let data_dir = test_data_dir();
@@ -6988,22 +7253,153 @@ mod tests {
             .unwrap()
             .to_string();
 
+        wait_for_pending_terminal(&state, &job_id).await;
+        let (_, api_while_failing) = get_job_json(&mut app, &job_id).await;
         assert_eq!(
-            wait_for_job_terminal_status(&state, &job_id).await,
-            JobStatus::Completed
+            api_while_failing["status"], "running",
+            "public API must not claim completed before durable persistence: {api_while_failing}"
         );
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(state.inner.progress_senders.contains_key(&job_id));
         let stored: String = conn
             .query_row("SELECT status FROM jobs WHERE id = ?1", [&job_id], |row| {
                 row.get(0)
             })
             .unwrap();
         assert_eq!(stored, "running", "the injected fault should have hit");
+        assert!(
+            state
+                .job_store()
+                .unwrap()
+                .pending_terminal_sidecar_path(&job_id)
+                .exists(),
+            "failed terminal write should record a durable sidecar"
+        );
 
         conn.execute_batch("DROP TRIGGER reject_terminal;").unwrap();
         assert!(
             wait_for_persisted_status(&data_dir, &job_id, "completed").await,
             "the terminal write should be retried"
+        );
+        assert_eq!(
+            wait_for_job_terminal_status(&state, &job_id).await,
+            JobStatus::Completed
+        );
+        let (_, api_after_recovery) = get_job_json(&mut app, &job_id).await;
+        assert_eq!(api_after_recovery["status"], "completed");
+        assert!(!state.inner.progress_senders.contains_key(&job_id));
+        assert!(!state
+            .job_store()
+            .unwrap()
+            .pending_terminal_sidecar_path(&job_id)
+            .exists());
+    }
+
+    /// Background retries keep running past 6 backoff steps with capped delay
+    /// and heal automatically without a new job submission or shutdown.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_terminal_write_retries_past_six_attempts_and_heals() {
+        let data_dir = test_data_dir();
+        let state = test_state_with_data_dir(data_dir.clone());
+        *state
+            .inner
+            .terminal_retry_delays_ms
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = vec![5, 10];
+        let conn = Connection::open(data_dir.join("jobs.db")).expect("open jobs db");
+        conn.execute_batch(
+            "CREATE TRIGGER reject_terminal BEFORE UPDATE ON jobs \
+             WHEN NEW.status = 'completed' \
+             BEGIN SELECT RAISE(ABORT, 'injected prolonged failure'); END;",
+        )
+        .unwrap();
+        let mut app = app_router(state.clone());
+        let job_id = create_job_id(&mut app, delay_workflow_json(0)).await;
+
+        wait_for_pending_terminal(&state, &job_id).await;
+        tokio::time::timeout(WAIT_BUDGET, async {
+            loop {
+                let passes = state
+                    .inner
+                    .unpersisted_terminal
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .retry_passes;
+                if passes >= 10 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("retry loop should continue past 6 attempts");
+
+        let (_, still_running) = get_job_json(&mut app, &job_id).await;
+        assert_eq!(still_running["status"], "running");
+        assert_eq!(
+            persisted_job_status(&data_dir, &job_id).as_deref(),
+            Some("running")
+        );
+
+        conn.execute_batch("DROP TRIGGER reject_terminal;").unwrap();
+        assert!(
+            wait_for_persisted_status(&data_dir, &job_id, "completed").await,
+            "prolonged failure should still heal automatically once SQLite recovers"
+        );
+        assert_eq!(
+            wait_for_job_terminal_status(&state, &job_id).await,
+            JobStatus::Completed
+        );
+        let (_, recovered) = get_job_json(&mut app, &job_id).await;
+        assert_eq!(recovered["status"], "completed");
+    }
+
+    /// A hard stop while `jobs.db` rejected the terminal update recovers the
+    /// completed state on the next start via the atomic sidecar instead of
+    /// turning the finished job into `cancelled`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_hard_restart_after_failed_terminal_write_recovers_from_sidecar() {
+        let data_dir = test_data_dir();
+        let state = test_state_with_data_dir(data_dir.clone());
+        let conn = Connection::open(data_dir.join("jobs.db")).expect("open jobs db");
+        conn.execute_batch(
+            "CREATE TRIGGER reject_terminal BEFORE UPDATE ON jobs \
+             WHEN NEW.status = 'completed' \
+             BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
+        )
+        .unwrap();
+        let mut app = app_router(state.clone());
+        let job_id = create_job_id(&mut app, delay_workflow_json(0)).await;
+        wait_for_pending_terminal(&state, &job_id).await;
+        assert_eq!(get_job_json(&mut app, &job_id).await.1["status"], "running");
+        assert_eq!(
+            persisted_job_status(&data_dir, &job_id).as_deref(),
+            Some("running")
+        );
+
+        // Simulate an ungraceful stop (no begin_shutdown / wait_for_jobs_to_stop)
+        // followed by DB recovery before the next process starts.
+        let weak = Arc::downgrade(&state.inner);
+        drop(app);
+        drop(state);
+        tokio::time::timeout(WAIT_BUDGET, async {
+            while weak.strong_count() > 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("previous instance tasks should release state");
+        conn.execute_batch("DROP TRIGGER reject_terminal;").unwrap();
+        drop(conn);
+
+        let restarted = test_state_with_data_dir(data_dir.clone());
+        restarted.ensure_jobs_ready().unwrap();
+        let mut restarted_app = app_router(restarted.clone());
+        let (http_status, job_json) = get_job_json(&mut restarted_app, &job_id).await;
+        assert_eq!(http_status, StatusCode::OK);
+        assert_eq!(job_json["status"], "completed", "{job_json}");
+        assert_eq!(
+            persisted_job_status(&data_dir, &job_id).as_deref(),
+            Some("completed")
         );
     }
 
@@ -7035,8 +7431,8 @@ mod tests {
             .as_str()
             .unwrap()
             .to_string();
-        wait_for_job_terminal_status(&state, &job_id).await;
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        wait_for_pending_terminal(&state, &job_id).await;
+        assert_eq!(get_job_json(&mut app, &job_id).await.1["status"], "running");
 
         conn.execute_batch("DROP TRIGGER reject_terminal;").unwrap();
         state.begin_shutdown();
@@ -7050,6 +7446,10 @@ mod tests {
             })
             .unwrap();
         assert_eq!(stored, "completed");
+        assert_eq!(
+            get_job_json(&mut app, &job_id).await.1["status"],
+            "completed"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -11,7 +11,7 @@ use petgraph::stable_graph::NodeIndex;
 use crate::compile::{resolve_video_topology, CompileContext, DecoderResult};
 use crate::frame_pool::FramePool;
 use crate::graph::PipelineGraph;
-use crate::node::{ExecutionContext, FrameProcessor, Node, PortDefinition};
+use crate::node::{ExecutionContext, FrameProcessor, Node, PortDefinition, StagedOutputHook};
 use crate::registry::NodeRegistry;
 use crate::streaming_executor::{FrameInterpolator, FrameSink, PipelineStage};
 use crate::types::{Frame, PortData, PortType};
@@ -189,6 +189,8 @@ pub struct VideoCompileContext {
     /// The job whose staged output files encoders create; see
     /// [`EncoderConfig::staging_owner`].
     staging_owner: Option<String>,
+    /// Hook invoked before/as staged output files are created.
+    staged_output_hook: RefCell<Option<StagedOutputHook>>,
     /// Bit depth of the frames reaching the encoder (8 or 16).
     pipe_bit_depth: Cell<u8>,
     trt_cache_dir: PathBuf,
@@ -331,6 +333,7 @@ impl VideoCompileContext {
             x265_preset,
             output_scales,
             staging_owner: self.staging_owner.clone(),
+            staged_output_hook: self.staged_output_hook.borrow().clone(),
         })
     }
 
@@ -351,6 +354,7 @@ impl VideoCompileContext {
             pending_fi_emit_tensor: RefCell::new(None),
             output_scales: RefCell::new(Vec::new()),
             staging_owner: None,
+            staged_output_hook: RefCell::new(None),
             pipe_bit_depth: Cell::new(8),
             trt_cache_dir,
             frame_pool: FramePool::shared(),
@@ -365,10 +369,17 @@ impl VideoCompileContext {
         self
     }
 
+    /// Registers a callback invoked before/as encoders create staged files.
+    pub fn with_staged_output_hook(self, hook: StagedOutputHook) -> Self {
+        self.staged_output_hook.replace(Some(hook));
+        self
+    }
+
     /// The context nodes initialised by this compile context execute under.
     fn node_execution_context(&self) -> ExecutionContext {
         ExecutionContext {
             cancellation: self.cancellation.borrow().clone(),
+            staged_output_hook: self.staged_output_hook.borrow().clone(),
             ..ExecutionContext::default()
         }
     }
@@ -984,6 +995,10 @@ impl CompileContext for VideoCompileContext {
 
     fn bind_execution_context(&self, exec_ctx: &ExecutionContext) {
         self.cancellation.replace(exec_ctx.cancellation.clone());
+        if exec_ctx.staged_output_hook.is_some() {
+            self.staged_output_hook
+                .replace(exec_ctx.staged_output_hook.clone());
+        }
     }
 
     fn create_stages(

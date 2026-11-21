@@ -1,12 +1,14 @@
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, TransactionBehavior};
+use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
-use tracing::warn;
+use tracing::{info, warn};
 
 use super::{CancelReason, CancelRequest, Job, JobStatus, PipelineGraph, ProgressUpdate};
 
@@ -21,10 +23,26 @@ pub(crate) use idempotency::{IdempotentJobClaim, IdempotentJobLookup};
 ///    before versioning (version 0) reach it through the original idempotent
 ///    `CREATE TABLE IF NOT EXISTS` and column probing.
 /// 2. `cancel_requested_at` and `cancel_reason`.
+/// 3. `job_staged_files` tracking runtime output and staged file paths for
+///    interrupted-job cleanup.
 ///
 /// A database with a higher version came from a newer build and is refused,
 /// so a downgrade cannot rewrite rows it does not understand.
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
+const PENDING_TERMINAL_DIR: &str = "pending_terminal";
+
+/// Durable fallback record written when a finished job's SQLite terminal
+/// update fails, replayed on startup before interrupted running jobs are
+/// reconciled to `cancelled`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct PendingTerminalTransition {
+    pub job_id: String,
+    pub status: JobStatus,
+    pub completed_at: DateTime<Utc>,
+    pub error: Option<String>,
+    pub cancel_requested_at: Option<DateTime<Utc>>,
+    pub cancel_reason: Option<CancelReason>,
+}
 
 const STATUS_QUEUED: &str = "queued";
 const STATUS_RUNNING: &str = "running";
@@ -53,6 +71,7 @@ struct PersistedJobRow {
 #[derive(Debug, Clone)]
 pub(crate) struct JobsPersistence {
     db_path: PathBuf,
+    pending_terminal_dir: PathBuf,
     /// One connection for the life of the store. A connection per operation
     /// made every write also checkpoint and delete the WAL when it closed,
     /// several extra fsyncs and file creations per job transition.
@@ -69,6 +88,7 @@ impl JobsPersistence {
         })?;
 
         let db_path = data_dir.join("jobs.db");
+        let pending_terminal_dir = data_dir.join(PENDING_TERMINAL_DIR);
         let connection = Connection::open(&db_path)
             .with_context(|| format!("failed to open jobs db: {}", db_path.display()))?;
         connection
@@ -76,6 +96,7 @@ impl JobsPersistence {
             .context("failed to set jobs db busy timeout")?;
         let persistence = Self {
             db_path,
+            pending_terminal_dir,
             connection: Arc::new(Mutex::new(connection)),
         };
         persistence.initialize_schema()?;
@@ -84,6 +105,76 @@ impl JobsPersistence {
 
     pub(crate) fn db_path(&self) -> &Path {
         &self.db_path
+    }
+
+    pub(crate) fn pending_terminal_sidecar_path(&self, job_id: &str) -> PathBuf {
+        self.pending_terminal_dir.join(format!("{job_id}.json"))
+    }
+
+    /// Writes an atomic, synced fallback record for a terminal transition that
+    /// could not be committed to `jobs.db`, so a crash before retry succeeds
+    /// still recovers the terminal outcome on the next start.
+    pub(crate) fn write_pending_terminal_sidecar(
+        &self,
+        pending: &PendingTerminalTransition,
+    ) -> Result<()> {
+        std::fs::create_dir_all(&self.pending_terminal_dir).with_context(|| {
+            format!(
+                "failed to create pending terminal directory: {}",
+                self.pending_terminal_dir.display()
+            )
+        })?;
+        let bytes =
+            serde_json::to_vec(pending).context("failed to serialize pending terminal record")?;
+        let prefix = format!(".{}.", pending.job_id);
+        let mut builder = tempfile::Builder::new();
+        builder.prefix(&prefix).suffix(".videnoa-pending");
+        #[cfg(unix)]
+        builder.permissions(std::os::unix::fs::PermissionsExt::from_mode(0o666));
+        let mut staged = builder
+            .tempfile_in(&self.pending_terminal_dir)
+            .with_context(|| {
+                format!(
+                    "failed to stage pending terminal record in {}",
+                    self.pending_terminal_dir.display()
+                )
+            })?;
+        staged
+            .write_all(&bytes)
+            .context("failed to write pending terminal record")?;
+        staged
+            .as_file()
+            .sync_all()
+            .context("failed to sync pending terminal record")?;
+        let target = self.pending_terminal_sidecar_path(&pending.job_id);
+        staged
+            .persist(&target)
+            .map_err(|err| err.error)
+            .with_context(|| {
+                format!(
+                    "failed to persist pending terminal record {}",
+                    target.display()
+                )
+            })?;
+        #[cfg(unix)]
+        if let Ok(dir) = std::fs::File::open(&self.pending_terminal_dir) {
+            let _ = dir.sync_all();
+        }
+        Ok(())
+    }
+
+    pub(crate) fn remove_pending_terminal_sidecar(&self, job_id: &str) {
+        let path = self.pending_terminal_sidecar_path(job_id);
+        if let Err(error) = std::fs::remove_file(&path) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                warn!(
+                    job_id = %job_id,
+                    path = %path.display(),
+                    %error,
+                    "Failed to remove pending terminal sidecar"
+                );
+            }
+        }
     }
 
     pub(crate) fn upsert_job(&self, job: &Job) -> Result<()> {
@@ -95,21 +186,101 @@ impl JobsPersistence {
     pub(crate) fn update_job(&self, job: &Job) -> Result<()> {
         let row = Self::row_from_job(job)?;
         self.with_connection(|conn| {
+            let now = Utc::now().to_rfc3339();
+            if row.status.is_terminal() {
+                let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+                tx.execute(
+                    "UPDATE jobs SET status = ?2, started_at = ?3, completed_at = ?4,
+                     progress_json = ?5, error = ?6, updated_at = ?7,
+                     cancel_requested_at = ?8, cancel_reason = ?9 WHERE id = ?1",
+                    params![
+                        row.id,
+                        status_to_str(row.status),
+                        row.started_at.map(|ts| ts.to_rfc3339()),
+                        row.completed_at.map(|ts| ts.to_rfc3339()),
+                        row.progress_json,
+                        row.error,
+                        now,
+                        row.cancel_requested_at.map(|ts| ts.to_rfc3339()),
+                        row.cancel_reason.map(cancel_reason_to_str),
+                    ],
+                )?;
+                tx.execute(
+                    "DELETE FROM job_staged_files WHERE job_id = ?1",
+                    params![row.id],
+                )?;
+                tx.commit()?;
+            } else {
+                conn.execute(
+                    "UPDATE jobs SET status = ?2, started_at = ?3, completed_at = ?4,
+                     progress_json = ?5, error = ?6, updated_at = ?7,
+                     cancel_requested_at = ?8, cancel_reason = ?9 WHERE id = ?1",
+                    params![
+                        row.id,
+                        status_to_str(row.status),
+                        row.started_at.map(|ts| ts.to_rfc3339()),
+                        row.completed_at.map(|ts| ts.to_rfc3339()),
+                        row.progress_json,
+                        row.error,
+                        now,
+                        row.cancel_requested_at.map(|ts| ts.to_rfc3339()),
+                        row.cancel_reason.map(cancel_reason_to_str),
+                    ],
+                )?;
+            }
+            Ok(())
+        })
+    }
+
+    pub(crate) fn record_staged_file(&self, job_id: &str, path: &Path) -> Result<()> {
+        if path.as_os_str().is_empty() {
+            return Ok(());
+        }
+        let resolved = if path.is_relative() {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(path))
+                .unwrap_or_else(|_| path.to_path_buf())
+        } else {
+            path.to_path_buf()
+        };
+        let encoded = resolved.to_string_lossy();
+        self.with_connection(|conn| {
             conn.execute(
-                "UPDATE jobs SET status = ?2, started_at = ?3, completed_at = ?4,
-                 progress_json = ?5, error = ?6, updated_at = ?7,
-                 cancel_requested_at = ?8, cancel_reason = ?9 WHERE id = ?1",
-                params![
-                    row.id,
-                    status_to_str(row.status),
-                    row.started_at.map(|ts| ts.to_rfc3339()),
-                    row.completed_at.map(|ts| ts.to_rfc3339()),
-                    row.progress_json,
-                    row.error,
-                    Utc::now().to_rfc3339(),
-                    row.cancel_requested_at.map(|ts| ts.to_rfc3339()),
-                    row.cancel_reason.map(cancel_reason_to_str),
-                ],
+                "INSERT OR IGNORE INTO job_staged_files (job_id, path) VALUES (?1, ?2)",
+                params![job_id, encoded.as_ref()],
+            )
+            .with_context(|| {
+                format!(
+                    "failed to record staged output path {} for job {job_id}",
+                    resolved.display()
+                )
+            })?;
+            Ok(())
+        })
+    }
+
+    pub(crate) fn list_staged_files(&self) -> Result<Vec<(String, PathBuf)>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT job_id, path FROM job_staged_files ORDER BY job_id ASC, path ASC",
+            )?;
+            let rows = stmt
+                .query_map([], |row| {
+                    let job_id: String = row.get(0)?;
+                    let path: String = row.get(1)?;
+                    Ok((job_id, PathBuf::from(path)))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        })
+    }
+
+    pub(crate) fn remove_staged_file_record(&self, job_id: &str, path: &Path) -> Result<()> {
+        let encoded = path.to_string_lossy();
+        self.with_connection(|conn| {
+            conn.execute(
+                "DELETE FROM job_staged_files WHERE job_id = ?1 AND path = ?2",
+                params![job_id, encoded.as_ref()],
             )?;
             Ok(())
         })
@@ -158,6 +329,15 @@ impl JobsPersistence {
     /// behind.
     pub(crate) fn load_jobs_for_startup_with_interrupted(&self) -> Result<(Vec<Job>, Vec<String>)> {
         self.with_connection(|conn| {
+            let replayed = self.replay_pending_terminal_sidecars(conn)?;
+            if replayed > 0 {
+                info!(
+                    replayed,
+                    dir = %self.pending_terminal_dir.display(),
+                    "Replayed pending terminal job transitions from sidecar records"
+                );
+            }
+
             let mut stmt = conn.prepare(
                 "SELECT
                     id,
@@ -367,13 +547,135 @@ impl JobsPersistence {
         })
     }
 
+    fn replay_pending_terminal_sidecars(&self, conn: &mut Connection) -> Result<usize> {
+        if !self.pending_terminal_dir.exists() {
+            return Ok(0);
+        }
+        let entries = std::fs::read_dir(&self.pending_terminal_dir).with_context(|| {
+            format!(
+                "failed to read pending terminal directory {}",
+                self.pending_terminal_dir.display()
+            )
+        })?;
+        let mut sidecar_paths = Vec::new();
+        for entry in entries {
+            let entry = entry.with_context(|| {
+                format!(
+                    "failed to inspect entry in {}",
+                    self.pending_terminal_dir.display()
+                )
+            })?;
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if name.starts_with('.') {
+                if name.ends_with(".videnoa-pending") {
+                    let _ = std::fs::remove_file(&path);
+                }
+                continue;
+            }
+            if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+                sidecar_paths.push(path);
+            }
+        }
+        sidecar_paths.sort();
+
+        let mut replayed = 0;
+        for path in sidecar_paths {
+            let raw = match std::fs::read(&path) {
+                Ok(raw) => raw,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("failed to read pending terminal sidecar {}", path.display())
+                    });
+                }
+            };
+            let pending: PendingTerminalTransition = match serde_json::from_slice(&raw) {
+                Ok(parsed) => parsed,
+                Err(error) => {
+                    warn!(
+                        path = %path.display(),
+                        %error,
+                        "Skipping malformed pending terminal sidecar"
+                    );
+                    continue;
+                }
+            };
+            if !pending.status.is_terminal() {
+                warn!(
+                    job_id = %pending.job_id,
+                    status = ?pending.status,
+                    path = %path.display(),
+                    "Skipping non-terminal sidecar record"
+                );
+                continue;
+            }
+
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let updated = tx
+                .execute(
+                    "UPDATE jobs SET
+                        status = ?2,
+                        completed_at = ?3,
+                        error = ?4,
+                        updated_at = ?5,
+                        cancel_requested_at = COALESCE(?6, cancel_requested_at),
+                        cancel_reason = COALESCE(?7, cancel_reason)
+                     WHERE id = ?1",
+                    params![
+                        pending.job_id,
+                        status_to_str(pending.status),
+                        pending.completed_at.to_rfc3339(),
+                        pending.error,
+                        Utc::now().to_rfc3339(),
+                        pending.cancel_requested_at.map(|ts| ts.to_rfc3339()),
+                        pending.cancel_reason.map(cancel_reason_to_str),
+                    ],
+                )
+                .with_context(|| {
+                    format!(
+                        "failed to replay pending terminal transition for job {}",
+                        pending.job_id
+                    )
+                })?;
+            tx.execute(
+                "DELETE FROM job_staged_files WHERE job_id = ?1",
+                params![pending.job_id],
+            )?;
+            tx.commit()?;
+            if updated > 0 {
+                replayed += 1;
+            }
+            if let Err(error) = std::fs::remove_file(&path) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    warn!(
+                        path = %path.display(),
+                        %error,
+                        "Failed to remove replayed pending terminal sidecar"
+                    );
+                }
+            }
+        }
+        Ok(replayed)
+    }
+
     pub(crate) fn delete_job(&self, job_id: &str) -> Result<usize> {
-        self.with_connection(|conn| {
-            let deleted_rows = conn
+        let deleted_rows = self.with_connection(|conn| {
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let deleted_rows = tx
                 .execute("DELETE FROM jobs WHERE id = ?1", params![job_id])
                 .with_context(|| format!("failed to delete persisted job {job_id}"))?;
+            tx.execute(
+                "DELETE FROM job_staged_files WHERE job_id = ?1",
+                params![job_id],
+            )?;
+            tx.commit()?;
             Ok(deleted_rows)
-        })
+        })?;
+        self.remove_pending_terminal_sidecar(job_id);
+        Ok(deleted_rows)
     }
 
     fn initialize_schema(&self) -> Result<()> {
@@ -401,6 +703,14 @@ impl JobsPersistence {
                 Self::migrate_to_v2(&transaction).with_context(|| {
                     format!(
                         "failed to migrate jobs db to schema version 2: {}",
+                        self.db_path.display()
+                    )
+                })?;
+            }
+            if version < 3 {
+                Self::migrate_to_v3(&transaction).with_context(|| {
+                    format!(
+                        "failed to migrate jobs db to schema version 3: {}",
                         self.db_path.display()
                     )
                 })?;
@@ -457,6 +767,20 @@ impl JobsPersistence {
             }
         }
         transaction.execute_batch("PRAGMA user_version = 2;")?;
+        Ok(())
+    }
+
+    fn migrate_to_v3(transaction: &rusqlite::Transaction<'_>) -> Result<()> {
+        transaction.execute_batch(
+            "CREATE TABLE IF NOT EXISTS job_staged_files (
+                job_id TEXT NOT NULL,
+                path TEXT NOT NULL,
+                PRIMARY KEY (job_id, path)
+             );
+             CREATE INDEX IF NOT EXISTS idx_job_staged_files_job_id
+                 ON job_staged_files(job_id);
+             PRAGMA user_version = 3;",
+        )?;
         Ok(())
     }
 

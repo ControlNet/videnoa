@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
@@ -15,6 +15,30 @@ pub struct PortDefinition {
     pub default_value: Option<serde_json::Value>,
 }
 
+type StagedOutputFn = dyn Fn(&Path) -> Result<()> + Send + Sync;
+
+/// Callback invoked before or as a staged output file is created, allowing a
+/// server job store to persist cleanup obligations for dynamically computed
+/// output paths.
+#[derive(Clone)]
+pub struct StagedOutputHook(Arc<StagedOutputFn>);
+
+impl StagedOutputHook {
+    pub fn new(callback: impl Fn(&Path) -> Result<()> + Send + Sync + 'static) -> Self {
+        Self(Arc::new(callback))
+    }
+
+    pub fn record(&self, path: &Path) -> Result<()> {
+        (self.0)(path)
+    }
+}
+
+impl std::fmt::Debug for StagedOutputHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("StagedOutputHook(..)")
+    }
+}
+
 #[derive(Default)]
 pub struct ExecutionContext {
     pub total_frames: Option<u64>,
@@ -25,6 +49,9 @@ pub struct ExecutionContext {
     /// Files this execution creates for itself. A nested execution must share
     /// the outer context's scratch so its files outlive the inner run.
     pub scratch: ExecutionScratch,
+    /// Optional hook for server-managed jobs to durably register staged output
+    /// paths before or as temporary staged files are created on disk.
+    pub staged_output_hook: Option<StagedOutputHook>,
 }
 
 /// Per-execution directory for files nodes create, such as downloads.
@@ -106,6 +133,13 @@ impl ExecutionContext {
     pub fn check_cancelled(&self) -> Result<()> {
         if self.cancellation.as_ref().is_some_and(|rx| *rx.borrow()) {
             return Err(WorkflowCancelled.into());
+        }
+        Ok(())
+    }
+
+    pub fn record_staged_output(&self, path: &Path) -> Result<()> {
+        if let Some(hook) = &self.staged_output_hook {
+            hook.record(path)?;
         }
         Ok(())
     }

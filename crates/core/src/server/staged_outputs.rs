@@ -15,7 +15,7 @@
 //! renamed to the `kept` role and is never removed. Files staged by releases
 //! that did not name the job are left alone.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use tracing::{info, warn};
@@ -26,8 +26,38 @@ const STAGED_ROLES: &[&str] = &["direct", "video", "mux"];
 /// The random part `tempfile` puts in each name.
 const RANDOM_LEN: usize = 6;
 
-/// Removes staged files of the given jobs' outputs; returns how many.
-pub(super) fn sweep_interrupted_jobs<'a>(jobs: impl IntoIterator<Item = &'a Job>) -> usize {
+pub(super) struct SweepReport {
+    pub removed: usize,
+    pub completed_records: Vec<(String, PathBuf)>,
+}
+
+/// Removes staged files recorded in `jobs.db` (`recorded`) as well as any
+/// statically discoverable outputs of `jobs` (legacy fallback). Each recorded
+/// `(job_id, path)` is included in [`SweepReport::completed_records`] once its
+/// cleanup obligation is satisfied without I/O errors, so a transient mount or
+/// permission failure retains the obligation for the next startup.
+pub(super) fn sweep_interrupted_jobs_with_recorded<'a>(
+    jobs: impl IntoIterator<Item = &'a Job>,
+    recorded: &[(String, PathBuf)],
+) -> SweepReport {
+    let mut removed_paths = HashSet::new();
+    let mut completed_records = Vec::new();
+
+    for (owner, path) in recorded {
+        let ok = if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| is_staged_filename_for_owner(name, owner))
+        {
+            sweep_direct_staged_file(path, &mut removed_paths)
+        } else {
+            sweep_beside_checked(path, owner, &mut removed_paths)
+        };
+        if ok {
+            completed_records.push((owner.clone(), path.clone()));
+        }
+    }
+
     let outputs: BTreeSet<(PathBuf, &str)> = jobs
         .into_iter()
         .flat_map(|job| {
@@ -36,11 +66,14 @@ pub(super) fn sweep_interrupted_jobs<'a>(jobs: impl IntoIterator<Item = &'a Job>
                 .map(move |path| (path, job.id.as_str()))
         })
         .collect();
-    let mut removed = 0;
     for (output, owner) in outputs {
-        removed += sweep_beside(&output, owner);
+        let _ = sweep_beside_checked(&output, owner, &mut removed_paths);
     }
-    removed
+
+    SweepReport {
+        removed: removed_paths.len(),
+        completed_records,
+    }
 }
 
 /// The `output_path` of each `VideoOutput` node: its own param, or the value
@@ -112,40 +145,151 @@ fn output_paths_in(
         .collect()
 }
 
-fn sweep_beside(output: &Path, owner: &str) -> usize {
-    let (Some(dir), Some(stem)) = (output.parent(), output.file_stem()) else {
-        return 0;
+fn sweep_direct_staged_file(path: &Path, removed_paths: &mut HashSet<PathBuf>) -> bool {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if !metadata.file_type().is_file() {
+                return true;
+            }
+            match std::fs::remove_file(path) {
+                Ok(()) => {
+                    info!(path = %path.display(), "Removed a staged output left by an interrupted job");
+                    removed_paths.insert(path.to_path_buf());
+                    true
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+                Err(error) => {
+                    warn!(
+                        path = %path.display(),
+                        %error,
+                        "Failed to remove a staged output left by an interrupted job"
+                    );
+                    false
+                }
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(error) => {
+            warn!(
+                path = %path.display(),
+                %error,
+                "Failed to inspect a staged output left by an interrupted job"
+            );
+            false
+        }
+    }
+}
+
+fn sweep_beside_checked(output: &Path, owner: &str, removed_paths: &mut HashSet<PathBuf>) -> bool {
+    let dir = match output.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
     };
-    let Some(stem) = stem.to_str() else {
-        return 0;
-    };
+    let stem = output
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
-        // A folder that is gone or unreachable has nothing to clean now.
-        Err(_) => return 0,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return true,
+        Err(error) => {
+            warn!(
+                dir = %dir.display(),
+                %error,
+                "Failed to scan directory for staged outputs of an interrupted job"
+            );
+            return false;
+        }
     };
-    let mut removed = 0;
-    for entry in entries.flatten() {
+    let mut clean = true;
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                warn!(
+                    dir = %dir.display(),
+                    %error,
+                    "Failed to read directory entry while sweeping staged outputs"
+                );
+                clean = false;
+                continue;
+            }
+        };
         let name = entry.file_name();
         let Some(name) = name.to_str() else {
             continue;
         };
-        if !is_staged_file_of(name, stem, owner) || !entry.file_type().is_ok_and(|t| t.is_file()) {
+        if !is_staged_file_of(name, &stem, owner) {
             continue;
         }
-        match std::fs::remove_file(entry.path()) {
-            Ok(()) => {
-                info!(path = %entry.path().display(), "Removed a staged output left by an interrupted job");
-                removed += 1;
+        match entry.file_type() {
+            Ok(file_type) if file_type.is_file() => {}
+            Ok(_) => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                warn!(
+                    path = %entry.path().display(),
+                    %error,
+                    "Failed to inspect file type of a staged output"
+                );
+                clean = false;
+                continue;
             }
-            Err(error) => warn!(
-                path = %entry.path().display(),
-                %error,
-                "Failed to remove a staged output left by an interrupted job"
-            ),
+        }
+        let entry_path = entry.path();
+        match std::fs::remove_file(&entry_path) {
+            Ok(()) => {
+                info!(path = %entry_path.display(), "Removed a staged output left by an interrupted job");
+                removed_paths.insert(entry_path);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                warn!(
+                    path = %entry_path.display(),
+                    %error,
+                    "Failed to remove a staged output left by an interrupted job"
+                );
+                clean = false;
+            }
         }
     }
-    removed
+    clean
+}
+
+/// Whether `name` is `.<any stem>.<owner>.<random>.videnoa-<role>[.<ext>]`.
+fn is_staged_filename_for_owner(name: &str, owner: &str) -> bool {
+    if owner.is_empty() {
+        return false;
+    }
+    let Some(rest) = name.strip_prefix('.') else {
+        return false;
+    };
+    let Some((before_marker, role_and_ext)) = rest.rsplit_once(".videnoa-") else {
+        return false;
+    };
+    let (role, extension) = match role_and_ext.split_once('.') {
+        Some((role, extension)) => (role, Some(extension)),
+        None => (role_and_ext, None),
+    };
+    if !STAGED_ROLES.contains(&role)
+        || !extension.is_none_or(|ext| !ext.is_empty() && !ext.contains('.'))
+    {
+        return false;
+    }
+    let Some(random_start) = before_marker.len().checked_sub(RANDOM_LEN) else {
+        return false;
+    };
+    let (before_random, random) = before_marker.split_at(random_start);
+    if !random.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
+        return false;
+    }
+    let Some(before_dot) = before_random.strip_suffix('.') else {
+        return false;
+    };
+    let Some(before_owner) = before_dot.strip_suffix(owner) else {
+        return false;
+    };
+    before_owner.ends_with('.')
 }
 
 /// Whether `name` is `.<stem>.<owner>.<random>.videnoa-<role>[.<ext>]`.
@@ -239,6 +383,26 @@ mod tests {
             "Episode 01.job-1.a1B2c3.videnoa-video.mkv",
         ] {
             assert!(!is_staged_file_of(name, "Episode 01", "job-1"), "{name}");
+        }
+    }
+
+    #[test]
+    fn owner_filename_check_handles_dotted_and_empty_stems_without_touching_kept() {
+        for name in [
+            ".Episode 01.job-1.a1B2c3.videnoa-video.mkv",
+            ".Show.S01E01.1080p.job-1.Zz9900.videnoa-mux.mkv",
+            "..job-1.abcdef.videnoa-direct",
+        ] {
+            assert!(is_staged_filename_for_owner(name, "job-1"), "{name}");
+        }
+        for name in [
+            "Episode 01.mkv",
+            ".Episode 01.job-2.a1B2c3.videnoa-video.mkv",
+            ".Episode 01.job-1.a1B2c3.videnoa-kept.mkv",
+            ".Episode 01.a1B2c3.videnoa-video.mkv",
+            "Episode 01.job-1.a1B2c3.videnoa-video.mkv",
+        ] {
+            assert!(!is_staged_filename_for_owner(name, "job-1"), "{name}");
         }
     }
 }

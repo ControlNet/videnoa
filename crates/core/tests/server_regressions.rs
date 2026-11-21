@@ -456,3 +456,220 @@ async fn failed_extraction_removes_its_partial_session() {
             .to_string_lossy()
             .starts_with("session-")));
 }
+
+async fn wait_for_instance_lock_release(data_dir: &std::path::Path) {
+    let lock_path = data_dir.join("instance.lock");
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let unlocked = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&lock_path)
+                .is_ok_and(|file| file.try_lock().is_ok());
+            if unlocked {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("previous AppState should release instance.lock");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn terminal_persistence_failure_holds_public_running_and_recovers_on_restart() {
+    let dir = TempDir::new().unwrap();
+    let data = dir.path().join("data");
+    let config_path = dir.path().join("config.toml");
+    let state = app_state_with_config(AppConfig::default(), config_path.clone(), data.clone());
+    let db = rusqlite::Connection::open(data.join("jobs.db")).unwrap();
+    db.execute_batch(
+        "CREATE TRIGGER reject_terminal BEFORE UPDATE ON jobs \
+         WHEN NEW.status = 'completed' \
+         BEGIN SELECT RAISE(ABORT, 'injected terminal write failure'); END;",
+    )
+    .unwrap();
+
+    let app = api_router(state.clone());
+    let (status, created) = request(
+        &app,
+        "POST",
+        "/api/jobs",
+        json!({"workflow":{"nodes":[{"id":"a","node_type":"Constant","params":{}}],"connections":[]}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let id = created["id"].as_str().unwrap().to_string();
+
+    let sidecar = data.join("pending_terminal").join(format!("{id}.json"));
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !sidecar.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("sidecar should be written when terminal SQLite update fails");
+
+    let (_, public_job) = request(&app, "GET", &format!("/api/jobs/{id}"), Value::Null).await;
+    assert_eq!(
+        public_job["status"], "running",
+        "API must not expose completed while SQLite still holds running: {public_job}"
+    );
+    let db_status: String = db
+        .query_row("SELECT status FROM jobs WHERE id = ?1", [&id], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(db_status, "running");
+
+    // Simulate hard restart after transient DB fault clears.
+    drop(app);
+    drop(state);
+    wait_for_instance_lock_release(&data).await;
+    db.execute_batch("DROP TRIGGER reject_terminal;").unwrap();
+    drop(db);
+
+    let restarted = app_state_with_config(AppConfig::default(), config_path, data.clone());
+    restarted.ensure_jobs_ready().unwrap();
+    let restarted_app = api_router(restarted);
+    let (http_status, restored_job) = request(
+        &restarted_app,
+        "GET",
+        &format!("/api/jobs/{id}"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(http_status, StatusCode::OK);
+    assert_eq!(restored_job["status"], "completed", "{restored_job}");
+    assert!(!sidecar.exists());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn startup_removes_staged_outputs_for_dynamically_computed_output_path() {
+    let dir = TempDir::new().unwrap();
+    let data = dir.path().join("data");
+    let config_path = dir.path().join("config.toml");
+    let source_media = dir.path().join("source.mkv");
+    std::fs::write(&source_media, b"synthetic source fixture").unwrap();
+    let computed_dir = dir.path().join("rendered").join("season-01");
+    std::fs::create_dir_all(&computed_dir).unwrap();
+
+    let entered = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let endpoint = Router::new().route(
+        "/pause",
+        get({
+            let entered = entered.clone();
+            let release = release.clone();
+            move || {
+                let entered = entered.clone();
+                let release = release.clone();
+                async move {
+                    entered.notify_one();
+                    release.notified().await;
+                    "ok"
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let pause_url = format!("http://{}/pause", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, endpoint).await.unwrap();
+    });
+
+    // `VideoOutput.output_path` is computed dynamically by `StringTemplate` +
+    // `PathJoiner` (neither a literal on `VideoOutput` nor a `WorkflowInput`),
+    // and `hold` sits downstream of `sink` so `VideoOutput` is guaranteed to
+    // have registered the path before the pause point is reached.
+    let workflow = json!({
+        "nodes": [
+            {"id": "dir", "node_type": "Constant", "params": {"type": "Path", "value": computed_dir.to_string_lossy()}},
+            {"id": "ep", "node_type": "Constant", "params": {"type": "Str", "value": "Episode 07"}},
+            {"id": "name", "node_type": "StringTemplate", "params": {"template": "{str0}.mkv", "num_input": 1}},
+            {"id": "join", "node_type": "PathJoiner", "params": {}},
+            {"id": "src", "node_type": "Constant", "params": {"type": "Path", "value": source_media.to_string_lossy()}},
+            {"id": "sink", "node_type": "VideoOutput", "params": {}},
+            {"id": "divide", "node_type": "PathDivider", "params": {}},
+            {"id": "hold", "node_type": "HttpRequest", "params": {"url": pause_url, "max_retries": 0}}
+        ],
+        "connections": [
+            {"from_node": "ep", "from_port": "value", "to_node": "name", "to_port": "str0", "port_type": "Str"},
+            {"from_node": "dir", "from_port": "value", "to_node": "join", "to_port": "parent_path", "port_type": "Path"},
+            {"from_node": "name", "from_port": "value", "to_node": "join", "to_port": "file_name", "port_type": "Str"},
+            {"from_node": "src", "from_port": "value", "to_node": "sink", "to_port": "source_path", "port_type": "Path"},
+            {"from_node": "join", "from_port": "path", "to_node": "sink", "to_port": "output_path", "port_type": "Path"},
+            {"from_node": "sink", "from_port": "output_path", "to_node": "divide", "to_port": "path", "port_type": "Path"},
+            {"from_node": "divide", "from_port": "file_name", "to_node": "hold", "to_port": "body", "port_type": "Str"}
+        ]
+    });
+
+    let state = app_state_with_config(AppConfig::default(), config_path.clone(), data.clone());
+    let app = api_router(state.clone());
+    let (status, created) = request(&app, "POST", "/api/jobs", json!({"workflow": workflow})).await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let job_id = created["id"].as_str().unwrap().to_string();
+
+    tokio::time::timeout(Duration::from_secs(10), entered.notified())
+        .await
+        .expect("job should execute VideoOutput and reach pause node while running");
+
+    // Materialize a staged file owned by this running job beside the dynamically
+    // computed output path, plus files that must NOT be removed.
+    let staged_video = computed_dir.join(format!(".Episode 07.{job_id}.a1B2c3.videnoa-video.mkv"));
+    let staged_mux = computed_dir.join(format!(".Episode 07.{job_id}.Zz9900.videnoa-mux.mkv"));
+    let kept_video = computed_dir.join(format!(".Episode 07.{job_id}.K3pt00.videnoa-kept.mkv"));
+    let other_job_staged = computed_dir.join(".Episode 07.other-job.a1B2c3.videnoa-video.mkv");
+    for path in [&staged_video, &staged_mux, &kept_video, &other_job_staged] {
+        std::fs::write(path, b"staged bytes").unwrap();
+    }
+
+    // Freeze `jobs.db` in `running` state to simulate a hard kill mid-encode.
+    let db = rusqlite::Connection::open(data.join("jobs.db")).unwrap();
+    db.execute_batch(
+        "CREATE TRIGGER freeze_running BEFORE UPDATE ON jobs \
+         BEGIN SELECT RAISE(ABORT, 'simulated hard crash'); END;",
+    )
+    .unwrap();
+    release.notify_one();
+    // Wait briefly for executor thread to exit before dropping `AppState`, then
+    // remove any pending_terminal sidecar because in a real SIGKILL `finish_job`
+    // never ran at all.
+    let sidecar = data.join("pending_terminal").join(format!("{job_id}.json"));
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !sidecar.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    drop(app);
+    drop(state);
+    wait_for_instance_lock_release(&data).await;
+    std::fs::remove_file(&sidecar).unwrap();
+    db.execute_batch("DROP TRIGGER freeze_running;").unwrap();
+    drop(db);
+    server.abort();
+
+    // Restart `AppState` on the same `data_dir`: the running job must become
+    // `cancelled` AND its dynamically computed staged files must be deleted.
+    let restarted = app_state_with_config(AppConfig::default(), config_path, data);
+    restarted.ensure_jobs_ready().unwrap();
+    let restarted_app = api_router(restarted);
+    let (http_status, job_json) = request(
+        &restarted_app,
+        "GET",
+        &format!("/api/jobs/{job_id}"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(http_status, StatusCode::OK);
+    assert_eq!(job_json["status"], "cancelled", "{job_json}");
+    assert!(!staged_video.exists(), "staged video file must be deleted");
+    assert!(!staged_mux.exists(), "staged mux file must be deleted");
+    assert!(kept_video.exists(), "kept encode must be preserved");
+    assert!(
+        other_job_staged.exists(),
+        "another job's staged file must be preserved"
+    );
+}

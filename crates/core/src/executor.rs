@@ -64,12 +64,31 @@ impl SequentialExecutor {
         compile_ctx: Option<&dyn CompileContext>,
         progress_callback: Option<ProgressCallback>,
         cancel_rx: Option<tokio::sync::watch::Receiver<bool>>,
-        mut node_debug_callback: Option<&mut NodeDebugEventCallback<'_>>,
+        node_debug_callback: Option<&mut NodeDebugEventCallback<'_>>,
     ) -> Result<HashMap<String, HashMap<String, PortData>>> {
         let ctx = ExecutionContext {
-            cancellation: cancel_rx.clone(),
+            cancellation: cancel_rx,
             ..Default::default()
         };
+        Self::execute_with_execution_context_and_debug_hook(
+            graph,
+            registry,
+            compile_ctx,
+            progress_callback,
+            ctx,
+            node_debug_callback,
+        )
+    }
+
+    pub(crate) fn execute_with_execution_context_and_debug_hook(
+        graph: &PipelineGraph,
+        registry: &NodeRegistry,
+        compile_ctx: Option<&dyn CompileContext>,
+        progress_callback: Option<ProgressCallback>,
+        ctx: ExecutionContext,
+        mut node_debug_callback: Option<&mut NodeDebugEventCallback<'_>>,
+    ) -> Result<HashMap<String, HashMap<String, PortData>>> {
+        let cancel_rx = ctx.cancellation.clone();
         ctx.check_cancelled()?;
         graph.validate(registry)?;
 
@@ -236,6 +255,7 @@ impl SequentialExecutor {
             nesting_depth: outer_ctx.nesting_depth,
             cancellation: outer_ctx.cancellation.clone(),
             scratch: outer_ctx.scratch.clone(),
+            staged_output_hook: outer_ctx.staged_output_hook.clone(),
             ..Default::default()
         };
 

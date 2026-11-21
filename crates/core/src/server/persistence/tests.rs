@@ -4,7 +4,7 @@ use rusqlite::Connection;
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 
-use super::{JobsPersistence, SCHEMA_VERSION};
+use super::{JobsPersistence, PendingTerminalTransition, SCHEMA_VERSION};
 use crate::graph::PipelineGraph;
 use crate::server::{CancelReason, CancelRequest, Job, JobStatus};
 
@@ -166,5 +166,66 @@ fn rows_that_cannot_be_loaded_are_skipped_but_can_be_deleted() -> Result<()> {
     );
     assert_eq!(persistence.delete_job("bad-status")?, 1);
     assert_eq!(persistence.delete_job("bad-workflow")?, 1);
+    Ok(())
+}
+
+#[test]
+fn pending_terminal_sidecar_is_replayed_before_running_jobs_are_cancelled() -> Result<()> {
+    let dir = TempDir::new()?;
+    let persistence = JobsPersistence::new(dir.path())?;
+    let mut running = job("sidecar-completed", JobStatus::Running);
+    running.started_at = Some(Utc::now() - chrono::Duration::seconds(10));
+    persistence.upsert_job(&running)?;
+    persistence.record_staged_file("sidecar-completed", std::path::Path::new("/tmp/out.mkv"))?;
+
+    let completed_at = Utc::now();
+    persistence.write_pending_terminal_sidecar(&PendingTerminalTransition {
+        job_id: "sidecar-completed".to_owned(),
+        status: JobStatus::Completed,
+        completed_at,
+        error: None,
+        cancel_requested_at: None,
+        cancel_reason: None,
+    })?;
+    assert!(persistence
+        .pending_terminal_sidecar_path("sidecar-completed")
+        .exists());
+    drop(persistence);
+
+    let reopened = JobsPersistence::new(dir.path())?;
+    let (restored, interrupted) = reopened.load_jobs_for_startup_with_interrupted()?;
+    assert!(interrupted.is_empty());
+    assert_eq!(restored.len(), 1);
+    assert_eq!(restored[0].id, "sidecar-completed");
+    assert_eq!(restored[0].status, JobStatus::Completed);
+    assert_eq!(
+        restored[0].completed_at.map(|ts| ts.timestamp_millis()),
+        Some(completed_at.timestamp_millis())
+    );
+    assert!(reopened.list_staged_files()?.is_empty());
+    assert!(!reopened
+        .pending_terminal_sidecar_path("sidecar-completed")
+        .exists());
+    Ok(())
+}
+
+#[test]
+fn staged_file_records_persist_across_running_reconciliation_until_cleared() -> Result<()> {
+    let dir = TempDir::new()?;
+    let persistence = JobsPersistence::new(dir.path())?;
+    persistence.upsert_job(&job("interrupted-encode", JobStatus::Running))?;
+    let staged_target = dir.path().join("computed").join("Episode 01.mkv");
+    persistence.record_staged_file("interrupted-encode", &staged_target)?;
+    drop(persistence);
+
+    let reopened = JobsPersistence::new(dir.path())?;
+    let (_, interrupted) = reopened.load_jobs_for_startup_with_interrupted()?;
+    assert_eq!(interrupted, vec!["interrupted-encode".to_owned()]);
+    assert_eq!(
+        reopened.list_staged_files()?,
+        vec![("interrupted-encode".to_owned(), staged_target.clone())]
+    );
+    reopened.remove_staged_file_record("interrupted-encode", &staged_target)?;
+    assert!(reopened.list_staged_files()?.is_empty());
     Ok(())
 }
