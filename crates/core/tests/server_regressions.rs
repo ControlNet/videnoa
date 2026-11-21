@@ -673,3 +673,58 @@ async fn startup_removes_staged_outputs_for_dynamically_computed_output_path() {
         "another job's staged file must be preserved"
     );
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn workflow_overwrite_preserves_private_file_permissions_across_atomic_replace() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = TempDir::new().unwrap();
+    let app = app(&dir);
+
+    let (status, created) = request(
+        &app,
+        "POST",
+        "/api/workflows",
+        json!({
+            "name": "PrivateWorkflow",
+            "description": "v1",
+            "workflow": {"nodes": [], "connections": []}
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+
+    let wf_path = dir
+        .path()
+        .join("data")
+        .join("workflows")
+        .join("PrivateWorkflow.json");
+    std::fs::set_permissions(&wf_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let old_link = dir.path().join("private-v1.link");
+    std::fs::hard_link(&wf_path, &old_link).unwrap();
+
+    let (status, updated) = request(
+        &app,
+        "POST",
+        "/api/workflows",
+        json!({
+            "name": "PrivateWorkflow",
+            "description": "v2",
+            "workflow": {"nodes": [], "connections": []},
+            "overwrite": true
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{updated}");
+
+    let mode = std::fs::metadata(&wf_path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(
+        mode, 0o600,
+        "atomic workflow overwrite must preserve 0600 permissions, got {mode:04o}"
+    );
+    let new_doc: Value = serde_json::from_slice(&std::fs::read(&wf_path).unwrap()).unwrap();
+    let old_doc: Value = serde_json::from_slice(&std::fs::read(&old_link).unwrap()).unwrap();
+    assert_eq!(new_doc["description"], "v2");
+    assert_eq!(old_doc["description"], "v1");
+}

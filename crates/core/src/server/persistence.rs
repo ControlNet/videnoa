@@ -214,7 +214,9 @@ impl JobsPersistence {
                 conn.execute(
                     "UPDATE jobs SET status = ?2, started_at = ?3, completed_at = ?4,
                      progress_json = ?5, error = ?6, updated_at = ?7,
-                     cancel_requested_at = ?8, cancel_reason = ?9 WHERE id = ?1",
+                     cancel_requested_at = COALESCE(cancel_requested_at, ?8),
+                     cancel_reason = COALESCE(cancel_reason, ?9)
+                     WHERE id = ?1 AND status IN ('queued', 'running')",
                     params![
                         row.id,
                         status_to_str(row.status),
@@ -286,18 +288,23 @@ impl JobsPersistence {
         })
     }
 
-    /// Records a cancel request without touching the job's other columns, so
-    /// it can be written after the job's lock is released without
-    /// overwriting a newer status.
+    /// Records a cancel request on an active (`queued` or `running`) job row
+    /// without touching its status or overwriting an earlier cancel reason.
+    ///
+    /// Returns `true` when an active uncancelled row was updated, or `false`
+    /// when the row was already terminal, already carried a cancel request, or
+    /// did not exist.
     pub(crate) fn record_cancel_request(
         &self,
         job_id: &str,
         request: &CancelRequest,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         self.with_connection(|conn| {
-            conn.execute(
+            let updated = conn.execute(
                 "UPDATE jobs SET cancel_requested_at = ?2, cancel_reason = ?3, updated_at = ?4
-                 WHERE id = ?1",
+                 WHERE id = ?1
+                   AND status IN ('queued', 'running')
+                   AND cancel_requested_at IS NULL",
                 params![
                     job_id,
                     request.requested_at.to_rfc3339(),
@@ -305,7 +312,7 @@ impl JobsPersistence {
                     Utc::now().to_rfc3339(),
                 ],
             )?;
-            Ok(())
+            Ok(updated > 0)
         })
     }
 

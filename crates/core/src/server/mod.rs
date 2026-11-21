@@ -75,9 +75,13 @@ pub struct AppState {
     inner: Arc<AppStateInner>,
 }
 
+#[cfg(test)]
+type AfterTerminalPersistHook = Arc<dyn Fn(&str) + Send + Sync>;
+
 struct AppStateInner {
     iroh: iroh::Runtime,
     settings_lock: tokio::sync::Mutex<()>,
+    job_delete_lock: tokio::sync::Mutex<()>,
     auth: std::result::Result<auth::AuthService, String>,
     jobs: DashMap<String, Job>,
     jobs_persistence: std::result::Result<JobsPersistence, String>,
@@ -107,9 +111,12 @@ struct AppStateInner {
     /// Backoff schedule (in ms) for retrying failed terminal writes, capped at
     /// its final element so retries continue indefinitely until persisted.
     terminal_retry_delays_ms: std::sync::Mutex<Vec<u64>>,
-    /// Held from the queue capacity check until the new jobs are in `jobs`,
-    /// so concurrent submissions cannot all take the last free slot.
-    admission: std::sync::Mutex<()>,
+    /// Coordinates queue capacity, in-flight job submissions, and shutdown
+    /// without holding a mutex across disk I/O.
+    admission: std::sync::Mutex<AdmissionState>,
+    admission_notify: tokio::sync::Notify,
+    #[cfg(test)]
+    after_terminal_persist_hook: std::sync::Mutex<Option<AfterTerminalPersistHook>>,
     /// Held for the life of the state. Declared last so it is released only
     /// after every store above has closed: once `instance.lock` is free, a
     /// new instance can open the data directory.
@@ -119,10 +126,49 @@ struct AppStateInner {
 
 #[derive(Default)]
 struct UnpersistedTerminalState {
+    /// Jobs whose `finish_job` has snapshotted the final outcome and is writing
+    /// the initial SQLite update before publishing to `jobs`.
+    committing: HashSet<String>,
+    /// Jobs whose initial SQLite terminal update failed and are awaiting retry.
     pending: HashMap<String, PendingTerminalTransition>,
     worker_running: bool,
     reset_backoff: bool,
     retry_passes: u64,
+}
+
+#[derive(Default)]
+struct AdmissionState {
+    shutting_down: bool,
+    /// Slots reserved by submissions that passed `admit_jobs` and have not yet
+    /// published their jobs into `jobs` (or rolled back).
+    in_flight: usize,
+}
+
+struct AdmissionGuard<'a> {
+    state: &'a AppState,
+    reserved: usize,
+}
+
+impl Drop for AdmissionGuard<'_> {
+    fn drop(&mut self) {
+        if self.reserved == 0 {
+            return;
+        }
+        let remaining = {
+            let mut guard = self
+                .state
+                .inner
+                .admission
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.in_flight = guard.in_flight.saturating_sub(self.reserved);
+            self.reserved = 0;
+            guard.in_flight
+        };
+        if remaining == 0 {
+            self.state.inner.admission_notify.notify_waiters();
+        }
+    }
 }
 
 const INSTANCE_LOCK_FILE: &str = "instance.lock";
@@ -324,6 +370,7 @@ impl AppState {
                 auth,
                 iroh: iroh::Runtime::default(),
                 settings_lock: tokio::sync::Mutex::new(()),
+                job_delete_lock: tokio::sync::Mutex::new(()),
                 jobs,
                 jobs_persistence,
                 gpu_semaphore: Arc::new(Semaphore::new(GPU_SLOTS)),
@@ -343,7 +390,10 @@ impl AppState {
                 terminal_retry_delays_ms: std::sync::Mutex::new(
                     TERMINAL_WRITE_RETRY_DELAYS_MS.to_vec(),
                 ),
-                admission: std::sync::Mutex::new(()),
+                admission: std::sync::Mutex::new(AdmissionState::default()),
+                admission_notify: tokio::sync::Notify::new(),
+                #[cfg(test)]
+                after_terminal_persist_hook: std::sync::Mutex::new(None),
                 instance_lock,
             }),
         }
@@ -386,10 +436,19 @@ impl AppState {
     /// exit in time is restored with that reason on the next start.
     pub fn begin_shutdown(&self) {
         use std::sync::atomic::Ordering;
-        if self.inner.shutting_down.swap(true, Ordering::SeqCst) {
-            return;
+        {
+            let mut admission = self
+                .inner
+                .admission
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if admission.shutting_down {
+                return;
+            }
+            admission.shutting_down = true;
+            self.inner.shutting_down.store(true, Ordering::SeqCst);
         }
-        let pending_terminal_ids = self.pending_terminal_ids();
+        self.inner.admission_notify.notify_waiters();
         // Cancel every job first, then write. Writing while iterating held
         // the job map's locks across disk I/O, so on a slow disk a queued job
         // not yet reached could start, or even complete, mid-shutdown.
@@ -398,13 +457,16 @@ impl AppState {
             .jobs
             .iter_mut()
             .filter_map(|mut job| {
-                if job.status.is_terminal() || pending_terminal_ids.contains(&job.id) {
+                if job.status.is_terminal() || self.is_terminal_committing_or_pending(&job.id) {
                     return None;
                 }
                 job.request_cancel(CancelReason::Shutdown);
                 Some((job.id.clone(), job.cancel_request?))
             })
             .collect();
+        if requests.is_empty() {
+            return;
+        }
         let Ok(store) = self.job_store() else {
             return;
         };
@@ -424,6 +486,11 @@ impl AppState {
     pub async fn wait_for_jobs_to_stop(&self, grace: Duration) -> Vec<String> {
         let deadline = Instant::now() + grace;
         loop {
+            let notified = self.inner.admission_notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+
+            let in_flight = self.in_flight_admissions();
             let pending_terminal_ids = self.pending_terminal_ids();
             let active: Vec<String> = self
                 .inner
@@ -432,12 +499,25 @@ impl AppState {
                 .filter(|job| !job.status.is_terminal() && !pending_terminal_ids.contains(&job.id))
                 .map(|job| job.id.clone())
                 .collect();
-            if active.is_empty() || Instant::now() >= deadline {
+            if (in_flight == 0 && active.is_empty()) || Instant::now() >= deadline {
                 self.write_unpersisted_terminal_states();
                 return active;
             }
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let sleep_for = remaining.min(Duration::from_millis(50));
+            tokio::select! {
+                _ = &mut notified => {}
+                _ = tokio::time::sleep(sleep_for) => {}
+            }
         }
+    }
+
+    fn in_flight_admissions(&self) -> usize {
+        self.inner
+            .admission
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .in_flight
     }
 
     fn pending_terminal_ids(&self) -> HashSet<String> {
@@ -451,6 +531,7 @@ impl AppState {
             .collect()
     }
 
+    #[cfg(test)]
     fn has_pending_terminal(&self, job_id: &str) -> bool {
         self.inner
             .unpersisted_terminal
@@ -460,32 +541,56 @@ impl AppState {
             .contains_key(job_id)
     }
 
-    fn remove_unpersisted_terminal(&self, job_id: &str) {
+    fn is_terminal_committing_or_pending(&self, job_id: &str) -> bool {
+        let guard = self
+            .inner
+            .unpersisted_terminal
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.committing.contains(job_id) || guard.pending.contains_key(job_id)
+    }
+
+    fn mark_terminal_committing(&self, job_id: &str) {
         self.inner
             .unpersisted_terminal
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .pending
-            .remove(job_id);
+            .committing
+            .insert(job_id.to_owned());
+    }
+
+    fn clear_terminal_tracking(&self, job_id: &str) {
+        let mut guard = self
+            .inner
+            .unpersisted_terminal
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.committing.remove(job_id);
+        guard.pending.remove(job_id);
+    }
+
+    #[cfg(test)]
+    fn run_after_terminal_persist_hook(&self, job_id: &str) {
+        let hook = self
+            .inner
+            .after_terminal_persist_hook
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        if let Some(hook) = hook {
+            hook(job_id);
+        }
     }
 
     /// Publishes an already-persisted terminal transition into in-memory state
     /// and closes the job's live progress channel.
     fn publish_terminal_transition(&self, transition: &PendingTerminalTransition) {
         if let Some(mut job) = self.inner.jobs.get_mut(&transition.job_id) {
-            job.status = transition.status;
-            job.completed_at = Some(transition.completed_at);
-            job.error = transition.error.clone();
-            if let (Some(reason), Some(requested_at)) =
-                (transition.cancel_reason, transition.cancel_requested_at)
-            {
-                job.cancel_request = Some(CancelRequest {
-                    requested_at,
-                    reason,
-                });
-            }
+            apply_pending_terminal(&mut job, transition);
+            self.clear_terminal_tracking(&transition.job_id);
+        } else {
+            self.clear_terminal_tracking(&transition.job_id);
         }
-        self.remove_unpersisted_terminal(&transition.job_id);
         self.inner.progress_senders.remove(&transition.job_id);
     }
 
@@ -517,7 +622,7 @@ impl AppState {
                     if let Ok(store) = self.job_store() {
                         store.remove_pending_terminal_sidecar(&job_id);
                     }
-                    self.remove_unpersisted_terminal(&job_id);
+                    self.clear_terminal_tracking(&job_id);
                 }
                 Some(job) => match self.persist_job_transition(&job) {
                     Ok(()) => {
@@ -562,6 +667,7 @@ impl AppState {
                 .unpersisted_terminal
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.committing.remove(&transition.job_id);
             guard.pending.insert(transition.job_id.clone(), transition);
             if guard.worker_running {
                 guard.reset_backoff = true;
@@ -667,24 +773,125 @@ impl AppState {
         Ok(())
     }
 
-    /// Refuses `additional` new jobs when they would exceed [`MAX_ACTIVE_JOBS`].
-    /// Keep the returned guard until the jobs are spawned: the next check
-    /// waits for it, so it counts them.
-    fn admit_jobs(&self, additional: usize) -> Result<std::sync::MutexGuard<'_, ()>, AppError> {
-        let guard = self
+    /// Reserves `additional` queue slots without holding a mutex across disk I/O.
+    /// Dropping the returned [`AdmissionGuard`] releases any uncommitted slots.
+    fn admit_jobs(&self, additional: usize) -> Result<AdmissionGuard<'_>, AppError> {
+        let mut guard = self
             .inner
             .admission
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.ensure_not_shutting_down()?;
+        if guard.shutting_down
+            || self
+                .inner
+                .shutting_down
+                .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(
+                AppError::ServiceUnavailable("worker is shutting down".to_owned())
+                    .with_code(ErrorCode::ShuttingDown),
+            );
+        }
         let (running, queued, _) = self.active_job_counts();
-        if running + queued + additional > MAX_ACTIVE_JOBS {
+        let queued_or_admitted = queued.saturating_add(guard.in_flight);
+        if running
+            .saturating_add(queued_or_admitted)
+            .saturating_add(additional)
+            > MAX_ACTIVE_JOBS
+        {
             return Err(AppError::ServiceUnavailable(format!(
-                "job queue is full ({running} running, {queued} queued, limit {MAX_ACTIVE_JOBS}); retry after some jobs finish"
+                "job queue is full ({running} running, {queued_or_admitted} queued, limit {MAX_ACTIVE_JOBS}); retry after some jobs finish"
             ))
             .with_code(ErrorCode::QueueFull));
         }
-        Ok(guard)
+        guard.in_flight = guard.in_flight.saturating_add(additional);
+        drop(guard);
+        Ok(AdmissionGuard {
+            state: self,
+            reserved: additional,
+        })
+    }
+
+    /// Publishes persisted `jobs` into runtime state and spawns their executors,
+    /// or rolls back their unpublished database rows and returns 503 when
+    /// shutdown started while database persistence was in flight.
+    fn commit_admitted_jobs(
+        &self,
+        mut admission: AdmissionGuard<'_>,
+        jobs: Vec<Job>,
+    ) -> Result<(), AppError> {
+        let outcome = {
+            let mut guard = self
+                .inner
+                .admission
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if guard.shutting_down
+                || self
+                    .inner
+                    .shutting_down
+                    .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                Err(jobs)
+            } else {
+                let mut spawn_list = Vec::with_capacity(jobs.len());
+                for job in jobs {
+                    let id = job.id.clone();
+                    let workflow_source = job.workflow_source.clone();
+                    let (sender, _receiver) = broadcast::channel::<JobWsEvent>(64);
+                    self.inner.progress_senders.insert(id.clone(), sender);
+                    self.inner.jobs.insert(id.clone(), job);
+                    spawn_list.push((id, workflow_source));
+                }
+                guard.in_flight = guard.in_flight.saturating_sub(admission.reserved);
+                admission.reserved = 0;
+                let drained = guard.in_flight == 0;
+                drop(guard);
+                if drained {
+                    self.inner.admission_notify.notify_waiters();
+                }
+                Ok(spawn_list)
+            }
+        };
+
+        let spawn_list = match outcome {
+            Ok(spawn_list) => spawn_list,
+            Err(unpublished_jobs) => {
+                // Keep `admission` alive across rollback so `wait_for_jobs_to_stop`
+                // waits until unpublished rows are cleaned up before returning.
+                if let Ok(persistence) = &self.inner.jobs_persistence {
+                    for job in &unpublished_jobs {
+                        if let Err(rollback_error) = persistence.delete_job(&job.id) {
+                            error!(
+                                job_id = %job.id,
+                                error = ?rollback_error,
+                                "Failed to roll back in-flight job after shutdown"
+                            );
+                            let shutdown_cancel = CancelRequest {
+                                requested_at: Utc::now(),
+                                reason: CancelReason::Shutdown,
+                            };
+                            let _ = persistence.record_cancel_request(&job.id, &shutdown_cancel);
+                        }
+                    }
+                }
+                drop(admission);
+                return Err(
+                    AppError::ServiceUnavailable("worker is shutting down".to_owned())
+                        .with_code(ErrorCode::ShuttingDown),
+                );
+            }
+        };
+
+        for (id, workflow_source) in spawn_list {
+            let state_clone = self.clone();
+            let job_id = id.clone();
+            tokio::spawn(async move {
+                run_job(state_clone, job_id).await;
+            });
+            info!(job_id = %id, workflow_source, "Job created");
+        }
+        Ok(())
     }
 
     fn preview_cache(&self) -> Result<&Arc<preview_cache::PreviewCache>, AppError> {
@@ -1948,6 +2155,7 @@ async fn run_workflow_by_name(
         .map_err(|_| AppError::Internal("failed to fingerprint run request".to_string()))?;
     if let Some(key) = idempotency_key.as_ref() {
         let persistence = jobs_persistence(&state)?;
+        state.ensure_not_shutting_down()?;
         match persistence
             .lookup_idempotent_job(key.as_str(), fingerprint.as_str())
             .map_err(|error| {
@@ -2044,12 +2252,12 @@ fn create_and_spawn_job(
     state: &AppState,
     submission: JobSubmission,
 ) -> Result<CreateJobResponse, AppError> {
-    let _admission = state.admit_jobs(1)?;
+    let admission = state.admit_jobs(1)?;
     let (job, response) = prepare_job(submission);
     state
         .persist_job_snapshot(&job)
         .map_err(|error| AppError::Internal(format!("failed to persist new job: {error:#}")))?;
-    spawn_job(state, job);
+    state.commit_admitted_jobs(admission, vec![job])?;
     Ok(response)
 }
 
@@ -2060,7 +2268,29 @@ fn create_idempotent_job(
     fingerprint: &RequestFingerprint,
 ) -> Result<(StatusCode, Json<CreateJobResponse>), AppError> {
     let persistence = jobs_persistence(state)?;
-    let _admission = state.admit_jobs(1)?;
+    let admission = match state.admit_jobs(1) {
+        Ok(admission) => admission,
+        Err(queue_err) => {
+            if !state
+                .inner
+                .shutting_down
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                match persistence
+                    .lookup_idempotent_job(key.as_str(), fingerprint.as_str())
+                    .map_err(|error| {
+                        AppError::Internal(format!("failed to inspect idempotent job: {error:#}"))
+                    })? {
+                    IdempotentJobLookup::Missing => {}
+                    IdempotentJobLookup::Replayed(existing) => {
+                        return Ok((StatusCode::OK, Json(existing)));
+                    }
+                    IdempotentJobLookup::Conflict => return Err(AppError::IdempotencyConflict),
+                }
+            }
+            return Err(queue_err);
+        }
+    };
     let (job, response) = prepare_job(submission);
     match persistence
         .claim_idempotent_job(key.as_str(), fingerprint.as_str(), &job)
@@ -2068,10 +2298,24 @@ fn create_idempotent_job(
             AppError::Internal(format!("failed to persist idempotent job: {error:#}"))
         })? {
         IdempotentJobClaim::Created => {
-            spawn_job(state, job);
+            state.commit_admitted_jobs(admission, vec![job])?;
             Ok((StatusCode::CREATED, Json(response)))
         }
-        IdempotentJobClaim::Replayed(existing) => Ok((StatusCode::OK, Json(existing))),
+        IdempotentJobClaim::Replayed(existing) => {
+            drop(admission);
+            if state
+                .inner
+                .shutting_down
+                .load(std::sync::atomic::Ordering::SeqCst)
+                && !state.inner.jobs.contains_key(&existing.id)
+            {
+                return Err(
+                    AppError::ServiceUnavailable("worker is shutting down".to_owned())
+                        .with_code(ErrorCode::ShuttingDown),
+                );
+            }
+            Ok((StatusCode::OK, Json(existing)))
+        }
         IdempotentJobClaim::Conflict => Err(AppError::IdempotencyConflict),
     }
 }
@@ -2110,20 +2354,6 @@ fn prepare_job(submission: JobSubmission) -> (Job, CreateJobResponse) {
         created_at: now,
     };
     (job, response)
-}
-
-fn spawn_job(state: &AppState, job: Job) {
-    let id = job.id.clone();
-    let workflow_source = job.workflow_source.clone();
-    let (sender, _receiver) = broadcast::channel::<JobWsEvent>(64);
-    state.inner.progress_senders.insert(id.clone(), sender);
-    state.inner.jobs.insert(id.clone(), job);
-    let state_clone = state.clone();
-    let job_id = id.clone();
-    tokio::spawn(async move {
-        run_job(state_clone, job_id).await;
-    });
-    info!(job_id = %id, workflow_source, "Job created");
 }
 
 struct ResolvedWorkflowFile {
@@ -2301,13 +2531,19 @@ async fn create_batch(
         }
     }
 
-    let mut job_ids = Vec::with_capacity(prepared.len());
+    let mut jobs = Vec::with_capacity(prepared.len());
+    let mut batch_meta = Vec::with_capacity(prepared.len());
     for (file_path, job, response) in prepared {
-        spawn_job(&state, job);
-        info!(job_id = %response.id, file_path = %file_path, "Batch job created");
-        job_ids.push(response.id);
+        jobs.push(job);
+        batch_meta.push((file_path, response.id));
     }
-    drop(admission);
+    state.commit_admitted_jobs(admission, jobs)?;
+
+    let mut job_ids = Vec::with_capacity(batch_meta.len());
+    for (file_path, id) in batch_meta {
+        info!(job_id = %id, file_path = %file_path, "Batch job created");
+        job_ids.push(id);
+    }
 
     let total = job_ids.len();
     Ok((StatusCode::CREATED, Json(BatchResponse { job_ids, total })))
@@ -2399,6 +2635,13 @@ async fn rerun_job(
     Ok((StatusCode::CREATED, Json(created)))
 }
 
+enum ActiveDeleteAction {
+    /// Already transitioning to terminal (`committing` or `pending`).
+    AlreadyFinishing { has_unpersisted_retry: bool },
+    /// Active job marked cancelled in memory; persist the cancel metadata conditionally.
+    RequestCancel(CancelRequest),
+}
+
 /// Deletes a finished job's history, or cancels a queued or running job.
 ///
 /// A cancelled job is not removed: it keeps its status and the GPU permit
@@ -2410,9 +2653,71 @@ async fn delete_job_history(
     Path(id): Path<String>,
 ) -> Result<StatusCode, AppError> {
     let persistence = jobs_persistence(&state)?;
-    let mut entry = match state.inner.jobs.entry(id.clone()) {
-        dashmap::mapref::entry::Entry::Occupied(entry) => entry,
-        dashmap::mapref::entry::Entry::Vacant(_) => {
+
+    // Inspect active jobs without holding any DashMap shard guard across SQLite I/O.
+    let active_action = {
+        match state.inner.jobs.get_mut(&id) {
+            Some(mut job) if !job.status.is_terminal() => {
+                let (is_committing, has_unpersisted_retry) = {
+                    let guard = state
+                        .inner
+                        .unpersisted_terminal
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    (
+                        guard.committing.contains(&id),
+                        guard.pending.contains_key(&id),
+                    )
+                };
+                if is_committing || has_unpersisted_retry {
+                    Some(ActiveDeleteAction::AlreadyFinishing {
+                        has_unpersisted_retry,
+                    })
+                } else {
+                    job.request_cancel(CancelReason::User);
+                    let request = job
+                        .cancel_request
+                        .expect("request_cancel populates cancel_request on non-terminal job");
+                    Some(ActiveDeleteAction::RequestCancel(request))
+                }
+            }
+            _ => None,
+        }
+    };
+
+    if let Some(action) = active_action {
+        match action {
+            ActiveDeleteAction::AlreadyFinishing {
+                has_unpersisted_retry,
+            } => {
+                if has_unpersisted_retry {
+                    state.write_unpersisted_terminal_states();
+                }
+                return Ok(StatusCode::NO_CONTENT);
+            }
+            ActiveDeleteAction::RequestCancel(request) => {
+                // Conditional SQL update on active rows only: never overwrites
+                // a concurrent terminal transition in `jobs.db`.
+                if let Err(err) = persistence.record_cancel_request(&id, &request) {
+                    error!(job_id = %id, error = ?err, "Failed to persist cancel request");
+                }
+                info!(job_id = %id, "Job cancellation requested");
+                return Ok(StatusCode::NO_CONTENT);
+            }
+        }
+    }
+
+    // Serialize terminal/unloaded history deletions without holding a DashMap
+    // guard across blocking SQLite I/O.
+    let _delete_guard = state.inner.job_delete_lock.lock().await;
+    let in_memory_terminal = state
+        .inner
+        .jobs
+        .get(&id)
+        .map(|job| job.status.is_terminal());
+
+    match in_memory_terminal {
+        None => {
             // A row that could not be loaded at startup is not listed, but it
             // can still be removed. Every active job is in memory, so this
             // never deletes one.
@@ -2423,37 +2728,25 @@ async fn delete_job_history(
                 return Err(AppError::NotFound(format!("job not found: {id}")));
             }
             info!(job_id = %id, "Unloadable job history row deleted");
-            return Ok(StatusCode::NO_CONTENT);
+            Ok(StatusCode::NO_CONTENT)
         }
-    };
-    if !entry.get().status.is_terminal() {
-        if state.has_pending_terminal(&id) {
-            drop(entry);
-            state.write_unpersisted_terminal_states();
-            return Ok(StatusCode::NO_CONTENT);
+        Some(true) => {
+            let rows = persistence.delete_job(&id).map_err(|e| {
+                AppError::Internal(format!("failed to delete job history row: {e:#}"))
+            })?;
+            if rows != 1 {
+                return Err(AppError::Internal(format!(
+                    "expected exactly one persisted row deleted for job {id}, deleted {rows}"
+                )));
+            }
+            state.inner.jobs.remove(&id);
+            state.clear_terminal_tracking(&id);
+            state.inner.progress_senders.remove(&id);
+            info!(job_id = %id, "Job history row deleted");
+            Ok(StatusCode::NO_CONTENT)
         }
-        entry.get_mut().request_cancel(CancelReason::User);
-        // Recorded so a restart before the executor exits keeps the reason.
-        if let Err(err) = persistence.update_job(entry.get()) {
-            error!(job_id = %id, error = ?err, "Failed to persist cancel request");
-        }
-        info!(job_id = %id, "Job cancellation requested");
-        return Ok(StatusCode::NO_CONTENT);
+        Some(false) => Ok(StatusCode::NO_CONTENT),
     }
-    // Hold the runtime entry until durable deletion succeeds.
-    let rows = persistence
-        .delete_job(&id)
-        .map_err(|e| AppError::Internal(format!("failed to delete job history row: {e:#}")))?;
-    if rows != 1 {
-        return Err(AppError::Internal(format!(
-            "expected exactly one persisted row deleted for job {id}, deleted {rows}"
-        )));
-    }
-    entry.remove();
-    state.remove_unpersisted_terminal(&id);
-    state.inner.progress_senders.remove(&id);
-    info!(job_id = %id, "Job history row deleted");
-    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn job_ws(
@@ -2648,6 +2941,30 @@ async fn list_workflows(State(state): State<AppState>) -> Json<Vec<WorkflowEntry
     Json(entries)
 }
 
+#[cfg(unix)]
+fn parse_proc_status_umask(status: &str) -> Option<u32> {
+    for line in status.lines() {
+        if let Some(rest) = line.strip_prefix("Umask:") {
+            let raw = rest.trim();
+            if !raw.is_empty() {
+                return u32::from_str_radix(raw, 8).ok().map(|mask| mask & 0o777);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(unix)]
+fn default_new_workflow_mode() -> u32 {
+    #[cfg(target_os = "linux")]
+    if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+        if let Some(umask) = parse_proc_status_umask(&status) {
+            return 0o666 & !umask;
+        }
+    }
+    0o600
+}
+
 /// Create `path` and write `bytes`, failing with `AlreadyExists` instead of
 /// replacing a file that is already there.
 fn write_new_workflow_file(path: &StdPath, bytes: &[u8]) -> std::io::Result<()> {
@@ -2657,7 +2974,8 @@ fn write_new_workflow_file(path: &StdPath, bytes: &[u8]) -> std::io::Result<()> 
         .write(true)
         .create_new(true)
         .open(path)?;
-    file.write_all(bytes)
+    file.write_all(bytes)?;
+    file.sync_all()
 }
 
 /// Replaces a saved workflow by writing a hidden file beside it and renaming
@@ -2673,12 +2991,24 @@ fn replace_workflow_file(path: &StdPath, bytes: &[u8]) -> std::io::Result<()> {
     let prefix = format!(".{file_name}.");
     let mut builder = tempfile::Builder::new();
     // No `.json` suffix, so the workflow list never shows the staging file.
+    // Default `tempfile` permissions keep the staging file private (0600 on Unix)
+    // while contents are written.
     builder.prefix(&prefix).suffix(".videnoa-save");
-    #[cfg(unix)]
-    builder.permissions(std::os::unix::fs::PermissionsExt::from_mode(0o666));
     let mut staged = builder.tempfile_in(parent)?;
     staged.write_all(bytes)?;
     staged.as_file().sync_all()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = match std::fs::metadata(path) {
+            Ok(meta) => meta.permissions().mode() & 0o777,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => default_new_workflow_mode(),
+            Err(err) => return Err(err),
+        };
+        staged
+            .as_file()
+            .set_permissions(std::fs::Permissions::from_mode(mode))?;
+    }
     staged.persist(path).map_err(|error| error.error)?;
     Ok(())
 }
@@ -3584,7 +3914,17 @@ async fn run_job(state: AppState, job_id: String) {
             (job.cancel_token.clone(), needs_gpu(&job.workflow))
         };
 
+        if cancel_token.is_cancelled() {
+            finish_job(&state, &job_id, Ok(()));
+            return;
+        }
+
         tokio::select! {
+            biased;
+            _ = cancel_token.cancelled() => {
+                finish_job(&state, &job_id, Ok(()));
+                return;
+            }
             permit = state.inner.gpu_semaphore.clone().acquire_owned(), if needs_gpu => {
                 match permit {
                     Ok(p) => Some(p),
@@ -3592,27 +3932,30 @@ async fn run_job(state: AppState, job_id: String) {
                 }
             }
             () = std::future::ready(()), if !needs_gpu => None,
-            _ = cancel_token.cancelled() => {
-                finish_job(&state, &job_id, Ok(()));
-                return;
-            }
         }
     };
 
     let running_snapshot = {
-        if let Some(mut job) = state.inner.jobs.get_mut(&job_id) {
+        let Some(mut job) = state.inner.jobs.get_mut(&job_id) else {
+            return;
+        };
+        if job.cancel_token.is_cancelled() {
+            None
+        } else {
             job.status = JobStatus::Running;
             job.started_at = Some(Utc::now());
             Some(job.clone())
-        } else {
-            None
         }
     };
 
-    if let Some(snapshot) = running_snapshot {
-        if let Err(err) = state.persist_job_transition(&snapshot) {
-            error!(job_id = %job_id, error = ?err, "Failed to persist running transition");
-        }
+    let Some(snapshot) = running_snapshot else {
+        drop(permit);
+        finish_job(&state, &job_id, Ok(()));
+        return;
+    };
+
+    if let Err(err) = state.persist_job_transition(&snapshot) {
+        error!(job_id = %job_id, error = ?err, "Failed to persist running transition");
     }
 
     let result = {
@@ -3756,14 +4099,13 @@ fn apply_pending_terminal(job: &mut Job, transition: &PendingTerminalTransition)
     job.status = transition.status;
     job.completed_at = Some(transition.completed_at);
     job.error = transition.error.clone();
-    if let (Some(reason), Some(requested_at)) =
-        (transition.cancel_reason, transition.cancel_requested_at)
-    {
-        job.cancel_request = Some(CancelRequest {
+    job.cancel_request = transition
+        .cancel_reason
+        .zip(transition.cancel_requested_at)
+        .map(|(reason, requested_at)| CancelRequest {
             requested_at,
             reason,
         });
-    }
 }
 
 /// Records the terminal state of a job whose executor has exited (or never
@@ -3795,14 +4137,10 @@ fn finish_job(state: &AppState, job_id: &str, result: Result<()>) {
             )
         } else {
             match &result {
-                Ok(()) => (JobStatus::Completed, None, job.cancel_request),
+                Ok(()) => (JobStatus::Completed, None, None),
                 Err(err) => {
                     error!(job_id = %job_id, error = ?err, "Job execution failed");
-                    (
-                        JobStatus::Failed,
-                        Some(format!("{err:#}")),
-                        job.cancel_request,
-                    )
+                    (JobStatus::Failed, Some(format!("{err:#}")), None)
                 }
             }
         };
@@ -3816,6 +4154,7 @@ fn finish_job(state: &AppState, job_id: &str, result: Result<()>) {
         };
         let mut snapshot = job.clone();
         apply_pending_terminal(&mut snapshot, &transition);
+        state.mark_terminal_committing(job_id);
         (transition, snapshot)
     };
 
@@ -3825,6 +4164,8 @@ fn finish_job(state: &AppState, job_id: &str, result: Result<()>) {
             if let Ok(store) = state.job_store() {
                 store.remove_pending_terminal_sidecar(job_id);
             }
+            #[cfg(test)]
+            state.run_after_terminal_persist_hook(job_id);
             state.publish_terminal_transition(&transition);
             info!(job_id = %job_id, status = ?transition.status, "Job finished");
         }
@@ -10301,5 +10642,685 @@ mod tests {
                 panic!("preset '{}' fails run validation: {error:?}", preset.key());
             }
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn delete_during_terminal_commit_to_publish_window_preserves_completed_state() {
+        let data_dir = test_data_dir();
+        let state = test_state_with_data_dir(data_dir.clone());
+        let (persisted_tx, persisted_rx) = std::sync::mpsc::sync_channel::<String>(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel::<()>(1);
+        let release_rx = Arc::new(std::sync::Mutex::new(release_rx));
+
+        *state
+            .inner
+            .after_terminal_persist_hook
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(Arc::new(move |job_id: &str| {
+            let _ = persisted_tx.send(job_id.to_owned());
+            tokio::task::block_in_place(|| {
+                let _ = release_rx
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .recv_timeout(Duration::from_secs(10));
+            });
+        }));
+
+        let mut app = app_router(state.clone());
+        let job_id = create_job_id(&mut app, delay_workflow_json(0)).await;
+
+        let paused_id = tokio::task::spawn_blocking(move || {
+            persisted_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("finish_job should reach after_terminal_persist_hook")
+        })
+        .await
+        .unwrap();
+        assert_eq!(paused_id, job_id);
+
+        // SQLite has committed `completed`, while public in-memory status is still `running`.
+        let conn = Connection::open(data_dir.join("jobs.db")).expect("open jobs db");
+        let query_row = |conn: &Connection, id: &str| -> (String, Option<String>, Option<String>) {
+            conn.query_row(
+                "SELECT status, cancel_reason, cancel_requested_at FROM jobs WHERE id = ?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("job row should exist")
+        };
+        assert_eq!(
+            query_row(&conn, &job_id),
+            ("completed".to_owned(), None, None)
+        );
+        let (_, before_publish) = get_job_json(&mut app, &job_id).await;
+        assert_eq!(before_publish["status"], "running", "{before_publish}");
+
+        // Concurrent DELETE arriving in this window must NOT revert SQLite to `running`
+        // or pollute `cancel_request` in either SQLite or memory.
+        assert_eq!(delete_job(&mut app, &job_id).await, StatusCode::NO_CONTENT);
+        assert_eq!(
+            query_row(&conn, &job_id),
+            ("completed".to_owned(), None, None),
+            "DELETE must never clobber a persisted completed row back to running"
+        );
+
+        // Clear the hook and let `finish_job` publish the terminal transition.
+        *state
+            .inner
+            .after_terminal_persist_hook
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = None;
+        release_tx.send(()).unwrap();
+
+        assert_eq!(
+            wait_for_job_terminal_status(&state, &job_id).await,
+            JobStatus::Completed
+        );
+        let (_, after_publish) = get_job_json(&mut app, &job_id).await;
+        assert_eq!(after_publish["status"], "completed", "{after_publish}");
+        assert!(
+            after_publish.get("cancel_requested").is_none(),
+            "{after_publish}"
+        );
+        assert!(
+            after_publish.get("cancel_reason").is_none(),
+            "{after_publish}"
+        );
+        assert!(after_publish["error"].is_null(), "{after_publish}");
+        assert_eq!(
+            query_row(&conn, &job_id),
+            ("completed".to_owned(), None, None)
+        );
+        {
+            let in_mem = state.inner.jobs.get(&job_id).expect("job in memory");
+            assert_eq!(in_mem.status, JobStatus::Completed);
+            assert!(in_mem.cancel_request.is_none());
+            assert!(!in_mem.cancel_token.is_cancelled());
+        }
+
+        // Restart `AppState` on the same `data_dir` and verify `Completed` survives intact.
+        drop(conn);
+        let weak = Arc::downgrade(&state.inner);
+        drop(app);
+        drop(state);
+        tokio::time::timeout(WAIT_BUDGET, async {
+            while weak.strong_count() > 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("previous state references should drop");
+        let lock_file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(data_dir.join("instance.lock"))
+            .unwrap();
+        tokio::time::timeout(WAIT_BUDGET, async {
+            while lock_file.try_lock().is_err() {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .expect("instance.lock should release");
+        drop(lock_file);
+
+        let restarted = test_state_with_data_dir(data_dir.clone());
+        restarted.ensure_jobs_ready().unwrap();
+        let mut restarted_app = app_router(restarted);
+        let (http_status, restored) = get_job_json(&mut restarted_app, &job_id).await;
+        assert_eq!(http_status, StatusCode::OK);
+        assert_eq!(restored["status"], "completed", "{restored}");
+        assert!(restored.get("cancel_requested").is_none(), "{restored}");
+
+        // Deleting the finished job now removes its history row cleanly.
+        assert_eq!(
+            delete_job(&mut restarted_app, &job_id).await,
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            get_job_json(&mut restarted_app, &job_id).await.0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(persisted_job_status(&data_dir, &job_id), None);
+        let _ = std::fs::remove_dir_all(&data_dir);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn shutdown_during_terminal_commit_to_publish_window_preserves_completed_state() {
+        let data_dir = test_data_dir();
+        let state = test_state_with_data_dir(data_dir.clone());
+        let (persisted_tx, persisted_rx) = std::sync::mpsc::sync_channel::<String>(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel::<()>(1);
+        let release_rx = Arc::new(std::sync::Mutex::new(release_rx));
+
+        *state
+            .inner
+            .after_terminal_persist_hook
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(Arc::new(move |job_id: &str| {
+            let _ = persisted_tx.send(job_id.to_owned());
+            tokio::task::block_in_place(|| {
+                let _ = release_rx
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .recv_timeout(Duration::from_secs(10));
+            });
+        }));
+
+        let mut app = app_router(state.clone());
+        let job_id = create_job_id(&mut app, delay_workflow_json(0)).await;
+        tokio::task::spawn_blocking(move || {
+            persisted_rx.recv_timeout(Duration::from_secs(10)).unwrap()
+        })
+        .await
+        .unwrap();
+
+        state.begin_shutdown();
+
+        *state
+            .inner
+            .after_terminal_persist_hook
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = None;
+        release_tx.send(()).unwrap();
+
+        assert!(state
+            .wait_for_jobs_to_stop(Duration::from_secs(5))
+            .await
+            .is_empty());
+        let (_, job_json) = get_job_json(&mut app, &job_id).await;
+        assert_eq!(job_json["status"], "completed", "{job_json}");
+        assert!(job_json.get("cancel_requested").is_none(), "{job_json}");
+        assert_eq!(
+            persisted_job_status(&data_dir, &job_id).as_deref(),
+            Some("completed")
+        );
+        let _ = std::fs::remove_dir_all(&data_dir);
+    }
+
+    struct CountingNode {
+        executions: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl crate::node::Node for CountingNode {
+        fn node_type(&self) -> &str {
+            "test_count"
+        }
+        fn input_ports(&self) -> Vec<crate::node::PortDefinition> {
+            vec![]
+        }
+        fn output_ports(&self) -> Vec<crate::node::PortDefinition> {
+            vec![]
+        }
+        fn execute(
+            &mut self,
+            _inputs: &std::collections::HashMap<String, crate::types::PortData>,
+            _ctx: &crate::node::ExecutionContext,
+        ) -> Result<std::collections::HashMap<String, crate::types::PortData>> {
+            self.executions
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(std::collections::HashMap::new())
+        }
+    }
+
+    fn counting_test_state(
+        data_dir: PathBuf,
+        workflows_dir: PathBuf,
+    ) -> (AppState, Arc<std::sync::atomic::AtomicUsize>) {
+        let executions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let executions_for_node = Arc::clone(&executions);
+        let mut node_registry = NodeRegistry::new();
+        node_registry.register("test_count", move |_params| {
+            Ok(Box::new(CountingNode {
+                executions: Arc::clone(&executions_for_node),
+            }))
+        });
+        let config = AppConfig {
+            paths: crate::config::PathsConfig {
+                models_dir: test_models_dir(),
+                trt_cache_dir: temp_path("trt_cache"),
+                presets_dir: temp_path("videnoa-test-presets-nonexistent"),
+                workflows_dir,
+            },
+            ..AppConfig::default()
+        };
+        let state = AppState::new(
+            node_registry,
+            ModelRegistry::with_builtin_models(test_models_dir()),
+            DashMap::new(),
+            config,
+            test_config_path(),
+            data_dir,
+        );
+        (state, executions)
+    }
+
+    struct StalledStore {
+        release_tx: Option<std::sync::mpsc::SyncSender<()>>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl StalledStore {
+        fn acquire(store: JobsPersistence) -> Self {
+            let (locked_tx, locked_rx) = std::sync::mpsc::sync_channel(1);
+            let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+            let thread = std::thread::spawn(move || {
+                let _guard = store.lock_connection();
+                let _ = locked_tx.send(());
+                let _ = release_rx.recv();
+            });
+            locked_rx.recv().expect("store connection locked on thread");
+            Self {
+                release_tx: Some(release_tx),
+                thread: Some(thread),
+            }
+        }
+
+        fn release(mut self) {
+            if let Some(tx) = self.release_tx.take() {
+                let _ = tx.send(());
+            }
+            if let Some(handle) = self.thread.take() {
+                handle.join().expect("stall thread exited cleanly");
+            }
+        }
+    }
+
+    impl Drop for StalledStore {
+        fn drop(&mut self) {
+            if let Some(tx) = self.release_tx.take() {
+                let _ = tx.send(());
+            }
+            if let Some(handle) = self.thread.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn shutdown_rejects_in_flight_submissions_after_db_lock_releases() {
+        // Variant 1: `wait_for_jobs_to_stop` runs while SQLite is still locked,
+        // then SQLite unlocks afterwards (exact sequence from review #2).
+        let data_dir = test_data_dir();
+        let workflows_dir = unique_temp_dir("videnoa-shutdown-inflight-wf");
+        std::fs::create_dir_all(&workflows_dir).unwrap();
+        let workflow = serde_json::json!({
+            "nodes": [{"id": "count", "node_type": "test_count", "params": {}}],
+            "connections": []
+        });
+        let (state, executions) = counting_test_state(data_dir.clone(), workflows_dir.clone());
+        let app = app_router(state.clone());
+
+        let store = state.job_store().unwrap().clone();
+        let stall = StalledStore::acquire(store);
+
+        let app_post = app.clone();
+        let wf_post = workflow.clone();
+        let post_handle = tokio::spawn(async move {
+            let req = Request::builder()
+                .method("POST")
+                .uri("/api/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "workflow": wf_post }).to_string(),
+                ))
+                .unwrap();
+            let resp = app_post.oneshot(req).await.unwrap();
+            let status = resp.status();
+            let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            (status, json)
+        });
+
+        tokio::time::timeout(WAIT_BUDGET, async {
+            while state.in_flight_admissions() != 1 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("POST /api/jobs should pass admission and block on SQLite");
+
+        state.begin_shutdown();
+        let wait_started = Instant::now();
+        let grace = Duration::from_millis(60);
+        let remaining = state.wait_for_jobs_to_stop(grace).await;
+        assert!(
+            wait_started.elapsed() >= Duration::from_millis(50),
+            "wait_for_jobs_to_stop must not return immediately while an admitted submission is in flight"
+        );
+        assert!(remaining.is_empty());
+
+        stall.release();
+        let (post_status, post_body) = post_handle.await.unwrap();
+        assert_eq!(post_status, StatusCode::SERVICE_UNAVAILABLE, "{post_body}");
+        assert_eq!(post_body["code"], "shutting_down", "{post_body}");
+        assert_eq!(state.in_flight_admissions(), 0);
+        assert!(state.inner.jobs.is_empty());
+        assert_eq!(
+            executions.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "no uncancelled workflow node may run after shutdown"
+        );
+        let conn = Connection::open(data_dir.join("jobs.db")).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM jobs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "rolled-back submission must leave zero DB rows");
+        drop(conn);
+        drop(app);
+        drop(state);
+        let _ = std::fs::remove_dir_all(&data_dir);
+        let _ = std::fs::remove_dir_all(&workflows_dir);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+    async fn wait_for_jobs_to_stop_drains_in_flight_single_idempotent_and_batch_submissions() {
+        let data_dir = test_data_dir();
+        let workflows_dir = unique_temp_dir("videnoa-shutdown-drain-wf");
+        std::fs::create_dir_all(&workflows_dir).unwrap();
+        let workflow = serde_json::json!({
+            "nodes": [{"id": "count", "node_type": "test_count", "params": {}}],
+            "connections": []
+        });
+        write_json_file(
+            &workflows_dir.join("saved-count.json"),
+            &serde_json::json!({
+                "name": "saved-count",
+                "description": "",
+                "workflow": workflow
+            }),
+        );
+
+        let (state, executions) = counting_test_state(data_dir.clone(), workflows_dir.clone());
+        let app = app_router(state.clone());
+
+        let store = state.job_store().unwrap().clone();
+        let stall = StalledStore::acquire(store);
+
+        // 1. POST /api/jobs (1 slot)
+        let app_jobs = app.clone();
+        let wf_jobs = workflow.clone();
+        let jobs_task = tokio::spawn(async move {
+            let req = Request::builder()
+                .method("POST")
+                .uri("/api/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "workflow": wf_jobs }).to_string(),
+                ))
+                .unwrap();
+            app_jobs.oneshot(req).await.unwrap().status()
+        });
+
+        // 2. POST /api/run (1 slot)
+        let app_run = app.clone();
+        let run_task = tokio::spawn(async move {
+            let req = Request::builder()
+                .method("POST")
+                .uri("/api/run")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"workflow_name":"saved-count"}"#))
+                .unwrap();
+            app_run.oneshot(req).await.unwrap().status()
+        });
+
+        // 3. POST /api/batch with 2 files (2 slots)
+        let app_batch = app.clone();
+        let wf_batch = workflow.clone();
+        let batch_task = tokio::spawn(async move {
+            let req = Request::builder()
+                .method("POST")
+                .uri("/api/batch")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "file_paths": ["/tmp/a.mkv", "/tmp/b.mkv"],
+                        "workflow": wf_batch
+                    })
+                    .to_string(),
+                ))
+                .unwrap();
+            app_batch.oneshot(req).await.unwrap().status()
+        });
+
+        tokio::time::timeout(WAIT_BUDGET, async {
+            while state.in_flight_admissions() != 4 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("all 4 admitted slots should be in flight while SQLite is stalled");
+
+        state.begin_shutdown();
+        let state_wait = state.clone();
+        let wait_task = tokio::spawn(async move {
+            state_wait
+                .wait_for_jobs_to_stop(Duration::from_secs(5))
+                .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(
+            !wait_task.is_finished(),
+            "wait_for_jobs_to_stop must stay parked while admitted submissions are still draining"
+        );
+
+        stall.release();
+
+        let left = tokio::time::timeout(WAIT_BUDGET, wait_task)
+            .await
+            .expect("wait_for_jobs_to_stop should complete once SQLite unblocks")
+            .unwrap();
+        assert!(left.is_empty());
+        assert_eq!(jobs_task.await.unwrap(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(run_task.await.unwrap(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(batch_task.await.unwrap(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(state.in_flight_admissions(), 0);
+        assert!(state.inner.jobs.is_empty());
+        assert_eq!(executions.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        let conn = Connection::open(data_dir.join("jobs.db")).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM jobs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+        drop(conn);
+        drop(app);
+        drop(state);
+        let _ = std::fs::remove_dir_all(&data_dir);
+        let _ = std::fs::remove_dir_all(&workflows_dir);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn shutdown_rolls_back_in_flight_idempotent_claim_without_leaving_key_receipt() {
+        let data_dir = test_data_dir();
+        let workflows_dir = unique_temp_dir("videnoa-shutdown-idempotent-wf");
+        std::fs::create_dir_all(&workflows_dir).unwrap();
+        let workflow = serde_json::json!({
+            "nodes": [{"id": "count", "node_type": "test_count", "params": {}}],
+            "connections": []
+        });
+        let parsed_workflow: PipelineGraph = serde_json::from_value(workflow).unwrap();
+        let (state, executions) = counting_test_state(data_dir.clone(), workflows_dir.clone());
+
+        let store = state.job_store().unwrap().clone();
+        let stall = StalledStore::acquire(store.clone());
+
+        let state_claim = state.clone();
+        let claim_task = tokio::task::spawn_blocking(move || {
+            let key = IdempotencyKey::parse("inflight-shutdown-key").unwrap();
+            let fp = RequestFingerprint::for_run("saved-count", None).unwrap();
+            create_idempotent_job(
+                &state_claim,
+                JobSubmission {
+                    workflow: parsed_workflow,
+                    params: None,
+                    workflow_name: "saved-count".to_owned(),
+                    workflow_source: WORKFLOW_SOURCE_API_RUN_WORKFLOWS.to_owned(),
+                    rerun_of_job_id: None,
+                },
+                &key,
+                &fp,
+            )
+        });
+
+        tokio::time::timeout(WAIT_BUDGET, async {
+            while state.in_flight_admissions() != 1 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("idempotent submission should hold 1 in-flight slot while blocked on SQLite");
+
+        state.begin_shutdown();
+        let state_wait = state.clone();
+        let wait_task = tokio::spawn(async move {
+            state_wait
+                .wait_for_jobs_to_stop(Duration::from_secs(5))
+                .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(!wait_task.is_finished());
+
+        stall.release();
+
+        assert!(wait_task.await.unwrap().is_empty());
+        let claim_resp = claim_task
+            .await
+            .unwrap()
+            .expect_err("in-flight idempotent claim should reject with 503 after shutdown")
+            .into_response();
+        assert_eq!(claim_resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(state.in_flight_admissions(), 0);
+        assert!(state.inner.jobs.is_empty());
+        assert_eq!(executions.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(store
+            .idempotent_job("inflight-shutdown-key")
+            .unwrap()
+            .is_none());
+
+        drop(state);
+        let _ = std::fs::remove_dir_all(&data_dir);
+        let _ = std::fs::remove_dir_all(&workflows_dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_parse_proc_status_umask_handles_valid_and_missing_lines() {
+        assert_eq!(
+            parse_proc_status_umask("Name:\tvidenoa\nUmask:\t0022\nState:\tR (running)\n"),
+            Some(0o022)
+        );
+        assert_eq!(parse_proc_status_umask("Umask:\t0077\n"), Some(0o077));
+        assert_eq!(parse_proc_status_umask("Umask:\t0002\n"), Some(0o002));
+        assert_eq!(parse_proc_status_umask("Name:\tvidenoa\n"), None);
+        assert_eq!(parse_proc_status_umask("Umask:\tnot-octal\n"), None);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_save_workflow_overwrite_preserves_existing_file_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = unique_temp_dir("videnoa-wf-preserve-perms");
+        let mut app = app_router(workflow_test_state(dir.clone()));
+
+        for (name, target_mode) in [
+            ("Private", 0o600_u32),
+            ("GroupRead", 0o640_u32),
+            ("WorldRead", 0o644_u32),
+        ] {
+            let create_body = serde_json::json!({
+                "name": name,
+                "description": "initial",
+                "workflow": {"nodes": [], "connections": []}
+            });
+            let (status, _) = post_workflow(&mut app, create_body).await;
+            assert_eq!(status, StatusCode::CREATED);
+
+            let path = dir.join(format!("{name}.json"));
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(target_mode)).unwrap();
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                target_mode
+            );
+
+            let link = dir.join(format!("{name}.old.link"));
+            std::fs::hard_link(&path, &link).unwrap();
+
+            let overwrite_body = serde_json::json!({
+                "name": name,
+                "description": "updated",
+                "workflow": {"nodes": [], "connections": []},
+                "overwrite": true
+            });
+            let (status, _) = post_workflow(&mut app, overwrite_body).await;
+            assert_eq!(status, StatusCode::CREATED);
+
+            let actual_mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(
+                actual_mode, target_mode,
+                "overwriting {name}.json must preserve mode {target_mode:04o}, got {actual_mode:04o}"
+            );
+            assert_eq!(saved_description(&path), "updated");
+            assert_eq!(saved_description(&link), "initial");
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_replace_workflow_file_preserves_0600_under_umask_022_subprocess() {
+        use std::os::unix::fs::PermissionsExt;
+
+        const CHILD_ENV: &str = "VIDENOA_TEST_UMASK_022_CHILD";
+        if std::env::var_os(CHILD_ENV).is_some() {
+            let dir = unique_temp_dir("videnoa-wf-umask022-child");
+            std::fs::create_dir_all(&dir).unwrap();
+            let target = dir.join("secret.json");
+            std::fs::write(&target, br#"{"name":"secret","v":1}"#).unwrap();
+            std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+            replace_workflow_file(&target, br#"{"name":"secret","v":2}"#).unwrap();
+            let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+            assert_eq!(
+                mode, 0o600,
+                "0600 workflow file must stay 0600 under umask 022, got {mode:04o}"
+            );
+
+            // Also verify creating a new file via replace_workflow_file under umask 022
+            // respects the process umask (0644 on Linux) without calling libc::umask.
+            let fresh = dir.join("fresh.json");
+            replace_workflow_file(&fresh, br#"{"name":"fresh"}"#).unwrap();
+            let fresh_mode = std::fs::metadata(&fresh).unwrap().permissions().mode() & 0o777;
+            if cfg!(target_os = "linux") {
+                assert_eq!(fresh_mode, 0o644, "got {fresh_mode:04o}");
+            } else {
+                assert_eq!(fresh_mode, 0o600, "got {fresh_mode:04o}");
+            }
+
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+
+        let exe = std::env::current_exe().expect("current test binary path");
+        let output = Command::new("sh")
+            .arg("-c")
+            .arg("umask 022 && exec \"$1\" --exact server::tests::test_replace_workflow_file_preserves_0600_under_umask_022_subprocess --nocapture")
+            .arg("sh")
+            .arg(&exe)
+            .env(CHILD_ENV, "1")
+            .output()
+            .expect("spawn sh child with umask 022");
+        assert!(
+            output.status.success(),
+            "umask 022 child failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }

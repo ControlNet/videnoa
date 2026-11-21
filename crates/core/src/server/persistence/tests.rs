@@ -229,3 +229,83 @@ fn staged_file_records_persist_across_running_reconciliation_until_cleared() -> 
     assert!(reopened.list_staged_files()?.is_empty());
     Ok(())
 }
+
+#[test]
+fn record_cancel_request_and_non_terminal_update_never_clobber_terminal_or_prior_cancel(
+) -> Result<()> {
+    let dir = TempDir::new()?;
+    let persistence = JobsPersistence::new(dir.path())?;
+
+    let mut active = job("active-job", JobStatus::Running);
+    active.started_at = Some(Utc::now() - chrono::Duration::seconds(5));
+    persistence.upsert_job(&active)?;
+
+    let user_cancel = CancelRequest {
+        requested_at: Utc::now() - chrono::Duration::seconds(2),
+        reason: CancelReason::User,
+    };
+    assert!(persistence.record_cancel_request("active-job", &user_cancel)?);
+
+    // A later shutdown cancel request must not overwrite the user's cancel reason.
+    let shutdown_cancel = CancelRequest {
+        requested_at: Utc::now(),
+        reason: CancelReason::Shutdown,
+    };
+    assert!(!persistence.record_cancel_request("active-job", &shutdown_cancel)?);
+
+    // A completed job must ignore both record_cancel_request and stale non-terminal update_job.
+    let mut completed = job("completed-job", JobStatus::Completed);
+    completed.started_at = Some(Utc::now() - chrono::Duration::seconds(10));
+    completed.completed_at = Some(Utc::now() - chrono::Duration::seconds(1));
+    persistence.upsert_job(&completed)?;
+
+    assert!(!persistence.record_cancel_request("completed-job", &user_cancel)?);
+    let mut stale_running = job("completed-job", JobStatus::Running);
+    stale_running.cancel_request = Some(user_cancel);
+    persistence.update_job(&stale_running)?;
+
+    let (restored, interrupted) =
+        JobsPersistence::new(dir.path())?.load_jobs_for_startup_with_interrupted()?;
+    assert_eq!(interrupted, vec!["active-job".to_owned()]);
+    let restored_active = restored.iter().find(|j| j.id == "active-job").unwrap();
+    assert_eq!(restored_active.status, JobStatus::Cancelled);
+    assert_eq!(
+        restored_active.cancel_request.map(|r| r.reason),
+        Some(CancelReason::User)
+    );
+    let restored_completed = restored.iter().find(|j| j.id == "completed-job").unwrap();
+    assert_eq!(restored_completed.status, JobStatus::Completed);
+    assert!(restored_completed.cancel_request.is_none());
+    Ok(())
+}
+
+#[test]
+fn delete_job_cleans_up_staged_file_records_and_sidecar_for_target_job_only() -> Result<()> {
+    let dir = TempDir::new()?;
+    let persistence = JobsPersistence::new(dir.path())?;
+    persistence.upsert_job(&job("delete-me", JobStatus::Completed))?;
+    persistence.upsert_job(&job("keep-me", JobStatus::Running))?;
+
+    let deleted_staged = dir.path().join("media").join("deleted.mkv");
+    let kept_staged = dir.path().join("media").join("kept.mkv");
+    persistence.record_staged_file("delete-me", &deleted_staged)?;
+    persistence.record_staged_file("keep-me", &kept_staged)?;
+    persistence.write_pending_terminal_sidecar(&PendingTerminalTransition {
+        job_id: "delete-me".to_owned(),
+        status: JobStatus::Completed,
+        completed_at: Utc::now(),
+        error: None,
+        cancel_requested_at: None,
+        cancel_reason: None,
+    })?;
+
+    assert_eq!(persistence.delete_job("delete-me")?, 1);
+    assert!(!persistence
+        .pending_terminal_sidecar_path("delete-me")
+        .exists());
+    assert_eq!(
+        persistence.list_staged_files()?,
+        vec![("keep-me".to_owned(), kept_staged)]
+    );
+    Ok(())
+}
