@@ -32,11 +32,11 @@ const worker: Worker = {
   last_error: null,
 }
 
-function listApiClient() {
+function listApiClient(items: readonly Worker[] = [worker]) {
   const requests: Request[] = []
   const fetcher: typeof fetch = async (input, init) => {
     requests.push(new Request(input, init))
-    return Response.json({ items: [worker], total: 1 })
+    return Response.json({ items, total: items.length })
   }
   return { apiClient: createApiClient({ fetcher, onUnauthorized: () => undefined }), requests }
 }
@@ -83,5 +83,107 @@ describe("worker name resolution", () => {
 
     // Then: it is added rather than waiting for the next invalidation.
     await waitFor(() => expect(result.current.get(added.id)).toBe("render-west"))
+  })
+
+  it("keeps the final name and map identity when a batched rename returns to the original", async () => {
+    // Given: the loaded map with worker named render-east, captured by identity.
+    const { apiClient, requests } = listApiClient()
+    const { result, unmount } = renderHook(() => useWorkerNames(apiClient))
+    await waitFor(() => expect(result.current.get(worker.id)).toBe("render-east"))
+    const before = result.current
+
+    // When: a single batch renames the worker away and back to its original name.
+    await act(async () => {
+      appWorkerUpdateStore.publish({ ...worker, version: 5, name: "render-north" })
+      appWorkerUpdateStore.publish({ ...worker, version: 6, name: "render-east" })
+    })
+
+    // Then: the final original name and map instance are preserved with no extra fetch.
+    expect(requests).toHaveLength(1)
+    expect(result.current.get(worker.id)).toBe("render-east")
+    expect(result.current).toBe(before)
+    unmount()
+  })
+
+  it("applies the final name when a batched rename settles on a different name", async () => {
+    // Given: the loaded map with worker named render-east.
+    const { apiClient, requests } = listApiClient()
+    const { result, unmount } = renderHook(() => useWorkerNames(apiClient))
+    await waitFor(() => expect(result.current.get(worker.id)).toBe("render-east"))
+    const before = result.current
+
+    // When: a single batch renames the worker twice to a distinct final name.
+    await act(async () => {
+      appWorkerUpdateStore.publish({ ...worker, version: 5, name: "render-north" })
+      appWorkerUpdateStore.publish({ ...worker, version: 6, name: "render-south" })
+    })
+
+    // Then: the map updates to the latest name in the batch without refetching.
+    expect(requests).toHaveLength(1)
+    expect(result.current.get(worker.id)).toBe("render-south")
+    expect(result.current).not.toBe(before)
+    unmount()
+  })
+
+  it("applies multi-worker batched updates across round-trip, renamed, and added workers", async () => {
+    // Given: two initially listed workers.
+    const secondWorker: Worker = {
+      ...worker,
+      id: "550e8400-e29b-41d4-a716-446655440001",
+      name: "render-west",
+    }
+    const addedWorker: Worker = {
+      ...worker,
+      id: "550e8400-e29b-41d4-a716-446655440002",
+      name: "render-staging",
+    }
+    const { apiClient, requests } = listApiClient([worker, secondWorker])
+    const { result, unmount } = renderHook(() => useWorkerNames(apiClient))
+    await waitFor(() => expect(result.current.size).toBe(2))
+    const before = result.current
+
+    // When: one batch round-trips the first worker, renames the second, and registers a third twice.
+    await act(async () => {
+      appWorkerUpdateStore.publish({ ...worker, version: 5, name: "render-north" })
+      appWorkerUpdateStore.publish({ ...secondWorker, version: 5, name: "render-central" })
+      appWorkerUpdateStore.publish({ ...addedWorker, version: 1, name: "render-staging" })
+      appWorkerUpdateStore.publish({ ...worker, version: 6, name: "render-east" })
+      appWorkerUpdateStore.publish({ ...addedWorker, version: 2, name: "render-south" })
+    })
+
+    // Then: each worker resolves to its final name in the batch without another fetch.
+    expect(requests).toHaveLength(1)
+    expect(result.current).not.toBe(before)
+    expect(result.current.get(worker.id)).toBe("render-east")
+    expect(result.current.get(secondWorker.id)).toBe("render-central")
+    expect(result.current.get(addedWorker.id)).toBe("render-south")
+    unmount()
+  })
+
+  it("preserves map identity when a multi-worker batch produces no net name change", async () => {
+    // Given: two initially listed workers, captured by map identity.
+    const secondWorker: Worker = {
+      ...worker,
+      id: "550e8400-e29b-41d4-a716-446655440003",
+      name: "render-west",
+    }
+    const { apiClient, requests } = listApiClient([worker, secondWorker])
+    const { result, unmount } = renderHook(() => useWorkerNames(apiClient))
+    await waitFor(() => expect(result.current.size).toBe(2))
+    const before = result.current
+
+    // When: a batch round-trips one worker's name and updates the other's health only.
+    await act(async () => {
+      appWorkerUpdateStore.publish({ ...worker, version: 5, name: "render-north" })
+      appWorkerUpdateStore.publish({ ...secondWorker, version: 5, online: false })
+      appWorkerUpdateStore.publish({ ...worker, version: 6, name: "render-east" })
+    })
+
+    // Then: the identical map instance is retained and both names stay intact.
+    expect(requests).toHaveLength(1)
+    expect(result.current).toBe(before)
+    expect(result.current.get(worker.id)).toBe("render-east")
+    expect(result.current.get(secondWorker.id)).toBe("render-west")
+    unmount()
   })
 })

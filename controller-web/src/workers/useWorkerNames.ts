@@ -60,10 +60,18 @@ export function useWorkerNames(apiClient: ApiClient): ReadonlyMap<string, string
     if (values.length === 0) return
     queueMicrotask(() => {
       setNames((current) => {
-        const changed = values.filter((incoming) => current.get(incoming.id) !== incoming.name)
-        if (changed.length === 0) return current
+        const latestByWorker = new Map<string, string>()
+        for (const incoming of values) latestByWorker.set(incoming.id, incoming.name)
+        let changed = false
+        for (const [id, name] of latestByWorker) {
+          if (!current.has(id) || current.get(id) !== name) {
+            changed = true
+            break
+          }
+        }
+        if (!changed) return current
         const next = new Map(current)
-        for (const incoming of changed) next.set(incoming.id, incoming.name)
+        for (const [id, name] of latestByWorker) next.set(id, name)
         return next
       })
     })
