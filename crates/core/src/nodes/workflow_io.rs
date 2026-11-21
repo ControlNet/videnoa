@@ -4,10 +4,10 @@
 //! WorkflowInput outputs injected params, WorkflowOutput collects results, and Workflow
 //! loads and executes a nested workflow with circular reference detection.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 
 use crate::executor::{port_data_from_json, SequentialExecutor};
 use crate::graph::PipelineGraph;
@@ -43,7 +43,7 @@ impl WorkflowInputNode {
         let ports = params
             .get("ports")
             .and_then(|v| v.as_array())
-            .map(|arr| parse_port_definitions(arr))
+            .map(|arr| parse_port_definitions(arr, true))
             .unwrap_or_default();
         let injected: HashMap<String, serde_json::Value> = params
             .iter()
@@ -145,7 +145,7 @@ impl WorkflowOutputNode {
         let ports = params
             .get("ports")
             .and_then(|v| v.as_array())
-            .map(|arr| parse_port_definitions(arr))
+            .map(|arr| parse_port_definitions(arr, false))
             .unwrap_or_default();
         Self { ports }
     }
@@ -219,13 +219,13 @@ impl WorkflowNode {
         let interface_inputs = params
             .get("interface_inputs")
             .and_then(|v| v.as_array())
-            .map(|arr| parse_port_definitions(arr))
+            .map(|arr| parse_workflow_interface_inputs(&workflow_path, arr))
             .unwrap_or_default();
 
         let interface_outputs = params
             .get("interface_outputs")
             .and_then(|v| v.as_array())
-            .map(|arr| parse_port_definitions(arr))
+            .map(|arr| parse_port_definitions(arr, false))
             .unwrap_or_default();
 
         Self {
@@ -303,6 +303,7 @@ impl Node for WorkflowNode {
             nesting_depth: ctx.nesting_depth + 1,
             cancellation: ctx.cancellation.clone(),
             scratch: ctx.scratch.clone(),
+            staged_output_hook: ctx.staged_output_hook.clone(),
             ..ExecutionContext::default()
         };
         inner_ctx.executing_workflows.insert(path);
@@ -363,25 +364,26 @@ fn load_nested_workflow(workflow_path: &str) -> Result<PipelineGraph> {
 
 /// Check, before a job is queued, that a `Workflow` node with these params can
 /// run its target: the target must load, must not nest itself, must pass the
-/// same graph checks as a job, and neither it nor a workflow it nests may have
-/// a VideoFrames chain. Nested workflows run on the scalar executor, which
-/// cannot stream frames.
+/// same graph checks as a job, must match the caller's declared input/output
+/// interface, and neither it nor a workflow it nests may have a VideoFrames
+/// chain. Nested workflows run on the scalar executor, which cannot stream
+/// frames.
 pub(crate) fn validate_nested_workflow(
     params: &HashMap<String, serde_json::Value>,
     registry: &NodeRegistry,
 ) -> Result<()> {
-    let workflow_path = params
-        .get("workflow_path")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default();
-    check_nested_workflow(workflow_path, registry, &mut Vec::new())
+    check_nested_workflow(params, registry, &mut Vec::new())
 }
 
 fn check_nested_workflow(
-    workflow_path: &str,
+    caller_params: &HashMap<String, serde_json::Value>,
     registry: &NodeRegistry,
     chain: &mut Vec<PathBuf>,
 ) -> Result<()> {
+    let workflow_path = caller_params
+        .get("workflow_path")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
     if workflow_path.is_empty() {
         bail!("Workflow node: workflow_path is empty");
     }
@@ -405,17 +407,199 @@ fn check_nested_workflow(
         .validate_own_nodes(registry)
         .with_context(|| format!("Workflow node: invalid graph in '{workflow_path}'"))?;
 
+    validate_nested_interface(workflow_path, caller_params, &graph)?;
+
     chain.push(path);
     for node in graph.nodes().filter(|node| node.node_type == "Workflow") {
-        let nested_path = node
-            .params
-            .get("workflow_path")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
-        check_nested_workflow(nested_path, registry, chain)
+        check_nested_workflow(&node.params, registry, chain)
             .with_context(|| format!("in node '{}' of '{workflow_path}'", node.id))?;
     }
     chain.pop();
+    Ok(())
+}
+
+struct InnerInputSpec {
+    name: String,
+    port_type: PortType,
+    needs_caller_value: bool,
+}
+
+/// Verify that a `Workflow` node's declared `interface_inputs`,
+/// `interface_outputs`, and node-level parameter values match the inner
+/// workflow's `WorkflowInput` and `WorkflowOutput` nodes.
+fn validate_nested_interface(
+    workflow_path: &str,
+    caller_params: &HashMap<String, serde_json::Value>,
+    graph: &PipelineGraph,
+) -> Result<()> {
+    let interface_inputs = parse_port_definitions_strict(caller_params, "interface_inputs", true)?;
+    let interface_outputs =
+        parse_port_definitions_strict(caller_params, "interface_outputs", false)?;
+
+    for caller_in in &interface_inputs {
+        if let Some(param_val) = caller_params.get(&caller_in.name) {
+            port_data_from_json(&caller_in.port_type, param_val).with_context(|| {
+                format!(
+                    "Workflow node: invalid param value for interface input '{}'",
+                    caller_in.name
+                )
+            })?;
+        }
+    }
+
+    let mut inner_inputs: Vec<InnerInputSpec> = Vec::new();
+    let mut inner_input_indices: HashMap<String, usize> = HashMap::new();
+    let mut inner_outputs: HashMap<String, Vec<(PortType, bool)>> = HashMap::new();
+
+    for idx in graph.execution_order()? {
+        let instance = graph.node(idx);
+        if instance.node_type == "WorkflowInput" {
+            let ports = parse_port_definitions_strict(&instance.params, "ports", true)
+                .with_context(|| {
+                    format!(
+                        "in WorkflowInput node '{}' of '{workflow_path}'",
+                        instance.id
+                    )
+                })?;
+            for port in ports {
+                // Match `WorkflowInputNode::execute`: caller input overrides
+                // node-level `injected`, which overrides `port.default_value`
+                // without falling through if `injected` is present.
+                let has_inner_fallback = match instance.params.get(&port.name) {
+                    Some(injected_val) => {
+                        port_data_from_json(&port.port_type, injected_val).is_ok()
+                    }
+                    None => port.default_value.is_some(),
+                };
+                let needs_caller_value = !has_inner_fallback;
+
+                if let Some(&existing_idx) = inner_input_indices.get(&port.name) {
+                    let existing = &mut inner_inputs[existing_idx];
+                    if !existing.port_type.is_compatible(&port.port_type) {
+                        bail!(
+                            "Workflow node: '{workflow_path}' defines conflicting types ({:?} vs {:?}) \
+                             for WorkflowInput port '{}'",
+                            existing.port_type,
+                            port.port_type,
+                            port.name
+                        );
+                    }
+                    existing.needs_caller_value |= needs_caller_value;
+                } else {
+                    inner_input_indices.insert(port.name.clone(), inner_inputs.len());
+                    inner_inputs.push(InnerInputSpec {
+                        name: port.name,
+                        port_type: port.port_type,
+                        needs_caller_value,
+                    });
+                }
+            }
+        } else if instance.node_type == "WorkflowOutput" {
+            let ports = parse_port_definitions_strict(&instance.params, "ports", false)
+                .with_context(|| {
+                    format!(
+                        "in WorkflowOutput node '{}' of '{workflow_path}'",
+                        instance.id
+                    )
+                })?;
+            let connected: HashSet<&str> = graph
+                .connections_to(idx)
+                .into_iter()
+                .map(|(_, conn)| conn.target_port.as_str())
+                .collect();
+
+            for port in ports {
+                let is_connected = connected.contains(port.name.as_str());
+                if !is_connected {
+                    if let Some(param_val) = instance.params.get(&port.name) {
+                        port_data_from_json(&port.port_type, param_val).with_context(|| {
+                            format!(
+                                "in WorkflowOutput node '{}' of '{workflow_path}': invalid param for '{}'",
+                                instance.id, port.name
+                            )
+                        })?;
+                    }
+                }
+                let is_fed = is_connected
+                    || instance.params.contains_key(&port.name)
+                    || port.default_value.is_some();
+                inner_outputs
+                    .entry(port.name)
+                    .or_default()
+                    .push((port.port_type, is_fed));
+            }
+        }
+    }
+
+    for caller_in in &interface_inputs {
+        let Some(&spec_idx) = inner_input_indices.get(&caller_in.name) else {
+            bail!(
+                "Workflow node: interface input '{}' does not exist in '{workflow_path}'",
+                caller_in.name
+            );
+        };
+        let inner_in = &inner_inputs[spec_idx];
+        if !caller_in.port_type.is_compatible(&inner_in.port_type) {
+            bail!(
+                "Workflow node: interface input '{}' has type {:?}, expected {:?} from '{workflow_path}'",
+                caller_in.name,
+                caller_in.port_type,
+                inner_in.port_type
+            );
+        }
+    }
+
+    for inner_in in &inner_inputs {
+        if !inner_in.needs_caller_value {
+            continue;
+        }
+        let Some(caller_in) = interface_inputs.iter().find(|p| p.name == inner_in.name) else {
+            bail!(
+                "Workflow node: missing required interface input '{}' ({:?}) for '{workflow_path}'",
+                inner_in.name,
+                inner_in.port_type
+            );
+        };
+        let has_caller_param = caller_params.contains_key(&inner_in.name);
+        if !caller_in.required && caller_in.default_value.is_none() && !has_caller_param {
+            bail!(
+                "Workflow node: interface input '{}' is optional without a default, \
+                 but '{workflow_path}' requires it",
+                inner_in.name
+            );
+        }
+    }
+
+    for caller_out in &interface_outputs {
+        let Some(specs) = inner_outputs.get(&caller_out.name) else {
+            bail!(
+                "Workflow node: interface output '{}' does not exist in '{workflow_path}'",
+                caller_out.name
+            );
+        };
+        if specs.len() > 1 {
+            bail!(
+                "Workflow node: '{workflow_path}' has more than one WorkflowOutput for '{}'",
+                caller_out.name
+            );
+        }
+        let (ref inner_type, is_fed) = specs[0];
+        if !inner_type.is_compatible(&caller_out.port_type) {
+            bail!(
+                "Workflow node: interface output '{}' has type {:?}, expected {:?} from '{workflow_path}'",
+                caller_out.name,
+                caller_out.port_type,
+                inner_type
+            );
+        }
+        if !is_fed {
+            bail!(
+                "Workflow node: interface output '{}' is not connected in '{workflow_path}'",
+                caller_out.name
+            );
+        }
+    }
+
     Ok(())
 }
 
@@ -431,21 +615,195 @@ fn parse_port_type(s: &str) -> Option<PortType> {
     }
 }
 
-fn parse_port_definitions(arr: &[serde_json::Value]) -> Vec<PortDefinition> {
+fn parse_workflow_interface_inputs(
+    workflow_path: &str,
+    arr: &[serde_json::Value],
+) -> Vec<PortDefinition> {
+    let needs_inner_lookup = arr.iter().any(|item| {
+        matches!(item.get("required"), None | Some(serde_json::Value::Null))
+            && item.get("default_value").filter(|v| !v.is_null()).is_none()
+    });
+    let optional_inner_ports = if needs_inner_lookup {
+        inner_ports_with_fallback(workflow_path)
+    } else {
+        HashSet::new()
+    };
+
     arr.iter()
         .filter_map(|item| {
             let name = item.get("name")?.as_str()?.to_string();
+            if name.is_empty() {
+                return None;
+            }
             let type_str = item.get("port_type")?.as_str()?;
             let port_type = parse_port_type(type_str)?;
-            let default_value = item.get("default_value").cloned();
+            let default_value = item.get("default_value").filter(|v| !v.is_null()).cloned();
+            let required = match item.get("required") {
+                None | Some(serde_json::Value::Null) => {
+                    default_value.is_none() && !optional_inner_ports.contains(&name)
+                }
+                Some(v) => v.as_bool()?,
+            };
             Some(PortDefinition {
                 name,
                 port_type,
-                required: false,
+                required,
                 default_value,
             })
         })
         .collect()
+}
+
+/// Ports of the target workflow's `WorkflowInput` nodes whose every declaration
+/// already has a valid inner fallback (`injected` node param or `default_value`),
+/// inspected from the immediate file without recursion.
+fn inner_ports_with_fallback(workflow_path: &str) -> HashSet<String> {
+    if workflow_path.is_empty() {
+        return HashSet::new();
+    }
+    let Ok(graph) = load_nested_workflow(workflow_path) else {
+        return HashSet::new();
+    };
+
+    let mut fallback_status: HashMap<String, bool> = HashMap::new();
+    for instance in graph
+        .nodes()
+        .filter(|node| node.node_type == "WorkflowInput")
+    {
+        let Some(ports_arr) = instance.params.get("ports").and_then(|v| v.as_array()) else {
+            continue;
+        };
+        for item in ports_arr {
+            let Some(name) = item
+                .get("name")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+            else {
+                continue;
+            };
+            let Some(port_type) = item
+                .get("port_type")
+                .and_then(|v| v.as_str())
+                .and_then(parse_port_type)
+            else {
+                fallback_status.insert(name.to_string(), false);
+                continue;
+            };
+            let has_fallback = match instance.params.get(name) {
+                Some(injected_val) => port_data_from_json(&port_type, injected_val).is_ok(),
+                None => item
+                    .get("default_value")
+                    .filter(|v| !v.is_null())
+                    .is_some_and(|dv| port_data_from_json(&port_type, dv).is_ok()),
+            };
+            fallback_status
+                .entry(name.to_string())
+                .and_modify(|all_have_fallback| *all_have_fallback &= has_fallback)
+                .or_insert(has_fallback);
+        }
+    }
+
+    fallback_status
+        .into_iter()
+        .filter_map(|(name, all_have_fallback)| all_have_fallback.then_some(name))
+        .collect()
+}
+
+fn parse_port_definitions(
+    arr: &[serde_json::Value],
+    required_by_default: bool,
+) -> Vec<PortDefinition> {
+    arr.iter()
+        .filter_map(|item| {
+            let name = item.get("name")?.as_str()?.to_string();
+            if name.is_empty() {
+                return None;
+            }
+            let type_str = item.get("port_type")?.as_str()?;
+            let port_type = parse_port_type(type_str)?;
+            let default_value = item.get("default_value").filter(|v| !v.is_null()).cloned();
+            let required = match item.get("required") {
+                None | Some(serde_json::Value::Null) => {
+                    required_by_default && default_value.is_none()
+                }
+                Some(v) => v.as_bool()?,
+            };
+            Some(PortDefinition {
+                name,
+                port_type,
+                required,
+                default_value,
+            })
+        })
+        .collect()
+}
+
+fn parse_port_definitions_strict(
+    params: &HashMap<String, serde_json::Value>,
+    key: &str,
+    required_by_default: bool,
+) -> Result<Vec<PortDefinition>> {
+    let Some(raw) = params.get(key) else {
+        return Ok(Vec::new());
+    };
+    if raw.is_null() {
+        return Ok(Vec::new());
+    }
+    let arr = raw
+        .as_array()
+        .ok_or_else(|| anyhow!("Workflow node: '{key}' must be an array"))?;
+
+    let mut ports = Vec::with_capacity(arr.len());
+    let mut seen_names = HashSet::with_capacity(arr.len());
+
+    for (idx, item) in arr.iter().enumerate() {
+        let obj = item
+            .as_object()
+            .ok_or_else(|| anyhow!("Workflow node: '{key}[{idx}]' must be an object"))?;
+        let name = obj
+            .get("name")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                anyhow!("Workflow node: '{key}[{idx}]' must have a non-empty string 'name'")
+            })?
+            .to_string();
+        if !seen_names.insert(name.clone()) {
+            bail!("Workflow node: duplicate port '{name}' in '{key}'");
+        }
+        let type_str = obj
+            .get("port_type")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                anyhow!("Workflow node: port '{name}' in '{key}' must have a string 'port_type'")
+            })?;
+        let port_type = parse_port_type(type_str).ok_or_else(|| {
+            anyhow!(
+                "Workflow node: unsupported port_type '{type_str}' for port '{name}' in '{key}'"
+            )
+        })?;
+        let default_value = obj.get("default_value").filter(|v| !v.is_null()).cloned();
+        if let Some(ref dv) = default_value {
+            port_data_from_json(&port_type, dv).with_context(|| {
+                format!("Workflow node: invalid default_value for port '{name}' in '{key}'")
+            })?;
+        }
+        let required = match obj.get("required") {
+            None | Some(serde_json::Value::Null) => required_by_default && default_value.is_none(),
+            Some(serde_json::Value::Bool(b)) => *b,
+            Some(_) => {
+                bail!("Workflow node: 'required' for port '{name}' in '{key}' must be a boolean")
+            }
+        };
+        ports.push(PortDefinition {
+            name,
+            port_type,
+            required,
+            default_value,
+        });
+    }
+
+    Ok(ports)
 }
 
 fn clone_port_data(data: &PortData) -> PortData {
@@ -1259,5 +1617,143 @@ mod tests {
             "{circular:#}"
         );
         assert!(format!("{empty:#}").contains("workflow_path is empty"));
+    }
+
+    #[test]
+    fn validate_nested_workflow_rejects_unconnected_or_duplicate_inner_outputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = crate::registry::build_default_registry();
+
+        // Inner WorkflowOutput declares 'result' without any incoming connection or default.
+        let unconnected = dir.path().join("unconnected_out.json");
+        std::fs::write(
+            &unconnected,
+            serde_json::json!({
+                "nodes": [
+                    {"id": "wo", "node_type": "WorkflowOutput", "params": {
+                        "ports": [{"name": "result", "port_type": "Str"}]
+                    }}
+                ],
+                "connections": []
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let outer_unconnected: PipelineGraph = serde_json::from_value(serde_json::json!({
+            "nodes": [{
+                "id": "nested",
+                "node_type": "Workflow",
+                "params": {
+                    "workflow_path": unconnected,
+                    "interface_outputs": [{"name": "result", "port_type": "Str"}]
+                }
+            }],
+            "connections": []
+        }))
+        .unwrap();
+        let err = outer_unconnected.validate(&registry).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("interface output 'result' is not connected"),
+            "{err:#}"
+        );
+
+        // Two inner WorkflowOutput nodes both define 'result'.
+        let duplicate = dir.path().join("duplicate_out.json");
+        std::fs::write(
+            &duplicate,
+            serde_json::json!({
+                "nodes": [
+                    {"id": "c", "node_type": "Constant", "params": {"type": "Str", "value": "v"}},
+                    {"id": "wo1", "node_type": "WorkflowOutput", "params": {
+                        "ports": [{"name": "result", "port_type": "Str"}]
+                    }},
+                    {"id": "wo2", "node_type": "WorkflowOutput", "params": {
+                        "ports": [{"name": "result", "port_type": "Str"}]
+                    }}
+                ],
+                "connections": [
+                    {"from_node": "c", "from_port": "value", "to_node": "wo1", "to_port": "result", "port_type": "Str"},
+                    {"from_node": "c", "from_port": "value", "to_node": "wo2", "to_port": "result", "port_type": "Str"}
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let outer_duplicate: PipelineGraph = serde_json::from_value(serde_json::json!({
+            "nodes": [{
+                "id": "nested",
+                "node_type": "Workflow",
+                "params": {
+                    "workflow_path": duplicate,
+                    "interface_outputs": [{"name": "result", "port_type": "Str"}]
+                }
+            }],
+            "connections": []
+        }))
+        .unwrap();
+        let err = outer_duplicate.validate(&registry).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("more than one WorkflowOutput for 'result'"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn validate_nested_workflow_rejects_conflicting_inner_inputs_and_malformed_interface() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = crate::registry::build_default_registry();
+
+        let conflicting = dir.path().join("conflicting_in.json");
+        std::fs::write(
+            &conflicting,
+            serde_json::json!({
+                "nodes": [
+                    {"id": "wi1", "node_type": "WorkflowInput", "params": {
+                        "ports": [{"name": "x", "port_type": "Int", "default_value": 1}]
+                    }},
+                    {"id": "wi2", "node_type": "WorkflowInput", "params": {
+                        "ports": [{"name": "x", "port_type": "Str", "default_value": "a"}]
+                    }}
+                ],
+                "connections": []
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let outer_conflict: PipelineGraph = serde_json::from_value(serde_json::json!({
+            "nodes": [{
+                "id": "nested",
+                "node_type": "Workflow",
+                "params": {"workflow_path": conflicting}
+            }],
+            "connections": []
+        }))
+        .unwrap();
+        let err = outer_conflict.validate(&registry).unwrap_err();
+        assert!(format!("{err:#}").contains("conflicting types"), "{err:#}");
+
+        let empty_inner = dir.path().join("empty_inner.json");
+        std::fs::write(
+            &empty_inner,
+            serde_json::json!({"nodes": [], "connections": []}).to_string(),
+        )
+        .unwrap();
+        let bad_type: PipelineGraph = serde_json::from_value(serde_json::json!({
+            "nodes": [{
+                "id": "nested",
+                "node_type": "Workflow",
+                "params": {
+                    "workflow_path": empty_inner,
+                    "interface_outputs": [{"name": "frames", "port_type": "VideoFrames"}]
+                }
+            }],
+            "connections": []
+        }))
+        .unwrap();
+        let err = bad_type.validate(&registry).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("unsupported port_type 'VideoFrames'"),
+            "{err:#}"
+        );
     }
 }

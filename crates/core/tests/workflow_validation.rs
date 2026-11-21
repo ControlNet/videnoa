@@ -247,3 +247,455 @@ async fn saved_workflow_records_its_schema_version() {
     .unwrap();
     assert_eq!(saved["workflow"]["schema_version"], json!(1), "{saved:#}");
 }
+
+/// Regression for Finding C: outer `Workflow` declares `interface_outputs: [declared]`,
+/// while inner `WorkflowOutput` only defines `actual`. Validation must reject up front.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn nested_interface_output_missing_from_inner_workflow_is_rejected() {
+    let dir = TempDir::new().unwrap();
+    let inner_path = dir.path().join("inner.json");
+    let inner = json!({
+        "nodes": [
+            {"id": "constant", "node_type": "Constant", "params": {"type": "Str", "value": "synthetic-review-value"}},
+            {"id": "out", "node_type": "WorkflowOutput", "params": {"ports": [{"name": "actual", "port_type": "Str", "required": true}]}}
+        ],
+        "connections": [
+            {"from_node": "constant", "from_port": "value", "to_node": "out", "to_port": "actual", "port_type": "Str"}
+        ]
+    });
+    std::fs::write(&inner_path, inner.to_string()).unwrap();
+
+    let outer = json!({
+        "nodes": [
+            {"id": "nested", "node_type": "Workflow", "params": {
+                "workflow_path": inner_path,
+                "interface_outputs": [{"name": "declared", "port_type": "Str", "required": true}]
+            }},
+            {"id": "out", "node_type": "WorkflowOutput", "params": {"ports": [{"name": "result", "port_type": "Str", "required": true}]}}
+        ],
+        "connections": [
+            {"from_node": "nested", "from_port": "declared", "to_node": "out", "to_port": "result", "port_type": "Str"}
+        ]
+    });
+
+    let graph: videnoa_core::graph::PipelineGraph = serde_json::from_value(outer.clone()).unwrap();
+    let registry = videnoa_core::registry::build_default_registry();
+    let err = graph
+        .validate(&registry)
+        .expect_err("mismatched nested interface output must fail validate()");
+    assert!(
+        format!("{err:#}").contains("interface output 'declared' does not exist"),
+        "{err:#}"
+    );
+
+    let app = app(&dir);
+    let (status, body) = request(&app, "POST", "/api/jobs", json!({"workflow": outer})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let message = body.to_string();
+    assert!(message.contains("node 'nested'"), "{message}");
+    assert!(message.contains("declared"), "{message}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn nested_interface_port_type_and_target_input_mismatches_are_rejected() {
+    let dir = TempDir::new().unwrap();
+    let inner_path = dir.path().join("typed_inner.json");
+    let inner = json!({
+        "nodes": [
+            {"id": "wi", "node_type": "WorkflowInput", "params": {
+                "ports": [{"name": "count", "port_type": "Int", "default_value": 1}]
+            }},
+            {"id": "to_str", "node_type": "TypeConversion", "params": {
+                "input_type": "Int", "output_type": "Str"
+            }},
+            {"id": "wo", "node_type": "WorkflowOutput", "params": {
+                "ports": [{"name": "label", "port_type": "Str"}]
+            }}
+        ],
+        "connections": [
+            {"from_node": "wi", "from_port": "count", "to_node": "to_str", "to_port": "value", "port_type": "Int"},
+            {"from_node": "to_str", "from_port": "value", "to_node": "wo", "to_port": "label", "port_type": "Str"}
+        ]
+    });
+    std::fs::write(&inner_path, inner.to_string()).unwrap();
+    let app = app(&dir);
+
+    // 1. Output PortType mismatch: inner produces Str, outer declares Int.
+    let wrong_output_type = json!({
+        "nodes": [
+            {"id": "nested", "node_type": "Workflow", "params": {
+                "workflow_path": inner_path,
+                "interface_outputs": [{"name": "label", "port_type": "Int"}]
+            }},
+            {"id": "wo", "node_type": "WorkflowOutput", "params": {
+                "ports": [{"name": "out", "port_type": "Int"}]
+            }}
+        ],
+        "connections": [
+            {"from_node": "nested", "from_port": "label", "to_node": "wo", "to_port": "out", "port_type": "Int"}
+        ]
+    });
+    let (status, body) = request(
+        &app,
+        "POST",
+        "/api/jobs",
+        json!({"workflow": wrong_output_type}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body.to_string()
+            .contains("interface output 'label' has type Int, expected Str"),
+        "{body}"
+    );
+
+    // 2. Input PortType mismatch: inner expects Int, outer declares Str.
+    let wrong_input_type = json!({
+        "nodes": [
+            {"id": "c", "node_type": "Constant", "params": {"type": "Str", "value": "seven"}},
+            {"id": "nested", "node_type": "Workflow", "params": {
+                "workflow_path": inner_path,
+                "interface_inputs": [{"name": "count", "port_type": "Str"}],
+                "interface_outputs": [{"name": "label", "port_type": "Str"}]
+            }}
+        ],
+        "connections": [
+            {"from_node": "c", "from_port": "value", "to_node": "nested", "to_port": "count", "port_type": "Str"}
+        ]
+    });
+    let (status, body) = request(
+        &app,
+        "POST",
+        "/api/jobs",
+        json!({"workflow": wrong_input_type}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body.to_string()
+            .contains("interface input 'count' has type Str, expected Int"),
+        "{body}"
+    );
+
+    // 3. Non-existent target input declared on outer Workflow node.
+    let ghost_input = json!({
+        "nodes": [
+            {"id": "c", "node_type": "Constant", "params": {"type": "Int", "value": 7}},
+            {"id": "nested", "node_type": "Workflow", "params": {
+                "workflow_path": inner_path,
+                "interface_inputs": [{"name": "nonexistent", "port_type": "Int"}],
+                "interface_outputs": [{"name": "label", "port_type": "Str"}]
+            }}
+        ],
+        "connections": [
+            {"from_node": "c", "from_port": "value", "to_node": "nested", "to_port": "nonexistent", "port_type": "Int"}
+        ]
+    });
+    let (status, body) = request(&app, "POST", "/api/jobs", json!({"workflow": ghost_input})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body.to_string()
+            .contains("interface input 'nonexistent' does not exist"),
+        "{body}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn nested_required_workflow_input_must_be_satisfied_at_submission() {
+    let dir = TempDir::new().unwrap();
+    let inner_path = dir.path().join("required_in.json");
+    let inner = json!({
+        "nodes": [
+            {"id": "wi", "node_type": "WorkflowInput", "params": {
+                "ports": [
+                    {"name": "required_text", "port_type": "Str"},
+                    {"name": "optional_suffix", "port_type": "Str", "default_value": "!"}
+                ]
+            }},
+            {"id": "tpl", "node_type": "StringTemplate", "params": {
+                "num_input": 2, "template": "{str0}{str1}", "strict": true
+            }},
+            {"id": "wo", "node_type": "WorkflowOutput", "params": {
+                "ports": [{"name": "out", "port_type": "Str"}]
+            }}
+        ],
+        "connections": [
+            {"from_node": "wi", "from_port": "required_text", "to_node": "tpl", "to_port": "str0", "port_type": "Str"},
+            {"from_node": "wi", "from_port": "optional_suffix", "to_node": "tpl", "to_port": "str1", "port_type": "Str"},
+            {"from_node": "tpl", "from_port": "value", "to_node": "wo", "to_port": "out", "port_type": "Str"}
+        ]
+    });
+    std::fs::write(&inner_path, inner.to_string()).unwrap();
+    let app = app(&dir);
+
+    // 1. Required inner input omitted from outer interface_inputs.
+    let omitted = json!({
+        "nodes": [{
+            "id": "nested",
+            "node_type": "Workflow",
+            "params": {
+                "workflow_path": inner_path,
+                "interface_inputs": [],
+                "interface_outputs": [{"name": "out", "port_type": "Str"}]
+            }
+        }],
+        "connections": []
+    });
+    let (status, body) = request(&app, "POST", "/api/jobs", json!({"workflow": omitted})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body.to_string()
+            .contains("missing required interface input 'required_text'"),
+        "{body}"
+    );
+
+    // 2. Required inner input marked optional without default on outer Workflow node.
+    let marked_optional = json!({
+        "nodes": [{
+            "id": "nested",
+            "node_type": "Workflow",
+            "params": {
+                "workflow_path": inner_path,
+                "interface_inputs": [{"name": "required_text", "port_type": "Str", "required": false}],
+                "interface_outputs": [{"name": "out", "port_type": "Str"}]
+            }
+        }],
+        "connections": []
+    });
+    let (status, body) = request(
+        &app,
+        "POST",
+        "/api/jobs",
+        json!({"workflow": marked_optional}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body.to_string()
+            .contains("interface input 'required_text' is optional without a default"),
+        "{body}"
+    );
+
+    // 3. Required inner input declared on outer Workflow node, but left unconnected without default/param.
+    let unconnected = json!({
+        "nodes": [{
+            "id": "nested",
+            "node_type": "Workflow",
+            "params": {
+                "workflow_path": inner_path,
+                "interface_inputs": [{"name": "required_text", "port_type": "Str"}],
+                "interface_outputs": [{"name": "out", "port_type": "Str"}]
+            }
+        }],
+        "connections": []
+    });
+    let (status, body) = request(&app, "POST", "/api/jobs", json!({"workflow": unconnected})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body.to_string()
+            .contains("node 'nested' missing required input port 'required_text'"),
+        "{body}"
+    );
+
+    // 4. Positive control: outer default_value satisfies required inner input, while inner default_value
+    // allows optional_suffix to be omitted from outer interface_inputs.
+    let satisfied = json!({
+        "nodes": [
+            {
+                "id": "nested",
+                "node_type": "Workflow",
+                "params": {
+                    "workflow_path": inner_path,
+                    "interface_inputs": [{
+                        "name": "required_text",
+                        "port_type": "Str",
+                        "required": false,
+                        "default_value": "hello"
+                    }],
+                    "interface_outputs": [{"name": "out", "port_type": "Str"}]
+                }
+            },
+            {
+                "id": "wo",
+                "node_type": "WorkflowOutput",
+                "params": {"ports": [{"name": "final", "port_type": "Str"}]}
+            }
+        ],
+        "connections": [
+            {"from_node": "nested", "from_port": "out", "to_node": "wo", "to_port": "final", "port_type": "Str"}
+        ]
+    });
+    let (status, created) =
+        request(&app, "POST", "/api/jobs", json!({"workflow": satisfied})).await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let job = terminal(&app, created["id"].as_str().unwrap()).await;
+    assert_eq!(job["status"], "completed", "{job:#}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn multi_level_nested_interface_mismatch_is_caught_at_outer_validate() {
+    let dir = TempDir::new().unwrap();
+    let path_c = dir.path().join("level_c.json");
+    let path_b = dir.path().join("level_b.json");
+
+    // Level C: valid standalone workflow producing 'actual_c' (Str) from 'x' (Int).
+    let workflow_c = json!({
+        "nodes": [
+            {"id": "wi", "node_type": "WorkflowInput", "params": {
+                "ports": [{"name": "x", "port_type": "Int"}]
+            }},
+            {"id": "conv", "node_type": "TypeConversion", "params": {
+                "input_type": "Int", "output_type": "Str"
+            }},
+            {"id": "wo", "node_type": "WorkflowOutput", "params": {
+                "ports": [{"name": "actual_c", "port_type": "Str"}]
+            }}
+        ],
+        "connections": [
+            {"from_node": "wi", "from_port": "x", "to_node": "conv", "to_port": "value", "port_type": "Int"},
+            {"from_node": "conv", "from_port": "value", "to_node": "wo", "to_port": "actual_c", "port_type": "Str"}
+        ]
+    });
+    std::fs::write(&path_c, workflow_c.to_string()).unwrap();
+
+    // Level B: agrees with outer A on (x: Int -> y: Str), but misdeclares C's output as 'wrong_c'.
+    let workflow_b = json!({
+        "nodes": [
+            {"id": "wi", "node_type": "WorkflowInput", "params": {
+                "ports": [{"name": "x", "port_type": "Int"}]
+            }},
+            {"id": "call_c", "node_type": "Workflow", "params": {
+                "workflow_path": path_c,
+                "interface_inputs": [{"name": "x", "port_type": "Int"}],
+                "interface_outputs": [{"name": "wrong_c", "port_type": "Str"}]
+            }},
+            {"id": "wo", "node_type": "WorkflowOutput", "params": {
+                "ports": [{"name": "y", "port_type": "Str"}]
+            }}
+        ],
+        "connections": [
+            {"from_node": "wi", "from_port": "x", "to_node": "call_c", "to_port": "x", "port_type": "Int"},
+            {"from_node": "call_c", "from_port": "wrong_c", "to_node": "wo", "to_port": "y", "port_type": "Str"}
+        ]
+    });
+    std::fs::write(&path_b, workflow_b.to_string()).unwrap();
+
+    // Level A: outer workflow calling B with matching (x: Int -> y: Str).
+    let workflow_a = json!({
+        "nodes": [
+            {"id": "c", "node_type": "Constant", "params": {"type": "Int", "value": 42}},
+            {"id": "call_b", "node_type": "Workflow", "params": {
+                "workflow_path": path_b,
+                "interface_inputs": [{"name": "x", "port_type": "Int"}],
+                "interface_outputs": [{"name": "y", "port_type": "Str"}]
+            }},
+            {"id": "wo", "node_type": "WorkflowOutput", "params": {
+                "ports": [{"name": "result", "port_type": "Str"}]
+            }}
+        ],
+        "connections": [
+            {"from_node": "c", "from_port": "value", "to_node": "call_b", "to_port": "x", "port_type": "Int"},
+            {"from_node": "call_b", "from_port": "y", "to_node": "wo", "to_port": "result", "port_type": "Str"}
+        ]
+    });
+
+    let graph: videnoa_core::graph::PipelineGraph =
+        serde_json::from_value(workflow_a.clone()).unwrap();
+    let registry = videnoa_core::registry::build_default_registry();
+    let err = graph
+        .validate(&registry)
+        .expect_err("A -> B -> C deep mismatch must be caught at A.validate()");
+    let full = format!("{err:#}");
+    assert!(full.contains("in node 'call_c'"), "{full}");
+    assert!(
+        full.contains("interface output 'wrong_c' does not exist"),
+        "{full}"
+    );
+
+    let app = app(&dir);
+    let (status, body) = request(&app, "POST", "/api/jobs", json!({"workflow": workflow_a})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.to_string().contains("wrong_c"), "{body}");
+}
+
+/// When outer `Workflow` declares `interface_inputs: [{"name": "x", "port_type": "Int"}]`
+/// without copying `default_value` and without an explicit `"required"` key (as the
+/// web editor exports for injected `WorkflowInput` params), leaving `x` unconnected
+/// must succeed whenever inner `WorkflowInput` provides either a `default_value`
+/// or an injected node param.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unconnected_interface_input_with_inner_default_or_injected_param_runs() {
+    let dir = TempDir::new().unwrap();
+    let app = app(&dir);
+
+    let inner_with_default = dir.path().join("inner_default.json");
+    std::fs::write(
+        &inner_with_default,
+        json!({
+            "nodes": [
+                {"id": "wi", "node_type": "WorkflowInput", "params": {
+                    "ports": [{"name": "x", "port_type": "Int", "default_value": 10}]
+                }},
+                {"id": "wo", "node_type": "WorkflowOutput", "params": {
+                    "ports": [{"name": "x", "port_type": "Int"}]
+                }}
+            ],
+            "connections": [
+                {"from_node": "wi", "from_port": "x", "to_node": "wo", "to_port": "x", "port_type": "Int"}
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let inner_with_injected = dir.path().join("inner_injected.json");
+    std::fs::write(
+        &inner_with_injected,
+        json!({
+            "nodes": [
+                {"id": "wi", "node_type": "WorkflowInput", "params": {
+                    "ports": [{"name": "x", "port_type": "Int"}],
+                    "x": 10
+                }},
+                {"id": "wo", "node_type": "WorkflowOutput", "params": {
+                    "ports": [{"name": "x", "port_type": "Int"}]
+                }}
+            ],
+            "connections": [
+                {"from_node": "wi", "from_port": "x", "to_node": "wo", "to_port": "x", "port_type": "Int"}
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    for inner_path in [&inner_with_default, &inner_with_injected] {
+        let outer = json!({
+            "nodes": [
+                {
+                    "id": "nested",
+                    "node_type": "Workflow",
+                    "params": {
+                        "workflow_path": inner_path,
+                        "interface_inputs": [{"name": "x", "port_type": "Int"}],
+                        "interface_outputs": [{"name": "x", "port_type": "Int"}]
+                    }
+                },
+                {
+                    "id": "wo",
+                    "node_type": "WorkflowOutput",
+                    "params": {"ports": [{"name": "result", "port_type": "Int"}]}
+                }
+            ],
+            "connections": [
+                {"from_node": "nested", "from_port": "x", "to_node": "wo", "to_port": "result", "port_type": "Int"}
+            ]
+        });
+
+        let (status, created) =
+            request(&app, "POST", "/api/jobs", json!({"workflow": outer})).await;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        let job = terminal(&app, created["id"].as_str().unwrap()).await;
+        assert_eq!(job["status"], "completed", "{job:#}");
+    }
+}
