@@ -149,6 +149,74 @@ describe("task detail refresh window", () => {
     await waitFor(() => expect(requestsFor(requests, taskAId, 0)).toHaveLength(2))
     expect(findRequest(requests, taskAId, 0).url.searchParams.get("limit")).toBe("100")
   })
+
+  it("preserves an in-flight loadMore across same-task SSE progress refreshes", async () => {
+    const { apiClient, requests } = controlledApiClient()
+    const total = 250
+    const originalTask = task(taskAId, "/media/task-a.mkv", 1)
+    const updatedTask = task(taskAId, "/media/task-a.mkv", 2)
+    const history = Array.from({ length: total }, (_, index) => attempt(originalTask, total - index))
+    const { result } = renderHook(() => useTaskDetail(apiClient, taskAId))
+    await respondTo(requests, taskAId, 0, detail(originalTask, history.slice(0, 100), total))
+    await waitFor(() => expect(result.current.detail?.attempts).toHaveLength(100))
+
+    // Start loading page 2 while 1 Hz progress SSE arrives for the same task.
+    act(() => result.current.loadMore())
+    await waitFor(() => expect(requestsFor(requests, taskAId, 100)).toHaveLength(1))
+    const page2Request = findRequest(requests, taskAId, 100)
+
+    act(() => appTaskUpdateStore.publish(updatedTask))
+    await waitFor(() => expect(requestsFor(requests, taskAId, 0)).toHaveLength(2))
+    expect(page2Request.signal.aborted).toBe(false)
+
+    // Refresh completes with updated task version and same head attempts; page 2 stays alive.
+    await act(async () => {
+      findRequest(requests, taskAId, 0).respond(detail(updatedTask, history.slice(0, 100), total))
+      await Promise.resolve()
+    })
+    await waitFor(() => expect(result.current.detail?.task.version).toBe(2))
+    expect(page2Request.signal.aborted).toBe(false)
+    expect(result.current.loadingMore).toBe(true)
+
+    // Page 2 completes and merges onto the refreshed version 2 detail.
+    await act(async () => {
+      page2Request.respond(detail(originalTask, history.slice(100, 200), total, 100))
+      await Promise.resolve()
+    })
+    await waitFor(() => expect(result.current.loadingMore).toBe(false))
+    expect(result.current.detail?.task.version).toBe(2)
+    expect(result.current.detail?.attempts.map(({ id }) => id)).toEqual(history.slice(0, 200).map(({ id }) => id))
+  })
+
+  it("retains loadMore attempts when loadMore resolves before an in-flight SSE refresh", async () => {
+    const { apiClient, requests } = controlledApiClient()
+    const total = 250
+    const originalTask = task(taskAId, "/media/task-a.mkv", 1)
+    const updatedTask = task(taskAId, "/media/task-a.mkv", 2)
+    const history = Array.from({ length: total }, (_, index) => attempt(originalTask, total - index))
+    const { result } = renderHook(() => useTaskDetail(apiClient, taskAId))
+    await respondTo(requests, taskAId, 0, detail(originalTask, history.slice(0, 100), total))
+    await waitFor(() => expect(result.current.detail?.attempts).toHaveLength(100))
+
+    act(() => result.current.loadMore())
+    await waitFor(() => expect(requestsFor(requests, taskAId, 100)).toHaveLength(1))
+    act(() => appTaskUpdateStore.publish(updatedTask))
+    await waitFor(() => expect(requestsFor(requests, taskAId, 0)).toHaveLength(2))
+
+    // loadMore finishes first, then the offset=0 refresh (which only asked for 100) finishes.
+    await act(async () => {
+      findRequest(requests, taskAId, 100).respond(detail(originalTask, history.slice(100, 200), total, 100))
+      await Promise.resolve()
+    })
+    await waitFor(() => expect(result.current.detail?.attempts).toHaveLength(200))
+
+    await act(async () => {
+      findRequest(requests, taskAId, 0).respond(detail(updatedTask, history.slice(0, 100), total))
+      await Promise.resolve()
+    })
+    await waitFor(() => expect(result.current.detail?.task.version).toBe(2))
+    expect(result.current.detail?.attempts.map(({ id }) => id)).toEqual(history.slice(0, 200).map(({ id }) => id))
+  })
 })
 
 function controlledApiClient() {

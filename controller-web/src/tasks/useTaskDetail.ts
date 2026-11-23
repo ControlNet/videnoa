@@ -17,8 +17,9 @@ type DetailOwner = {
 
 type HistoryRequest = {
   readonly controller: AbortController
-  readonly owner: DetailOwner
+  readonly taskId: string
   readonly offset: number
+  readonly headAttemptId: string | null
 }
 
 export type TaskDetailData = {
@@ -80,28 +81,43 @@ export function useTaskDetail(apiClient: ApiClient, taskId: string): TaskDetailD
   const ownsHistoryRequest = useCallback((request: HistoryRequest): boolean => {
     return historyRequestRef.current === request
       && !request.controller.signal.aborted
-      && selectedTaskId.current === request.owner.taskId
-      && generationRef.current === request.owner.generation
+      && selectedTaskId.current === request.taskId
   }, [])
   const reload = useCallback(() => {
     cancelHistoryRequest()
     generationRef.current += 1
     setGeneration(generationRef.current)
   }, [cancelHistoryRequest])
+  const refreshSameTask = useCallback(() => {
+    generationRef.current += 1
+    setGeneration(generationRef.current)
+  }, [])
   const loadMore = useCallback(() => {
     const current = detailRef.current
     const owner = detailOwnerRef.current
     if (current === null || owner === null || selectedTaskId.current !== owner.taskId || generationRef.current !== owner.generation) return
     const offset = current.attempts.length
     if (historyRequestRef.current !== null || offset >= current.total) return
-    const request = { controller: new AbortController(), owner, offset } satisfies HistoryRequest
+    const headAttemptId = current.attempts[0]?.id ?? null
+    const request = { controller: new AbortController(), taskId: owner.taskId, offset, headAttemptId } satisfies HistoryRequest
     historyRequestRef.current = request
     setLoadingMore(true)
-    void apiClient.request(`api/tasks/${owner.taskId}?limit=${attemptPageSize}&offset=${offset}`, { schema: taskDetailSchema, signal: request.controller.signal }).then(
+    void apiClient.request(`api/tasks/${request.taskId}?limit=${attemptPageSize}&offset=${offset}`, { schema: taskDetailSchema, signal: request.controller.signal }).then(
       (value) => {
-        if (!ownsHistoryRequest(request) || value.task.id !== owner.taskId || value.offset !== offset) return
+        if (!ownsHistoryRequest(request)) return
         const activeDetail = detailRef.current
-        if (activeDetail === null || activeDetail.task.id !== owner.taskId || activeDetail.attempts.length !== offset) return
+        if (
+          value.task.id !== request.taskId
+          || value.offset !== offset
+          || activeDetail === null
+          || activeDetail.task.id !== request.taskId
+          || activeDetail.attempts.length !== offset
+          || (activeDetail.attempts[0]?.id ?? null) !== request.headAttemptId
+        ) {
+          historyRequestRef.current = null
+          setLoadingMore(false)
+          return
+        }
         const attemptIds = new Set(activeDetail.attempts.map((attempt) => attempt.id))
         const appended = value.attempts.filter((attempt) => !attemptIds.has(attempt.id))
         const attempts = [...activeDetail.attempts, ...appended].slice(0, value.total)
@@ -132,6 +148,12 @@ export function useTaskDetail(apiClient: ApiClient, taskId: string): TaskDetailD
   }, [apiClient, ownsHistoryRequest])
 
   useEffect(() => {
+    return () => {
+      abortHistoryRequest()
+    }
+  }, [abortHistoryRequest, taskId])
+
+  useEffect(() => {
     const owner = { taskId, generation } satisfies DetailOwner
     const controller = new AbortController()
     /*
@@ -150,13 +172,13 @@ export function useTaskDetail(apiClient: ApiClient, taskId: string): TaskDetailD
     if (isSelectionChange) {
       detailRef.current = null
       detailOwnerRef.current = null
+      abortHistoryRequest()
     }
-    abortHistoryRequest()
     queueMicrotask(() => {
       if (controller.signal.aborted || selectedTaskId.current !== owner.taskId || generationRef.current !== owner.generation) return
       setError(null)
-      setLoadingMore(false)
       if (isSelectionChange) {
+        setLoadingMore(false)
         setDetail(null)
         setLoading(true)
       }
@@ -166,14 +188,28 @@ export function useTaskDetail(apiClient: ApiClient, taskId: string): TaskDetailD
      * page: re-requesting the default page collapsed an expanded history back to
      * 100 attempts on every update.
      */
-    const retained = isSelectionChange ? null : detailRef.current
-    const limit = Math.min(Math.max(retained?.attempts.length ?? attemptPageSize, attemptPageSize), attemptPageMaximum)
+    const retainedAtStart = isSelectionChange ? null : detailRef.current
+    const limit = Math.min(Math.max(retainedAtStart?.attempts.length ?? attemptPageSize, attemptPageSize), attemptPageMaximum)
     void apiClient.request(`api/tasks/${owner.taskId}?limit=${limit}&offset=0`, { schema: taskDetailSchema, signal: controller.signal }).then(
       (value) => {
         if (controller.signal.aborted || selectedTaskId.current !== owner.taskId || generationRef.current !== owner.generation) return
-        const next = withRetainedAttempts(value, retained)
+        const currentRetained = isSelectionChange ? null : detailRef.current
+        const next = withRetainedAttempts(value, currentRetained)
         detailRef.current = next
         detailOwnerRef.current = owner
+        const pendingHistory = historyRequestRef.current
+        if (
+          pendingHistory !== null
+          && (
+            pendingHistory.taskId !== next.task.id
+            || next.attempts.length !== pendingHistory.offset
+            || next.attempts.length >= next.total
+            || (next.attempts[0]?.id ?? null) !== pendingHistory.headAttemptId
+          )
+        ) {
+          abortHistoryRequest()
+          setLoadingMore(false)
+        }
         setDetail(next)
         setLoading(false)
       },
@@ -189,7 +225,6 @@ export function useTaskDetail(apiClient: ApiClient, taskId: string): TaskDetailD
     )
     return () => {
       controller.abort()
-      abortHistoryRequest()
     }
   }, [abortHistoryRequest, apiClient, generation, taskId])
 
@@ -204,8 +239,12 @@ export function useTaskDetail(apiClient: ApiClient, taskId: string): TaskDetailD
     if (update.generation <= applied) return
     appliedGeneration.current = update.generation
     const { values, complete } = deltasSince(update.recent, applied)
-    if (!complete || values.some((task) => task.id === taskId)) queueMicrotask(reload)
-  }, [reload, taskId, update.generation, update.recent])
+    if (!complete) {
+      queueMicrotask(reload)
+    } else if (values.some((task) => task.id === taskId)) {
+      queueMicrotask(refreshSameTask)
+    }
+  }, [refreshSameTask, reload, taskId, update.generation, update.recent])
 
   return { detail, error, loading, loadingMore, loadMore, reload }
 }

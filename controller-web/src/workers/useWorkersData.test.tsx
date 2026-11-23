@@ -2,8 +2,10 @@ import { act, renderHook, waitFor } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
 import { createApiClient } from "../api/client"
+import type { Task } from "../api/taskSchemas"
 import type { Worker } from "../api/workerSchemas"
 import { appInvalidationStore } from "../events/store"
+import { appTaskUpdateStore } from "../events/taskUpdates"
 import { appWorkerUpdateStore } from "../events/workerUpdates"
 import { useWorkersData } from "./useWorkersData"
 
@@ -158,5 +160,104 @@ describe("worker data requests", () => {
 
     // Then: retained history causes no duplicate fetch, while the new generation does.
     await waitFor(() => expect(reads).toBe(2))
+  })
+
+  it("coalesces task updates while GET /api/workers is in flight without aborting it", async () => {
+    const pending: Array<{ readonly signal: AbortSignal; readonly resolve: (body: unknown) => void }> = []
+    const fetcher: typeof fetch = (_input, init) => {
+      const signal = init?.signal ?? new AbortController().signal
+      return new Promise<Response>((resolve) => {
+        pending.push({ signal, resolve: (body) => resolve(Response.json(body)) })
+      })
+    }
+    const apiClient = createApiClient({ fetcher, onUnauthorized: () => undefined })
+    const { result } = renderHook(() => useWorkersData(apiClient))
+    await waitFor(() => expect(pending).toHaveLength(1))
+
+    // Burst of task progress events while initial GET /api/workers is still pending.
+    const sampleTask: Task = {
+      id: "00000000-0000-4000-8000-000000000091",
+      version: 1,
+      status: "processing",
+      input_path: "/media/a.mkv",
+      output_path: "/output/a.mp4",
+      input_extension: "mkv",
+      output_extension: "mp4",
+      workflow: "anime-2x",
+      priority: 0,
+      source: "manual",
+      source_reference: null,
+      input_size: 1024,
+      worker_id: worker.id,
+      requested_worker_id: null,
+      remote_job_id: null,
+      progress: {
+        percent: 25,
+        processed_frames: 25,
+        total_frames: 100,
+        frames_per_second: 12,
+        eta_seconds: 6,
+        bytes_transferred: null,
+        bytes_total: null,
+      },
+      attempt_count: 1,
+      failure: null,
+      cancel_requested_at: null,
+      created_at: "2030-01-01T00:00:00Z",
+      updated_at: "2030-01-01T00:01:00Z",
+      completed_at: null,
+      allowed_actions: [],
+    }
+    act(() => {
+      appTaskUpdateStore.publish({ ...sampleTask, version: 2 })
+      appTaskUpdateStore.publish({ ...sampleTask, version: 3 })
+      appTaskUpdateStore.publish({ ...sampleTask, version: 4 })
+    })
+
+    // First GET must not be aborted or starved by task events.
+    expect(pending).toHaveLength(1)
+    expect(pending[0]?.signal.aborted).toBe(false)
+
+    // Resolving the first GET renders the snapshot and triggers one trailing refresh.
+    await act(async () => {
+      pending[0]?.resolve({ items: [worker], total: 1 })
+      await Promise.resolve()
+    })
+    await waitFor(() => expect(result.current.workers?.items).toHaveLength(1))
+    await waitFor(() => expect(pending).toHaveLength(2))
+    expect(pending[1]?.signal.aborted).toBe(false)
+
+    const updatedWorker: Worker = {
+      ...worker,
+      capacity: { ...worker.capacity, used_slots: 3, available_slots: 1 },
+    }
+    await act(async () => {
+      pending[1]?.resolve({ items: [updatedWorker], total: 1 })
+      await Promise.resolve()
+    })
+    await waitFor(() => expect(result.current.workers?.items[0]?.capacity.used_slots).toBe(3))
+    expect(pending).toHaveLength(2)
+  })
+
+  it("replays worker deltas received while GET /api/workers is in flight", async () => {
+    const pending: Array<{ readonly resolve: (body: unknown) => void }> = []
+    const fetcher: typeof fetch = () => new Promise<Response>((resolve) => {
+      pending.push({ resolve: (body) => resolve(Response.json(body)) })
+    })
+    const apiClient = createApiClient({ fetcher, onUnauthorized: () => undefined })
+    const { result } = renderHook(() => useWorkersData(apiClient))
+    await waitFor(() => expect(pending).toHaveLength(1))
+
+    // A newer worker delta arrives while the GET snapshot (version 4) is still in flight.
+    act(() => appWorkerUpdateStore.publish({ ...worker, version: 5, online: false, last_error: "lost connection" }))
+    await act(async () => {
+      pending[0]?.resolve({ items: [worker], total: 1 })
+      await Promise.resolve()
+    })
+
+    await waitFor(() => expect(result.current.workers?.items[0]?.version).toBe(5))
+    expect(result.current.workers?.items[0]?.online).toBe(false)
+    expect(result.current.workers?.items[0]?.last_error).toBe("lost connection")
+    expect(pending).toHaveLength(1)
   })
 })

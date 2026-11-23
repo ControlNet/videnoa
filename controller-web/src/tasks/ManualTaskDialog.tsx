@@ -28,6 +28,7 @@ export function ManualTaskDialog({ apiClient, open, onClose, onCreated }: Manual
   const [serverError, setServerError] = useState<string | null>(null)
   const [intent, setIntent] = useState<SubmissionIntent | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const submittingRef = useRef(false)
 
   useEffect(() => {
     const dialog = dialogRef.current
@@ -39,7 +40,7 @@ export function ManualTaskDialog({ apiClient, open, onClose, onCreated }: Manual
   }, [open])
 
   function close(): void {
-    if (submitting) return
+    if (submittingRef.current || submitting) return
     setFields(emptyFields)
     setFieldErrors({})
     setServerError(null)
@@ -53,6 +54,7 @@ export function ManualTaskDialog({ apiClient, open, onClose, onCreated }: Manual
   }
 
   async function submit(): Promise<void> {
+    if (submittingRef.current) return
     const parsedPriority = Number(fields.priority)
     const errors: Partial<Record<keyof ManualTaskFields, string>> = {}
     if (fields.inputPath === "") errors.inputPath = "Enter the exact input path."
@@ -85,6 +87,7 @@ export function ManualTaskDialog({ apiClient, open, onClose, onCreated }: Manual
     }
     const nextIntent = beginSubmission(intent, body)
     setIntent(nextIntent)
+    submittingRef.current = true
     setSubmitting(true)
     setServerError(null)
     try {
@@ -116,6 +119,7 @@ export function ManualTaskDialog({ apiClient, open, onClose, onCreated }: Manual
         })
       }
     } finally {
+      submittingRef.current = false
       setSubmitting(false)
     }
   }

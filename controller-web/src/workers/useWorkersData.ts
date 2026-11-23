@@ -29,12 +29,36 @@ export type WorkersData = {
   readonly deleteWorker: (worker: Worker) => Promise<boolean>
 }
 
+type WorkerDeltaReconciliation =
+  | { readonly kind: "unchanged" }
+  | { readonly kind: "merged"; readonly list: WorkerList }
+  | { readonly kind: "refetch" }
+
+function reconcileWorkerDeltas(
+  list: WorkerList,
+  values: readonly Worker[],
+): WorkerDeltaReconciliation {
+  if (values.some((incoming) => !list.items.some((worker) => worker.id === incoming.id))) {
+    return { kind: "refetch" }
+  }
+  let items = list.items
+  for (const incoming of values) {
+    const latest = items.find((worker) => worker.id === incoming.id)
+    if (latest === undefined || incoming.version <= latest.version) continue
+    items = items.map((worker) => (worker.id === incoming.id ? incoming : worker))
+  }
+  if (items === list.items) return { kind: "unchanged" }
+  return { kind: "merged", list: { ...list, items } }
+}
+
 export function useWorkersData(apiClient: ApiClient): WorkersData {
   const invalidation = useSyncExternalStore(appInvalidationStore.subscribe, appInvalidationStore.snapshot)
   const update = useSyncExternalStore(appWorkerUpdateStore.subscribe, appWorkerUpdateStore.snapshot)
   const taskUpdate = useSyncExternalStore(appTaskUpdateStore.subscribe, appTaskUpdateStore.snapshot)
   const appliedUpdateGeneration = useRef(appWorkerUpdateStore.snapshot().generation)
   const appliedTaskGeneration = useRef(appTaskUpdateStore.snapshot().generation)
+  const inFlightRequest = useRef(true)
+  const pendingTaskRefresh = useRef(false)
   const [workers, setWorkers] = useState<WorkerList | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -46,6 +70,9 @@ export function useWorkersData(apiClient: ApiClient): WorkersData {
     void invalidation.generation
     void retryGeneration
     const controller = new AbortController()
+    const requestStartGeneration = appWorkerUpdateStore.snapshot().generation
+    inFlightRequest.current = true
+    pendingTaskRefresh.current = false
     queueMicrotask(() => {
       if (!controller.signal.aborted) {
         setLoading(true)
@@ -55,11 +82,38 @@ export function useWorkersData(apiClient: ApiClient): WorkersData {
     void apiClient.request("api/workers", { schema: workerListSchema, signal: controller.signal }).then(
       (nextWorkers) => {
         if (controller.signal.aborted) return
-        setWorkers(nextWorkers)
+        const latestUpdate = appWorkerUpdateStore.snapshot()
+        let resolvedWorkers = nextWorkers
+        if (latestUpdate.generation > requestStartGeneration) {
+          const { values, complete } = deltasSince(latestUpdate.recent, requestStartGeneration)
+          appliedUpdateGeneration.current = latestUpdate.generation
+          if (!complete) {
+            setRetryGeneration((generation) => generation + 1)
+            return
+          }
+          const reconciled = reconcileWorkerDeltas(nextWorkers, values)
+          if (reconciled.kind === "refetch") {
+            setRetryGeneration((generation) => generation + 1)
+            return
+          }
+          if (reconciled.kind === "merged") {
+            resolvedWorkers = reconciled.list
+          }
+        } else if (appliedUpdateGeneration.current < requestStartGeneration) {
+          appliedUpdateGeneration.current = requestStartGeneration
+        }
+        inFlightRequest.current = false
+        setWorkers(resolvedWorkers)
         setLoading(false)
+        if (pendingTaskRefresh.current) {
+          pendingTaskRefresh.current = false
+          setRetryGeneration((generation) => generation + 1)
+        }
       },
       (reason: unknown) => {
         if (controller.signal.aborted) return
+        inFlightRequest.current = false
+        pendingTaskRefresh.current = false
         if (!(reason instanceof ApiClientError)) throw reason
         setWorkers(null)
         setError(reason.code === "network_failure" ? "Controller could not be reached." : "Controller could not load workers.")
@@ -76,13 +130,17 @@ export function useWorkersData(apiClient: ApiClient): WorkersData {
    * takes one bounded refetch rather than a guessed position.
    */
   useEffect(() => {
+    // Defer deltas that arrive while a list GET is in flight: when that GET
+    // resolves, it replays everything since `requestStartGeneration` against the
+    // returned snapshot instead of letting the response overwrite newer versions.
+    if (loading || inFlightRequest.current) return
     const applied = appliedUpdateGeneration.current
     if (update.generation <= applied) return
     appliedUpdateGeneration.current = update.generation
     const { values, complete } = deltasSince(update.recent, applied)
     if (values.length === 0 && complete) return
     const refetch = () => queueMicrotask(() => setRetryGeneration((generation) => generation + 1))
-    if (!complete || workers === null || loading) {
+    if (!complete || workers === null) {
       refetch()
       return
     }
@@ -93,13 +151,8 @@ export function useWorkersData(apiClient: ApiClient): WorkersData {
     queueMicrotask(() => {
       setWorkers((previous) => {
         if (previous === null) return previous
-        let items = previous.items
-        for (const incoming of values) {
-          const latest = items.find((worker) => worker.id === incoming.id)
-          if (latest === undefined || incoming.version <= latest.version) continue
-          items = items.map((worker) => (worker.id === incoming.id ? incoming : worker))
-        }
-        return items === previous.items ? previous : { ...previous, items }
+        const reconciled = reconcileWorkerDeltas(previous, values)
+        return reconciled.kind === "merged" ? reconciled.list : previous
       })
     })
   }, [loading, update.generation, update.recent, workers])
@@ -110,16 +163,18 @@ export function useWorkersData(apiClient: ApiClient): WorkersData {
    * this table without changing any worker's version -- and no worker delta is
    * published for it. A task delta therefore takes one bounded list read.
    *
-   * That costs one request per task event while this route is mounted, roughly
-   * one a second per actively processing task. It is accepted deliberately:
-   * recomputing capacity here would duplicate the Controller's own counting,
-   * and an operator watching this table is watching it for these numbers. The
-   * read keeps the rendered list, so nothing blanks while it is in flight.
+   * Keep at most one refresh in flight and coalesce bursts into a single
+   * trailing read instead of aborting an in-flight GET on every progress tick,
+   * so continuous multi-worker task updates cannot starve the table.
    */
   useEffect(() => {
     if (taskUpdate.generation <= appliedTaskGeneration.current) return
     appliedTaskGeneration.current = taskUpdate.generation
     if (taskUpdate.task === null) return
+    if (inFlightRequest.current) {
+      pendingTaskRefresh.current = true
+      return
+    }
     queueMicrotask(() => setRetryGeneration((generation) => generation + 1))
   }, [taskUpdate.generation, taskUpdate.task])
 
