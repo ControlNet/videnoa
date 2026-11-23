@@ -190,6 +190,19 @@ fn pending_terminal_sidecar_is_replayed_before_running_jobs_are_cancelled() -> R
     assert!(persistence
         .pending_terminal_sidecar_path("sidecar-completed")
         .exists());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode =
+            std::fs::metadata(persistence.pending_terminal_sidecar_path("sidecar-completed"))?
+                .permissions()
+                .mode()
+                & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "pending terminal sidecar must keep owner-only permissions (0600)"
+        );
+    }
     drop(persistence);
 
     let reopened = JobsPersistence::new(dir.path())?;

@@ -2740,6 +2740,7 @@ async fn get_job_by_idempotency_key(
     Path(key): Path<String>,
 ) -> Result<Json<CreateJobResponse>, AppError> {
     let key = IdempotencyKey::parse(&key).map_err(|_| AppError::InvalidIdempotencyKey)?;
+    let _key_guard = state.lock_idempotency_key(key.as_str()).await;
     jobs_persistence(&state)?
         .idempotent_job(key.as_str())
         .map_err(|error| {
@@ -3019,7 +3020,7 @@ async fn inspect_model(
 /// same live lookup `/api/run` resolves preset names against, so the list
 /// cannot drift from what runs after `presets_dir` changes.
 async fn list_presets(State(state): State<AppState>) -> Json<Vec<PresetResponse>> {
-    let presets_dir = state.inner.config.read().await.paths.presets_dir.clone();
+    let presets_dir = state.inner.config.read().await.paths.resolved_presets_dir();
     let mut presets: Vec<PresetResponse> = load_builtin_presets(&presets_dir)
         .into_iter()
         .map(|(id, preset)| PresetResponse {
@@ -3215,7 +3216,7 @@ async fn save_workflow(
 
     // `/api/run` resolves a name in `workflows_dir` before `presets_dir`, so a
     // saved workflow with a preset's run name would silently replace it.
-    let presets_dir = state.inner.config.read().await.paths.presets_dir.clone();
+    let presets_dir = state.inner.config.read().await.paths.resolved_presets_dir();
     if presets_dir.join(&filename).exists() {
         let run_name = filename.trim_end_matches(".json");
         return Err(AppError::Conflict {
@@ -9895,6 +9896,57 @@ mod tests {
         let _ = std::fs::remove_dir_all(&presets_dir);
     }
 
+    #[tokio::test]
+    async fn test_list_presets_and_save_workflow_resolve_relative_presets_dir_via_asset_base() {
+        let exe_dir = std::env::current_exe()
+            .expect("current exe")
+            .parent()
+            .expect("exe parent dir")
+            .to_path_buf();
+        let relative_presets = tempfile::Builder::new()
+            .prefix("videnoa-rel-presets-")
+            .tempdir_in(&exe_dir)
+            .expect("create temp presets dir under exe dir");
+        let relative_name = relative_presets
+            .path()
+            .file_name()
+            .expect("dir name")
+            .to_os_string();
+        assert!(
+            !std::path::Path::new(&relative_name).exists(),
+            "relative preset dir must not exist in cwd"
+        );
+        write_json_file(
+            &relative_presets.path().join("bundled-preset.json"),
+            &serde_json::json!({
+                "name": "Bundled Preset",
+                "description": "Resolved relative to exe dir",
+                "workflow": {"nodes": [], "connections": []}
+            }),
+        );
+
+        let workflows_dir = unique_temp_dir("videnoa-rel-presets-wf");
+        let state = workflow_test_state(workflows_dir.clone());
+        state.inner.config.write().await.paths.presets_dir = PathBuf::from(&relative_name);
+        let mut app = app_router(state);
+
+        assert_eq!(list_preset_ids(&mut app).await, vec!["bundled-preset"]);
+
+        let (status, json) = post_workflow(
+            &mut app,
+            serde_json::json!({
+                "name": "bundled-preset",
+                "description": "",
+                "workflow": {"nodes": [], "connections": []}
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{json}");
+        assert_eq!(json["code"], "workflow_name_is_preset", "{json}");
+
+        let _ = std::fs::remove_dir_all(&workflows_dir);
+    }
+
     /// Save targets the file the workflow was loaded from. A file copied on
     /// disk keeps the original's JSON `name`; saving the copy by name would
     /// overwrite the original.
@@ -11439,21 +11491,30 @@ mod tests {
             .unwrap();
 
         // While the job is between SQLite claim and runtime queue acceptance,
-        // both key lookup and ID lookup must agree that the job is not yet accepted.
-        let key_lookup = app
-            .call(
-                Request::builder()
-                    .method("GET")
-                    .uri("/api/jobs/by-idempotency-key/window-shutdown-key")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(key_lookup.status(), StatusCode::NOT_FOUND);
+        // ID lookup hides the uncommitted job immediately and key lookup blocks
+        // behind the per-key lock rather than publishing a premature 200 receipt
+        // or a premature 404 before the commit/rollback decision completes.
         assert_eq!(
             get_job_json(&mut app, &claimed_id).await.0,
             StatusCode::NOT_FOUND
+        );
+        let lookup_app = app.clone();
+        let key_lookup_task = tokio::spawn(async move {
+            lookup_app
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri("/api/jobs/by-idempotency-key/window-shutdown-key")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+        });
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(
+            !key_lookup_task.is_finished(),
+            "key lookup must wait for the in-flight claim to commit or roll back"
         );
 
         // Shutting down during this window rolls back the uncommitted claim with 503.
@@ -11469,6 +11530,11 @@ mod tests {
             .expect_err("uncommitted claim must fail with 503 when shutdown intervenes")
             .into_response();
         assert_eq!(claim_resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let key_lookup = tokio::time::timeout(WAIT_BUDGET, key_lookup_task)
+            .await
+            .expect("key lookup should finish after rollback")
+            .unwrap();
+        assert_eq!(key_lookup.status(), StatusCode::NOT_FOUND);
         assert_eq!(executions.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert!(state
             .job_store()

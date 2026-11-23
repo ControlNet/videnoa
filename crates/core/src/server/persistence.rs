@@ -147,9 +147,8 @@ impl JobsPersistence {
             serde_json::to_vec(pending).context("failed to serialize pending terminal record")?;
         let prefix = format!(".{}.", pending.job_id);
         let mut builder = tempfile::Builder::new();
+        // Default `tempfile` permissions keep pending terminal records private (0600 on Unix).
         builder.prefix(&prefix).suffix(".videnoa-pending");
-        #[cfg(unix)]
-        builder.permissions(std::os::unix::fs::PermissionsExt::from_mode(0o666));
         let mut staged = builder
             .tempfile_in(&self.pending_terminal_dir)
             .with_context(|| {

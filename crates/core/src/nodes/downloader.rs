@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 use sha2::{Digest, Sha256};
@@ -70,7 +70,7 @@ impl Node for DownloaderNode {
         // One directory per download keeps the original file name without
         // colliding with other downloads; it is removed when the job ends.
         let download_dir = ctx.scratch.allocate_dir()?;
-        let final_path = download_to_file(&parsed_url, &redacted, &download_dir)?;
+        let final_path = download_to_file(&parsed_url, &redacted, &download_dir, ctx)?;
 
         let mut outputs = HashMap::new();
         outputs.insert("path".to_string(), PortData::Path(final_path));
@@ -97,7 +97,13 @@ fn parse_http_url(raw: &str) -> Result<Url> {
     }
 }
 
-fn download_to_file(url: &Url, redacted_url: &str, download_dir: &Path) -> Result<PathBuf> {
+fn download_to_file(
+    url: &Url,
+    redacted_url: &str,
+    download_dir: &Path,
+    ctx: &ExecutionContext,
+) -> Result<PathBuf> {
+    ctx.check_cancelled()?;
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(DOWNLOAD_CONNECT_TIMEOUT)
         .timeout(DOWNLOAD_REQUEST_TIMEOUT)
@@ -105,7 +111,8 @@ fn download_to_file(url: &Url, redacted_url: &str, download_dir: &Path) -> Resul
         .context("failed to build HTTP client for downloader")?;
 
     for attempt in 1..=DOWNLOAD_MAX_ATTEMPTS {
-        match download_once(&client, url, redacted_url, download_dir) {
+        ctx.check_cancelled()?;
+        match download_once(&client, url, redacted_url, download_dir, ctx) {
             Ok(final_path) => return Ok(final_path),
             Err(attempt_error) => {
                 let DownloadAttemptError { retryable, error } = attempt_error;
@@ -120,7 +127,7 @@ fn download_to_file(url: &Url, redacted_url: &str, download_dir: &Path) -> Resul
                     );
 
                     let backoff_ms = DOWNLOAD_RETRY_BACKOFF_MS.saturating_mul(attempt as u64);
-                    std::thread::sleep(Duration::from_millis(backoff_ms));
+                    sleep_unless_cancelled(Duration::from_millis(backoff_ms), ctx)?;
                     continue;
                 }
 
@@ -145,12 +152,28 @@ fn download_to_file(url: &Url, redacted_url: &str, download_dir: &Path) -> Resul
     ))
 }
 
+fn sleep_unless_cancelled(duration: Duration, ctx: &ExecutionContext) -> Result<()> {
+    let deadline = Instant::now() + duration;
+    loop {
+        ctx.check_cancelled()?;
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            return Ok(());
+        };
+        if remaining.is_zero() {
+            return Ok(());
+        }
+        std::thread::sleep(remaining.min(Duration::from_millis(25)));
+    }
+}
+
 fn download_once(
     client: &reqwest::blocking::Client,
     url: &Url,
     redacted_url: &str,
     download_dir: &Path,
+    ctx: &ExecutionContext,
 ) -> std::result::Result<PathBuf, DownloadAttemptError> {
+    ctx.check_cancelled().map_err(DownloadAttemptError::fatal)?;
     let mut response = client.get(url.as_str()).send().map_err(|err| {
         let wrapped = anyhow!("failed to start download from {redacted_url}");
         if is_retryable_reqwest_error(&err) {
@@ -184,14 +207,25 @@ fn download_once(
         .map_err(DownloadAttemptError::fatal)?;
     let mut tmp_guard = TempFileCleanupGuard::new(&tmp_path);
 
-    response.copy_to(&mut tmp_file).map_err(|err| {
-        let wrapped = anyhow!("failed while reading HTTP body from {redacted_url}");
-        if is_retryable_reqwest_error(&err) {
-            DownloadAttemptError::retryable(wrapped)
-        } else {
-            DownloadAttemptError::fatal(wrapped)
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        ctx.check_cancelled().map_err(DownloadAttemptError::fatal)?;
+        let read_bytes = response.read(&mut buffer).map_err(|err| {
+            let wrapped = anyhow!("failed while reading HTTP body from {redacted_url}");
+            if err.kind() == std::io::ErrorKind::InvalidData {
+                DownloadAttemptError::fatal(wrapped)
+            } else {
+                DownloadAttemptError::retryable(wrapped)
+            }
+        })?;
+        if read_bytes == 0 {
+            break;
         }
-    })?;
+        tmp_file
+            .write_all(&buffer[..read_bytes])
+            .with_context(|| format!("failed to write temp file: {}", tmp_path.display()))
+            .map_err(DownloadAttemptError::fatal)?;
+    }
 
     tmp_file
         .flush()
@@ -204,6 +238,8 @@ fn download_once(
         .map_err(DownloadAttemptError::fatal)?;
 
     drop(tmp_file);
+
+    ctx.check_cancelled().map_err(DownloadAttemptError::fatal)?;
 
     fs::rename(&tmp_path, &final_path)
         .with_context(|| {
@@ -544,7 +580,7 @@ fn redacted_url_for_display(url: &Url) -> String {
     if redacted.query().is_some() {
         redacted.set_query(Some("<redacted>"));
     }
-    redacted.to_string()
+    crate::logging::redact_sensitive_text(redacted.as_str())
 }
 
 #[cfg(test)]
@@ -1225,5 +1261,138 @@ mod tests {
         drop(outer);
         assert!(!path.exists());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_execute_redacts_url_credentials_in_errors() {
+        let id = unique_id();
+        let invalid_scheme_url =
+            format!("ftp://alice:super-secret-pass@example.com/video/{id}.mp4?token=qsecret");
+        let ctx = ExecutionContext::default();
+        let mut node = DownloaderNode::new();
+        let err = node
+            .execute(
+                &HashMap::from([("url".to_string(), PortData::Str(invalid_scheme_url))]),
+                &ctx,
+            )
+            .err()
+            .expect("invalid scheme should fail");
+        let msg = err.to_string();
+        assert!(!msg.contains("alice"), "error leaked username: {msg}");
+        assert!(
+            !msg.contains("super-secret-pass"),
+            "error leaked password: {msg}"
+        );
+        assert!(!msg.contains("qsecret"), "error leaked query: {msg}");
+        assert!(
+            msg.contains("***REDACTED***"),
+            "error missing redaction: {msg}"
+        );
+
+        let (base_url, server_handle) = spawn_single_response_server(ServerResponse::Status {
+            code: 404,
+            reason: "Not Found",
+            body: b"missing".to_vec(),
+        });
+        let authed_url = base_url.replacen("http://", "http://bob:very-secret-pwd@", 1)
+            + &format!("/clip/{id}.mkv?api_key=key123");
+        let err = node
+            .execute(
+                &HashMap::from([("url".to_string(), PortData::Str(authed_url))]),
+                &ctx,
+            )
+            .err()
+            .expect("404 should fail");
+        server_handle.join().unwrap();
+        let msg = err.to_string();
+        assert!(msg.contains("HTTP 404"), "error: {msg}");
+        assert!(!msg.contains("bob"), "error leaked username: {msg}");
+        assert!(
+            !msg.contains("very-secret-pwd"),
+            "error leaked password: {msg}"
+        );
+        assert!(!msg.contains("key123"), "error leaked query: {msg}");
+        assert!(
+            msg.contains("***REDACTED***"),
+            "error missing redaction: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_execute_respects_cancellation_and_cleans_part_file() {
+        // Pre-cancelled context must fail immediately without touching the network.
+        let (_pre_tx, pre_rx) = tokio::sync::watch::channel(true);
+        let pre_cancelled = ExecutionContext {
+            cancellation: Some(pre_rx),
+            ..ExecutionContext::default()
+        };
+        let mut node = DownloaderNode::new();
+        let err = node
+            .execute(
+                &HashMap::from([(
+                    "url".to_string(),
+                    PortData::Str("http://127.0.0.1:9/never-connect.mkv".to_string()),
+                )]),
+                &pre_cancelled,
+            )
+            .err()
+            .expect("pre-cancelled download must fail");
+        assert!(
+            crate::node::is_cancellation(&err),
+            "expected cancellation error, got: {err:#}"
+        );
+
+        // Mid-stream cancellation stops reading chunks and cleans up `.part`.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let first_chunk_sent = Arc::new(std::sync::Barrier::new(2));
+        let server_barrier = Arc::clone(&first_chunk_sent);
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            consume_request_headers(&mut stream);
+            let total = 256 * 1024;
+            let headers =
+                format!("HTTP/1.1 200 OK\r\nContent-Length: {total}\r\nConnection: close\r\n\r\n");
+            let _ = stream.write_all(headers.as_bytes());
+            let chunk = vec![b'a'; 64 * 1024];
+            let _ = stream.write_all(&chunk);
+            let _ = stream.flush();
+            server_barrier.wait();
+            // Send a second chunk after cancel triggers so `read` returns and loop checks cancel.
+            thread::sleep(Duration::from_millis(50));
+            let _ = stream.write_all(&chunk);
+            let _ = stream.flush();
+        });
+
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        let ctx = ExecutionContext {
+            cancellation: Some(cancel_rx),
+            ..ExecutionContext::default()
+        };
+        let cancel_handle = thread::spawn(move || {
+            first_chunk_sent.wait();
+            let _ = cancel_tx.send(true);
+        });
+
+        let url = format!("http://{addr}/stream-{}.mkv", unique_id());
+        let err = node
+            .execute(
+                &HashMap::from([("url".to_string(), PortData::Str(url))]),
+                &ctx,
+            )
+            .err()
+            .expect("cancelled streaming download must fail");
+        cancel_handle.join().unwrap();
+        server.join().unwrap();
+
+        assert!(
+            crate::node::is_cancellation(&err),
+            "expected cancellation error, got: {err:#}"
+        );
+        assert_eq!(
+            scratch_files(&ctx),
+            Vec::<PathBuf>::new(),
+            "cancelled download must not leave .part or final files"
+        );
     }
 }

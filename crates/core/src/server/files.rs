@@ -43,6 +43,9 @@ pub(super) async fn upload_file(
         PathRequirement::AllowMissing,
     )
     .await?;
+    let parent = resolved.absolute.parent().ok_or_else(|| {
+        AppError::BadRequest("file path must have a parent directory".to_string())
+    })?;
     match tokio::fs::symlink_metadata(&resolved.absolute).await {
         Ok(metadata) if metadata.is_dir() => {
             return Err(AppError::BadRequest(format!(
@@ -90,7 +93,11 @@ pub(super) async fn upload_file(
         .flush()
         .await
         .map_err(|error| io_error("flush upload", &resolved.absolute, error))?;
-    drop(writer);
+    writer
+        .into_inner()
+        .sync_all()
+        .await
+        .map_err(|error| io_error("sync upload", &resolved.absolute, error))?;
 
     staged
         .persist(&resolved.absolute)

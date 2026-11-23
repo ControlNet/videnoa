@@ -147,10 +147,11 @@ impl AppState {
             let stopped = stop.clone();
             let router = api_router(self.clone());
             let task = tokio::spawn(async move {
-                tokio::select! {
-                    _ = stopped.cancelled() => {},
-                    _ = axum::serve(listener, router.into_make_service_with_connect_info::<std::net::SocketAddr>()) => {},
-                }
+                let _ = super::http_server::HttpServer::new(listener, router)
+                    .serve_with_graceful_shutdown(async move {
+                        stopped.cancelled().await;
+                    })
+                    .await;
             });
             tracing::info!(
                 endpoint_id = %server.id(),
@@ -162,7 +163,8 @@ impl AppState {
             runtime.api_stop = Some(stop);
             runtime.api_task = Some(task);
             anyhow::Ok(())
-        }.await;
+        }
+        .await;
         runtime.error = result.as_ref().err().map(ToString::to_string);
         result
     }
