@@ -133,8 +133,8 @@ function EditorCanvas() {
 	const submittedJobId = useWorkflowStore((s) => s.submittedJobId);
 
 	useEffect(() => {
-		void fetchJobs();
-		const id = setInterval(() => void fetchJobs(), 2_000);
+		void fetchJobs().catch(() => undefined);
+		const id = setInterval(() => void fetchJobs().catch(() => undefined), 2_000);
 		return () => clearInterval(id);
 	}, [fetchJobs]);
 
@@ -329,14 +329,26 @@ function EditorCanvas() {
 	);
 
 	useEffect(() => {
+		function isEditableTarget(target: EventTarget | null): boolean {
+			if (!(target instanceof HTMLElement)) return false;
+			const tag = target.tagName;
+			return (
+				tag === "INPUT" ||
+				tag === "TEXTAREA" ||
+				tag === "SELECT" ||
+				target.isContentEditable
+			);
+		}
+
 		function handleKeyDown(e: KeyboardEvent) {
-			if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey) {
+			const key = e.key.toLowerCase();
+			if ((e.ctrlKey || e.metaKey) && key === "z" && !isEditableTarget(e.target)) {
 				e.preventDefault();
-				undo();
-			}
-			if ((e.ctrlKey || e.metaKey) && e.key === "Z" && e.shiftKey) {
-				e.preventDefault();
-				redo();
+				if (e.shiftKey) {
+					redo();
+				} else {
+					undo();
+				}
 			}
 			// A nested dialog (e.g. a delete confirmation) that consumed Escape
 			// must not also close the modal underneath it.

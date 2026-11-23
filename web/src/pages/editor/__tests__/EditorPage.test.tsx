@@ -526,3 +526,55 @@ describe("EditorPage empty canvas", () => {
 		expect(screen.getByRole("button", { name: "加载预设" })).toBeInTheDocument();
 	});
 });
+
+describe("EditorPage polling and keyboard shortcuts", () => {
+	it("handles rejected background fetchJobs polls without unhandled rejections", async () => {
+		const unhandled: unknown[] = [];
+		const onUnhandled = (event: PromiseRejectionEvent) => {
+			unhandled.push(event.reason);
+		};
+		window.addEventListener("unhandledrejection", onUnhandled);
+		jobStoreMocks.fetchJobs.mockRejectedValue(new Error("worker offline"));
+		try {
+			render(<EditorPage />);
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			expect(jobStoreMocks.fetchJobs).toHaveBeenCalled();
+			expect(unhandled).toEqual([]);
+		} finally {
+			window.removeEventListener("unhandledrejection", onUnhandled);
+		}
+	});
+
+	it("ignores Ctrl+Z inside editable fields and supports Shift+Ctrl+z redo", () => {
+		render(<EditorPage />);
+		act(() => {
+			useWorkflowStore.getState().addNode({
+				id: "n1",
+				type: "pipeline",
+				position: { x: 0, y: 0 },
+				data: { nodeType: "VideoInput", params: {} },
+			});
+		});
+		expect(useWorkflowStore.getState().nodes).toHaveLength(1);
+
+		const input = document.createElement("input");
+		document.body.appendChild(input);
+		try {
+			fireEvent.keyDown(input, { key: "z", ctrlKey: true });
+			expect(useWorkflowStore.getState().nodes).toHaveLength(1);
+
+			fireEvent.keyDown(document.body, { key: "z", ctrlKey: true });
+			expect(useWorkflowStore.getState().nodes).toHaveLength(0);
+
+			// Shift+Ctrl+z with lowercase `z` (e.g. CapsLock on) must still redo.
+			fireEvent.keyDown(document.body, {
+				key: "z",
+				ctrlKey: true,
+				shiftKey: true,
+			});
+			expect(useWorkflowStore.getState().nodes).toHaveLength(1);
+		} finally {
+			input.remove();
+		}
+	});
+});
