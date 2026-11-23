@@ -16,12 +16,8 @@ impl TransferExecutor {
         &self,
         report: &RecoveryReport,
     ) -> Result<Vec<crate::domain::TaskId>, TransferError> {
-        self.dispatch_recovery_with(
-            report,
-            || self.live_now(),
-            || self.sample_jitter(),
-        )
-        .await
+        self.dispatch_recovery_with(report, || self.live_now(), || self.sample_jitter())
+            .await
     }
 
     /// Executes transfer commands emitted from durable startup reconciliation.
@@ -35,12 +31,8 @@ impl TransferExecutor {
         jitter: JitterSample,
     ) -> Result<Vec<crate::domain::TaskId>, TransferError> {
         let started = tokio::time::Instant::now();
-        self.dispatch_recovery_with(
-            report,
-            || self.observed_now(now, started),
-            || jitter,
-        )
-        .await
+        self.dispatch_recovery_with(report, || self.observed_now(now, started), || jitter)
+            .await
     }
 
     async fn dispatch_recovery_with(
@@ -70,7 +62,8 @@ impl TransferExecutor {
                             }
                         }
                         Err(TransferError::MissingEvidence) => {
-                            self.fail_malformed_recovery(trace.task_id, now_fn()).await?;
+                            self.fail_malformed_recovery(trace.task_id, now_fn())
+                                .await?;
                         }
                         Err(error) => return Err(error),
                     }
@@ -83,7 +76,8 @@ impl TransferExecutor {
                         Ok(DownloadOutcome::RetryScheduled { .. } | DownloadOutcome::Failed)
                         | Err(TransferError::Busy | TransferError::RetryNotDue) => {}
                         Err(TransferError::MissingEvidence) => {
-                            self.fail_malformed_recovery(trace.task_id, now_fn()).await?;
+                            self.fail_malformed_recovery(trace.task_id, now_fn())
+                                .await?;
                         }
                         Err(error) => return Err(error),
                     }
@@ -98,7 +92,8 @@ impl TransferExecutor {
                         )
                         | Err(TransferError::RetryNotDue) => {}
                         Err(TransferError::MissingEvidence) => {
-                            self.fail_malformed_recovery(trace.task_id, now_fn()).await?;
+                            self.fail_malformed_recovery(trace.task_id, now_fn())
+                                .await?;
                         }
                         Err(error) => return Err(error),
                     }
@@ -113,7 +108,8 @@ impl TransferExecutor {
                         )
                         | Err(TransferError::RetryNotDue) => {}
                         Err(TransferError::MissingEvidence) => {
-                            self.fail_malformed_recovery(trace.task_id, now_fn()).await?;
+                            self.fail_malformed_recovery(trace.task_id, now_fn())
+                                .await?;
                         }
                         Err(error) => return Err(error),
                     }

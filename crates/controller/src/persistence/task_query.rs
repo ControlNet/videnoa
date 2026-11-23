@@ -100,10 +100,7 @@ impl Store {
     }
 }
 
-async fn count_tasks_in<'e, E>(
-    executor: E,
-    query: &TaskListQuery,
-) -> Result<u64, PersistenceError>
+async fn count_tasks_in<'e, E>(executor: E, query: &TaskListQuery) -> Result<u64, PersistenceError>
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {

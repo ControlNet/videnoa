@@ -28,15 +28,21 @@ impl TransferExecutor {
         let (mut task, mut attempt) = self.snapshots(task_id).await?;
         Self::require_retry_due(&task, &attempt, now)?;
         let Some(remote_output_path) = attempt.attempt.remote_output_path.clone() else {
-            return self.download_ambiguity(&task, &attempt, self.observed_now(now, started)).await;
+            return self
+                .download_ambiguity(&task, &attempt, self.observed_now(now, started))
+                .await;
         };
         let Some(remote_input_path) = attempt.attempt.remote_input_path.as_ref() else {
-            return self.download_ambiguity(&task, &attempt, self.observed_now(now, started)).await;
+            return self
+                .download_ambiguity(&task, &attempt, self.observed_now(now, started))
+                .await;
         };
         let output_name = format!("output.{}", task.output_extension.as_str());
         let expected_output_path = sibling_output_path(remote_input_path, &output_name)?;
         if attempt.attempt.remote_job_id.is_none() || remote_output_path != expected_output_path {
-            return self.download_ambiguity(&task, &attempt, self.observed_now(now, started)).await;
+            return self
+                .download_ambiguity(&task, &attempt, self.observed_now(now, started))
+                .await;
         }
         let _permit = self
             .resources
@@ -78,7 +84,15 @@ impl TransferExecutor {
             artifact
         } else {
             match self
-                .fetch_remote_download(&task, &attempt, &output_name, workspace, now, started, jitter)
+                .fetch_remote_download(
+                    &task,
+                    &attempt,
+                    &output_name,
+                    workspace,
+                    now,
+                    started,
+                    jitter,
+                )
                 .await?
             {
                 RemoteFetchOutcome::Verified(artifact) => artifact,

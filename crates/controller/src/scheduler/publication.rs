@@ -77,7 +77,12 @@ impl TransferExecutor {
         let (task, attempt) = self.snapshots(task_id).await?;
         let published_at = self.observed_now(now, started);
         LifecycleService::new(self.resources.store.clone())
-            .advance(&task, &attempt, AdvanceCommand::FinishPublication, published_at)
+            .advance(
+                &task,
+                &attempt,
+                AdvanceCommand::FinishPublication,
+                published_at,
+            )
             .await?;
         self.cleanup(task_id, published_at, jitter).await
     }

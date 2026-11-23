@@ -118,7 +118,11 @@ impl TransferExecutor {
     /// the elapsed duration of the transfer stage so post-I/O failure/completion
     /// timestamps reflect actual transfer time while keeping deterministic test
     /// timestamps anchored.
-    pub(super) fn observed_now(&self, started_at: DateTime<Utc>, started: Instant) -> DateTime<Utc> {
+    pub(super) fn observed_now(
+        &self,
+        started_at: DateTime<Utc>,
+        started: Instant,
+    ) -> DateTime<Utc> {
         if let Some(clock) = &self.clock {
             return clock();
         }
